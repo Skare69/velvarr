@@ -346,6 +346,10 @@ function SetupWizard({ onDone }: { onDone: () => void }) {
                 value={f.setupSecret}
                 onChange={bind("setupSecret")}
               />
+              <p className="mt-1 text-xs text-muted">
+                The VELVARR_SETUP_SECRET value from your compose/.env file.
+                Whoever knows it can claim ownership of this fresh instance.
+              </p>
             </div>
             <div>
               <label className="label" htmlFor="su-url">
@@ -361,6 +365,11 @@ function SetupWizard({ onDone }: { onDone: () => void }) {
                 value={f.jellyfinUrl}
                 onChange={bind("jellyfinUrl")}
               />
+              <p className="mt-1 text-xs text-muted">
+                How Velvarr reaches Jellyfin — must resolve from inside the
+                Velvarr container (http://jellyfin:8096 only works on a shared
+                Docker network; otherwise use the host address).
+              </p>
             </div>
             <div>
               <label className="label" htmlFor="su-ext">
@@ -376,6 +385,10 @@ function SetupWizard({ onDone }: { onDone: () => void }) {
                 value={f.jellyfinExternalUrl}
                 onChange={bind("jellyfinExternalUrl")}
               />
+              <p className="mt-1 text-xs text-muted">
+                The Jellyfin web address users open in a browser. Used to build
+                playback links.
+              </p>
             </div>
             <div>
               <label className="label" htmlFor="su-key">
@@ -389,6 +402,11 @@ function SetupWizard({ onDone }: { onDone: () => void }) {
                 value={f.jellyfinApiKey}
                 onChange={bind("jellyfinApiKey")}
               />
+              <p className="mt-1 text-xs text-muted">
+                Administrator key from Jellyfin Dashboard → API Keys. Used for
+                read-only server status; user actions always run under the
+                signed-in user's own token.
+              </p>
             </div>
             <div>
               <label className="label" htmlFor="su-user">
@@ -402,6 +420,9 @@ function SetupWizard({ onDone }: { onDone: () => void }) {
                 value={f.username}
                 onChange={bind("username")}
               />
+              <p className="mt-1 text-xs text-muted">
+                The Jellyfin account that becomes Velvarr's permanent owner.
+              </p>
             </div>
             <div>
               <label className="label" htmlFor="su-pass">
@@ -415,6 +436,11 @@ function SetupWizard({ onDone }: { onDone: () => void }) {
                 value={f.password}
                 onChange={bind("password")}
               />
+              <p className="mt-1 text-xs text-muted">
+                That account's Jellyfin password. Velvarr verifies it once
+                against Jellyfin and never stores it — every login happens
+                against Jellyfin.
+              </p>
             </div>
             <button
               type="submit"
