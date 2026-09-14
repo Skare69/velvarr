@@ -92,7 +92,11 @@ export function guardMutation(request: Request): void {
     throw new AppError(403, "origin_mismatch", "origin not allowed");
   }
   if (got.origin !== configured.origin) {
-    throw new AppError(403, "origin_mismatch", "origin not allowed");
+    throw new AppError(
+      403,
+      "origin_mismatch",
+      `origin not allowed: set VELVARR_ORIGIN to the address you browse (expected ${configured.origin}, got ${got.origin})`,
+    );
   }
 }
 
