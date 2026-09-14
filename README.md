@@ -59,15 +59,15 @@ Production: `docker compose up --build`. The image runs the Next standalone serv
 
 ## Environment variables
 
-`bun run setup` writes `VELVARR_ORIGIN`, `VELVARR_SECRET_KEY`, and `VELVARR_SETUP_SECRET` to the git-ignored `.env.local`. The container reads them from the environment at runtime only; no credential enters the image as a build argument, copied file, or layer.
+`bun run setup` writes `VELVARR_SECRET_KEY` and `VELVARR_SETUP_SECRET` to the git-ignored `.env.local` (plus an optional `VELVARR_ORIGIN`). The container reads them from the environment at runtime only; no credential enters the image as a build argument, copied file, or layer.
 
 | Variable                     | Required         | Meaning                                                                                                                                                                                      |
 | ---------------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `VELVARR_SECRET_KEY`         | yes              | Exactly 64 hex characters. Decrypts credentials stored in the database; losing it loses the stored data and every backup. Restores require the key from backup time.                          |
 | `VELVARR_SETUP_SECRET`       | until bootstrap  | At least 32 characters; gates the one-time owner setup.                                                                                                                                       |
-| `VELVARR_ORIGIN`             | no               | Public origin; default `http://127.0.0.1:5577`.                                                                                                                                               |
+| `VELVARR_ORIGIN`             | no               | Pin the public origin (e.g. behind a fixed reverse proxy). When set, mutations from a different `Origin` are refused. Unset (default), CSRF safety comes from the `HttpOnly` + `SameSite=Strict` session cookie alone, and the deployment needs no knowledge of its own address — same as Jellyfin/Seerr. |
 | `VELVARR_DATA_DIR`           | no               | Data directory; default `./data`, `/data` in the container.                                                                                                                                   |
-| `VELVARR_ALLOW_HTTP`         | no               | `1` allows plain HTTP to trusted private addresses; loopback is always allowed.                                                                                                               |
+| `VELVARR_ALLOW_HTTP`         | no               | Only relevant together with `VELVARR_ORIGIN`: `1` allows that origin to be plain HTTP at a trusted private address; loopback is always allowed.                                                |
 | `VELVARR_ENABLE_REMOVAL`     | no               | `1` enables the removal ladder instance-wide. Off by default, and even when on, creating or approving removals additionally requires a per-account removal grant set by an administrator.      |
 | `VELVARR_DISCORD_WEBHOOK_URL`| no               | Discord webhook for notifications; unset disables the notifier entirely. Only https `discord.com`/`discordapp.com` webhook URLs are accepted (plain http only for loopback, which is how the test fixture works), and the URL is never logged or embedded in errors. |
 | `VELVARR_DISCORD_DETAIL`     | no               | `1` includes titles in notifications. Off by default: messages carry only the event kind and the media identity (provider/kind/external id), never titles or artwork.                          |

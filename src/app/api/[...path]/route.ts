@@ -46,6 +46,7 @@ import {
   consumeLoginAttempt,
   guardMutation,
   sessionCookie,
+  isSecureRequest,
   verifySetupSecret,
 } from "../../../server/security.ts";
 import { AppError, validateBaseUrl } from "../../../server/http.ts";
@@ -432,7 +433,7 @@ async function setupCommit(request: Request): Promise<Response> {
   };
   const grant = bootstrap(config, selection.user, selection.token);
   return json({ account: grant.account }, 200, {
-    "set-cookie": sessionCookie(grant),
+    "set-cookie": sessionCookie(grant, isSecureRequest(request)),
   });
 }
 
@@ -472,7 +473,7 @@ async function login(request: Request): Promise<Response> {
   }
   const grant = createSession(account.id, token);
   return json({ account: grant.account }, 200, {
-    "set-cookie": sessionCookie(grant),
+    "set-cookie": sessionCookie(grant, isSecureRequest(request)),
   });
 }
 
@@ -481,7 +482,9 @@ async function logout(request: Request): Promise<Response> {
   await readJson(request);
   const raw = readSessionToken(request);
   if (raw) revokeSession(raw);
-  return json({ ok: true }, 200, { "set-cookie": sessionCookie(undefined) });
+  return json({ ok: true }, 200, {
+    "set-cookie": sessionCookie(undefined, isSecureRequest(request)),
+  });
 }
 
 // --- user routes ---

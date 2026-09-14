@@ -15,13 +15,20 @@ const MAX_BUCKETS = 1024;
 type Bucket = { count: number; windowStart: number };
 const buckets = new Map<string, Bucket>();
 
-// Shared by guardMutation and sessionCookie so cookie flags and origin checks
-// can never disagree.
-function configuredOrigin(): string {
-  return (process.env.VELVARR_ORIGIN || "http://127.0.0.1:5577").replace(
-    /\/+$/,
-    "",
+// HTTPS upgrade for the session cookie comes from the request, not from a
+// pinned origin: behind any https reverse proxy (X-Forwarded-Proto) or direct
+// https URL the cookie gains Secure; plain LAN http legitimately cannot have
+// it (browsers drop Secure cookies on http).
+export function isSecureRequest(request: Request): boolean {
+  return (
+    request.headers.get("x-forwarded-proto") === "https:" ||
+    request.headers.get("x-forwarded-proto") === "https" ||
+    new URL(request.url).protocol === "https:"
   );
+}
+
+function originEnforced(): boolean {
+  return !!process.env.VELVARR_ORIGIN;
 }
 
 function consumeBucket(key: string, limit: number, now: number): void {
@@ -55,9 +62,11 @@ function isLoopbackHost(hostname: string): boolean {
 }
 
 function enforceOriginConfig(): URL {
+  const raw = process.env.VELVARR_ORIGIN;
+  if (!raw) throw new AppError(500, "bad_origin_config", "unreachable");
   let url: URL;
   try {
-    url = new URL(configuredOrigin());
+    url = new URL(raw);
   } catch {
     throw new AppError(
       500,
@@ -80,6 +89,7 @@ function enforceOriginConfig(): URL {
 }
 
 export function guardMutation(request: Request): void {
+  if (!originEnforced()) return;
   const configured = enforceOriginConfig();
   const header = request.headers.get("origin");
   if (!header) {
@@ -125,11 +135,11 @@ export function consumeLoginAttempt(name: string): void {
   );
 }
 
-export function sessionCookie(grant?: SessionGrant): string {
-  const secure = configuredOrigin().startsWith("https://") ? "; Secure" : "";
+export function sessionCookie(grant?: SessionGrant, secure?: boolean): string {
+  const suffix = secure ? "; Secure" : "";
   if (!grant) {
-    return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure}`;
+    return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${suffix}`;
   }
   const maxAge = Math.max(1, Math.floor((grant.expiresAt - Date.now()) / 1000));
-  return `${COOKIE_NAME}=${grant.token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`;
+  return `${COOKIE_NAME}=${grant.token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${suffix}`;
 }

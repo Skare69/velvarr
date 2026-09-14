@@ -469,38 +469,54 @@ test("setup secret compare is constant-time-correct; login limiter is bounded pe
   security.consumeLoginAttempt("bob");
 });
 
-test("session cookie flags follow origin transport and clear correctly", () => {
-  process.env.VELVARR_ORIGIN = "https://velvarr.example.org";
-  const set = security.sessionCookie({
+test("session cookie flags follow request transport and clear correctly", () => {
+  const grant = {
     token: "tok123",
     expiresAt: Date.now() + 60_000,
     account: accountFixture(),
-  });
-  assert.ok(set.startsWith("velvarr_session=tok123;"));
+  };
+  const secureSet = security.sessionCookie(grant, true);
+  assert.ok(secureSet.startsWith("velvarr_session=tok123;"));
   assert.ok(
-    set.includes("HttpOnly") &&
-      set.includes("SameSite=Strict") &&
-      set.includes("Path=/") &&
-      set.includes("Secure"),
+    secureSet.includes("HttpOnly") &&
+      secureSet.includes("SameSite=Strict") &&
+      secureSet.includes("Path=/") &&
+      secureSet.includes("Secure"),
   );
   assert.ok(
-    set.includes("Max-Age=6") ||
-      set.includes("Max-Age=5") ||
-      set.includes("Max-Age=60"),
+    secureSet.includes("Max-Age=6") ||
+      secureSet.includes("Max-Age=5") ||
+      secureSet.includes("Max-Age=60"),
   );
 
-  const clear = security.sessionCookie();
-  assert.ok(clear.startsWith("velvarr_session=;"));
-  assert.ok(clear.includes("Max-Age=0"));
-
-  process.env.VELVARR_ORIGIN = "http://127.0.0.1:5577";
-  const plain = security.sessionCookie({
-    token: "tok123",
-    expiresAt: Date.now() + 60_000,
-    account: accountFixture(),
-  });
+  const plain = security.sessionCookie(grant);
   assert.ok(!plain.includes("Secure"));
   assert.ok(plain.includes("HttpOnly") && plain.includes("SameSite=Strict"));
+
+  const clear = security.sessionCookie(undefined, true);
+  assert.ok(clear.startsWith("velvarr_session=;"));
+  assert.ok(clear.includes("Max-Age=0") && clear.includes("Secure"));
+});
+
+test("origin pin is optional: unset VELVARR_ORIGIN skips origin enforcement", () => {
+  const req = new Request("http://192.168.1.50:5577/api/login", {
+    method: "POST",
+    headers: { origin: "http://other-host:5577" },
+    body: "{}",
+  });
+  const previous = process.env.VELVARR_ORIGIN;
+  delete process.env.VELVARR_ORIGIN;
+  try {
+    assert.doesNotThrow(() => security.guardMutation(req));
+    process.env.VELVARR_ORIGIN = "http://127.0.0.1:5577";
+    assert.throws(
+      () => security.guardMutation(req),
+      (e: { code: string }) => e.code === "origin_mismatch",
+    );
+  } finally {
+    if (previous !== undefined) process.env.VELVARR_ORIGIN = previous;
+    else delete process.env.VELVARR_ORIGIN;
+  }
 });
 
 // --- M2 foundations ---
