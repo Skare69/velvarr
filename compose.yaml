@@ -1,7 +1,9 @@
 services:
   velvarr:
-    build: .
-    image: velvarr:local
+    # Pull-only deployment. To build from source instead, replace image with
+    # "velvarr:local" and uncomment build.
+    image: ghcr.io/skare69/velvarr:v0.1.1
+    # build: .
     restart: unless-stopped
     ports:
       # Loopback only: the app is never exposed to the network by default.
