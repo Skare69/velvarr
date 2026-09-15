@@ -59,7 +59,15 @@ function isPrivateHost(hostname: string): boolean {
       (a === 169 && b === 254)
     );
   }
-  return h.endsWith(".local") || h.startsWith("fc") || h.startsWith("fd");
+  // ponytail: dotless hostnames are treated as Docker-network-internal
+  // (compose service names like "jellyfin"); resolvable-name classification
+  // needs async DNS if this ever misfires.
+  return (
+    h.endsWith(".local") ||
+    h.startsWith("fc") ||
+    h.startsWith("fd") ||
+    !h.includes(".")
+  );
 }
 
 // Preserves any reverse-proxy path prefix, strips trailing slashes, and
@@ -83,20 +91,18 @@ export function validateBaseUrl(value: string): string {
   if (u.username || u.password || u.search || u.hash) throw invalid();
   const scheme = u.protocol.slice(0, -1);
   if (scheme === "http") {
-    if (!isLoopbackHost(u.hostname)) {
+    if (
+      !isLoopbackHost(u.hostname) &&
+      (process.env.VELVARR_ALLOW_HTTP !== "1" || !isPrivateHost(u.hostname))
+    ) {
       // ponytail: EnableRemoteAccess-style trusted client-network model does
       // not exist yet, so private HTTP needs the explicit operator escape
       // hatch; public HTTP origins are always rejected.
-      if (
-        process.env.VELVARR_ALLOW_HTTP !== "1" ||
-        !isPrivateHost(u.hostname)
-      ) {
-        throw new AppError(
-          400,
-          "invalid_url",
-          "Plain HTTP is only allowed for loopback, or for trusted private addresses when VELVARR_ALLOW_HTTP=1.",
-        );
-      }
+      throw new AppError(
+        400,
+        "invalid_url",
+        "Plain HTTP is only allowed for loopback, or for trusted private addresses when VELVARR_ALLOW_HTTP=1.",
+      );
     }
   } else if (scheme !== "https") {
     throw invalid();
