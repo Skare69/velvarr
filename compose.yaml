@@ -10,9 +10,8 @@ services:
       # Runtime-only credentials, produced once by `npm run setup`; never baked into the image.
       - path: .env.local
         required: false
-    environment:
-      # Browse Velvarr or Jellyfin over plain HTTP on the LAN? Uncomment:
-      # - VELVARR_ALLOW_HTTP=1
+    # Plain HTTP on the LAN (Velvarr origin or Jellyfin/Whisparr base URLs)?
+    # Add an environment entry:  - VELVARR_ALLOW_HTTP=1
     volumes:
       - velvarr-data:/data
 
