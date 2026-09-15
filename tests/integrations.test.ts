@@ -271,6 +271,24 @@ test("validateBaseUrl preserves reverse-proxy prefixes and strips trailing slash
     validateBaseUrl("http://localhost:8096/jellyfin/"),
     "http://localhost:8096/jellyfin",
   );
+  process.env.VELVARR_ALLOW_HTTP = "1";
+  assert.equal(
+    validateBaseUrl("http://jellyfin:8096/"),
+    "http://jellyfin:8096",
+  );
+  assert.equal(
+    validateBaseUrl("http://192.168.1.10:8096"),
+    "http://192.168.1.10:8096",
+  );
+  assert.throws(
+    () => validateBaseUrl("http://media.example.com"),
+    appError(400, "invalid_url"),
+  );
+  delete process.env.VELVARR_ALLOW_HTTP;
+  assert.throws(
+    () => validateBaseUrl("http://jellyfin:8096/"),
+    appError(400, "invalid_url"),
+  );
 });
 
 test("validateBaseUrl rejects query strings, fragments, userinfo, and bad schemes", () => {
