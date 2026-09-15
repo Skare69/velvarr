@@ -691,12 +691,67 @@ async function adminUpdateUser(
   return json({ account });
 }
 
+/** Provider credentials: omitted key = unchanged, "" = clear (falls back to
+ * the environment). Verify happens via /api/admin/providers. */
+function nextProviderCredentials(
+  existing: IntegrationConfig["providers"],
+  body: Record<string, unknown>,
+): IntegrationConfig["providers"] {
+  const tpdbApiToken = optionalText(body, "tpdbApiToken", 1024);
+  const stashdbApiKey = optionalText(body, "stashdbApiKey", 512);
+  if (tpdbApiToken === undefined && stashdbApiKey === undefined) {
+    return existing;
+  }
+  const providers = {
+    tpdbApiToken:
+      tpdbApiToken === undefined
+        ? existing?.tpdbApiToken
+        : tpdbApiToken === ""
+          ? undefined
+          : tpdbApiToken.trim(),
+    stashdbApiKey:
+      stashdbApiKey === undefined
+        ? existing?.stashdbApiKey
+        : stashdbApiKey === ""
+          ? undefined
+          : stashdbApiKey.trim(),
+  };
+  if (
+    providers.tpdbApiToken === undefined &&
+    providers.stashdbApiKey === undefined
+  ) {
+    return undefined;
+  }
+  return providers;
+}
+
 async function adminUpdateIntegrations(
   request: Request,
   ctx: AuthContext,
 ): Promise<Response> {
   guardMutation(request);
   const body = await readJson(request);
+  // Provider-only saves never touch Jellyfin/Whisparr: the provider card
+  // sends just its fields, and re-validating the Jellyfin connection would
+  // make provider keys uneditable whenever Jellyfin is briefly down.
+  const bodyKeys = Object.keys(body);
+  if (bodyKeys.every((k) => k === "tpdbApiToken" || k === "stashdbApiKey")) {
+    if (bodyKeys.length === 0) {
+      throw new AppError(
+        400,
+        "invalid_field",
+        "No provider credential fields were sent.",
+      );
+    }
+    const providers = nextProviderCredentials(ctx.config.providers, body);
+    const config: IntegrationConfig = {
+      jellyfin: ctx.config.jellyfin,
+      ...(ctx.config.whisparr ? { whisparr: ctx.config.whisparr } : {}),
+      ...(providers ? { providers } : {}),
+    };
+    saveConfig(config);
+    return json(integrationsShape(config));
+  }
   const jellyfinUrl = fieldUrl(body, "jellyfinUrl");
   const jellyfinExternalUrl = fieldUrl(body, "jellyfinExternalUrl");
   // Authorization for this change is the admin session itself: requireAdmin
@@ -847,33 +902,7 @@ async function adminUpdateIntegrations(
       ...(pathMappings ? { pathMappings } : {}),
     };
   }
-  // Provider credentials: omitted key = unchanged, "" = clear (falls back to
-  // the environment). Verify happens via /api/admin/providers.
-  let providers = ctx.config.providers;
-  const tpdbApiToken = optionalText(body, "tpdbApiToken", 1024);
-  const stashdbApiKey = optionalText(body, "stashdbApiKey", 512);
-  if (tpdbApiToken !== undefined || stashdbApiKey !== undefined) {
-    providers = {
-      tpdbApiToken:
-        tpdbApiToken === undefined
-          ? providers?.tpdbApiToken
-          : tpdbApiToken === ""
-            ? undefined
-            : tpdbApiToken.trim(),
-      stashdbApiKey:
-        stashdbApiKey === undefined
-          ? providers?.stashdbApiKey
-          : stashdbApiKey === ""
-            ? undefined
-            : stashdbApiKey.trim(),
-    };
-    if (
-      providers.tpdbApiToken === undefined &&
-      providers.stashdbApiKey === undefined
-    ) {
-      providers = undefined;
-    }
-  }
+  const providers = nextProviderCredentials(ctx.config.providers, body);
   const config: IntegrationConfig = {
     jellyfin,
     ...(whisparr ? { whisparr } : {}),

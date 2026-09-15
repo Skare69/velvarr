@@ -1494,8 +1494,6 @@ test("provider credentials: stored config wins over environment, clear falls bac
   const stored = await call("PATCH", "/api/admin/integrations", {
     cookie: admin,
     body: {
-      jellyfinUrl,
-      jellyfinExternalUrl: jellyfinUrl,
       tpdbApiToken: "wrong-stored-token",
     },
   });
@@ -1516,8 +1514,6 @@ test("provider credentials: stored config wins over environment, clear falls bac
   const good = await call("PATCH", "/api/admin/integrations", {
     cookie: admin,
     body: {
-      jellyfinUrl,
-      jellyfinExternalUrl: jellyfinUrl,
       tpdbApiToken: tpdbToken,
     },
   });
@@ -1535,8 +1531,6 @@ test("provider credentials: stored config wins over environment, clear falls bac
   const cleared = await call("PATCH", "/api/admin/integrations", {
     cookie: admin,
     body: {
-      jellyfinUrl,
-      jellyfinExternalUrl: jellyfinUrl,
       tpdbApiToken: "",
     },
   });
