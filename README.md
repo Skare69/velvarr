@@ -61,10 +61,26 @@ Production: `docker compose up --build`. The image runs the Next standalone serv
 
 `bun run setup` writes `VELVARR_SECRET_KEY` and `VELVARR_SETUP_SECRET` to the git-ignored `.env.local` (plus an optional `VELVARR_ORIGIN`). The container reads them from the environment at runtime only; no credential enters the image as a build argument, copied file, or layer.
 
+### Generating the secrets
+
+`bun run setup` generates both secrets and writes them to `.env.local`; it never overwrites an existing file. To write `.env.local` by hand (for example directly on the NAS host), generate the values first:
+
+```sh
+# VELVARR_SECRET_KEY — exactly 64 hex chars (32-byte AES-256 key)
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+openssl rand -hex 32        # equivalent, if you prefer openssl
+
+# VELVARR_SETUP_SECRET — at least 32 characters
+node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+openssl rand -base64 32
+```
+
+Back up `VELVARR_SECRET_KEY` (password manager, encrypted notes): losing it makes the stored database and every backup unreadable.
+
 | Variable                     | Required         | Meaning                                                                                                                                                                                      |
 | ---------------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VELVARR_SECRET_KEY`         | yes              | Exactly 64 hex characters. Decrypts credentials stored in the database; losing it loses the stored data and every backup. Restores require the key from backup time.                          |
-| `VELVARR_SETUP_SECRET`       | until bootstrap  | At least 32 characters; gates the one-time owner setup.                                                                                                                                       |
+| `VELVARR_SECRET_KEY`         | yes              | Exactly 64 hex characters (see [Generating the secrets](#generating-the-secrets)). Decrypts credentials stored in the database; losing it loses the stored data and every backup. Restores require the key from backup time. |
+| `VELVARR_SETUP_SECRET`       | until bootstrap  | At least 32 characters (see [Generating the secrets](#generating-the-secrets)); gates the one-time owner setup.                                                                              |
 | `VELVARR_ORIGIN`             | no               | Pin the public origin (e.g. behind a fixed reverse proxy). When set, mutations from a different `Origin` are refused. Unset (default), CSRF safety comes from the `HttpOnly` + `SameSite=Strict` session cookie alone, and the deployment needs no knowledge of its own address — same as Jellyfin/Seerr. |
 | `VELVARR_DATA_DIR`           | no               | Data directory; default `./data`, `/data` in the container.                                                                                                                                   |
 | `VELVARR_ALLOW_HTTP`         | no               | Only relevant together with `VELVARR_ORIGIN`: `1` allows that origin to be plain HTTP at a trusted private address; loopback is always allowed.                                                |
