@@ -259,6 +259,12 @@ export type IntegrationConfig = {
     delivery?: WhisparrDelivery;
     pathMappings?: WhisparrPathMapping[];
   };
+  /** Stored metadata-provider credentials (admin UI). Absent or empty
+   * fields fall back to the environment variables. */
+  providers?: {
+    tpdbApiToken?: string;
+    stashdbApiKey?: string;
+  };
 };
 
 export type Account = {

@@ -53,12 +53,23 @@ import type {
   MediaKind,
 } from "../lib/contracts.ts";
 
-// --- credentials and bases: read from the environment at call time; values
-// are never logged, echoed, or placed in URLs ---
+// --- credentials and bases: stored admin UI credentials win, the environment
+// is the fallback; read at call time so a save or clear takes effect without
+// a restart. Values are never logged, echoed, or placed in URLs. ---
+import { getConfig } from "./storage.ts";
+
+function credential(provider: "tpdb" | "stashdb"): string | undefined {
+  const stored = getConfig()?.providers;
+  const value =
+    provider === "tpdb"
+      ? (stored?.tpdbApiToken ?? process.env.TPDB_API_TOKEN)
+      : (stored?.stashdbApiKey ?? process.env.STASHDB_API_KEY);
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
 
 function tpdbGet<T>(path: string): Promise<T> {
-  const token = process.env.TPDB_API_TOKEN;
-  if (typeof token !== "string" || token.trim() === "") {
+  const token = credential("tpdb");
+  if (token === undefined) {
     throw notConfigured("tpdb");
   }
   const base =
@@ -82,8 +93,8 @@ async function stashQuery(
   variables: Record<string, unknown>,
   dataKey: string,
 ): Promise<unknown> {
-  const token = process.env.STASHDB_API_KEY;
-  if (typeof token !== "string" || token.trim() === "") {
+  const token = credential("stashdb");
+  if (token === undefined) {
     throw notConfigured("stashdb");
   }
   const base =

@@ -613,6 +613,27 @@ function integrationsShape(config: IntegrationConfig) {
           pathMappings: config.whisparr.pathMappings ?? [],
         }
       : null,
+    providers: {
+      tpdb: providerShape(config.providers?.tpdbApiToken, "TPDB_API_TOKEN"),
+      stashdb: providerShape(
+        config.providers?.stashdbApiKey,
+        "STASHDB_API_KEY",
+      ),
+    },
+  };
+}
+
+function providerShape(
+  stored: string | undefined,
+  envName: string,
+): { configured: boolean; source: "stored" | "environment" } {
+  if (typeof stored === "string" && stored !== "") {
+    return { configured: true, source: "stored" };
+  }
+  const env = process.env[envName];
+  return {
+    configured: typeof env === "string" && env !== "",
+    source: "environment",
   };
 }
 
@@ -826,9 +847,37 @@ async function adminUpdateIntegrations(
       ...(pathMappings ? { pathMappings } : {}),
     };
   }
+  // Provider credentials: omitted key = unchanged, "" = clear (falls back to
+  // the environment). Verify happens via /api/admin/providers.
+  let providers = ctx.config.providers;
+  const tpdbApiToken = optionalText(body, "tpdbApiToken", 1024);
+  const stashdbApiKey = optionalText(body, "stashdbApiKey", 512);
+  if (tpdbApiToken !== undefined || stashdbApiKey !== undefined) {
+    providers = {
+      tpdbApiToken:
+        tpdbApiToken === undefined
+          ? providers?.tpdbApiToken
+          : tpdbApiToken === ""
+            ? undefined
+            : tpdbApiToken.trim(),
+      stashdbApiKey:
+        stashdbApiKey === undefined
+          ? providers?.stashdbApiKey
+          : stashdbApiKey === ""
+            ? undefined
+            : stashdbApiKey.trim(),
+    };
+    if (
+      providers.tpdbApiToken === undefined &&
+      providers.stashdbApiKey === undefined
+    ) {
+      providers = undefined;
+    }
+  }
   const config: IntegrationConfig = {
     jellyfin,
     ...(whisparr ? { whisparr } : {}),
+    ...(providers ? { providers } : {}),
   };
   saveConfig(config);
   return json(integrationsShape(config));
