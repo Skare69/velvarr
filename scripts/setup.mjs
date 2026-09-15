@@ -15,7 +15,7 @@ const target = path.join(repoRoot, ".env.local");
 
 if (process.argv[2] === "--help") {
   console.log(
-    "Usage: npm run setup [-- <origin>]   (origin optional, default http://127.0.0.1:5577)",
+    "Usage: npm run setup [-- <origin>]   (origin optional, default http://127.0.0.1:6699)",
   );
   process.exit(0);
 }
@@ -55,7 +55,7 @@ function canonicalOrigin(value) {
 
 const origin = process.argv[2]
   ? canonicalOrigin(process.argv[2])
-  : canonicalOrigin("http://127.0.0.1:5577");
+  : canonicalOrigin("http://127.0.0.1:6699");
 
 if (existsSync(target)) {
   console.error(`.env.local already exists at ${target}`);

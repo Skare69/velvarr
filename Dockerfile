@@ -21,7 +21,7 @@ WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     HOSTNAME=0.0.0.0 \
-    PORT=5577 \
+    PORT=6699 \
     VELVARR_DATA_DIR=/data
 # The image-owned /data gives a first-use named volume velvarr ownership in compose.
 RUN groupadd --system --gid 10001 velvarr \
@@ -32,8 +32,8 @@ COPY --from=build --chown=velvarr:velvarr /app/.next/standalone ./
 COPY --from=build --chown=velvarr:velvarr /app/.next/static ./.next/static
 # ponytail: no COPY public — M1 ships no public/ assets; add one line here if that changes.
 USER velvarr
-EXPOSE 5577
+EXPOSE 6699
 VOLUME /data
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:5577/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+  CMD ["node", "-e", "fetch('http://127.0.0.1:6699/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
 CMD ["node", "server.js"]

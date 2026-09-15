@@ -59,7 +59,7 @@ jobs:
       - name: Run container with throwaway runtime secrets
         run: |
           docker run -d --name velvarr-smoke \
-            -p 127.0.0.1:5577:5577 \
+            -p 127.0.0.1:6699:6699 \
             -e "VELVARR_SECRET_KEY=$(openssl rand -hex 32)" \
             -e "VELVARR_SETUP_SECRET=$(openssl rand -hex 32)" \
             -v velvarr-smoke-data:/data \
@@ -68,7 +68,7 @@ jobs:
         run: |
           ready=0
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:5577/api/health | grep -q '"ok":true'; then ready=1; break; fi
+            if curl -fsS http://127.0.0.1:6699/api/health | grep -q '"ok":true'; then ready=1; break; fi
             sleep 2
           done
           if [ "$ready" != 1 ]; then
@@ -82,7 +82,7 @@ jobs:
           docker restart velvarr-smoke
           ready=0
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:5577/api/health | grep -q '"ok":true'; then ready=1; break; fi
+            if curl -fsS http://127.0.0.1:6699/api/health | grep -q '"ok":true'; then ready=1; break; fi
             sleep 2
           done
           if [ "$ready" != 1 ]; then
