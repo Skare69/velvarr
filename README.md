@@ -6,15 +6,19 @@ Standalone adult-media discovery and request app for a homelab stack: browse mov
 
 Internal planning documents are maintained locally and are not published in the repository tree.
 
-Runnable standalone application. Milestones M1 through M7 are implemented and verified locally against HTTP fixtures (provider, Jellyfin, Whisparr), with a green test suite and a CI pipeline that includes container smoke checks. What that actually exercised: one-time bootstrap and the account lifecycle, access-checked browsing of a real user-accessible library with credential-free watch links, provider-backed discovery and global search, durable requests with approval, the shared acquisition worker, backup and restore, migration rollback, and crash/boot reconciliation.
+Runnable standalone application, deployed in the operator's homelab. Implemented and verified against real services (the installed Jellyfin 12.0.0, a live Whisparr 3.5 Eros instance, and authenticated TPDB/StashDB accounts), with a green test suite (223 node:test cases) and a CI pipeline including container smoke checks.
 
-Unproven, stated so nobody assumes otherwise:
+Proven end to end against the real stack (2026-09-12):
 
-- **No Whisparr add has ever been executed.** The end-to-end acquisition-to-playback journey for a movie or a scene is unproven. Proving it needs the operator to nominate fixtures, a root folder, and a quality profile, and to authorize the first controlled add.
-- **The installed homelab Jellyfin is unproven**; only a local lab Jellyfin 12.0.0 was used. That build ships empty `ProviderIds` and ignores `parentId` when ids are present, so library membership is proven via ancestors and availability matching leans on the Whisparr path.
-- **No removal has ever been executed against a real system.** The removal ladder is proven against loopback fixtures only.
-- **Container behavior is verified in CI**, because this workstation has no container runtime.
-- **There is no LICENSE file.** The licence choice has not been made and is the operator's.
+- **The full acquisition journey for both kinds.** An authorized TPDB movie and a StashDB scene each travelled provider detail → request → approval → Whisparr add → grab → import → exact Jellyfin match → `available` with a working, credential-free watch link. Stored identities stayed source-clean (`tpdbId`/`stashId` as UUIDs, `tmdbId: 0`, no cross-provider redirect).
+- **The installed homelab Jellyfin.** Setup, per-user login, granted-library browsing, artwork proxy, availability, and watch links are verified against the real server, not a fixture.
+- **Honest failure behavior.** A real Jellyfin outage produced `502 upstream_unavailable` and recovered without operator action; a deliberately wrong Whisparr key reports "Whisparr rejected the stored credentials" instead of signing the admin out; a scene with no indexer coverage stays truthfully in `monitoring`.
+
+Not yet done, stated so nobody assumes otherwise:
+
+- **M4 hardening** (systematic availability/privacy/recovery hazard coverage) and the **M6 formal cutover** checklist are open, even though the app already runs on the homelab NAS.
+- **No removal has been executed against a real system.** The removal ladder is proven against loopback fixtures only and ships disabled.
+- **Container behavior is verified in CI**, because the workstation has no container runtime; the NAS runs the image built there.
 - **Neither provider publishes usage terms** covering third-party apps, artwork re-serving, caching, or rate limits. Nothing is cached; this remains an open operator question.
 
 ## What it does
