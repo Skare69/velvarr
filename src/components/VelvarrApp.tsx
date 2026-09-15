@@ -2216,6 +2216,12 @@ function JellyfinCard({ onForbidden }: { onForbidden: () => void }) {
   );
 }
 
+// Shape of one entry in GET /api/admin/integrations → providers.
+type ProviderConfigRow = {
+  configured: boolean;
+  source: "stored" | "environment";
+};
+
 // Shape returned by GET /api/admin/providers (ProviderVerification).
 type ProviderCheckRow =
   | { provider: "tpdb" | "stashdb"; configured: false }
@@ -2230,6 +2236,15 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
   const [check, setCheck] = useState<ProviderCheckRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
+  const [shape, setShape] = useState<{
+    tpdb: ProviderConfigRow;
+    stashdb: ProviderConfigRow;
+  } | null>(null);
+  const [tpdbToken, setTpdbToken] = useState("");
+  const [stashdbKey, setStashdbKey] = useState("");
+  const [pending, setPending] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
 
   const load = useCallback(() => {
     setError(null);
@@ -2241,25 +2256,81 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
       });
   }, []);
 
+  const loadShape = useCallback(() => {
+    api<{
+      providers: { tpdb: ProviderConfigRow; stashdb: ProviderConfigRow };
+    }>("/api/admin/integrations")
+      .then((d) => setShape(d.providers))
+      .catch(() => setShape(null));
+  }, []);
+
   useEffect(load, [load]);
+  useEffect(loadShape, [loadShape]);
+
+  const save = async () => {
+    const body: Record<string, string> = {};
+    if (tpdbToken.trim() !== "") body.tpdbApiToken = tpdbToken.trim();
+    if (stashdbKey.trim() !== "") body.stashdbApiKey = stashdbKey.trim();
+    if (Object.keys(body).length === 0) return;
+    setPending(true);
+    setSaveError(null);
+    setSaved(false);
+    try {
+      await api("/api/admin/integrations", {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      });
+      setTpdbToken("");
+      setStashdbKey("");
+      setSaved(true);
+      load();
+      loadShape();
+    } catch (e) {
+      setSaveError(messageOf(e));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const clearStored = async (field: "tpdbApiToken" | "stashdbApiKey") => {
+    setPending(true);
+    setSaveError(null);
+    setSaved(false);
+    try {
+      await api("/api/admin/integrations", {
+        method: "PATCH",
+        body: JSON.stringify({ [field]: "" }),
+      });
+      setSaved(true);
+      load();
+      loadShape();
+    } catch (e) {
+      setSaveError(messageOf(e));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const rows: Array<
+    ["tpdb" | "stashdb", string, string, "tpdbApiToken" | "stashdbApiKey"]
+  > = [
+    ["tpdb", "TPDB", tpdbToken, "tpdbApiToken"],
+    ["stashdb", "StashDB", stashdbKey, "stashdbApiKey"],
+  ];
 
   return (
     <div className="panel p-5">
       <h3 className="font-semibold">Metadata providers</h3>
       <p className="mt-1 text-sm text-muted">
-        The first chip reads the stored environment; the second is a live check
-        against the provider — the real proof. A failed live check is an outage
-        or a bad key, never an empty catalog.
+        Credentials saved here (encrypted) take precedence over the environment;
+        the live check against the provider is the real proof. A failed live
+        check is an outage or a bad key, never an empty catalog.
       </p>
       <dl className="mt-3 space-y-2 text-sm">
-        {(
-          [
-            ["tpdb", "TPDB"],
-            ["stashdb", "StashDB"],
-          ] as const
-        ).map(([id, name]) => {
+        {rows.map(([id, name]) => {
           const state = providers?.[id];
           const live = check?.find((r) => r.provider === id);
+          const conf = shape?.[id];
           return (
             <div key={id} className="flex flex-wrap items-center gap-2">
               <dt className="font-medium">{name}</dt>
@@ -2267,6 +2338,11 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
                 <span className="chip">
                   {state ? PROVIDER_STATE[state] : "Unknown"}
                 </span>
+                {conf && conf.source === "stored" ? (
+                  <span className="chip chip-accent">Stored</span>
+                ) : conf && conf.configured ? (
+                  <span className="chip">From environment</span>
+                ) : null}
                 {forbidden ? null : live ? (
                   live.configured ? (
                     <span className="chip chip-accent">
@@ -2285,9 +2361,78 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
       </dl>
       {forbidden ? (
         <p className="mt-3 text-sm text-muted">
-          Live verification needs an administrator account.
+          Editing and live verification need an administrator account.
         </p>
-      ) : error ? (
+      ) : (
+        <div className="mt-4 space-y-3">
+          {rows.map(([id, name, value, field]) => {
+            const conf = shape?.[id];
+            return (
+              <div key={field}>
+                <label className="label" htmlFor={`provider-${id}`}>
+                  {name} {id === "tpdb" ? "API token" : "API key"}
+                </label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    id={`provider-${id}`}
+                    className="input max-w-md"
+                    type="password"
+                    autoComplete="off"
+                    value={value}
+                    onChange={(e) => {
+                      if (id === "tpdb") setTpdbToken(e.target.value);
+                      else setStashdbKey(e.target.value);
+                    }}
+                    placeholder={
+                      conf && conf.source === "stored"
+                        ? "Stored — leave blank to keep"
+                        : conf && conf.configured
+                          ? "Configured via environment"
+                          : "Not configured"
+                    }
+                  />
+                  {conf && conf.source === "stored" ? (
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={pending}
+                      onClick={() => clearStored(field)}
+                    >
+                      Clear stored
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            );
+          })}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="btn btn-accent"
+              disabled={pending}
+              onClick={save}
+            >
+              Save credentials
+            </button>
+            <span className="text-sm text-muted">
+              Saving stores the key encrypted and re-runs the live check.
+            </span>
+          </div>
+          {saved ? (
+            <p className="text-sm text-muted">
+              Saved. Live check refreshed below.
+            </p>
+          ) : null}
+          {saveError ? (
+            <ErrorPanel
+              title="Saving provider credentials failed"
+              message={saveError}
+              onRetry={save}
+            />
+          ) : null}
+        </div>
+      )}
+      {forbidden ? null : error ? (
         <div className="mt-3">
           <ErrorPanel
             title="Live provider check failed"

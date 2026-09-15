@@ -1019,6 +1019,27 @@ function assertConfigShape(config: IntegrationConfig): void {
       );
     }
   }
+  if (config.providers !== undefined) {
+    const p = config.providers;
+    const credentialOk = (v: unknown, max: number) =>
+      v === undefined ||
+      (typeof v === "string" &&
+        v !== "" &&
+        v.length <= max &&
+        /^[\x21-\x7E]+$/.test(v));
+    if (
+      typeof p !== "object" ||
+      p === null ||
+      !credentialOk(p.tpdbApiToken, 1024) ||
+      !credentialOk(p.stashdbApiKey, 512)
+    ) {
+      throw new AppError(
+        400,
+        "invalid_config",
+        "Metadata provider credentials are incomplete",
+      );
+    }
+  }
 }
 
 /** The Whisparr instance identity is storage-owned: preserved across key

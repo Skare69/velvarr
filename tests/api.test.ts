@@ -1471,6 +1471,85 @@ test("catalog search: auth, filter combos, honest totals, outage honesty", async
   assert.equal(err.code, "upstream_unavailable");
 });
 
+test("provider credentials: stored config wins over environment, clear falls back", async () => {
+  // The owner session from bootstrap is still valid; a fresh login would
+  // burn the shared login rate-limit bucket late in the suite.
+  const admin = owner;
+
+  // Environment-configured baseline: the shape reports the environment.
+  const before = await call("GET", "/api/admin/integrations", {
+    cookie: admin,
+  });
+  assert.equal(before.status, 200);
+  const beforeShape = (await before.json()) as {
+    providers: { tpdb: { configured: boolean; source: string } };
+  };
+  assert.deepEqual(beforeShape.providers.tpdb, {
+    configured: true,
+    source: "environment",
+  });
+
+  // Storing a WRONG key flips the live check from "not configured" to an
+  // auth failure — proof the stored key is used, not the environment one.
+  const stored = await call("PATCH", "/api/admin/integrations", {
+    cookie: admin,
+    body: {
+      jellyfinUrl,
+      jellyfinExternalUrl: jellyfinUrl,
+      tpdbApiToken: "wrong-stored-token",
+    },
+  });
+  assert.equal(stored.status, 200);
+  const storedShape = (await stored.json()) as {
+    providers: { tpdb: { configured: boolean; source: string } };
+  };
+  assert.deepEqual(storedShape.providers.tpdb, {
+    configured: true,
+    source: "stored",
+  });
+  const rejected = await call("GET", "/api/admin/providers", { cookie: admin });
+  assert.equal(rejected.status, 401);
+  const rejectedBody = (await rejected.json()) as { error: { code: string } };
+  assert.equal(rejectedBody.error.code, "upstream_auth");
+
+  // Storing the working key verifies against the provider.
+  const good = await call("PATCH", "/api/admin/integrations", {
+    cookie: admin,
+    body: {
+      jellyfinUrl,
+      jellyfinExternalUrl: jellyfinUrl,
+      tpdbApiToken: tpdbToken,
+    },
+  });
+  assert.equal(good.status, 200);
+  const liveGood = await call("GET", "/api/admin/providers", { cookie: admin });
+  assert.equal(liveGood.status, 200);
+  const rows = (await liveGood.json()) as {
+    providers: { provider: string; configured: boolean; account?: string }[];
+  };
+  const tpdbRow = rows.providers.find((r) => r.provider === "tpdb");
+  assert.equal(tpdbRow?.configured, true);
+  assert.equal(tpdbRow?.account, "Fixture TPDB");
+
+  // Clearing the stored key falls back to the environment.
+  const cleared = await call("PATCH", "/api/admin/integrations", {
+    cookie: admin,
+    body: {
+      jellyfinUrl,
+      jellyfinExternalUrl: jellyfinUrl,
+      tpdbApiToken: "",
+    },
+  });
+  assert.equal(cleared.status, 200);
+  const clearedShape = (await cleared.json()) as {
+    providers: { tpdb: { configured: boolean; source: string } };
+  };
+  assert.deepEqual(clearedShape.providers.tpdb, {
+    configured: true,
+    source: "environment",
+  });
+});
+
 test("catalog detail: validation before upstream, absence vs outage, own request only", async () => {
   const anon = await call("GET", `/api/catalog/tpdb/movie/${TPDB_MOVIE}`);
   assert.equal(anon.status, 401);
