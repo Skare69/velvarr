@@ -61,7 +61,7 @@ bun run setup    # writes .env.local with fresh secrets; never overwrites existi
 bun run dev      # http://127.0.0.1:6699
 ```
 
-Production: `docker compose up --build`. The image runs the Next standalone server (`node server.js`), which is the supported path for this build's `output: "standalone"`; image build, readiness, non-root, restart, and no-secrets checks run in CI. `bun run build` then `bun run start` is a local preview only; Next prints a warning that `next start` is not the standalone entry point. Checks: `bun run check` (TypeScript strict), `bun run test` (node:test).
+Production: `docker compose up -d` pulls the release image `ghcr.io/skare69/velvarr` (see compose.yaml; to build from source, uncomment `build: .`). The image runs the Next standalone server (`node server.js`), which is the supported path for this build's `output: "standalone"`; image build, readiness, non-root, restart, and no-secrets checks run in CI. `bun run build` then `bun run start` is a local preview only; Next prints a warning that `next start` is not the standalone entry point. Checks: `bun run check` (TypeScript strict), `bun run test` (node:test).
 
 ## Environment variables
 
@@ -118,7 +118,7 @@ What then happens, each verified:
 
 ## Cutover position
 
-Velvarr is deployed **beside** the existing Seerr/Whisparr/Jellyfin stack: its own image (`velvarr:local`, built locally by compose; nothing is published), its own named volume (`velvarr-data`), and its own loopback port (`127.0.0.1:6699`). Nothing in this repository replaces, reconfigures, or touches the family's existing deployment. Changing the adult entry point is a deliberate operator decision, made by the operator, not performed or scheduled by this codebase.
+Velvarr is deployed **beside** the existing Seerr/Whisparr/Jellyfin stack: its own image (pulled from GHCR by compose), its own named volume (`velvarr-data`), and its own loopback port (`127.0.0.1:6699`). Nothing in this repository replaces, reconfigures, or touches the family's existing deployment. Changing the adult entry point is a deliberate operator decision, made by the operator, not performed or scheduled by this codebase.
 
 Prerequisites that remain open before any cutover decision:
 
