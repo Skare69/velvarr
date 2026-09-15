@@ -111,7 +111,6 @@ jobs:
         id: meta
         with:
           images: ghcr.io/${{ github.repository }}
-          flavor: latest=false
           tags: |
             type=ref,event=branch
             type=ref,event=tag
