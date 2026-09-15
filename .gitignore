@@ -15,4 +15,3 @@ next-env.d.ts
 *.tsbuildinfo
 report.xml
 
-# Local-only project documentation.
