@@ -735,14 +735,10 @@ async function adminUpdateIntegrations(
   // sends just its fields, and re-validating the Jellyfin connection would
   // make provider keys uneditable whenever Jellyfin is briefly down.
   const bodyKeys = Object.keys(body);
-  if (bodyKeys.every((k) => k === "tpdbApiToken" || k === "stashdbApiKey")) {
-    if (bodyKeys.length === 0) {
-      throw new AppError(
-        400,
-        "invalid_field",
-        "No provider credential fields were sent.",
-      );
-    }
+  if (
+    bodyKeys.length > 0 &&
+    bodyKeys.every((k) => k === "tpdbApiToken" || k === "stashdbApiKey")
+  ) {
     const providers = nextProviderCredentials(ctx.config.providers, body);
     const config: IntegrationConfig = {
       jellyfin: ctx.config.jellyfin,

@@ -2267,11 +2267,7 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
   useEffect(load, [load]);
   useEffect(loadShape, [loadShape]);
 
-  const save = async () => {
-    const body: Record<string, string> = {};
-    if (tpdbToken.trim() !== "") body.tpdbApiToken = tpdbToken.trim();
-    if (stashdbKey.trim() !== "") body.stashdbApiKey = stashdbKey.trim();
-    if (Object.keys(body).length === 0) return;
+  const apply = async (body: Record<string, string>) => {
     setPending(true);
     setSaveError(null);
     setSaved(false);
@@ -2292,30 +2288,26 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
     }
   };
 
-  const clearStored = async (field: "tpdbApiToken" | "stashdbApiKey") => {
-    setPending(true);
-    setSaveError(null);
-    setSaved(false);
-    try {
-      await api("/api/admin/integrations", {
-        method: "PATCH",
-        body: JSON.stringify({ [field]: "" }),
-      });
-      setSaved(true);
-      load();
-      loadShape();
-    } catch (e) {
-      setSaveError(messageOf(e));
-    } finally {
-      setPending(false);
-    }
+  const save = () => {
+    const body: Record<string, string> = {};
+    if (tpdbToken.trim() !== "") body.tpdbApiToken = tpdbToken.trim();
+    if (stashdbKey.trim() !== "") body.stashdbApiKey = stashdbKey.trim();
+    if (Object.keys(body).length > 0) apply(body);
   };
 
-  const rows: Array<
-    ["tpdb" | "stashdb", string, string, "tpdbApiToken" | "stashdbApiKey"]
-  > = [
-    ["tpdb", "TPDB", tpdbToken, "tpdbApiToken"],
-    ["stashdb", "StashDB", stashdbKey, "stashdbApiKey"],
+  const rows = [
+    {
+      id: "tpdb" as const,
+      name: "TPDB",
+      value: tpdbToken,
+      field: "tpdbApiToken" as const,
+    },
+    {
+      id: "stashdb" as const,
+      name: "StashDB",
+      value: stashdbKey,
+      field: "stashdbApiKey" as const,
+    },
   ];
 
   return (
@@ -2327,7 +2319,7 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
         check is an outage or a bad key, never an empty catalog.
       </p>
       <dl className="mt-3 space-y-2 text-sm">
-        {rows.map(([id, name]) => {
+        {rows.map(({ id, name }) => {
           const state = providers?.[id];
           const live = check?.find((r) => r.provider === id);
           const conf = shape?.[id];
@@ -2365,7 +2357,7 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
         </p>
       ) : (
         <div className="mt-4 space-y-3">
-          {rows.map(([id, name, value, field]) => {
+          {rows.map(({ id, name, value, field }) => {
             const conf = shape?.[id];
             return (
               <div key={field}>
@@ -2396,7 +2388,7 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
                       type="button"
                       className="btn"
                       disabled={pending}
-                      onClick={() => clearStored(field)}
+                      onClick={() => apply({ [field]: "" })}
                     >
                       Clear stored
                     </button>

@@ -40,7 +40,9 @@ function serviceName(service: Service): string {
   }
 }
 
-function isLoopbackHost(hostname: string): boolean {
+/** The one loopback test: lowercases, strips IPv6 brackets, and accepts the
+ * whole 127.0.0.0/8. security.ts shares it for VELVARR_ORIGIN validation. */
+export function isLoopbackHost(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   return h === "localhost" || h === "::1" || h.startsWith("127.");
 }
