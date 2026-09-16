@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { SessionGrant } from "../lib/contracts.ts";
-import { AppError } from "./http.ts";
+import { AppError, isLoopbackHost } from "./http.ts";
 
 const COOKIE_NAME = "velvarr_session";
 
@@ -50,15 +50,6 @@ function consumeBucket(key: string, limit: number, now: number): void {
       if (now - b.windowStart >= WINDOW_MS) buckets.delete(k);
     }
   }
-}
-
-function isLoopbackHost(hostname: string): boolean {
-  return (
-    hostname === "127.0.0.1" ||
-    hostname === "localhost" ||
-    hostname === "::1" ||
-    hostname === "[::1]"
-  );
 }
 
 function enforceOriginConfig(): URL {
