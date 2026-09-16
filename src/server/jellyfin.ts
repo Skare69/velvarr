@@ -818,7 +818,7 @@ export async function getLibraryImage(
 /** Identity hints for resolvePlaybackAccess. A MediaReference
  * ({provider, kind, id}) is valid as-is; the remaining fields are optional
  * enrichment from the acquisition record. */
-export type PlaybackHints = {
+type PlaybackHints = {
   provider: CatalogProvider;
   kind: MediaKind;
   /** External provider UUID (TPDB movie/scene id, StashDB scene id). */
@@ -1158,12 +1158,12 @@ export async function resolvePlaybackAccess(
  * not a comment — makes it impossible to pass the integration administrator
  * key (a bare string from IntegrationConfig) where a user session is
  * required. Build it only from authenticate()/validateUser() output. */
-export interface JellyfinUserSession {
+interface JellyfinUserSession {
   readonly token: string;
 }
 
 /** External facts the removal audit needs, observed BEFORE the delete. */
-export interface JellyfinRemovalFacts {
+interface JellyfinRemovalFacts {
   itemId: string;
   name: string;
   /** The granted library folder the membership proof resolved through. */
@@ -1175,7 +1175,7 @@ export interface JellyfinRemovalFacts {
   size?: number;
 }
 
-export type JellyfinRemovalOutcome =
+type JellyfinRemovalOutcome =
   | { status: "removed"; facts: JellyfinRemovalFacts; watchLinkInvalid: true }
   | {
       status: "already_gone";

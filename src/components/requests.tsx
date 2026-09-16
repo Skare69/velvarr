@@ -1,7 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, api, ErrorPanel, messageOf, useSession } from "./shared";
+import {
+  ApiError,
+  api,
+  detailHref,
+  ErrorPanel,
+  messageOf,
+  useSession,
+} from "./shared";
 import { acquisitionText } from "./catalog";
 import type {
   AcquisitionState,
@@ -116,12 +123,6 @@ function MediaTitle({
   return <ReferenceLine media={media} />;
 }
 
-/** Link target for the shared URL contract: an open catalog detail is
- * view + provider + kind + id; the catalog view matches the media kind. */
-function detailHref(media: MediaReference): string {
-  const view = media.kind === "movie" ? "movies" : "scenes";
-  return `/?view=${view}&provider=${media.provider}&kind=${media.kind}&id=${encodeURIComponent(media.id)}`;
-}
 function RequestRow({
   record,
   acquisition,

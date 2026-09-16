@@ -11,10 +11,16 @@ import { useSearchParams } from "next/navigation";
 import {
   ApiError,
   api,
+  duration,
   ErrorPanel,
+  GridSkeleton,
+  imgSrc,
   intOr,
   ItemImage,
   messageOf,
+  MovieCard,
+  providerLabel,
+  SceneCard,
   useParamsSetter,
   useSession,
 } from "./shared";
@@ -47,22 +53,6 @@ type Tab = "scenes" | "movies";
 const PORTRAIT_COLS =
   "grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5";
 const LANDSCAPE_COLS = "grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3";
-
-function providerLabel(p: CatalogProvider): string {
-  return p === "tpdb" ? "TPDB" : "StashDB";
-}
-
-/** Provider artwork may only reach the DOM through the same-origin proxy. */
-function imgSrc(url: string | undefined): string | undefined {
-  return url ? `/api/catalog/image?url=${encodeURIComponent(url)}` : undefined;
-}
-
-function duration(seconds: number | undefined): string | null {
-  if (!seconds || seconds <= 0) return null;
-  const h = Math.floor(seconds / 3600);
-  const m = Math.round((seconds % 3600) / 60);
-  return h > 0 ? `${h} h ${m} min` : `${m} min`;
-}
 
 /* ---------- Fetch hooks: a live flag makes stale in-flight responses inert ---------- */
 
@@ -152,93 +142,7 @@ function usePerformerListing(
 
 /* ---------- Cards: the established treatments ---------- */
 
-function MovieCard({
-  item,
-  onOpen,
-}: {
-  item: CatalogDetail;
-  onOpen: (r: CatalogReference) => void;
-}) {
-  return (
-    <button
-      type="button"
-      className="card text-left"
-      onClick={() => onOpen(item.reference)}
-    >
-      <div className="relative aspect-[2/3] w-full bg-raised">
-        <ItemImage
-          name={item.title}
-          src={imgSrc(item.imageUrl)}
-          className="absolute inset-0 h-full w-full object-cover"
-        />
-      </div>
-      <div className="p-2">
-        <div className="truncate text-sm font-medium">{item.title}</div>
-        <div className="truncate text-xs text-muted">
-          {[item.releaseDate?.slice(0, 4), item.studio?.name]
-            .filter(Boolean)
-            .join(" · ")}
-        </div>
-      </div>
-    </button>
-  );
-}
-
-function SceneCard({
-  item,
-  onOpen,
-}: {
-  item: CatalogDetail;
-  onOpen: (r: CatalogReference) => void;
-}) {
-  const performers = item.credits.map((c) => c.name).join(", ");
-  return (
-    <button
-      type="button"
-      className="card text-left"
-      onClick={() => onOpen(item.reference)}
-    >
-      <div className="relative aspect-video w-full bg-raised">
-        <ItemImage
-          name={item.title}
-          src={imgSrc(item.imageUrl)}
-          className="absolute inset-0 h-full w-full object-cover"
-        />
-      </div>
-      <div className="p-2">
-        <div className="truncate text-sm font-medium">{item.title}</div>
-        <div className="truncate text-xs text-muted">
-          {[item.releaseDate, item.studio?.name, duration(item.durationSeconds)]
-            .filter(Boolean)
-            .join(" · ")}
-        </div>
-        {performers && (
-          <div className="truncate text-xs text-muted">with {performers}</div>
-        )}
-      </div>
-    </button>
-  );
-}
-
 /* ---------- Panels, skeleton, paging ---------- */
-
-function GridSkeleton({
-  aspect,
-  cols,
-  count,
-}: {
-  aspect: string;
-  cols: string;
-  count: number;
-}) {
-  return (
-    <div className={cols} aria-label="Loading results" aria-busy="true">
-      {Array.from({ length: count }, (_, i) => (
-        <div key={i} className={`skel ${aspect}`} />
-      ))}
-    </div>
-  );
-}
 
 function HeaderSkeleton() {
   return (

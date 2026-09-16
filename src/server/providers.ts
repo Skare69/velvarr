@@ -45,7 +45,7 @@
 //   studio records carry explicit provider URLs, but cross-provider linking
 //   stays performer-level only — studios are never merged across providers.
 
-import { AppError, requestJson, requestBytes } from "./http.ts";
+import { AppError, isLoopbackHost, requestJson, requestBytes } from "./http.ts";
 import type {
   CatalogDetail,
   CatalogProvider,
@@ -223,12 +223,7 @@ const RASTER_IMAGE_TYPES: Record<string, true> = {
 
 export const IMAGE_BYTE_CAP = 8 * 1024 * 1024;
 
-function isLoopbackHost(hostname: string): boolean {
-  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  return h === "localhost" || h === "::1" || h.startsWith("127.");
-}
-
-export type ImageUrlCheck =
+type ImageUrlCheck =
   { ok: true; service: "tpdb" | "stashdb" } | { ok: false; reason: string };
 
 /** Pure gate: is this URL a provider-hosted raster artwork source? Loopback
@@ -774,7 +769,7 @@ export type CatalogSortKey =
 
 export type CatalogSortDirection = "asc" | "desc";
 
-export interface AppliedSort {
+interface AppliedSort {
   key: CatalogSortKey;
   /** Absent only for TPDB relevance, which has no direction upstream. */
   direction?: CatalogSortDirection;

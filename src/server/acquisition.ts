@@ -42,7 +42,7 @@ const JITTER_MS = 5_000;
 // it is abandoned to boot-time reconciliation, never waited on longer.
 const SHUTDOWN_GRACE_MS = 10_000;
 
-export type WorkSummary = {
+type WorkSummary = {
   /** Items the pass pulled from the due list. */
   considered: number;
   /** Adds Whisparr accepted. */
@@ -752,7 +752,7 @@ export function stopAcquisitionLoop(): void {
   }
 }
 
-export type ShutdownResult = { forced: boolean };
+type ShutdownResult = { forced: boolean };
 
 let shutdownPromise: Promise<ShutdownResult> | null = null;
 

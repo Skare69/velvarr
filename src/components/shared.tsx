@@ -2,7 +2,14 @@
 
 import { createContext, useCallback, useContext, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { Account, ProviderStatus } from "../lib/contracts.ts";
+import type {
+  Account,
+  CatalogDetail,
+  CatalogProvider,
+  CatalogReference,
+  MediaReference,
+  ProviderStatus,
+} from "../lib/contracts.ts";
 
 /* ---------- API helper ---------- */
 
@@ -161,5 +168,145 @@ export function ForbiddenPanel() {
         Your account does not have permission to view this area.
       </p>
     </div>
+  );
+}
+
+/* ---------- Shared catalog presentation ---------- */
+
+/** Provider artwork may only reach the DOM through the same-origin proxy. */
+export function imgSrc(url: string | undefined): string | undefined {
+  return url ? `/api/catalog/image?url=${encodeURIComponent(url)}` : undefined;
+}
+
+export function duration(seconds: number | undefined): string | null {
+  if (!seconds || seconds <= 0) return null;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  return h > 0 ? `${h} h ${m} min` : `${m} min`;
+}
+
+export function providerLabel(p: CatalogProvider): string {
+  return p === "tpdb" ? "TPDB" : "StashDB";
+}
+
+/** Link target for the shared URL contract: an open catalog detail is
+ * view + provider + kind + id; the catalog view matches the media kind. */
+export function detailHref(media: MediaReference): string {
+  const view = media.kind === "movie" ? "movies" : "scenes";
+  return `/?view=${view}&provider=${media.provider}&kind=${media.kind}&id=${encodeURIComponent(media.id)}`;
+}
+
+export function GridSkeleton({
+  aspect,
+  cols,
+  count,
+}: {
+  aspect: string;
+  cols: string;
+  count: number;
+}) {
+  return (
+    <div className={cols} aria-label="Loading results" aria-busy="true">
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i} className={`skel ${aspect}`} />
+      ))}
+    </div>
+  );
+}
+
+export function MovieCard({
+  item,
+  onOpen,
+}: {
+  item: CatalogDetail;
+  onOpen: (r: CatalogReference) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="card text-left"
+      onClick={() => onOpen(item.reference)}
+    >
+      <div className="relative aspect-[2/3] w-full bg-raised">
+        <ItemImage
+          name={item.title}
+          src={imgSrc(item.imageUrl)}
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+      </div>
+      <div className="p-2">
+        <div className="truncate text-sm font-medium">{item.title}</div>
+        <div className="truncate text-xs text-muted">
+          {[item.releaseDate?.slice(0, 4), item.studio?.name]
+            .filter(Boolean)
+            .join(" · ")}
+        </div>
+      </div>
+    </button>
+  );
+}
+
+export function SceneCard({
+  item,
+  onOpen,
+}: {
+  item: CatalogDetail;
+  onOpen: (r: CatalogReference) => void;
+}) {
+  const performers = item.credits.map((c) => c.name).join(", ");
+  return (
+    <button
+      type="button"
+      className="card text-left"
+      onClick={() => onOpen(item.reference)}
+    >
+      <div className="relative aspect-video w-full bg-raised">
+        <ItemImage
+          name={item.title}
+          src={imgSrc(item.imageUrl)}
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+      </div>
+      <div className="p-2">
+        <div className="truncate text-sm font-medium">{item.title}</div>
+        <div className="truncate text-xs text-muted">
+          {[item.releaseDate, item.studio?.name, duration(item.durationSeconds)]
+            .filter(Boolean)
+            .join(" · ")}
+        </div>
+        {performers && (
+          <div className="truncate text-xs text-muted">with {performers}</div>
+        )}
+      </div>
+    </button>
+  );
+}
+
+export function PerformerCard({
+  item,
+  onOpen,
+}: {
+  item: CatalogDetail;
+  onOpen: (r: CatalogReference) => void;
+}) {
+  const aka = item.aliases[0];
+  return (
+    <button
+      type="button"
+      className="card text-left"
+      onClick={() => onOpen(item.reference)}
+    >
+      <div className="relative aspect-square w-full bg-raised">
+        <ItemImage
+          name={item.title}
+          src={imgSrc(item.imageUrl)}
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+      </div>
+      <div className="p-2">
+        <div className="truncate text-sm font-medium">{item.title}</div>
+        {aka && <div className="truncate text-xs text-muted">aka {aka}</div>}
+      </div>
+    </button>
   );
 }

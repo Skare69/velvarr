@@ -949,11 +949,12 @@ function parseCatalogProvider(raw: string | null): CatalogProvider {
   if (raw === "tpdb" || raw === "stashdb") return raw;
   throw new AppError(400, "invalid_reference", "Unknown catalog provider.");
 }
+// Two signatures only: the stashdb narrowing one (its call site narrows the
+// provider first and needs the narrow return) and the general one.
 function parseCatalogKind(
   provider: "stashdb",
   raw: string,
 ): "scene" | "performer" | "studio";
-function parseCatalogKind(provider: "tpdb", raw: string): CatalogKind;
 function parseCatalogKind(provider: CatalogProvider, raw: string): CatalogKind;
 function parseCatalogKind(provider: CatalogProvider, raw: string): CatalogKind {
   if (provider === "tpdb") {
