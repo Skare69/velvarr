@@ -11,8 +11,12 @@ import type {
 import {
   api,
   ErrorPanel,
+  GridSkeleton,
+  imgSrc,
   ItemImage,
   messageOf,
+  MovieCard,
+  PerformerCard,
   useParamsSetter,
 } from "./shared.tsx";
 
@@ -49,62 +53,7 @@ const KIND_LABEL: Record<CatalogKind, string> = {
   studio: "Studios",
 };
 
-/** Provider artwork may only reach the DOM through the same-origin proxy. */
-function imgSrc(url: string | undefined): string | undefined {
-  return url ? `/api/catalog/image?url=${encodeURIComponent(url)}` : undefined;
-}
-
-function GridSkeleton({
-  aspect,
-  cols,
-  count,
-}: {
-  aspect: string;
-  cols: string;
-  count: number;
-}) {
-  return (
-    <div className={cols} aria-label="Loading results" aria-busy="true">
-      {Array.from({ length: count }, (_, i) => (
-        <div key={i} className={`skel ${aspect}`} />
-      ))}
-    </div>
-  );
-}
-
 /* ---------- Cards: same treatments as the catalog views ---------- */
-
-function MovieCard({
-  item,
-  onOpen,
-}: {
-  item: CatalogDetail;
-  onOpen: (r: CatalogReference) => void;
-}) {
-  return (
-    <button
-      type="button"
-      className="card text-left"
-      onClick={() => onOpen(item.reference)}
-    >
-      <div className="relative aspect-[2/3] w-full bg-raised">
-        <ItemImage
-          name={item.title}
-          src={imgSrc(item.imageUrl)}
-          className="absolute inset-0 h-full w-full object-cover"
-        />
-      </div>
-      <div className="p-2">
-        <div className="truncate text-sm font-medium">{item.title}</div>
-        <div className="truncate text-xs text-muted">
-          {[item.releaseDate?.slice(0, 4), item.studio?.name]
-            .filter(Boolean)
-            .join(" · ")}
-        </div>
-      </div>
-    </button>
-  );
-}
 
 function SceneCard({
   item,
@@ -140,35 +89,6 @@ function SceneCard({
         {performers && (
           <div className="truncate text-xs text-muted">with {performers}</div>
         )}
-      </div>
-    </button>
-  );
-}
-
-function PerformerCard({
-  item,
-  onOpen,
-}: {
-  item: CatalogDetail;
-  onOpen: (r: CatalogReference) => void;
-}) {
-  const aka = item.aliases[0];
-  return (
-    <button
-      type="button"
-      className="card text-left"
-      onClick={() => onOpen(item.reference)}
-    >
-      <div className="relative aspect-square w-full bg-raised">
-        <ItemImage
-          name={item.title}
-          src={imgSrc(item.imageUrl)}
-          className="absolute inset-0 h-full w-full object-cover"
-        />
-      </div>
-      <div className="p-2">
-        <div className="truncate text-sm font-medium">{item.title}</div>
-        {aka && <div className="truncate text-xs text-muted">aka {aka}</div>}
       </div>
     </button>
   );

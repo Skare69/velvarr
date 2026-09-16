@@ -98,7 +98,7 @@ export type RemovalRequest = {
   decidedAt: number | null;
 };
 
-export type RemovalExecutionState =
+type RemovalExecutionState =
   "unsent" | "executing" | "uncertain" | "done" | "failed" | "blocked";
 
 /** Shared durable removal work for one resolved identity on one logical
@@ -143,22 +143,6 @@ export type RemovalObservedFacts = {
   fileCount?: number;
   size?: number;
   added?: string;
-};
-
-/** Append-only evidence for one execution attempt. Never mutated, never
- * deleted; parties and identities are denormalized so rows stand alone. */
-export type RemovalAudit = {
-  id: string;
-  executionId: string;
-  requesterId: string;
-  approverId: string;
-  media: MediaReference;
-  level: RemovalLevel;
-  attemptToken: string | null;
-  outcome: RemovalAttemptOutcome;
-  detail: string | null;
-  /** Unix milliseconds. */
-  createdAt: number;
 };
 
 export type AcquisitionState =

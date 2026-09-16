@@ -9,7 +9,9 @@ import type {
   RequestRecord,
 } from "../lib/contracts";
 import {
+  duration as durationLabel,
   ErrorPanel,
+  imgSrc,
   ItemImage,
   api,
   messageOf,
@@ -59,18 +61,6 @@ function fetchDiscover(): Promise<DiscoverPage> {
 }
 
 /* ---------- Small helpers (same conventions as catalog.tsx) ---------- */
-
-/** Provider artwork may only reach the DOM through the same-origin proxy. */
-function imgSrc(url: string | undefined): string | undefined {
-  return url ? `/api/catalog/image?url=${encodeURIComponent(url)}` : undefined;
-}
-
-function durationLabel(seconds: number | undefined): string | null {
-  if (!seconds || seconds <= 0) return null;
-  const h = Math.floor(seconds / 3600);
-  const m = Math.round((seconds % 3600) / 60);
-  return h > 0 ? `${h} h ${m} min` : `${m} min`;
-}
 
 function sourceLabel(s: Shelf["source"]): string {
   return s === "tpdb"

@@ -91,7 +91,7 @@ const UUID_RE =
 
 /** Canonical external provider identity: lowercase dashed UUID. Accepts the
  * dashed or compact hex form so stored identities compare equal either way. */
-export function canonicalProviderId(value: unknown): string {
+function canonicalProviderId(value: unknown): string {
   const compact =
     typeof value === "string"
       ? value.trim().toLowerCase().replace(/-/g, "")
@@ -251,7 +251,7 @@ function identityOf(
 
 // --- resolution (lookup) ---
 
-export interface WhisparrResolved {
+interface WhisparrResolved {
   itemType: MediaKind;
   /** The exact provider UUID that was requested, verified against the
    * upstream response. Never a wrapper id. */
@@ -338,7 +338,7 @@ export async function resolveWhisparrItem(
 
 /** Server-owned POST /api/v3/movie body. Nothing is spread from lookup
  * responses; routing fields carry exactly one metadata source. */
-export interface WhisparrMoviePayload {
+interface WhisparrMoviePayload {
   title: string;
   foreignId: string;
   tmdbId: 0;
@@ -703,7 +703,7 @@ export async function deliverToWhisparr(
 
 /** External facts observed before a destructive call — what the audit row
  * needs, and what a safe retry compares against. */
-export interface WhisparrRemovalFacts {
+interface WhisparrRemovalFacts {
   whisparrId: number;
   itemType: MediaKind;
   identity: string;
