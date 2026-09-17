@@ -193,3 +193,43 @@ button.discovery-art-card:hover {
 .discovery-shelf-body.panel {
   margin-top: 0.25rem;
 }
+
+/* ---------- Small screens ---------- */
+
+/* A phone gets ~440px of height between the topbar and the bottom nav, so a
+ * shelf spends it on artwork: the scope sentence goes, the header tightens,
+ * and tiles shrink until two of them (plus a peek of the third) fit a row. */
+@media (max-width: 640px) {
+  .discovery-shelf {
+    margin-top: 1.6rem;
+  }
+  .discovery-shelf-head {
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.55rem;
+  }
+  .discovery-shelf-title {
+    font-size: 0.98rem;
+  }
+  /* Scope and the request caveat are shelf-level prose, not state claims:
+   * both reappear on the surface each shelf links to. */
+  .discovery-shelf-scope,
+  .discovery-note {
+    display: none;
+  }
+  .discovery-rail {
+    gap: 0.625rem;
+  }
+  .discovery-tile-poster {
+    width: 122px;
+  }
+  .discovery-tile-scene {
+    width: min(210px, 62vw);
+  }
+  .discovery-art-title {
+    font-size: 0.8rem;
+  }
+  .discovery-library-foot {
+    padding: 0.4rem 0.5rem 0.5rem;
+  }
+}
