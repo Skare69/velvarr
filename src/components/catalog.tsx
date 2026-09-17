@@ -1,13 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useSearchParams } from "next/navigation";
+import "./catalog.css";
 import {
   api,
   ApiError,
   duration,
   ErrorPanel,
   GridSkeleton,
+  Icon,
   imgSrc,
   intOr,
   ItemImage,
@@ -75,9 +83,9 @@ type DetailTarget = {
 
 /* ---------- Small helpers ---------- */
 
-const PORTRAIT_COLS =
-  "grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5";
-const LANDSCAPE_COLS = "grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3";
+const POSTER_GRID = "poster-grid";
+const SCENE_GRID = "scene-grid";
+const PERFORMER_GRID = "performer-grid";
 
 function providerOf(v: string | null): CatalogProvider {
   return v === "stashdb" ? "stashdb" : "tpdb";
@@ -172,6 +180,100 @@ function filterName(provider: string, kind: string, id: string): string {
   return filterNames.get(`${provider}:${kind}:${id}`) ?? `${id.slice(0, 8)}…`;
 }
 
+/* ---------- Filter drawer (native <dialog>) ---------- */
+
+/** Right-hand drawer on a native dialog: showModal gives Escape, a modal
+ * backdrop and focus entry; the close event restores focus natively.
+ * Backdrop clicks (target === dialog) and the header/footer buttons close.
+ * Filters commit to the URL immediately — the drawer never buffers them. */
+function FilterDrawer({
+  open,
+  onClose,
+  count,
+  onClear,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  count: number;
+  onClear: () => void;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open && !d.open) d.showModal();
+    else if (!open && d.open) d.close();
+  }, [open]);
+  return (
+    <dialog
+      ref={ref}
+      className="cat-drawer"
+      aria-label="Filters"
+      onClose={onClose}
+      onClick={(e) => {
+        if (e.target === ref.current) ref.current.close();
+      }}
+    >
+      <div className="cat-drawer-head">
+        <h2 className="cat-drawer-title">
+          Filters{count > 0 ? ` · ${count} active` : ""}
+        </h2>
+        <button
+          type="button"
+          className="btn"
+          aria-label="Close filters"
+          onClick={() => ref.current?.close()}
+        >
+          <Icon name="close" />
+        </button>
+      </div>
+      <div className="cat-drawer-body" tabIndex={-1}>
+        {children}
+      </div>
+      <div className="cat-drawer-foot">
+        <button
+          type="button"
+          className="btn"
+          onClick={onClear}
+          disabled={count === 0}
+        >
+          Clear all
+        </button>
+        <button
+          type="button"
+          className="btn btn-accent"
+          onClick={() => ref.current?.close()}
+        >
+          Done
+        </button>
+      </div>
+    </dialog>
+  );
+}
+
+function FiltersButton({
+  count,
+  onClick,
+}: {
+  count: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="btn"
+      aria-haspopup="dialog"
+      aria-label={count > 0 ? `Filters, ${count} active` : "Filters"}
+      onClick={onClick}
+    >
+      <Icon name="filter" /> Filters
+      {count > 0 && <span className="cat-count">{count}</span>}
+    </button>
+  );
+}
+
 /** Sort control offering only what the provider+kind genuinely supports;
  * direction appears only with an explicit sort (the route 400s otherwise). */
 function SortSelect({
@@ -198,7 +300,7 @@ function SortSelect({
       <label className="label" htmlFor={id}>
         Sort
       </label>
-      <div className="mt-1 flex gap-2">
+      <div className="flex gap-2">
         <select
           id={id}
           className="input"
@@ -296,14 +398,10 @@ function YearBox({
   id,
   value,
   onCommit,
-  locked,
-  lockNote,
 }: {
   id: string;
   value: string;
   onCommit: (v: string) => void;
-  locked?: boolean;
-  lockNote?: string;
 }) {
   const { input, setInput, mark } = useSyncedInput(value);
   const commit = useCallback(() => {
@@ -327,20 +425,13 @@ function YearBox({
         max={2100}
         placeholder="Any year"
         className="input"
-        disabled={locked}
         value={input}
-        aria-describedby={lockNote ? `${id}-note` : undefined}
         onChange={(e) => setInput(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
           if (e.key === "Enter") commit();
         }}
       />
-      {lockNote && (
-        <p id={`${id}-note`} className="mt-1 text-xs text-muted">
-          {lockNote}
-        </p>
-      )}
     </div>
   );
 }
@@ -436,7 +527,7 @@ function SourcePicker({
   return (
     <div role="group" aria-label="Source provider">
       <div className="label">Source</div>
-      <div className="mt-1 flex gap-2">
+      <div className="flex gap-2">
         {(["tpdb", "stashdb"] as const).map((p) => (
           <button
             key={p}
@@ -539,9 +630,7 @@ function useCatalogSearch(f: CatalogQuery): {
   return { data, error, loading };
 }
 
-/* ---------- Cards: three deliberate treatments ---------- */
-
-/* ---------- Detail dialog ---------- */
+/* ---------- Detail page ---------- */
 
 function detailTarget(params: URLSearchParams): DetailTarget | null {
   const providerRaw = params.get("provider");
@@ -553,19 +642,22 @@ function detailTarget(params: URLSearchParams): DetailTarget | null {
   return { provider, kind, id };
 }
 
-function DetailSkeleton({ kind }: { kind: CatalogKind }) {
+function DetailSkeleton() {
   return (
-    <div className="flex gap-4" aria-label="Loading details" aria-busy="true">
-      <div
-        className={`skel shrink-0 ${
-          kind === "scene" ? "aspect-video w-64" : "aspect-[2/3] w-36"
-        }`}
-      />
-      <div className="flex-1 space-y-3 pt-2">
-        <div className="skel h-6 w-3/4" />
-        <div className="skel h-4 w-1/3" />
-        <div className="skel h-4 w-full" />
-        <div className="skel h-4 w-5/6" />
+    <div aria-label="Loading details" aria-busy="true">
+      <div className="skel cat-hero-skel" />
+      <div className="cat-cols">
+        <div className="space-y-3">
+          <div className="skel h-24 w-full" />
+          <div className="skel h-6 w-3/4" />
+          <div className="skel h-4 w-full" />
+          <div className="skel h-4 w-5/6" />
+        </div>
+        <div className="space-y-3">
+          <div className="skel h-4 w-1/3" />
+          <div className="skel h-20 w-full" />
+          <div className="skel h-4 w-2/3" />
+        </div>
       </div>
     </div>
   );
@@ -660,7 +752,7 @@ function AvailabilityBox({
               target="_blank"
               rel="noopener noreferrer"
             >
-              Open in Jellyfin
+              <Icon name="play" /> Open in Jellyfin
             </a>
           )}
         </div>
@@ -921,7 +1013,7 @@ function MediaActions({
     }
   }, [target, onRefetch]);
   return (
-    <div className="mt-4">
+    <div>
       <div className="label">Request</div>
       {requested ? (
         <div className="mt-1 flex flex-wrap items-center gap-2">
@@ -996,16 +1088,17 @@ function DetailBody({
   // Tag-filtered search exists for movie/scene only; performer and studio
   // details keep their tags as plain text rather than dead controls.
   const tagBrowse = target.kind === "movie" || target.kind === "scene";
-  const aspect =
-    target.kind === "scene"
-      ? "aspect-video w-full sm:w-72"
-      : target.kind === "performer"
-        ? "aspect-square w-36 sm:w-44"
-        : "aspect-[2/3] w-36 sm:w-44";
   const showSourceUrl =
     d.sourceUrl && !d.links.some((l) => l.url === d.sourceUrl)
       ? d.sourceUrl
       : null;
+  const posterClass =
+    target.kind === "scene"
+      ? "cat-poster cat-poster-wide"
+      : target.kind === "performer"
+        ? "cat-poster cat-poster-square"
+        : "cat-poster";
+  const backdrop = imgSrc(d.imageUrl);
   // Remember studio/tag names so browse chips can label the ids the URL
   // carries — details are where names are known.
   useEffect(() => {
@@ -1019,208 +1112,263 @@ function DetailBody({
         filterNames.set(`${target.provider}:tag:${t.id}`, t.name);
   }, [studioRef, tagBrowse, d, target.provider]);
   return (
-    <div className="flex flex-col gap-4 sm:flex-row">
-      <div
-        className={`relative shrink-0 self-center bg-raised sm:self-start ${aspect}`}
+    <>
+      <header
+        className="cat-hero"
+        style={backdrop ? { backgroundImage: `url("${backdrop}")` } : undefined}
       >
-        <ItemImage
-          name={d.title}
-          src={imgSrc(d.imageUrl)}
-          className="absolute inset-0 h-full w-full object-cover"
-        />
-      </div>
-      <div className="min-w-0 flex-1">
-        <h3 className="text-xl font-semibold">{d.title}</h3>
-        <div className="mt-1 flex flex-wrap gap-1">
-          {d.releaseDate && <span className="chip">{d.releaseDate}</span>}
-          {duration(d.durationSeconds) && (
-            <span className="chip">{duration(d.durationSeconds)}</span>
-          )}
-          {d.studio && !studioRef && (
-            <span className="chip">{d.studio.name}</span>
-          )}
+        <div className="cat-hero-scrim" aria-hidden="true" />
+        <div className="cat-hero-inner">
+          <div className={posterClass}>
+            <ItemImage
+              name={d.title}
+              src={imgSrc(d.imageUrl)}
+              className="cat-poster-img"
+            />
+          </div>
+          <div className="cat-hero-copy">
+            <div className="cat-hero-meta">
+              <span className="chip">
+                {providerLabel(target.provider)} · {target.kind}
+              </span>
+              {d.releaseDate && <span className="chip">{d.releaseDate}</span>}
+              {duration(d.durationSeconds) && (
+                <span className="chip">{duration(d.durationSeconds)}</span>
+              )}
+            </div>
+            <h1 className="cat-hero-title">{d.title}</h1>
+            {d.studio && (
+              <p className="cat-hero-sub">
+                {studioRef ? (
+                  <>
+                    <button
+                      type="button"
+                      className="cat-hero-studio"
+                      onClick={() =>
+                        onBrowse(
+                          target.kind === "movie" ? "movies" : "scenes",
+                          {
+                            param: "studio",
+                            provider: studioRef.provider,
+                            id: studioRef.id,
+                          },
+                        )
+                      }
+                    >
+                      {d.studio?.name}
+                    </button>
+                  </>
+                ) : (
+                  d.studio.name
+                )}
+              </p>
+            )}
+          </div>
         </div>
-        {d.description ? (
-          <p className="mt-3 text-sm leading-relaxed text-muted">
-            {d.description}
-          </p>
-        ) : (
-          <p className="mt-3 text-sm text-muted">No description available.</p>
-        )}
-        {d.aliases.length > 0 && (
-          <p className="mt-2 text-xs text-muted">
-            Also known as: {d.aliases.join(", ")}
-          </p>
-        )}
+      </header>
 
-        {d.credits.length > 0 && (
-          <div className="mt-3">
-            <div className="label">Performers</div>
-            <div className="mt-1 flex flex-wrap gap-2">
-              {d.credits.map((c) => (
-                <button
-                  key={`${c.reference.provider}:${c.reference.id}`}
-                  type="button"
-                  className="chip flex items-center gap-1"
-                  onClick={() => onNavigate(c.reference)}
-                >
-                  {c.imageUrl && (
+      <div className="cat-cols">
+        <div>
+          {mediaKind && (
+            <section
+              className="panel cat-actions-panel"
+              aria-label="Request and availability"
+            >
+              <MediaActions
+                target={{
+                  provider: target.provider,
+                  kind: mediaKind,
+                  id: target.id,
+                }}
+                mine={payload.myRequest}
+                acquisition={payload.acquisition}
+                onRefetch={onRefetch}
+              />
+            </section>
+          )}
+          <section
+            className={mediaKind ? "cat-section" : undefined}
+            aria-label="Overview"
+          >
+            <h2 className="cat-section-title">Overview</h2>
+            {d.description ? (
+              <p className="mt-2 text-sm leading-relaxed text-muted">
+                {d.description}
+              </p>
+            ) : (
+              <p className="mt-2 text-sm text-muted">
+                No description available.
+              </p>
+            )}
+            {d.aliases.length > 0 && (
+              <p className="mt-2 text-xs text-muted">
+                Also known as: {d.aliases.join(", ")}
+              </p>
+            )}
+          </section>
+        </div>
+
+        <aside>
+          {d.credits.length > 0 && (
+            <section className="cat-section" aria-label="Performers">
+              <h2 className="cat-section-title">Performers</h2>
+              <div className="cat-people mt-2">
+                {d.credits.map((c) => (
+                  <button
+                    key={`${c.reference.provider}:${c.reference.id}`}
+                    type="button"
+                    className="cat-person"
+                    onClick={() => onNavigate(c.reference)}
+                  >
                     <ItemImage
                       name={c.name}
                       src={imgSrc(c.imageUrl)}
-                      className="h-5 w-5 rounded-full object-cover"
+                      className="cat-person-img"
                     />
-                  )}
-                  {c.name}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
+                    <span className="cat-person-name">{c.name}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
 
-        {studioRef && (
-          <div className="mt-3">
-            <div className="label">Studio</div>
-            <button
-              type="button"
-              className="chip mt-1"
-              onClick={() =>
-                onBrowse(target.kind === "movie" ? "movies" : "scenes", {
-                  param: "studio",
-                  provider: studioRef.provider,
-                  id: studioRef.id,
-                })
-              }
-            >
-              {d.studio?.name}
-            </button>
-          </div>
-        )}
+          {studioRef && (
+            <section className="cat-section" aria-label="Studio">
+              <h2 className="cat-section-title">Studio</h2>
+              <button
+                type="button"
+                className="chip mt-2"
+                onClick={() =>
+                  onBrowse(target.kind === "movie" ? "movies" : "scenes", {
+                    param: "studio",
+                    provider: studioRef.provider,
+                    id: studioRef.id,
+                  })
+                }
+              >
+                {d.studio?.name}
+              </button>
+            </section>
+          )}
 
-        {d.tags.length > 0 && (
-          <div className="mt-3">
-            <div className="label">Tags</div>
-            <div className="mt-1 flex flex-wrap gap-1">
-              {d.tags.map((t) =>
-                tagBrowse ? (
+          {d.tags.length > 0 && (
+            <section className="cat-section" aria-label="Tags">
+              <h2 className="cat-section-title">Tags</h2>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {d.tags.map((t) =>
+                  tagBrowse ? (
+                    <button
+                      key={t.id}
+                      type="button"
+                      className="chip"
+                      onClick={() =>
+                        onBrowse(
+                          target.kind === "movie" ? "movies" : "scenes",
+                          {
+                            param: "tags",
+                            provider: target.provider,
+                            id: t.id,
+                          },
+                        )
+                      }
+                    >
+                      {t.name}
+                    </button>
+                  ) : (
+                    <span key={t.id} className="chip">
+                      {t.name}
+                    </span>
+                  ),
+                )}
+              </div>
+            </section>
+          )}
+
+          <section className="cat-section" aria-label="Cross-provider link">
+            <h2 className="cat-section-title">Cross-provider link</h2>
+            {linked ? (
+              <button
+                type="button"
+                className="chip chip-accent mt-2"
+                onClick={() => onNavigate(linked)}
+              >
+                Open the linked {providerLabel(linked.provider)} record
+              </button>
+            ) : (
+              <p className="mt-2 text-xs text-muted">
+                {"unlinkedReason" in payload.link
+                  ? payload.link.unlinkedReason
+                  : "No cross-provider link."}
+              </p>
+            )}
+          </section>
+
+          {(d.links.length > 0 || showSourceUrl) && (
+            <section className="cat-section" aria-label="Links">
+              <h2 className="cat-section-title">Links</h2>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {d.links.map((l, i) => (
+                  <a
+                    key={i}
+                    className="chip"
+                    href={l.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {l.label ?? providerLabel(target.provider)}
+                  </a>
+                ))}
+                {showSourceUrl && (
+                  <a
+                    className="chip"
+                    href={showSourceUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Source · {providerLabel(target.provider)}
+                  </a>
+                )}
+              </div>
+            </section>
+          )}
+
+          {d.related.length > 0 && (
+            <section className="cat-section" aria-label="Related">
+              <h2 className="cat-section-title">
+                {target.kind === "movie"
+                  ? "Scenes in this movie (as supplied by the provider)"
+                  : "Related"}
+              </h2>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {d.related.map((r, i) => (
                   <button
-                    key={t.id}
+                    key={`${r.provider}:${r.kind}:${r.id}:${i}`}
                     type="button"
                     className="chip"
-                    onClick={() =>
-                      onBrowse(target.kind === "movie" ? "movies" : "scenes", {
-                        param: "tags",
-                        provider: target.provider,
-                        id: t.id,
-                      })
-                    }
+                    onClick={() => onNavigate(r)}
                   >
-                    {t.name}
+                    {providerLabel(r.provider)} · {r.kind} · {r.id.slice(0, 8)}…
                   </button>
-                ) : (
-                  <span key={t.id} className="chip">
-                    {t.name}
-                  </span>
-                ),
-              )}
-            </div>
-          </div>
-        )}
-
-        <div className="mt-3">
-          <div className="label">Cross-provider link</div>
-          {linked ? (
-            <button
-              type="button"
-              className="chip chip-accent mt-1"
-              onClick={() => onNavigate(linked)}
-            >
-              Open the linked {providerLabel(linked.provider)} record
-            </button>
-          ) : (
-            <p className="mt-1 text-xs text-muted">
-              {"unlinkedReason" in payload.link
-                ? payload.link.unlinkedReason
-                : "No cross-provider link."}
-            </p>
+                ))}
+              </div>
+            </section>
           )}
-        </div>
-
-        {(d.links.length > 0 || showSourceUrl) && (
-          <div className="mt-3">
-            <div className="label">Links</div>
-            <div className="mt-1 flex flex-wrap gap-2">
-              {d.links.map((l, i) => (
-                <a
-                  key={i}
-                  className="chip"
-                  href={l.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  {l.label ?? providerLabel(target.provider)}
-                </a>
-              ))}
-              {showSourceUrl && (
-                <a
-                  className="chip"
-                  href={showSourceUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Source · {providerLabel(target.provider)}
-                </a>
-              )}
-            </div>
-          </div>
-        )}
-
-        {mediaKind && (
-          <MediaActions
-            target={{
-              provider: target.provider,
-              kind: mediaKind,
-              id: target.id,
-            }}
-            mine={payload.myRequest}
-            acquisition={payload.acquisition}
-            onRefetch={onRefetch}
-          />
-        )}
-
-        {d.related.length > 0 && (
-          <div className="mt-3">
-            <div className="label">
-              {target.kind === "movie"
-                ? "Scenes in this movie (as supplied by the provider)"
-                : "Related"}
-            </div>
-            <div className="mt-1 flex flex-wrap gap-2">
-              {d.related.map((r, i) => (
-                <button
-                  key={`${r.provider}:${r.kind}:${r.id}:${i}`}
-                  type="button"
-                  className="chip"
-                  onClick={() => onNavigate(r)}
-                >
-                  {providerLabel(r.provider)} · {r.kind} · {r.id.slice(0, 8)}…
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
+        </aside>
       </div>
-    </div>
+    </>
   );
 }
 
-/** The open catalog detail: provider + kind + id URL params. Returns null
- * when closed; mounted by every catalog view so any surface can open it. */
+/** The open catalog detail: provider + kind + id URL params, rendered as a
+ * full page inside app main — top search and sidebar stay usable. Returns
+ * null when closed; mounted by every catalog view so any surface can open
+ * it. The browse grid behind it stays mounted but hidden, so returning is
+ * instant and never refetches. */
 function CatalogDetail() {
   const params = useSearchParams();
   const setP = useParamsSetter();
   const target = detailTarget(params);
-  const panelRef = useRef<HTMLDivElement>(null);
+  const pageRef = useRef<HTMLDivElement>(null);
   const prevFocus = useRef<HTMLElement | null>(null);
   const wasOpen = useRef(false);
   const [payload, setPayload] = useState<DetailPayload | null>(null);
@@ -1235,9 +1383,9 @@ function CatalogDetail() {
   // Closing clears only the detail target. `provider` is also the browse
   // source, so clearing it silently switched a StashDB browse back to TPDB.
   const close = useCallback(() => setP({ kind: null, id: null }), [setP]);
-  // Studio/tag navigation leaves the dialog for a fresh browse on the
+  // Studio/tag navigation leaves the page for a fresh browse on the
   // matching surface: same provider, provider-native id, the other
-  // provider's filter ids never carried across.
+  // provider's filter ids never carried across. Surface change → push.
   const browseTo = useCallback(
     (
       view: "movies" | "scenes",
@@ -1264,15 +1412,14 @@ function CatalogDetail() {
       };
       patch[filter.param] = filter.id;
       patch[filter.param === "studio" ? "tags" : "studio"] = null;
-      setP(patch);
+      setP(patch, { push: true });
     },
     [setP],
   );
 
-  // Escape closes; focus moves in on open and is restored on close. Background
-  // scroll is deliberately left untouched.
+  // Escape closes; focus moves in on open and is restored on close.
   const open = refKey !== null;
-  // Runs once per open/close — in-dialog navigation must not re-capture or
+  // Runs once per open/close — in-page navigation must not re-capture or
   // restore focus; only closing does.
   useEffect(() => {
     if (!open) return;
@@ -1286,14 +1433,14 @@ function CatalogDetail() {
       prevFocus.current?.focus();
     };
   }, [open, close]);
-  // Moves focus into the panel on open and whenever the target changes.
+  // Moves focus to the page on open and whenever the target changes.
   useEffect(() => {
-    if (open) panelRef.current?.focus();
+    if (open) pageRef.current?.focus();
   }, [open, refKey]);
-  // Scroll restoration: the position behind the dialog is saved under the
-  // browse state (URL minus provider/kind/id/tab) when the dialog opens and
-  // restored when it closes — Escape, Close and Back all close it. Deliberate
-  // filter changes never open the dialog, so they never cause a jump.
+  // Scroll: the position behind the detail is saved under the browse state
+  // (URL minus provider/kind/id/tab) when it opens and restored when it
+  // closes — Escape, Back to browse and Back all close it. Deliberate
+  // filter changes never open the detail, so they never cause a jump.
   useEffect(() => {
     if (refKey === null) {
       if (wasOpen.current) {
@@ -1305,6 +1452,7 @@ function CatalogDetail() {
     if (!wasOpen.current) {
       wasOpen.current = true;
       saveScroll(browseKeyOf(params));
+      window.scrollTo(0, 0);
     }
   });
 
@@ -1334,74 +1482,57 @@ function CatalogDetail() {
   if (!target) return null;
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 sm:items-center sm:p-6"
-      onClick={close}
+      ref={pageRef}
+      className="cat-detail"
+      tabIndex={-1}
+      aria-label={
+        payload ? `${payload.detail.title} details` : "Catalog details"
+      }
     >
-      <div
-        ref={panelRef}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        aria-label={
-          payload ? `${payload.detail.title} details` : "Catalog details"
-        }
-        className="panel max-h-[92vh] w-full max-w-3xl overflow-y-auto p-5"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <span className="chip">
-            {providerLabel(target.provider)} · {target.kind}
-          </span>
-          <button
-            type="button"
-            className="btn"
-            onClick={close}
-            aria-label="Close details"
-          >
-            Close
-          </button>
-        </div>
-        {notFound ? (
-          <div className="panel p-6" role="note">
-            <h3 className="font-semibold">Not in the provider catalog</h3>
-            <p className="mt-2 text-sm text-muted">
-              {providerLabel(target.provider)} no longer has this record. It may
-              have been removed at the source.
-            </p>
-          </div>
-        ) : error ? (
-          <ErrorPanel
-            title="Catalog unavailable"
-            message={error}
-            onRetry={() => setReload((n) => n + 1)}
-          />
-        ) : !payload ? (
-          <DetailSkeleton kind={target.kind} />
-        ) : (
-          <DetailBody
-            key={refKey}
-            payload={payload}
-            target={target}
-            onNavigate={(r) =>
-              setP(
-                {
-                  // A performer lives on the Performers surface; without the
-                  // view switch the reference changed but nothing rendered it.
-                  ...(r.kind === "performer" ? { view: "performers" } : {}),
-                  provider: r.provider,
-                  kind: r.kind,
-                  id: r.id,
-                },
-                // Leaving the browse for a performer page is a surface change,
-                // so Back must return to the results, not exit the app.
-                r.kind === "performer" ? { push: true } : undefined,
-              )
-            }
-            onBrowse={browseTo}
-            onRefetch={() => setReload((n) => n + 1)}
-          />
-        )}
+      <div className="cat-topline">
+        <button type="button" className="btn" onClick={close}>
+          <Icon name="chevron-left" /> Back to browse
+        </button>
       </div>
+      {notFound ? (
+        <div className="panel p-6" role="note">
+          <h3 className="font-semibold">Not in the provider catalog</h3>
+          <p className="mt-2 text-sm text-muted">
+            {providerLabel(target.provider)} no longer has this record. It may
+            have been removed at the source.
+          </p>
+        </div>
+      ) : error ? (
+        <ErrorPanel
+          title="Catalog unavailable"
+          message={error}
+          onRetry={() => setReload((n) => n + 1)}
+        />
+      ) : !payload ? (
+        <DetailSkeleton />
+      ) : (
+        <DetailBody
+          key={refKey}
+          payload={payload}
+          target={target}
+          onNavigate={(r) =>
+            setP(
+              {
+                // A performer lives on the Performers surface; without the
+                // view switch the reference changed but nothing rendered it.
+                ...(r.kind === "performer" ? { view: "performers" } : {}),
+                provider: r.provider,
+                kind: r.kind,
+                id: r.id,
+              },
+              // Detail navigation is a surface change: Back walks the trail.
+              { push: true },
+            )
+          }
+          onBrowse={browseTo}
+          onRefetch={() => setReload((n) => n + 1)}
+        />
+      )}
     </div>
   );
 }
@@ -1428,7 +1559,16 @@ export function MoviesView() {
   const page = Math.max(1, intOr(params.get("page"), 1));
   const perPage = Math.min(100, Math.max(1, intOr(params.get("perPage"), 24)));
   const [reload, setReload] = useState(0);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const notConfigured = providers?.tpdb === "not_configured";
+  const target = detailTarget(params);
+  const tagList = [...new Set(tags.split(",").filter(Boolean))];
+  const filterCount =
+    (q ? 1 : 0) +
+    (year ? 1 : 0) +
+    (performer ? 1 : 0) +
+    (studio ? 1 : 0) +
+    tagList.length;
   const { data, error } = useCatalogSearch({
     provider: "tpdb",
     kind: "movie",
@@ -1447,7 +1587,7 @@ export function MoviesView() {
   });
   const open = useCallback(
     (r: CatalogReference) =>
-      setP({ provider: r.provider, kind: r.kind, id: r.id }),
+      setP({ provider: r.provider, kind: r.kind, id: r.id }, { push: true }),
     [setP],
   );
   const onPage = useCallback(
@@ -1489,111 +1629,152 @@ export function MoviesView() {
       }),
     [setP, tags],
   );
+  const clearFilters = useCallback(
+    () =>
+      setP({
+        q: null,
+        year: null,
+        performer: null,
+        studio: null,
+        tags: null,
+        page: null,
+      }),
+    [setP],
+  );
   const retry = useCallback(() => setReload((n) => n + 1), []);
   return (
     <section aria-label="Movies">
-      <h2 className="text-xl font-semibold">Movies</h2>
-      <p className="mt-1 text-sm text-muted">
-        Browsed from TPDB — StashDB has no movie records, so no source choice is
-        offered here.
-      </p>
-      <div className="mt-4 flex flex-col gap-3 sm:flex-row">
-        <div className="sm:max-w-xs sm:flex-1">
-          <SearchBox id="movie-q" label="Search" value={q} onCommit={onQ} />
-        </div>
-        <div className="sm:w-36">
-          <YearBox id="movie-year" value={year} onCommit={onYear} />
-        </div>
-        <div className="sm:w-56">
-          <SearchBox
-            id="movie-performer"
-            label="Performer"
-            value={performer}
-            onCommit={onPerformer}
-            placeholder="Performer name…"
-          />
-        </div>
-        <div className="sm:w-64">
-          <SortSelect
-            id="movie-sort"
-            provider="tpdb"
-            kind="movie"
-            sort={sortKey ?? ""}
-            direction={direction}
-            onSort={onSort}
-            onDirection={onDirection}
-          />
-        </div>
-      </div>
-      {(q || year || performer || studio || tags || sortKey) && (
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <span className="text-xs text-muted">Filters:</span>
-          {q && <FilterChip label={`“${q}”`} onRemove={() => onQ("")} />}
-          {year && (
-            <FilterChip label={`Year ${year}`} onRemove={() => onYear("")} />
-          )}
-          {performer && (
-            <FilterChip
-              label={`Performer: ${performer}`}
-              onRemove={() => onPerformer("")}
-            />
-          )}
-          {studio && (
-            <FilterChip
-              label={`Studio: ${filterName("tpdb", "studio", studio)}`}
-              onRemove={() => onStudio("")}
-            />
-          )}
-          {[...new Set(tags.split(",").filter(Boolean))].map((id) => (
-            <FilterChip
-              key={id}
-              label={`Tag: ${filterName("tpdb", "tag", id)}`}
-              onRemove={() => removeTag(id)}
-            />
-          ))}
-          {sortKey && (
-            <FilterChip
-              label={`Sort: ${SORT_LABELS[sortKey]}${direction ? ` (${direction})` : ""}`}
-              onRemove={() => onSort("")}
-            />
-          )}
-        </div>
-      )}
-      <div className="mt-4">
-        {notConfigured ? (
-          <NotConfigured provider="tpdb" />
-        ) : error ? (
-          <ErrorPanel
-            title="TPDB unavailable"
-            message={error}
-            onRetry={retry}
-          />
-        ) : !data ? (
-          <GridSkeleton aspect="aspect-[2/3]" cols={PORTRAIT_COLS} count={10} />
-        ) : data.items.length === 0 ? (
-          <div className="panel p-8 text-center text-sm text-muted">
-            {q || year || performer || studio || tags
-              ? "No movies match your filters."
-              : "No movies found."}
+      <div hidden={target !== null}>
+        <div className="page-heading">
+          <div>
+            <h2 className="page-title">Movies</h2>
+            <p className="page-description">
+              Browsed from TPDB — StashDB has no movie records, so no source
+              choice is offered here.
+            </p>
           </div>
-        ) : (
-          <>
-            <div className={PORTRAIT_COLS}>
-              {data.items.map((it) => (
-                <MovieCard key={it.reference.id} item={it} onOpen={open} />
-              ))}
-            </div>
-            <Paging
-              page={page}
-              hasMore={data.hasMore}
-              total={data.total}
-              totalCountKnown={data.totalCountKnown}
-              onPage={onPage}
+          <div className="page-toolbar">
+            <SortSelect
+              id="movie-sort"
+              provider="tpdb"
+              kind="movie"
+              sort={sortKey ?? ""}
+              direction={direction}
+              onSort={onSort}
+              onDirection={onDirection}
             />
-          </>
+            <FiltersButton
+              count={filterCount}
+              onClick={() => setFiltersOpen(true)}
+            />
+          </div>
+        </div>
+        {(filterCount > 0 || sortKey) && (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted">Filters:</span>
+            {q && <FilterChip label={`“${q}”`} onRemove={() => onQ("")} />}
+            {year && (
+              <FilterChip label={`Year ${year}`} onRemove={() => onYear("")} />
+            )}
+            {performer && (
+              <FilterChip
+                label={`Performer: ${performer}`}
+                onRemove={() => onPerformer("")}
+              />
+            )}
+            {studio && (
+              <FilterChip
+                label={`Studio: ${filterName("tpdb", "studio", studio)}`}
+                onRemove={() => onStudio("")}
+              />
+            )}
+            {tagList.map((id) => (
+              <FilterChip
+                key={id}
+                label={`Tag: ${filterName("tpdb", "tag", id)}`}
+                onRemove={() => removeTag(id)}
+              />
+            ))}
+            {sortKey && (
+              <FilterChip
+                label={`Sort: ${SORT_LABELS[sortKey]}${direction ? ` (${direction})` : ""}`}
+                onRemove={() => onSort("")}
+              />
+            )}
+          </div>
         )}
+        <div className="mt-4">
+          {notConfigured ? (
+            <NotConfigured provider="tpdb" />
+          ) : error ? (
+            <ErrorPanel
+              title="TPDB unavailable"
+              message={error}
+              onRetry={retry}
+            />
+          ) : !data ? (
+            <GridSkeleton aspect="aspect-[2/3]" cols={POSTER_GRID} count={10} />
+          ) : data.items.length === 0 ? (
+            <div className="panel p-8 text-center text-sm text-muted">
+              {q || year || performer || studio || tags
+                ? "No movies match your filters."
+                : "No movies found."}
+            </div>
+          ) : (
+            <>
+              <div className={POSTER_GRID}>
+                {data.items.map((it) => (
+                  <MovieCard key={it.reference.id} item={it} onOpen={open} />
+                ))}
+              </div>
+              <Paging
+                page={page}
+                hasMore={data.hasMore}
+                total={data.total}
+                totalCountKnown={data.totalCountKnown}
+                onPage={onPage}
+              />
+            </>
+          )}
+        </div>
       </div>
       <CatalogDetail />
+      <FilterDrawer
+        open={filtersOpen}
+        onClose={() => setFiltersOpen(false)}
+        count={filterCount}
+        onClear={clearFilters}
+      >
+        <SearchBox id="movie-q" label="Title" value={q} onCommit={onQ} />
+        <YearBox id="movie-year" value={year} onCommit={onYear} />
+        <SearchBox
+          id="movie-performer"
+          label="Performer"
+          value={performer}
+          onCommit={onPerformer}
+          placeholder="Performer name…"
+        />
+        {(studio || tagList.length > 0) && (
+          <div>
+            <div className="label">From details</div>
+            <div className="flex flex-wrap gap-2">
+              {studio && (
+                <FilterChip
+                  label={`Studio: ${filterName("tpdb", "studio", studio)}`}
+                  onRemove={() => onStudio("")}
+                />
+              )}
+              {tagList.map((id) => (
+                <FilterChip
+                  key={id}
+                  label={`Tag: ${filterName("tpdb", "tag", id)}`}
+                  onRemove={() => removeTag(id)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+      </FilterDrawer>
     </section>
   );
 }
@@ -1631,7 +1812,16 @@ export function ScenesView() {
   const page = Math.max(1, intOr(params.get("page"), 1));
   const perPage = Math.min(100, Math.max(1, intOr(params.get("perPage"), 24)));
   const [reload, setReload] = useState(0);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const notConfigured = providers?.[provider] === "not_configured";
+  const target = detailTarget(params);
+  const tagList = [...new Set(tags.split(",").filter(Boolean))];
+  const filterCount =
+    (q ? 1 : 0) +
+    (provider === "tpdb" && year ? 1 : 0) +
+    (performer ? 1 : 0) +
+    (studio ? 1 : 0) +
+    tagList.length;
   const { data, error } = useCatalogSearch({
     provider,
     kind: "scene",
@@ -1651,7 +1841,7 @@ export function ScenesView() {
   });
   const open = useCallback(
     (r: CatalogReference) =>
-      setP({ provider: r.provider, kind: r.kind, id: r.id }),
+      setP({ provider: r.provider, kind: r.kind, id: r.id }, { push: true }),
     [setP],
   );
   const onPage = useCallback(
@@ -1717,6 +1907,19 @@ export function ScenesView() {
       }),
     [setP, tags],
   );
+  const clearFilters = useCallback(
+    () =>
+      setP({
+        q: null,
+        year: null,
+        performer: null,
+        studio: null,
+        studioMode: null,
+        tags: null,
+        page: null,
+      }),
+    [setP],
+  );
   const retry = useCallback(() => setReload((n) => n + 1), []);
   // A StashDB studio browse that returns zero items may mean the studio is
   // a parent label whose scenes live under its child studios. The studio's
@@ -1766,59 +1969,150 @@ export function ScenesView() {
     : null;
   return (
     <section aria-label="Scenes">
-      <h2 className="text-xl font-semibold">Scenes</h2>
-      <p className="mt-1 text-sm text-muted">
-        Results are labeled by source and never merged — pick TPDB or StashDB
-        explicitly.
-      </p>
-      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
-        <SourcePicker value={provider} onChange={onProvider} />
-        <div className="sm:max-w-xs sm:flex-1">
-          <SearchBox id="scene-q" label="Search" value={q} onCommit={onQ} />
-        </div>
-        {provider === "tpdb" ? (
-          <div className="sm:w-36">
-            <YearBox id="scene-year" value={year} onCommit={onYear} />
+      <div hidden={target !== null}>
+        <div className="page-heading">
+          <div>
+            <h2 className="page-title">Scenes</h2>
+            <p className="page-description">
+              Results are labeled by source and never merged — pick TPDB or
+              StashDB explicitly.
+            </p>
           </div>
-        ) : (
-          <div className="sm:w-36">
-            <YearBox
-              id="scene-year"
-              value=""
-              onCommit={() => {}}
-              locked
-              lockNote="Not available for StashDB — StashDB scene search does not support year."
+          <div className="page-toolbar">
+            <SourcePicker value={provider} onChange={onProvider} />
+            <SortSelect
+              id="scene-sort"
+              provider={provider}
+              kind="scene"
+              sort={sortKey ?? ""}
+              direction={direction}
+              onSort={onSort}
+              onDirection={onDirection}
+            />
+            <FiltersButton
+              count={filterCount}
+              onClick={() => setFiltersOpen(true)}
             />
           </div>
+        </div>
+        {(filterCount > 0 || sortKey) && (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted">Filters:</span>
+            {q && <FilterChip label={`“${q}”`} onRemove={() => onQ("")} />}
+            {provider === "tpdb" && year && (
+              <FilterChip label={`Year ${year}`} onRemove={() => onYear("")} />
+            )}
+            {performer && (
+              <FilterChip
+                label={`Performer: ${performer}`}
+                onRemove={() => onPerformer("")}
+              />
+            )}
+            {studio && (
+              <FilterChip
+                label={`Studio: ${filterName(provider, "studio", studio)}`}
+                onRemove={() => onStudio("")}
+              />
+            )}
+            {studioMode === "withChildren" && (
+              <FilterChip
+                label="Scope: include child studios"
+                onRemove={() => onStudioMode("")}
+              />
+            )}
+            {tagList.map((id) => (
+              <FilterChip
+                key={id}
+                label={`Tag: ${filterName(provider, "tag", id)}`}
+                onRemove={() => removeTag(id)}
+              />
+            ))}
+            {sortKey && (
+              <FilterChip
+                label={`Sort: ${SORT_LABELS[sortKey]}${direction ? ` (${direction})` : ""}`}
+                onRemove={() => onSort("")}
+              />
+            )}
+          </div>
         )}
-        <div className="sm:w-64">
-          <SortSelect
-            id="scene-sort"
-            provider={provider}
-            kind="scene"
-            sort={sortKey ?? ""}
-            direction={direction}
-            onSort={onSort}
-            onDirection={onDirection}
-          />
+        <div className="mt-4">
+          {notConfigured ? (
+            <NotConfigured provider={provider} />
+          ) : error ? (
+            <ErrorPanel
+              title={`${providerLabel(provider)} unavailable`}
+              message={error}
+              onRetry={retry}
+            />
+          ) : !data ? (
+            <GridSkeleton aspect="aspect-video" cols={SCENE_GRID} count={6} />
+          ) : data.items.length === 0 ? (
+            parentEmpty ? (
+              <div className="panel p-8 text-center text-sm text-muted">
+                <p>
+                  {parentEmpty.kind === "count"
+                    ? `No ${providerLabel(provider)} scenes match your filters. ${parentEmpty.title} is a parent label — its scenes are catalogued under its ${parentEmpty.count} child studios.`
+                    : `No ${providerLabel(provider)} scenes match your filters. If ${filterName("stashdb", "studio", studio)} is a parent label, its scenes are catalogued under its child studios.`}
+                </p>
+                <button
+                  type="button"
+                  className="btn mt-3"
+                  onClick={() => onStudioMode("withChildren")}
+                >
+                  Include child studios
+                </button>
+              </div>
+            ) : (
+              <div className="panel p-8 text-center text-sm text-muted">
+                {q || year || performer || studio || tags
+                  ? `No ${providerLabel(provider)} scenes match your filters.`
+                  : `No ${providerLabel(provider)} scenes found.`}
+              </div>
+            )
+          ) : (
+            <>
+              <div className={SCENE_GRID}>
+                {data.items.map((it) => (
+                  <SceneCard key={it.reference.id} item={it} onOpen={open} />
+                ))}
+              </div>
+              <Paging
+                page={page}
+                hasMore={data.hasMore}
+                total={data.total}
+                totalCountKnown={data.totalCountKnown}
+                onPage={onPage}
+              />
+            </>
+          )}
         </div>
-        <div className="sm:w-56">
-          <SearchBox
-            id="scene-performer"
-            label="Performer"
-            value={performer}
-            onCommit={onPerformer}
-            placeholder="Performer name…"
-          />
-        </div>
+      </div>
+      <CatalogDetail />
+      <FilterDrawer
+        open={filtersOpen}
+        onClose={() => setFiltersOpen(false)}
+        count={filterCount}
+        onClear={clearFilters}
+      >
+        <SearchBox id="scene-q" label="Title" value={q} onCommit={onQ} />
+        {provider === "tpdb" && (
+          <YearBox id="scene-year" value={year} onCommit={onYear} />
+        )}
+        <SearchBox
+          id="scene-performer"
+          label="Performer"
+          value={performer}
+          onCommit={onPerformer}
+          placeholder="Performer name…"
+        />
         {provider === "stashdb" && studio && (
-          <div className="sm:w-56">
+          <div>
             <label className="label" htmlFor="scene-studio-scope">
               Studio scope
             </label>
             <select
               id="scene-studio-scope"
-              className="input mt-1"
+              className="input"
               value={studioMode}
               onChange={(e) => onStudioMode(e.target.value)}
             >
@@ -1827,104 +2121,33 @@ export function ScenesView() {
             </select>
           </div>
         )}
-      </div>
-      {(q ||
-        (provider === "tpdb" && year) ||
-        performer ||
-        studio ||
-        tags ||
-        sortKey) && (
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <span className="text-xs text-muted">Filters:</span>
-          {q && <FilterChip label={`“${q}”`} onRemove={() => onQ("")} />}
-          {provider === "tpdb" && year && (
-            <FilterChip label={`Year ${year}`} onRemove={() => onYear("")} />
-          )}
-          {performer && (
-            <FilterChip
-              label={`Performer: ${performer}`}
-              onRemove={() => onPerformer("")}
-            />
-          )}
-          {studio && (
-            <FilterChip
-              label={`Studio: ${filterName(provider, "studio", studio)}`}
-              onRemove={() => onStudio("")}
-            />
-          )}
-          {studioMode === "withChildren" && (
-            <FilterChip
-              label="Scope: include child studios"
-              onRemove={() => onStudioMode("")}
-            />
-          )}
-          {[...new Set(tags.split(",").filter(Boolean))].map((id) => (
-            <FilterChip
-              key={id}
-              label={`Tag: ${filterName(provider, "tag", id)}`}
-              onRemove={() => removeTag(id)}
-            />
-          ))}
-          {sortKey && (
-            <FilterChip
-              label={`Sort: ${SORT_LABELS[sortKey]}${direction ? ` (${direction})` : ""}`}
-              onRemove={() => onSort("")}
-            />
-          )}
-        </div>
-      )}
-      <div className="mt-4">
-        {notConfigured ? (
-          <NotConfigured provider={provider} />
-        ) : error ? (
-          <ErrorPanel
-            title={`${providerLabel(provider)} unavailable`}
-            message={error}
-            onRetry={retry}
-          />
-        ) : !data ? (
-          <GridSkeleton aspect="aspect-video" cols={LANDSCAPE_COLS} count={6} />
-        ) : data.items.length === 0 ? (
-          parentEmpty ? (
-            <div className="panel p-8 text-center text-sm text-muted">
-              <p>
-                {parentEmpty.kind === "count"
-                  ? `No ${providerLabel(provider)} scenes match your filters. ${parentEmpty.title} is a parent label — its scenes are catalogued under its ${parentEmpty.count} child studios.`
-                  : `No ${providerLabel(provider)} scenes match your filters. If ${filterName("stashdb", "studio", studio)} is a parent label, its scenes are catalogued under its child studios.`}
-              </p>
-              <button
-                type="button"
-                className="btn mt-3"
-                onClick={() => onStudioMode("withChildren")}
-              >
-                Include child studios
-              </button>
-            </div>
-          ) : (
-            <div className="panel p-8 text-center text-sm text-muted">
-              {q || year || performer || studio || tags
-                ? `No ${providerLabel(provider)} scenes match your filters.`
-                : `No ${providerLabel(provider)} scenes found.`}
-            </div>
-          )
-        ) : (
-          <>
-            <div className={LANDSCAPE_COLS}>
-              {data.items.map((it) => (
-                <SceneCard key={it.reference.id} item={it} onOpen={open} />
+        {(studio || tagList.length > 0) && (
+          <div>
+            <div className="label">From details</div>
+            <div className="flex flex-wrap gap-2">
+              {studio && (
+                <FilterChip
+                  label={`Studio: ${filterName(provider, "studio", studio)}`}
+                  onRemove={() => onStudio("")}
+                />
+              )}
+              {studioMode === "withChildren" && (
+                <FilterChip
+                  label="Scope: include child studios"
+                  onRemove={() => onStudioMode("")}
+                />
+              )}
+              {tagList.map((id) => (
+                <FilterChip
+                  key={id}
+                  label={`Tag: ${filterName(provider, "tag", id)}`}
+                  onRemove={() => removeTag(id)}
+                />
               ))}
             </div>
-            <Paging
-              page={page}
-              hasMore={data.hasMore}
-              total={data.total}
-              totalCountKnown={data.totalCountKnown}
-              onPage={onPage}
-            />
-          </>
+          </div>
         )}
-      </div>
-      <CatalogDetail />
+      </FilterDrawer>
     </section>
   );
 }
@@ -1932,8 +2155,8 @@ export function ScenesView() {
 export function PerformersView() {
   const params = useSearchParams();
   const setP = useParamsSetter();
-  // A performer target in the URL is the performer page, not the dialog:
-  // kind=performer renders PerformerView; other kinds keep the dialog.
+  // A performer target in the URL is the performer page, not the detail
+  // page: kind=performer renders PerformerView; other kinds keep CatalogDetail.
   const target = detailTarget(params);
   const performerTarget =
     target?.kind === "performer"
@@ -1941,8 +2164,8 @@ export function PerformersView() {
       : null;
   const hadPerformer = useRef(false);
   // Scroll save/restore around the performer page: saved on entry, restored
-  // when it closes (Escape/Close/Back). Filter changes never touch the
-  // store, so they never cause a jump.
+  // when it closes (Escape/Back to browse/Back). Filter changes never touch
+  // the store, so they never cause a jump.
   useEffect(() => {
     if (performerTarget) {
       if (!hadPerformer.current) {
@@ -1962,6 +2185,7 @@ export function PerformersView() {
   const page = Math.max(1, intOr(params.get("page"), 1));
   const perPage = Math.min(100, Math.max(1, intOr(params.get("perPage"), 24)));
   const [reload, setReload] = useState(0);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   // StashDB performer search is unpaged; TPDB performer search is paged but
   // still query-only — year and performer filters are invalid for both.
   const unpaged = provider === "stashdb";
@@ -1986,7 +2210,7 @@ export function PerformersView() {
   });
   const open = useCallback(
     (r: CatalogReference) =>
-      setP({ provider: r.provider, kind: r.kind, id: r.id }),
+      setP({ provider: r.provider, kind: r.kind, id: r.id }, { push: true }),
     [setP],
   );
   const onPage = useCallback(
@@ -2001,6 +2225,7 @@ export function PerformersView() {
     (p: CatalogProvider) => setP({ provider: p, page: null }),
     [setP],
   );
+  const clearFilters = useCallback(() => setP({ q: null, page: null }), [setP]);
   const retry = useCallback(() => setReload((n) => n + 1), []);
   if (performerTarget) {
     return (
@@ -2011,79 +2236,107 @@ export function PerformersView() {
   }
   return (
     <section aria-label="Performers">
-      <h2 className="text-xl font-semibold">Performers</h2>
-      <p className="mt-1 text-sm text-muted">
-        Performer search needs a name. {providerLabel(provider)}{" "}
-        {unpaged ? "results come back unpaged." : "results are paged."}
-      </p>
-      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
-        <SourcePicker value={provider} onChange={onProvider} />
-        <div className="sm:max-w-xs sm:flex-1">
-          <SearchBox
-            id="performer-q"
-            label="Search"
-            value={q}
-            onCommit={onQ}
-            placeholder="Performer name…"
-          />
-        </div>
-      </div>
-      {q && (
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <span className="text-xs text-muted">Filters:</span>
-          <FilterChip label={`“${q}”`} onRemove={() => onQ("")} />
-        </div>
-      )}
-      <div className="mt-4">
-        {notConfigured ? (
-          <NotConfigured provider={provider} />
-        ) : needsQuery ? (
-          <div className="panel p-8 text-center text-sm text-muted">
-            Type a name to search {providerLabel(provider)} performers —
-            performer search requires a query.
+      <div hidden={target !== null}>
+        <div className="page-heading">
+          <div>
+            <h2 className="page-title">Performers</h2>
+            <p className="page-description">
+              Performer search needs a name. {providerLabel(provider)}{" "}
+              {unpaged ? "results come back unpaged." : "results are paged."}
+            </p>
           </div>
-        ) : error ? (
-          <ErrorPanel
-            title={`${providerLabel(provider)} unavailable`}
-            message={error}
-            onRetry={retry}
-          />
-        ) : !data ? (
-          <GridSkeleton
-            aspect="aspect-square"
-            cols={PORTRAIT_COLS}
-            count={10}
-          />
-        ) : data.items.length === 0 ? (
-          <div className="panel p-8 text-center text-sm text-muted">
-            No {providerLabel(provider)} performers match “{q}”.
+          <div className="page-toolbar">
+            <SourcePicker value={provider} onChange={onProvider} />
+            <FiltersButton
+              count={q ? 1 : 0}
+              onClick={() => setFiltersOpen(true)}
+            />
           </div>
-        ) : (
-          <>
-            <div className={PORTRAIT_COLS}>
-              {data.items.map((it) => (
-                <PerformerCard key={it.reference.id} item={it} onOpen={open} />
-              ))}
-            </div>
-            {unpaged ? (
-              <div className="mt-6 text-sm text-muted">
-                {data.totalCountKnown && data.total != null
-                  ? `${data.total} results`
-                  : `${data.items.length} results shown`}
-              </div>
-            ) : (
-              <Paging
-                page={page}
-                hasMore={data.hasMore}
-                total={data.total}
-                totalCountKnown={data.totalCountKnown}
-                onPage={onPage}
-              />
-            )}
-          </>
+        </div>
+        {q && (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted">Filters:</span>
+            <FilterChip label={`“${q}”`} onRemove={() => onQ("")} />
+          </div>
         )}
+        <div className="mt-4">
+          {notConfigured ? (
+            <NotConfigured provider={provider} />
+          ) : needsQuery ? (
+            <div className="panel p-8 text-center text-sm text-muted">
+              Type a name to search {providerLabel(provider)} performers —
+              performer search requires a query.
+              <br />
+              <button
+                type="button"
+                className="btn mt-3"
+                aria-haspopup="dialog"
+                onClick={() => setFiltersOpen(true)}
+              >
+                <Icon name="search" /> Open search
+              </button>
+            </div>
+          ) : error ? (
+            <ErrorPanel
+              title={`${providerLabel(provider)} unavailable`}
+              message={error}
+              onRetry={retry}
+            />
+          ) : !data ? (
+            <GridSkeleton
+              aspect="aspect-square"
+              cols={PERFORMER_GRID}
+              count={10}
+            />
+          ) : data.items.length === 0 ? (
+            <div className="panel p-8 text-center text-sm text-muted">
+              No {providerLabel(provider)} performers match “{q}”.
+            </div>
+          ) : (
+            <>
+              <div className={PERFORMER_GRID}>
+                {data.items.map((it) => (
+                  <PerformerCard
+                    key={it.reference.id}
+                    item={it}
+                    onOpen={open}
+                  />
+                ))}
+              </div>
+              {unpaged ? (
+                <div className="mt-6 text-sm text-muted">
+                  {data.totalCountKnown && data.total != null
+                    ? `${data.total} results`
+                    : `${data.items.length} results shown`}
+                </div>
+              ) : (
+                <Paging
+                  page={page}
+                  hasMore={data.hasMore}
+                  total={data.total}
+                  totalCountKnown={data.totalCountKnown}
+                  onPage={onPage}
+                />
+              )}
+            </>
+          )}
+        </div>
       </div>
       <CatalogDetail />
+      <FilterDrawer
+        open={filtersOpen}
+        onClose={() => setFiltersOpen(false)}
+        count={q ? 1 : 0}
+        onClear={clearFilters}
+      >
+        <SearchBox
+          id="performer-q"
+          label="Name"
+          value={q}
+          onCommit={onQ}
+          placeholder="Performer name…"
+        />
+      </FilterDrawer>
     </section>
   );
 }

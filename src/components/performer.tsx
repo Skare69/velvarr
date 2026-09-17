@@ -29,6 +29,7 @@ import type {
   CatalogProvider,
   CatalogReference,
 } from "../lib/contracts";
+import "./views.css";
 
 /* ---------- Local shapes ---------- */
 
@@ -49,10 +50,6 @@ type SearchPage = {
 type Tab = "scenes" | "movies";
 
 /* ---------- Small helpers (same conventions as catalog.tsx) ---------- */
-
-const PORTRAIT_COLS =
-  "grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5";
-const LANDSCAPE_COLS = "grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3";
 
 /* ---------- Fetch hooks: a live flag makes stale in-flight responses inert ---------- */
 
@@ -147,13 +144,13 @@ function usePerformerListing(
 function HeaderSkeleton() {
   return (
     <div
-      className="flex flex-col gap-4 sm:flex-row"
+      className="performer-hero relative flex flex-col gap-5 p-5 sm:flex-row sm:p-6"
       aria-label="Loading performer"
       aria-busy="true"
     >
-      <div className="skel aspect-square w-36 shrink-0 self-center sm:w-44 sm:self-start" />
-      <div className="flex-1 space-y-3 pt-2">
-        <div className="skel h-6 w-1/2" />
+      <div className="skel aspect-[2/3] w-40 shrink-0 self-center sm:w-48 sm:self-start" />
+      <div className="min-w-0 flex-1 space-y-3 pt-1">
+        <div className="skel h-7 w-1/2" />
         <div className="skel h-4 w-1/4" />
         <div className="skel h-4 w-full" />
         <div className="skel h-4 w-2/3" />
@@ -257,7 +254,7 @@ function Listing({
       ) : loading || !data ? (
         <GridSkeleton
           aspect={kind === "movie" ? "aspect-[2/3]" : "aspect-video"}
-          cols={kind === "movie" ? PORTRAIT_COLS : LANDSCAPE_COLS}
+          cols={kind === "movie" ? "poster-grid" : "scene-grid"}
           count={kind === "movie" ? 10 : 6}
         />
       ) : data.items.length === 0 ? (
@@ -266,7 +263,7 @@ function Listing({
         </div>
       ) : (
         <>
-          <div className={kind === "movie" ? PORTRAIT_COLS : LANDSCAPE_COLS}>
+          <div className={kind === "movie" ? "poster-grid" : "scene-grid"}>
             {data.items.map((it) =>
               kind === "movie" ? (
                 <MovieCard key={it.reference.id} item={it} onOpen={open} />
@@ -455,87 +452,97 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
         <HeaderSkeleton />
       ) : (
         <>
-          <div className="flex flex-col gap-4 sm:flex-row">
-            <div className="relative aspect-square w-36 shrink-0 self-center bg-raised sm:w-44 sm:self-start">
+          <div className="performer-hero">
+            {d.imageUrl && (
               <ItemImage
-                name={d.title}
+                name=""
                 src={imgSrc(d.imageUrl)}
-                className="absolute inset-0 h-full w-full object-cover"
+                className="performer-backdrop"
               />
-            </div>
-            <div className="min-w-0 flex-1">
-              <h2 className="text-xl font-semibold">{d.title}</h2>
-              <div className="mt-1 flex flex-wrap gap-1">
-                <span className="chip">
-                  {providerLabel(reference.provider)} · performer
-                </span>
+            )}
+            <div className="performer-scrim" aria-hidden="true" />
+            <div className="relative flex flex-col gap-5 p-5 sm:flex-row sm:p-6">
+              <div className="relative aspect-[2/3] w-40 shrink-0 self-center overflow-hidden rounded-lg border border-edge bg-raised sm:self-start sm:w-48">
+                <ItemImage
+                  name={d.title}
+                  src={imgSrc(d.imageUrl)}
+                  className="absolute inset-0 h-full w-full object-cover"
+                />
               </div>
-              {d.aliases.length > 0 && (
-                <p className="mt-2 text-xs text-muted">
-                  Also known as: {d.aliases.join(", ")}
-                </p>
-              )}
-              {d.description && (
-                <p className="mt-3 text-sm leading-relaxed text-muted">
-                  {d.description}
-                </p>
-              )}
-
-              <div className="mt-3">
-                <div className="label">Cross-provider link</div>
-                {linked ? (
-                  <button
-                    type="button"
-                    className="chip chip-accent mt-1"
-                    onClick={() => open(linked)}
-                  >
-                    Open the linked {providerLabel(linked.provider)} record
-                  </button>
-                ) : (
-                  <p className="mt-1 text-xs text-muted">
-                    {unlinkedReason
-                      ? unlinkedReason
-                      : "No cross-provider link is recorded, so the other provider’s catalog cannot be shown for this performer."}
+              <div className="min-w-0 flex-1">
+                <h2 className="page-title">{d.title}</h2>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  <span className="chip">
+                    {providerLabel(reference.provider)} · performer
+                  </span>
+                </div>
+                {d.aliases.length > 0 && (
+                  <p className="mt-2 text-xs text-muted">
+                    Also known as: {d.aliases.join(", ")}
                   </p>
                 )}
-              </div>
+                {d.description && (
+                  <p className="mt-3 max-w-prose text-sm leading-relaxed text-muted">
+                    {d.description}
+                  </p>
+                )}
 
-              {(d.links.length > 0 || sourceUrl) && (
-                <div className="mt-3">
-                  <div className="label">Links</div>
-                  <div className="mt-1 flex flex-wrap gap-2">
-                    {d.links.map((l, i) => (
-                      <a
-                        key={i}
-                        className="chip"
-                        href={l.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        {l.label ?? providerLabel(reference.provider)}
-                      </a>
-                    ))}
-                    {sourceUrl && (
-                      <a
-                        className="chip"
-                        href={sourceUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        Source · {providerLabel(reference.provider)}
-                      </a>
-                    )}
-                  </div>
+                <div className="mt-4">
+                  <div className="label">Cross-provider link</div>
+                  {linked ? (
+                    <button
+                      type="button"
+                      className="chip chip-accent mt-1"
+                      onClick={() => open(linked)}
+                    >
+                      Open the linked {providerLabel(linked.provider)} record
+                    </button>
+                  ) : (
+                    <p className="mt-1 text-xs text-muted">
+                      {unlinkedReason
+                        ? unlinkedReason
+                        : "No cross-provider link is recorded, so the other provider’s catalog cannot be shown for this performer."}
+                    </p>
+                  )}
                 </div>
-              )}
+
+                {(d.links.length > 0 || sourceUrl) && (
+                  <div className="mt-4">
+                    <div className="label">Links</div>
+                    <div className="mt-1 flex flex-wrap gap-2">
+                      {d.links.map((l, i) => (
+                        <a
+                          key={i}
+                          className="chip"
+                          href={l.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          {l.label ?? providerLabel(reference.provider)}
+                        </a>
+                      ))}
+                      {sourceUrl && (
+                        <a
+                          className="chip"
+                          href={sourceUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          Source · {providerLabel(reference.provider)}
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
-          <div className="mt-6">
+          <div className="mt-8">
             <div
               role="tablist"
               aria-label={`${d.title} catalogs`}
-              className="flex gap-2"
+              className="performer-tabs"
               onKeyDown={onTablistKeyDown}
             >
               {TAB_IDS.map((t) => (
@@ -550,7 +557,7 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
                   aria-selected={tab === t}
                   aria-controls={`performer-panel-${t}`}
                   tabIndex={tab === t ? 0 : -1}
-                  className={`btn ${tab === t ? "btn-accent" : ""}`}
+                  className="performer-tab"
                   onClick={() => onTab(t)}
                 >
                   {TAB_LABEL[t]}

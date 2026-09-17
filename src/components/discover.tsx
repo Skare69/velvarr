@@ -1,20 +1,31 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import "./discover.css";
 import type {
   CatalogDetail,
   CatalogReference,
   LibraryItem,
   MediaReference,
+  RequestDecision,
   RequestRecord,
 } from "../lib/contracts";
 import {
-  duration as durationLabel,
   ErrorPanel,
+  Icon,
   imgSrc,
   ItemImage,
   api,
   messageOf,
+  MovieCard,
+  PerformerCard,
+  SceneCard,
   useParamsSetter,
 } from "./shared";
 
@@ -114,59 +125,94 @@ const NOT_CONFIGURED_CODES = ["provider_not_configured", "not_configured"];
 
 const DATE_FMT = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
 
-/* ---------- Skeletons: same geometry as the final rows ---------- */
+/* ---------- Skeletons: same geometry as the final rail ---------- */
 
-function CardRowSkeleton({
-  aspect,
-  width,
-  count,
-}: {
-  aspect: string;
-  width: string;
-  count: number;
-}) {
+function RailSkeleton({ poster, count }: { poster: boolean; count: number }) {
   return (
-    <div className="mt-3 flex gap-4 overflow-x-auto pb-2" aria-hidden="true">
+    <div className="discovery-rail" aria-hidden="true">
       {Array.from({ length: count }, (_, i) => (
-        <div key={i} className={`skel shrink-0 ${aspect} ${width}`} />
+        <div
+          key={i}
+          className={`discovery-tile ${poster ? "discovery-tile-poster" : "discovery-tile-scene"}`}
+        >
+          <div
+            className={`skel w-full ${poster ? "aspect-[2/3]" : "aspect-video"}`}
+          />
+        </div>
       ))}
     </div>
   );
 }
 
-function ShelfSkeleton({
-  aspect,
-  width,
-  count,
-}: {
-  aspect: string;
-  width: string;
-  count: number;
-}) {
-  return (
-    <section className="mt-8" aria-busy="true">
-      <div className="skel h-5 w-44" />
-      <div className="skel mt-2 h-4 w-full max-w-md" />
-      <CardRowSkeleton aspect={aspect} width={width} count={count} />
-    </section>
-  );
-}
+/* ---------- Rail plumbing: snap scroller + edge-aware Previous/Next ---------- */
 
-function RowsSkeleton() {
-  return (
-    <div className="mt-3 space-y-2" aria-hidden="true">
-      {Array.from({ length: 4 }, (_, i) => (
-        <div key={i} className="skel h-9 w-full max-w-xl" />
-      ))}
+/** Page the rail this header owns. Disabled state mirrors the real scroll
+ * edges; scroll + ResizeObserver keep it honest while images load. */
+function useRailNav(label: string) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ start: true, end: true });
+
+  const sync = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    setEdges({
+      start: el.scrollLeft <= 1,
+      end: el.scrollLeft + el.clientWidth >= el.scrollWidth - 1,
+    });
+  }, []);
+
+  useEffect(() => {
+    sync();
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [sync]);
+
+  const nudge = (dir: -1 | 1) => {
+    const el = ref.current;
+    if (!el) return;
+    const reduce = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    el.scrollBy({
+      left: dir * el.clientWidth,
+      behavior: reduce ? "auto" : "smooth",
+    });
+  };
+
+  const nav = (
+    <div className="discovery-rail-nav">
+      <button
+        type="button"
+        className="btn"
+        aria-label={`Scroll ${label} back`}
+        disabled={edges.start}
+        onClick={() => nudge(-1)}
+      >
+        <Icon name="chevron-left" />
+      </button>
+      <button
+        type="button"
+        className="btn"
+        aria-label={`Scroll ${label} forward`}
+        disabled={edges.end}
+        onClick={() => nudge(1)}
+      >
+        <Icon name="chevron-right" />
+      </button>
     </div>
   );
+
+  return { ref, nav, onScroll: sync };
 }
 
 /* ---------- Shelf bodies ---------- */
 
-/** Catalog cards reuse the established treatments: portrait movies,
- * landscape scenes, square performer headshots. */
-function CatalogCard({
+/** Shared catalog cards, sized by the rail tile: portrait movies and square
+ * performers, landscape scenes. */
+function CatalogTile({
   item,
   onOpen,
 }: {
@@ -174,48 +220,108 @@ function CatalogCard({
   onOpen: (r: CatalogReference) => void;
 }) {
   const kind = item.reference.kind;
-  const aspect =
-    kind === "scene"
-      ? "aspect-video"
-      : kind === "performer"
-        ? "aspect-square"
-        : "aspect-[2/3]";
-  const width = kind === "scene" ? "w-64 sm:w-80" : "w-36 sm:w-40";
-  const meta =
-    kind === "scene"
-      ? [
-          item.releaseDate,
-          item.studio?.name,
-          durationLabel(item.durationSeconds),
-        ]
-      : [item.releaseDate?.slice(0, 4), item.studio?.name];
-  const performers =
-    kind === "scene" ? item.credits.map((c) => c.name).join(", ") : "";
   return (
-    /* Sized wrapper: .card is unlayered CSS with width:100%, so sizing
-     * utilities on the button itself lose the cascade — the wrapper owns
-     * the tile width, the card fills it. */
-    <div className={`shrink-0 ${width}`}>
+    <div
+      className={`discovery-tile ${kind === "scene" ? "discovery-tile-scene" : "discovery-tile-poster"}`}
+    >
+      {kind === "scene" ? (
+        <SceneCard item={item} onOpen={onOpen} />
+      ) : kind === "performer" ? (
+        <PerformerCard item={item} onOpen={onOpen} />
+      ) : (
+        <MovieCard item={item} onOpen={onOpen} />
+      )}
+    </div>
+  );
+}
+
+/* Request tiles resolve title + artwork once via the existing detail endpoint.
+ * Module cache (same pattern as requests.tsx): an unresolvable reference
+ * stays the reference — never a fabricated title or image. */
+interface RequestArt {
+  title: string;
+  imageUrl?: string;
+}
+
+const requestArtCache: Record<string, RequestArt | null> = {};
+
+function useRequestArt(media: MediaReference): RequestArt | null | undefined {
+  const key = `${media.provider}:${media.kind}:${media.id}`;
+  const [art, setArt] = useState<RequestArt | null | undefined>(
+    () => requestArtCache[key],
+  );
+  useEffect(() => {
+    if (art !== undefined) return;
+    let live = true;
+    api<{ detail: CatalogDetail }>(
+      `/api/catalog/${media.provider}/${media.kind}/${media.id}`,
+    )
+      .then((d) => {
+        const found: RequestArt = {
+          title: d.detail.title,
+          imageUrl: d.detail.imageUrl,
+        };
+        requestArtCache[key] = found;
+        if (live) setArt(found);
+      })
+      .catch(() => {
+        requestArtCache[key] = null;
+        if (live) setArt(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [key, art, media.provider, media.kind, media.id]);
+  return art;
+}
+
+/** The decision is the request's state, not playback: an approval means the
+ * request was accepted, never that the title is watchable. */
+const DECISION_LABELS: Record<RequestDecision, string> = {
+  pending: "Pending approval",
+  approved: "Approved",
+  declined: "Declined",
+  cancelled: "Cancelled",
+};
+
+function RequestTile({
+  item,
+  onOpen,
+}: {
+  item: RequestRecord;
+  onOpen: (r: CatalogReference) => void;
+}) {
+  const art = useRequestArt(item.media);
+  const label = DECISION_LABELS[item.decision];
+  return (
+    <div className="discovery-tile discovery-tile-scene">
       <button
         type="button"
-        className="card"
-        onClick={() => onOpen(item.reference)}
+        className="discovery-art-card"
+        onClick={() => onOpen(item.media)}
+        aria-label={`Request ${art?.title ?? item.media.id} — ${label}; open catalog details`}
       >
-        <div className={`relative w-full bg-raised ${aspect}`}>
+        <div className="discovery-art">
           <ItemImage
-            name={item.title}
-            src={imgSrc(item.imageUrl)}
-            className="absolute inset-0 h-full w-full object-cover"
+            name={art?.title ?? "·"}
+            src={art ? imgSrc(art.imageUrl) : undefined}
           />
-        </div>
-        <div className="p-2">
-          <div className="truncate text-sm font-medium">{item.title}</div>
-          <div className="truncate text-xs text-muted">
-            {meta.filter(Boolean).join(" · ")}
+          <div className="discovery-shade">
+            <span className="discovery-art-title">
+              {art === undefined
+                ? "Loading…"
+                : (art?.title ??
+                  `${item.media.provider} · ${item.media.kind} · ${item.media.id}`)}
+            </span>
+            <span className="discovery-art-meta">
+              <span
+                className={`chip ${item.decision === "pending" ? "chip-accent" : ""}`}
+              >
+                {label}
+              </span>
+              <span>{DATE_FMT.format(item.createdAt)}</span>
+            </span>
           </div>
-          {performers && (
-            <div className="truncate text-xs text-muted">with {performers}</div>
-          )}
         </div>
       </button>
     </div>
@@ -223,113 +329,47 @@ function CatalogCard({
 }
 
 /** Jellyfin tiles: the item image is already a same-origin /api/images path,
- * and the outward link appears only when playback is genuinely permitted. */
-function LibraryCard({ item }: { item: LibraryItem }) {
+ * and the outward link appears only when playback is genuinely permitted;
+ * otherwise the tile says so instead of implying availability. */
+function LibraryTile({ item }: { item: LibraryItem }) {
   const mins =
     item.durationTicks != null && item.durationTicks > 0
       ? Math.round(item.durationTicks / 600000000)
       : null;
   return (
-    <div className="panel w-64 shrink-0 overflow-hidden sm:w-80">
-      <div className="relative aspect-video w-full bg-raised">
-        <ItemImage
-          name={item.name}
-          src={item.image}
-          className="absolute inset-0 h-full w-full object-cover"
-        />
-      </div>
-      <div className="p-2">
-        <div className="truncate text-sm font-medium">{item.name}</div>
-        <div className="truncate text-xs text-muted">
-          {[item.year, item.kind, mins === null ? null : `${mins} min`]
-            .filter(Boolean)
-            .join(" · ")}
+    <div className="discovery-tile discovery-tile-scene">
+      <div className="discovery-art-card">
+        <div className="discovery-art">
+          <ItemImage name={item.name} src={item.image} />
+          <div className="discovery-shade">
+            <span className="discovery-art-title">{item.name}</span>
+            <span className="discovery-art-meta">
+              {[item.year, item.kind, mins === null ? null : `${mins} min`]
+                .filter(Boolean)
+                .join(" · ")}
+            </span>
+          </div>
         </div>
-        {item.canPlay && item.watchUrl && (
-          <a
-            className="btn mt-2"
-            href={item.watchUrl}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Open in Jellyfin
-          </a>
-        )}
+        <div className="discovery-library-foot">
+          {item.canPlay && item.watchUrl ? (
+            <a
+              className="btn btn-accent"
+              href={item.watchUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <Icon name="play" /> Open in Jellyfin
+            </a>
+          ) : (
+            <span className="discovery-library-note">No playback access</span>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-/* Lazy row titles with a module cache (same pattern as requests.tsx): the
- * reference renders immediately; an unresolvable one stays the reference. */
-const titleCache: Record<string, string | null> = {};
-
-function RequestTitle({ media }: { media: MediaReference }) {
-  const key = `${media.provider}:${media.kind}:${media.id}`;
-  const [title, setTitle] = useState<string | null | undefined>(
-    () => titleCache[key],
-  );
-  useEffect(() => {
-    if (title !== undefined) return;
-    let live = true;
-    api<{ detail: { title: string } }>(
-      `/api/catalog/${media.provider}/${media.kind}/${media.id}`,
-    )
-      .then((d) => {
-        titleCache[key] = d.detail.title;
-        if (live) setTitle(d.detail.title);
-      })
-      .catch(() => {
-        titleCache[key] = null;
-        if (live) setTitle(null);
-      });
-    return () => {
-      live = false;
-    };
-  }, [key, title, media.provider, media.kind, media.id]);
-  if (title) return <span className="font-medium">{title}</span>;
-  return (
-    <span className="font-mono text-xs text-muted">
-      {media.provider} · {media.kind} · {media.id}
-    </span>
-  );
-}
-
-function RequestRows({
-  items,
-  onOpen,
-}: {
-  items: RequestRecord[];
-  onOpen: (r: CatalogReference) => void;
-}) {
-  return (
-    <ul className="mt-3 divide-y divide-edge overflow-hidden rounded-xl border border-edge bg-panel">
-      {items.map((r) => (
-        <li key={r.id}>
-          <button
-            type="button"
-            className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-raised"
-            onClick={() => onOpen(r.media)}
-          >
-            <span className="min-w-0 flex-1 truncate">
-              <RequestTitle media={r.media} />
-            </span>
-            <span
-              className={`chip capitalize ${r.decision === "pending" ? "chip-accent" : ""}`}
-            >
-              {r.decision}
-            </span>
-            <span className="shrink-0 text-xs text-muted">
-              {DATE_FMT.format(r.createdAt)}
-            </span>
-          </button>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-/* ---------- One shelf: title + honest scope + body by kind ---------- */
+/* ---------- One shelf: header + honest scope + body by kind ---------- */
 
 function ShelfSection({
   shelf,
@@ -345,33 +385,34 @@ function ShelfSection({
   onOpen: (r: CatalogReference) => void;
 }) {
   const isSceneShelf = shelf.browse?.params.kind === "scene";
+  const posterShelf = shelf.kind === "catalog" && !isSceneShelf;
+
+  /* One rail body per shelf kind; panel bodies (errors/empty) get none. */
+  const catalogItems = shelf.items?.filter(
+    (it): it is CatalogDetail => "reference" in it,
+  );
+  const libraryItems = shelf.items?.filter(
+    (it): it is LibraryItem => "canPlay" in it,
+  );
+  const requestItems = shelf.items?.filter(
+    (it): it is RequestRecord => "media" in it,
+  );
+
+  const railLabel = `${shelf.title} rail`;
+  const rail = useRailNav(railLabel);
+  /* Only rail bodies get Previous/Next; panel bodies (errors/empty) none. */
+  const hasRail = !shelf.error && !!shelf.items && shelf.items.length > 0;
+
   let body: ReactNode;
   if (shelf.error) {
     if (busy) {
       // Retrying the page: keep the shelf slot reserved with its skeleton.
-      body =
-        shelf.kind === "requests" ? (
-          <RowsSkeleton />
-        ) : (
-          <CardRowSkeleton
-            aspect={
-              shelf.kind === "catalog" && !isSceneShelf
-                ? "aspect-[2/3]"
-                : "aspect-video"
-            }
-            width={
-              shelf.kind === "catalog" && !isSceneShelf
-                ? "w-36 sm:w-40"
-                : "w-64 sm:w-80"
-            }
-            count={6}
-          />
-        );
+      body = <RailSkeleton poster={posterShelf} count={6} />;
     } else if (NOT_CONFIGURED_CODES.includes(shelf.error.code)) {
       // A missing key is stated as a missing key — never an outage, never
       // an empty catalog, never with a retry that cannot help.
       body = (
-        <div className="panel p-4">
+        <div className="discovery-shelf-body panel p-4">
           <span className="chip chip-accent">Not configured</span>
           <p className="mt-2 text-sm text-muted">
             {sourceLabel(shelf.source)} has no API key on this server, so this
@@ -391,57 +432,82 @@ function ShelfSection({
     }
   } else if (!shelf.items || shelf.items.length === 0) {
     body = (
-      <div className="panel p-4 text-sm text-muted">Nothing here yet.</div>
-    );
-  } else if (shelf.kind === "requests") {
-    body = (
-      <RequestRows
-        items={shelf.items.filter((it): it is RequestRecord => "media" in it)}
-        onOpen={onOpen}
-      />
-    );
-  } else if (shelf.kind === "library") {
-    body = (
-      <div className="mt-3 flex gap-4 overflow-x-auto pb-2">
-        {shelf.items
-          .filter((it): it is LibraryItem => "canPlay" in it)
-          .map((it, i) => (
-            <LibraryCard key={`${shelf.id}-${i}`} item={it} />
-          ))}
+      <div className="discovery-shelf-body panel p-4 text-sm text-muted">
+        Nothing here yet.
       </div>
     );
   } else {
+    const tiles: ReactNode[] = [];
+    if (requestItems && requestItems.length > 0) {
+      for (const r of requestItems)
+        tiles.push(<RequestTile key={r.id} item={r} onOpen={onOpen} />);
+    } else if (libraryItems && libraryItems.length > 0) {
+      libraryItems.forEach((it, i) =>
+        tiles.push(<LibraryTile key={`${shelf.id}-${i}`} item={it} />),
+      );
+    } else {
+      for (const it of catalogItems ?? [])
+        tiles.push(
+          <CatalogTile key={it.reference.id} item={it} onOpen={onOpen} />,
+        );
+    }
     body = (
-      <div className="mt-3 flex gap-4 overflow-x-auto pb-2">
-        {shelf.items
-          .filter((it): it is CatalogDetail => "reference" in it)
-          .map((it) => (
-            <CatalogCard key={it.reference.id} item={it} onOpen={onOpen} />
-          ))}
+      <div
+        ref={rail.ref}
+        className="discovery-rail"
+        aria-label={railLabel}
+        tabIndex={0}
+        onScroll={rail.onScroll}
+      >
+        {tiles}
       </div>
     );
   }
+
   return (
-    <section className="mt-8" aria-busy={busy || undefined}>
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="text-lg font-semibold">{shelf.title}</h3>
-        {shelf.browse && (
-          <button
-            type="button"
-            className="btn"
-            onClick={() => onBrowse(browseUpdates(shelf))}
-          >
-            Browse all
-          </button>
-        )}
+    <section className="discovery-shelf" aria-busy={busy || undefined}>
+      <div className="discovery-shelf-head">
+        <div>
+          <h3 className="discovery-shelf-title">{shelf.title}</h3>
+          <p className="discovery-shelf-scope">{shelf.scope}</p>
+          {shelf.kind === "requests" && !shelf.error && (
+            <p className="discovery-note">
+              A decision records the request's outcome — approval is not
+              playback availability.
+            </p>
+          )}
+        </div>
+        <div className="discovery-shelf-tools">
+          {shelf.browse && (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => onBrowse(browseUpdates(shelf))}
+            >
+              Browse all <Icon name="arrow-right" />
+            </button>
+          )}
+          {hasRail && rail.nav}
+        </div>
       </div>
-      <p className="mt-1 text-sm text-muted">{shelf.scope}</p>
       {body}
     </section>
   );
 }
 
 /* ---------- The discover homepage ---------- */
+
+const PAGE_HEADING = (
+  <header className="page-heading">
+    <div>
+      <h2 className="page-title">Discover</h2>
+      <p className="page-description">
+        Fresh from each source: new releases, trending scenes, recent additions
+        in your libraries, and the latest requests.
+      </p>
+    </div>
+  </header>
+);
 
 export function DiscoverShelves() {
   const setP = useParamsSetter();
@@ -475,42 +541,55 @@ export function DiscoverShelves() {
 
   // Catalog cards open the detail over the matching surface view; the
   // destination view mounts the shared detail dialog for provider+kind+id.
+  // Surface/detail transitions push a history entry so Back returns here.
   const openDetail = useCallback(
     (r: CatalogReference) =>
-      setP({
-        view:
-          r.kind === "movie"
-            ? "movies"
-            : r.kind === "scene"
-              ? "scenes"
-              : "performers",
-        provider: r.provider,
-        kind: r.kind,
-        id: r.id,
-      }),
+      setP(
+        {
+          view:
+            r.kind === "movie"
+              ? "movies"
+              : r.kind === "scene"
+                ? "scenes"
+                : "performers",
+          provider: r.provider,
+          kind: r.kind,
+          id: r.id,
+        },
+        { push: true },
+      ),
     [setP],
   );
+
+  // Presentation order only: what was added (library), then requests, then
+  // the provider shelves in the server's order. Titles and scopes stay the
+  // server's own honest words.
+  const ORDER: Record<Shelf["kind"], number> = {
+    library: 0,
+    requests: 1,
+    catalog: 2,
+  };
+
+  const shelves = page
+    ? [...page.shelves].sort((a, b) => ORDER[a.kind] - ORDER[b.kind])
+    : [];
 
   if (busy && !page) {
     return (
       <section aria-label="Discover" aria-busy="true">
-        <h2 className="text-xl font-semibold">Discover</h2>
-        <ShelfSkeleton aspect="aspect-[2/3]" width="w-36 sm:w-40" count={6} />
-        <ShelfSkeleton aspect="aspect-video" width="w-64 sm:w-80" count={5} />
-        <ShelfSkeleton aspect="aspect-video" width="w-64 sm:w-80" count={5} />
-        <ShelfSkeleton aspect="aspect-video" width="w-64 sm:w-80" count={5} />
-        <section className="mt-8" aria-busy="true">
-          <div className="skel h-5 w-44" />
-          <div className="skel mt-2 h-4 w-full max-w-md" />
-          <RowsSkeleton />
-        </section>
+        {PAGE_HEADING}
+        <RailSkeleton poster={false} count={5} />
+        <RailSkeleton poster={false} count={5} />
+        <RailSkeleton poster={true} count={6} />
+        <RailSkeleton poster={false} count={5} />
+        <RailSkeleton poster={false} count={5} />
       </section>
     );
   }
   if (error && !page) {
     return (
       <section aria-label="Discover">
-        <h2 className="text-xl font-semibold">Discover</h2>
+        {PAGE_HEADING}
         <ErrorPanel
           title="Discover is unavailable"
           message={error}
@@ -522,14 +601,14 @@ export function DiscoverShelves() {
   if (!page) return null;
   return (
     <section aria-label="Discover">
-      <h2 className="text-xl font-semibold">Discover</h2>
-      {page.shelves.map((s) => (
+      {PAGE_HEADING}
+      {shelves.map((s) => (
         <ShelfSection
           key={s.id}
           shelf={s}
           busy={busy}
           onRetry={() => load(true)}
-          onBrowse={setP}
+          onBrowse={(updates) => setP(updates, { push: true })}
           onOpen={openDetail}
         />
       ))}

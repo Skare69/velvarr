@@ -10,6 +10,7 @@ import {
   useSession,
 } from "./shared";
 import { acquisitionText } from "./catalog";
+import "./views.css";
 import type {
   AcquisitionState,
   MediaReference,
@@ -154,31 +155,31 @@ function RequestRow({
 }) {
   const r = record;
   return (
-    <li className="panel p-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
+    <li className="panel mgmt-row p-4">
+      <div className="min-w-0">
+        <div className="text-base">
           <MediaTitle media={r.media} providers={providers} />
-          <p className="mt-1 text-xs text-muted">
-            {r.media.provider} · {r.media.kind}
-          </p>
-          <p className="mt-1 text-xs text-muted">
-            Requested {DATE_FMT.format(new Date(r.createdAt))}
-            {r.decidedAt !== null
-              ? ` · Decided ${DATE_FMT.format(new Date(r.decidedAt))}`
-              : ""}
-          </p>
-          {acquisition && (
-            <p className="mt-1 text-xs text-muted">
-              Acquisition status: {acquisitionText(acquisition)}
-            </p>
-          )}
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <span
-            className={`chip ${r.decision === "pending" ? "chip-accent" : ""}`}
-          >
-            {GROUP_LABEL[r.decision]}
-          </span>
+        <p className="mt-1 text-xs text-muted">
+          {r.media.provider} · {r.media.kind}
+        </p>
+        <p className="mt-1 text-xs text-muted">
+          Requested {DATE_FMT.format(new Date(r.createdAt))}
+          {r.decidedAt !== null
+            ? ` · Decided ${DATE_FMT.format(new Date(r.decidedAt))}`
+            : ""}
+        </p>
+        {acquisition && (
+          <p className="mt-1 text-xs text-muted">
+            Acquisition status: {acquisitionText(acquisition)}
+          </p>
+        )}
+      </div>
+      <div className="flex flex-col items-start gap-2 sm:items-end">
+        <span className="chip state-badge" data-state={r.decision}>
+          {GROUP_LABEL[r.decision]}
+        </span>
+        <div className="flex flex-wrap gap-2">
           <a className="btn" href={detailHref(r.media)}>
             View in catalog
           </a>
@@ -215,7 +216,7 @@ function RequestRow({
         </div>
       </div>
       {rowError !== null && rowError.id === r.id && (
-        <div className="mt-3">
+        <div className="sm:col-span-2">
           <ErrorPanel title="Update not applied" message={rowError.message} />
         </div>
       )}
@@ -330,8 +331,9 @@ export function RequestsView() {
           <section key={g.decision} aria-labelledby={`requests-${g.decision}`}>
             <h2
               id={`requests-${g.decision}`}
-              className="mb-3 text-lg font-semibold"
+              className="mb-3 text-lg font-semibold tracking-tight"
             >
+              {GROUP_LABEL[g.decision]}{" "}
               <span className="text-sm font-normal text-muted">
                 ({g.items.length})
               </span>
@@ -374,10 +376,10 @@ export function RequestsView() {
         {announcement}
       </div>
 
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h2 className="text-xl font-semibold">Requests</h2>
-          <p className="mt-1 text-sm text-muted">
+      <div className="page-heading">
+        <div className="min-w-0">
+          <h2 className="page-title">Requests</h2>
+          <p className="page-description">
             {isStaff
               ? "Showing every user's requests."
               : "Showing only your own requests."}
@@ -385,7 +387,7 @@ export function RequestsView() {
         </div>
         <button
           type="button"
-          className="btn"
+          className="btn shrink-0"
           onClick={() => {
             setRowError(null);
             load();
@@ -395,7 +397,7 @@ export function RequestsView() {
         </button>
       </div>
 
-      <p className="mb-6 max-w-prose text-sm text-muted">
+      <p className="page-description mb-6 mt-4 max-w-prose">
         A request is one person&rsquo;s intent. Downloading is shared work that
         several requests can attach to, and playback access is decided per
         person — neither is changed here. Cancelling removes only that
