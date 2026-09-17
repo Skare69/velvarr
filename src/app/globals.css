@@ -821,7 +821,8 @@ summary:focus-visible,
     gap: 20px 12px;
   }
   .scene-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px 12px;
   }
   .connection-status-grid {
     grid-template-columns: 1fr;
@@ -835,10 +836,30 @@ summary:focus-visible,
   }
   .library-detail-poster {
     width: 100%;
-    max-width: 320px;
+    max-width: 300px;
   }
   .library-detail-copy {
     align-self: stretch;
+    text-align: center;
+  }
+  /* Chip row and the watch button follow the centred title. */
+  .library-detail-copy > div {
+    justify-content: center;
+  }
+  .library-detail-copy h2 {
+    font-size: clamp(1.4rem, 6vw, 1.9rem);
+    margin: 12px 0 16px;
+  }
+  /* Wrapping put the active tab on its own row and split the underline;
+   * scroll the strip instead. */
+  .settings-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .settings-tabs button {
+    flex: none;
+    padding: 12px 14px;
   }
   .auth-card {
     padding: 26px;
