@@ -1,0 +1,127 @@
+/* Supporting views (search, performer, requests, removals): view-scoped CSS.
+   Palette tokens and shared component classes (.btn, .panel, .chip, …) live
+   in globals.css — this file only adds what those cannot express. */
+
+:root {
+  /* Approval green, mixed to the same softness as --color-danger. */
+  --views-ok: #93cfae;
+}
+
+/* ---------- Search ---------- */
+
+/* The quoted query in the heading carries the accent. */
+.search-query {
+  color: var(--color-accent);
+}
+
+/* Anchor jump targets must stop below the persistent topbar, not under it. */
+.search-section {
+  scroll-margin-top: calc(var(--topbar-height, 76px) + 1.5rem);
+}
+
+/* Studios are text-first — name and blurb, never a poster crop — so they get
+   a wider, shallower card than the image grids. */
+.studio-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+}
+
+/* ---------- Performer ---------- */
+
+.performer-hero {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--color-edge);
+  border-radius: 14px;
+  background: var(--color-panel);
+}
+
+/* Decoration derived from the same proxied portrait — no second fetch, the
+   blurred layer is the performer's own artwork. */
+.performer-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scale(1.35);
+  filter: blur(46px) saturate(1.15);
+  opacity: 0.5;
+}
+
+.performer-scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-canvas) 62%, transparent),
+    color-mix(in srgb, var(--color-panel) 92%, transparent) 82%
+  );
+}
+
+/* Underline tabs, not boxed buttons; selection carries the accent. */
+.performer-tabs {
+  display: flex;
+  gap: 1.5rem;
+  border-bottom: 1px solid var(--color-edge);
+}
+
+.performer-tab {
+  margin-bottom: -1px;
+  padding: 0.6rem 0.15rem;
+  border-bottom: 2px solid transparent;
+  color: var(--color-muted);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.performer-tab:hover {
+  color: var(--color-ink);
+}
+
+.performer-tab[aria-selected="true"] {
+  border-bottom-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+/* ---------- Requests / Removals rows ---------- */
+
+/* Two-column row on sm+: facts left, badge + actions right; a clean single
+   column below (grid auto-stacks, nothing overflows at 390px). */
+.mgmt-row {
+  display: grid;
+  gap: 0.9rem;
+}
+
+@media (min-width: 640px) {
+  .mgmt-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+}
+
+/* State colors on top of the shared chip base; data-state is the single
+   source of the variant so markup stays one class + one attribute. */
+.state-badge[data-state="pending"] {
+  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  color: var(--color-accent);
+}
+
+.state-badge[data-state="approved"] {
+  border-color: color-mix(in srgb, var(--views-ok) 55%, transparent);
+  background: color-mix(in srgb, var(--views-ok) 14%, transparent);
+  color: var(--views-ok);
+}
+
+.state-badge[data-state="declined"] {
+  border-color: color-mix(in srgb, var(--color-danger) 55%, transparent);
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
+  color: var(--color-danger);
+}
+
+.state-badge[data-state="cancelled"] {
+  border-color: var(--color-edge);
+  background: transparent;
+  color: var(--color-muted);
+}

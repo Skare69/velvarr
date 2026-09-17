@@ -8,7 +8,15 @@ import type {
   RemovalLevel,
   RemovalRequest,
 } from "../lib/contracts";
-import { api, ApiError, ErrorPanel, messageOf, useSession } from "./shared";
+import {
+  api,
+  ApiError,
+  detailHref,
+  ErrorPanel,
+  messageOf,
+  useSession,
+} from "./shared";
+import "./views.css";
 
 /* Facts displayed per row, kept visibly separate (the domain model):
  *  1. Removal request — one user's durable intent (this list).
@@ -172,8 +180,8 @@ function confirmCopy(
 }
 
 /* ---------- Row helpers ---------- */
-/* ponytail: MediaName/detailHref duplicated from requests.tsx (frozen this
- * wave); hoist into shared.tsx when it unfreezes. */
+/* ponytail: MediaName duplicated from requests.tsx (frozen this wave);
+ * hoist into shared.tsx when it unfreezes. */
 const titleCache = new Map<string, string | null>();
 function MediaName({
   media,
@@ -215,11 +223,6 @@ function MediaName({
       {media.provider} · {media.kind} · {media.id}
     </span>
   );
-}
-
-function detailHref(media: MediaReference): string {
-  const view = media.kind === "movie" ? "movies" : "scenes";
-  return `/?view=${view}&provider=${media.provider}&kind=${media.kind}&id=${encodeURIComponent(media.id)}`;
 }
 
 /** Error codes from PATCH /api/removals/:id, mapped faithfully per row. */
@@ -323,40 +326,39 @@ function RemovalRow({
     onDecide(r, "approved", selected.id);
   };
 
-  const pending = r.decision === "pending";
   const copy =
     confirming && selected?.destructive === true
       ? confirmCopy(selected.id, r, impact)
       : null;
 
   return (
-    <li className="panel p-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
+    <li className="panel mgmt-row p-4">
+      <div className="min-w-0">
+        <div className="text-base">
           <MediaName media={r.media} providers={providers} />
-          <p className="mt-1 text-xs text-muted">
-            {r.media.provider} · {r.media.kind} · {r.media.id}
-          </p>
-          <p className="mt-1 text-xs text-muted">
-            Requested {DATE_FMT.format(new Date(r.createdAt))}
-            {r.decidedAt !== null
-              ? ` · Decided ${DATE_FMT.format(new Date(r.decidedAt))}`
-              : ""}
-          </p>
-          <p className="mt-2 max-w-prose text-sm">Reason: {r.reason}</p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <span className={`chip ${pending ? "chip-accent" : ""}`}>
-            {GROUP_LABEL[r.decision]}
-          </span>
-          {r.level !== null && (
-            <span className="chip">{levelLabel(r.level)}</span>
-          )}
-        </div>
+        <p className="mt-1 text-xs text-muted">
+          {r.media.provider} · {r.media.kind} · {r.media.id}
+        </p>
+        <p className="mt-1 text-xs text-muted">
+          Requested {DATE_FMT.format(new Date(r.createdAt))}
+          {r.decidedAt !== null
+            ? ` · Decided ${DATE_FMT.format(new Date(r.decidedAt))}`
+            : ""}
+        </p>
+        <p className="mt-2 max-w-prose text-sm">Reason: {r.reason}</p>
+      </div>
+      <div className="flex flex-col items-start gap-2 sm:items-end">
+        <span className="chip state-badge" data-state={r.decision}>
+          {GROUP_LABEL[r.decision]}
+        </span>
+        {r.level !== null && (
+          <span className="chip">{levelLabel(r.level)}</span>
+        )}
       </div>
 
       {needsImpact && (
-        <div className="mt-3 border-t border-edge pt-3">
+        <div className="border-t border-edge pt-3 sm:col-span-2">
           <div className="label">
             Removal level — your explicit choice; the requester never picks it
           </div>
@@ -455,7 +457,7 @@ function RemovalRow({
       )}
 
       {copy !== null && (
-        <div role="alert" className="panel panel-error mt-3 p-4">
+        <div role="alert" className="panel panel-error p-4 sm:col-span-2">
           <div className="font-medium">{copy.heading}</div>
           <p className="mt-1 text-sm">{copy.lead}</p>
           <ul className="mt-2 space-y-1 text-sm text-muted">
@@ -484,7 +486,7 @@ function RemovalRow({
         </div>
       )}
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2 sm:col-span-2">
         {canCancel && (
           <button
             type="button"
@@ -501,7 +503,7 @@ function RemovalRow({
       </div>
 
       {rowError !== null && rowError.id === r.id && (
-        <div className="mt-3">
+        <div className="sm:col-span-2">
           <ErrorPanel title="Decision not applied" message={rowError.message} />
         </div>
       )}
@@ -661,10 +663,10 @@ export function RemovalsView() {
         {announcement}
       </div>
 
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h2 className="text-xl font-semibold">Removals</h2>
-          <p className="mt-1 text-sm text-muted">
+      <div className="page-heading">
+        <div className="min-w-0">
+          <h2 className="page-title">Removals</h2>
+          <p className="page-description">
             {isStaff
               ? "Showing every user's removal requests."
               : "Showing only your own removal requests."}
@@ -672,7 +674,7 @@ export function RemovalsView() {
         </div>
         <button
           type="button"
-          className="btn"
+          className="btn shrink-0"
           onClick={() => {
             setRowError(null);
             load();
@@ -681,6 +683,15 @@ export function RemovalsView() {
           Refresh
         </button>
       </div>
+
+      <p className="page-description mb-6 mt-4 max-w-prose">
+        Three separate things: a removal request is one person&rsquo;s intent;
+        the removal execution is shared destructive work done once per item; and
+        availability afterwards is decided per person. Approving removes only
+        the external media in Whisparr and Jellyfin — catalog history, request
+        history, and the audit trail survive, and deciding a request never
+        deletes anyone else&rsquo;s.
+      </p>
 
       {data !== null && !data.enabled && (
         <div className="panel panel-error mb-4 p-4" role="alert">
@@ -700,15 +711,6 @@ export function RemovalsView() {
           grant, which an administrator sets on your account.
         </p>
       )}
-
-      <p className="mb-6 max-w-prose text-sm text-muted">
-        Three separate things: a removal request is one person&rsquo;s intent;
-        the removal execution is shared destructive work done once per item; and
-        availability afterwards is decided per person. Approving removes only
-        the external media in Whisparr and Jellyfin — catalog history, request
-        history, and the audit trail survive, and deciding a request never
-        deletes anyone else&rsquo;s.
-      </p>
 
       {content}
     </div>

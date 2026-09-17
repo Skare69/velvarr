@@ -171,6 +171,54 @@ export function ForbiddenPanel() {
   );
 }
 
+const ICON_PATHS = {
+  discover: "m12 3 2.6 6.4L21 12l-6.4 2.6L12 21l-2.6-6.4L3 12l6.4-2.6L12 3Z",
+  movie: "M4 3h16v18H4z M4 8h16M4 16h16M8 3v18M16 3v18",
+  scene: "M3 5h18v14H3z m7 3 6 4-6 4V8Z",
+  performer: "M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z M4 21v-2a8 8 0 0 1 16 0v2",
+  search: "M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z m-2 5 6 6",
+  requests: "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M12 7v5l3 2",
+  library: "M4 4v16M8 4v16M12 4v16M16 4l4 16",
+  settings: "M4 7h16M4 17h16M8 4v6M16 14v6",
+  users:
+    "M14 8a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z M2 21v-2a8 8 0 0 1 16 0v2 M17 4a4 4 0 0 1 0 8m2 3a6 6 0 0 1 3 6",
+  removals: "M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7",
+  menu: "M4 6h16M4 12h16M4 18h16",
+  close: "m6 6 12 12M6 18 18 6",
+  "chevron-left": "m15 5-7 7 7 7",
+  "chevron-right": "m9 5 7 7-7 7",
+  filter: "M4 6h16M7 12h10M10 18h4",
+  play: "m8 4 12 8-12 8V4Z",
+  logout: "M10 3H4v18h6M10 12h11m-5-5 5 5-5 5",
+  "arrow-right": "M4 12h16m-6-6 6 6-6 6",
+  check: "m5 12 4 4L19 6",
+  plus: "M12 4v16M4 12h16",
+} as const;
+
+export function Icon({
+  name,
+  className,
+}: {
+  name: keyof typeof ICON_PATHS;
+  className?: string;
+}) {
+  return (
+    <svg
+      className={`icon ${className ?? ""}`}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d={ICON_PATHS[name]} />
+    </svg>
+  );
+}
+
 /* ---------- Shared catalog presentation ---------- */
 
 /** Provider artwork may only reach the DOM through the same-origin proxy. */
@@ -224,19 +272,23 @@ export function MovieCard({
   return (
     <button
       type="button"
-      className="card text-left"
+      className="media-card"
       onClick={() => onOpen(item.reference)}
     >
-      <div className="relative aspect-[2/3] w-full bg-raised">
+      <div className="media-art aspect-[2/3]">
         <ItemImage
           name={item.title}
           src={imgSrc(item.imageUrl)}
-          className="absolute inset-0 h-full w-full object-cover"
+          className="h-full w-full object-cover"
         />
+        <span className="media-badge">Movie</span>
+        <span className="media-reveal">
+          <Icon name="plus" /> View details
+        </span>
       </div>
-      <div className="p-2">
-        <div className="truncate text-sm font-medium">{item.title}</div>
-        <div className="truncate text-xs text-muted">
+      <div className="media-meta">
+        <div className="media-title">{item.title}</div>
+        <div className="media-subtitle">
           {[item.releaseDate?.slice(0, 4), item.studio?.name]
             .filter(Boolean)
             .join(" · ")}
@@ -257,26 +309,31 @@ export function SceneCard({
   return (
     <button
       type="button"
-      className="card text-left"
+      className="media-card scene-card"
       onClick={() => onOpen(item.reference)}
     >
-      <div className="relative aspect-video w-full bg-raised">
+      <div className="media-art aspect-video">
         <ItemImage
           name={item.title}
           src={imgSrc(item.imageUrl)}
-          className="absolute inset-0 h-full w-full object-cover"
+          className="h-full w-full object-cover"
         />
-      </div>
-      <div className="p-2">
-        <div className="truncate text-sm font-medium">{item.title}</div>
-        <div className="truncate text-xs text-muted">
-          {[item.releaseDate, item.studio?.name, duration(item.durationSeconds)]
-            .filter(Boolean)
-            .join(" · ")}
-        </div>
-        {performers && (
-          <div className="truncate text-xs text-muted">with {performers}</div>
+        <span className="media-badge">Scene</span>
+        {duration(item.durationSeconds) && (
+          <span className="media-runtime">
+            {duration(item.durationSeconds)}
+          </span>
         )}
+        <span className="media-reveal">
+          <Icon name="plus" /> View details
+        </span>
+      </div>
+      <div className="media-meta">
+        <div className="media-title">{item.title}</div>
+        <div className="media-subtitle">
+          {[item.studio?.name, item.releaseDate].filter(Boolean).join(" · ")}
+        </div>
+        {performers && <div className="media-subtitle">{performers}</div>}
       </div>
     </button>
   );
@@ -289,23 +346,28 @@ export function PerformerCard({
   item: CatalogDetail;
   onOpen: (r: CatalogReference) => void;
 }) {
-  const aka = item.aliases[0];
   return (
     <button
       type="button"
-      className="card text-left"
+      className="media-card performer-card"
       onClick={() => onOpen(item.reference)}
     >
-      <div className="relative aspect-square w-full bg-raised">
+      <div className="media-art aspect-square">
         <ItemImage
           name={item.title}
           src={imgSrc(item.imageUrl)}
-          className="absolute inset-0 h-full w-full object-cover"
+          className="h-full w-full object-cover"
         />
+        <span className="media-badge">Performer</span>
+        <span className="media-reveal">
+          Explore filmography <Icon name="arrow-right" />
+        </span>
       </div>
-      <div className="p-2">
-        <div className="truncate text-sm font-medium">{item.title}</div>
-        {aka && <div className="truncate text-xs text-muted">aka {aka}</div>}
+      <div className="media-meta">
+        <div className="media-title">{item.title}</div>
+        {item.aliases[0] && (
+          <div className="media-subtitle">Also known as {item.aliases[0]}</div>
+        )}
       </div>
     </button>
   );

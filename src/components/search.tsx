@@ -12,13 +12,14 @@ import {
   api,
   ErrorPanel,
   GridSkeleton,
-  imgSrc,
-  ItemImage,
   messageOf,
   MovieCard,
   PerformerCard,
+  SceneCard,
+  providerLabel,
   useParamsSetter,
 } from "./shared.tsx";
+import "./views.css";
 
 /* ---------- API shape (GET /api/search) ---------- */
 
@@ -34,18 +35,6 @@ type SearchPayload = { query: string; categories: SearchCategory[] };
 
 /* ---------- Small helpers ---------- */
 
-const PORTRAIT_COLS =
-  "grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5";
-const LANDSCAPE_COLS = "grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3";
-const SQUARE_COLS =
-  "grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6";
-const STUDIO_COLS = "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3";
-
-// Three+ call sites below must label providers in lockstep with the catalog views.
-function providerLabel(p: CatalogProvider): string {
-  return p === "tpdb" ? "TPDB" : "StashDB";
-}
-
 const KIND_LABEL: Record<CatalogKind, string> = {
   movie: "Movies",
   scene: "Scenes",
@@ -53,46 +42,7 @@ const KIND_LABEL: Record<CatalogKind, string> = {
   studio: "Studios",
 };
 
-/* ---------- Cards: same treatments as the catalog views ---------- */
-
-function SceneCard({
-  item,
-  onOpen,
-}: {
-  item: CatalogDetail;
-  onOpen: (r: CatalogReference) => void;
-}) {
-  const performers = item.credits.map((c) => c.name).join(", ");
-  const mins = item.durationSeconds
-    ? `${Math.round(item.durationSeconds / 60)} min`
-    : null;
-  return (
-    <button
-      type="button"
-      className="card text-left"
-      onClick={() => onOpen(item.reference)}
-    >
-      <div className="relative aspect-video w-full bg-raised">
-        <ItemImage
-          name={item.title}
-          src={imgSrc(item.imageUrl)}
-          className="absolute inset-0 h-full w-full object-cover"
-        />
-      </div>
-      <div className="p-2">
-        <div className="truncate text-sm font-medium">{item.title}</div>
-        <div className="truncate text-xs text-muted">
-          {[item.releaseDate, item.studio?.name, mins]
-            .filter(Boolean)
-            .join(" · ")}
-        </div>
-        {performers && (
-          <div className="truncate text-xs text-muted">with {performers}</div>
-        )}
-      </div>
-    </button>
-  );
-}
+/* ---------- Cards ---------- */
 
 // Studios are text-first: a name and a blurb, never a fake poster crop.
 function StudioCard({
@@ -133,11 +83,20 @@ function CategorySection({
 }) {
   const label = `${providerLabel(cat.provider)} ${KIND_LABEL[cat.kind]}`;
   const headingId = `search-cat-${cat.id}`;
+  // A count is shown only when it is actually known — a failed source has
+  // none, and none is invented for it.
+  const count = cat.error ? null : cat.items.length;
   return (
-    <section aria-labelledby={headingId} className="mt-8 first:mt-0">
-      <h3 id={headingId} className="text-lg font-semibold">
-        {label}
-      </h3>
+    <section
+      aria-labelledby={headingId}
+      className="search-section mt-10 first:mt-0"
+    >
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h3 id={headingId} className="text-lg font-semibold tracking-tight">
+          {label}
+        </h3>
+        {count !== null && <span className="chip">{count}</span>}
+      </div>
       <p className="mt-1 text-xs text-muted">
         {providerLabel(cat.provider)}’s own result set — never merged with other
         sources and never globally ranked.
@@ -167,25 +126,25 @@ function CategorySection({
             {providerLabel(cat.provider)} for “{q}”.
           </div>
         ) : cat.kind === "movie" ? (
-          <div className={PORTRAIT_COLS}>
+          <div className="poster-grid">
             {cat.items.map((it) => (
               <MovieCard key={it.reference.id} item={it} onOpen={onOpen} />
             ))}
           </div>
         ) : cat.kind === "scene" ? (
-          <div className={LANDSCAPE_COLS}>
+          <div className="scene-grid">
             {cat.items.map((it) => (
               <SceneCard key={it.reference.id} item={it} onOpen={onOpen} />
             ))}
           </div>
         ) : cat.kind === "performer" ? (
-          <div className={SQUARE_COLS}>
+          <div className="performer-grid">
             {cat.items.map((it) => (
               <PerformerCard key={it.reference.id} item={it} onOpen={onOpen} />
             ))}
           </div>
         ) : (
-          <div className={STUDIO_COLS}>
+          <div className="studio-grid">
             {cat.items.map((it) => (
               <StudioCard key={it.reference.id} item={it} onOpen={onOpen} />
             ))}
@@ -297,43 +256,85 @@ export function SearchView() {
 
   const retry = useCallback(() => setReload((n) => n + 1), []);
 
+  const focusGlobalSearch = useCallback(() => {
+    document.getElementById("global-search")?.focus();
+  }, []);
+
   return (
     <section aria-label="Search">
-      <h2 className="text-xl font-semibold">Search</h2>
-      <p className="mt-1 text-sm text-muted">
-        One query, seven separate sections. Each section is that source’s own
-        results — nothing is merged across providers and nothing is globally
-        ranked.
-      </p>
+      <div className="page-heading">
+        <div className="min-w-0">
+          <h2 className="page-title">
+            {ready ? (
+              <>
+                Results for <span className="search-query">“{q}”</span>
+              </>
+            ) : (
+              "Search"
+            )}
+          </h2>
+          <p className="page-description">
+            One query, seven separate sections. Each section is that source’s
+            own results — nothing is merged across providers and nothing is
+            globally ranked.
+          </p>
+        </div>
+      </div>
 
-      <div className="mt-4">
+      <div className="mt-6">
         {!ready ? (
-          <div className="panel p-8 text-center text-sm text-muted" role="note">
-            {q.length === 1
-              ? "Keep typing — enter at least 2 characters to search."
-              : "Type at least 2 characters in the search box above and press Enter."}
+          <div className="panel p-8 text-center" role="note">
+            <div className="text-base font-semibold">
+              {q.length === 1 ? "Keep typing" : "Search every source at once"}
+            </div>
+            <p className="mx-auto mt-2 max-w-md text-sm text-muted">
+              {q.length === 1
+                ? "Enter at least 2 characters to search."
+                : "Type at least 2 characters in the search box in the top bar and press Enter. Movies, scenes, performers and studios come back per source — never merged, never re-ranked."}
+            </p>
+            <button
+              type="button"
+              className="btn btn-accent mt-4"
+              onClick={focusGlobalSearch}
+            >
+              Go to the search box
+            </button>
           </div>
         ) : error ? (
           <ErrorPanel title="Search failed" message={error} onRetry={retry} />
         ) : loading || !data ? (
-          <div aria-label="Searching all sources" aria-busy="true">
-            <div className="skel h-6 w-48" />
-            <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-              {Array.from({ length: 8 }, (_, i) => (
-                <div key={i} className="skel aspect-[2/3]" />
-              ))}
-            </div>
-          </div>
+          <GridSkeleton aspect="aspect-[2/3]" cols="poster-grid" count={10} />
         ) : (
-          data.categories.map((cat) => (
-            <CategorySection
-              key={cat.id}
-              cat={cat}
-              q={data.query}
-              onRetry={retry}
-              onOpen={open}
-            />
-          ))
+          <>
+            {data.categories.length > 0 && (
+              <nav
+                aria-label="Jump to a result section"
+                className="mb-2 flex flex-wrap gap-2"
+              >
+                {data.categories.map((cat) => (
+                  <a
+                    key={cat.id}
+                    className="chip"
+                    href={`#search-cat-${cat.id}`}
+                  >
+                    {providerLabel(cat.provider)} {KIND_LABEL[cat.kind]}
+                    <span className="ml-1.5 text-muted">
+                      {cat.error ? "unavailable" : String(cat.items.length)}
+                    </span>
+                  </a>
+                ))}
+              </nav>
+            )}
+            {data.categories.map((cat) => (
+              <CategorySection
+                key={cat.id}
+                cat={cat}
+                q={data.query}
+                onRetry={retry}
+                onOpen={open}
+              />
+            ))}
+          </>
         )}
       </div>
     </section>

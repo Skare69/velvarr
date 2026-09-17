@@ -24,6 +24,7 @@ import {
   api,
   ErrorPanel,
   ForbiddenPanel,
+  Icon,
   intOr,
   ItemImage,
   messageOf,
@@ -81,22 +82,24 @@ const PROVIDER_STATE: Record<ProviderStatus["tpdb"], string> = {
 
 function BootSkeleton() {
   return (
-    <div className="min-h-screen md:flex" aria-hidden="true">
-      <aside className="hidden md:block md:fixed md:inset-y-0 md:w-56 md:shrink-0 border-r border-edge bg-panel p-4">
-        <div className="skel mb-8 h-6 w-28" />
-        <div className="skel mb-2 h-8 w-full" />
-        <div className="skel mb-2 h-8 w-full" />
+    <div className="app-shell" aria-label="Loading Velvarr" aria-busy="true">
+      <aside className="app-sidebar" aria-hidden="true">
+        <div className="skel mb-10 h-10 w-36" />
+        {Array.from({ length: 6 }, (_, i) => (
+          <div key={i} className="skel mb-3 h-10" />
+        ))}
       </aside>
-      <div className="min-w-0 flex-1 md:ml-56">
-        <div className="mx-auto max-w-6xl p-4 md:p-8">
-          <div className="skel mb-4 h-9 w-64" />
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-            {Array.from({ length: 10 }, (_, i) => (
-              <div key={i} className="skel aspect-[2/3]" />
-            ))}
-          </div>
-        </div>
+      <div className="app-topbar" aria-hidden="true">
+        <div className="skel h-10 w-full" />
       </div>
+      <main className="app-main">
+        <div className="skel mb-6 h-8 w-48" />
+        <div className="poster-grid">
+          {Array.from({ length: 14 }, (_, i) => (
+            <div key={i} className="skel aspect-[2/3]" />
+          ))}
+        </div>
+      </main>
     </div>
   );
 }
@@ -602,9 +605,15 @@ function LoginView({ onSignedIn }: { onSignedIn: () => void }) {
   };
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-sm items-center p-6">
-      <div className="panel w-full p-6">
-        <div className="text-lg font-semibold">Velvarr</div>
+    <div className="auth-page">
+      <div className="panel auth-card">
+        <div className="brand">
+          <span className="brand-mark">
+            <Icon name="play" />
+          </span>
+          Velvarr
+        </div>
+        <h1>Welcome back</h1>
         <p className="mt-1 text-sm text-muted">
           Sign in with your Jellyfin account.
         </p>
@@ -673,75 +682,78 @@ const VIEWS = [
 ] as const;
 type View = (typeof VIEWS)[number];
 
-const PROVIDER_VIEWS = {
-  discover: { label: "Discover", needs: ["tpdb", "stashdb"] },
-  movies: { label: "Movies", needs: ["tpdb"] },
-  scenes: { label: "Scenes", needs: ["stashdb"] },
-  performers: { label: "Performers", needs: ["stashdb"] },
-  requests: { label: "Requests", needs: [] },
-} as const;
-type ProviderView = keyof typeof PROVIDER_VIEWS;
+/* ---------- Persistent global search ---------- */
 
-/* ---------- Global search entry (desktop sidebar + mobile header) ---------- */
-
-// Submit-on-Enter only: no debounced keystroke requests. The input resyncs
-// when the URL q changes from outside (Back, chip removal) and never steals
-// focus on render.
-function GlobalSearchForm({
-  id,
-  className,
-}: {
-  id: string;
-  className?: string;
-}) {
+function GlobalSearchForm() {
   const params = useSearchParams();
   const setP = useParamsSetter();
-  const urlQ = params.get("q") ?? "";
+  const urlQ = params.get("view") === "search" ? (params.get("q") ?? "") : "";
   const [input, setInput] = useState(urlQ);
-  const committed = useRef(urlQ);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => setInput(urlQ), [urlQ]);
   useEffect(() => {
-    if (urlQ !== committed.current) {
-      committed.current = urlQ;
-      setInput(urlQ);
-    }
-  });
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    const t = input.trim();
-    committed.current = t;
-    setP({
-      view: "search",
-      q: t || null,
-      provider: null,
-      kind: null,
-      id: null,
-      tab: null,
-      year: null,
-      performer: null,
-      studio: null,
-      tags: null,
-      tagsAll: null,
-      tagsExclude: null,
-      sort: null,
-      direction: null,
-      page: null,
-      perPage: null,
-    });
+    const focusSearch = (event: KeyboardEvent) => {
+      const target = event.target;
+      const typing =
+        target instanceof HTMLElement &&
+        (target.matches("input, textarea, select") || target.isContentEditable);
+      if (
+        ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") ||
+        (event.key === "/" &&
+          !typing &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.altKey)
+      ) {
+        if (document.querySelector("dialog[open]")) return;
+        event.preventDefault();
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", focusSearch);
+    return () => window.removeEventListener("keydown", focusSearch);
+  }, []);
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const updates: Record<string, string | null> = {};
+    for (const key of new URLSearchParams(window.location.search).keys())
+      updates[key] = null;
+    setP(
+      { ...updates, view: "search", q: input.trim() || null },
+      { push: true },
+    );
+    window.scrollTo({ top: 0 });
   };
   return (
-    <form role="search" onSubmit={submit} className={className}>
-      <label htmlFor={id} className="sr-only">
+    <form role="search" onSubmit={submit} className="global-search">
+      <Icon name="search" />
+      <label htmlFor="global-search" className="sr-only">
         Search all sources
       </label>
       <input
-        id={id}
+        ref={inputRef}
+        id="global-search"
         type="search"
-        className="input"
         maxLength={200}
-        placeholder="Search all sources…"
+        autoComplete="off"
+        spellCheck={false}
+        placeholder="Search movies, scenes, performers…"
         value={input}
-        onChange={(e) => setInput(e.target.value)}
+        onChange={(event) => setInput(event.target.value)}
       />
+      <kbd className="search-shortcut" title="Press / or Control K to search">
+        /
+      </kbd>
+      <button
+        type="submit"
+        className="icon-button"
+        aria-label="Search everything"
+      >
+        <Icon name="arrow-right" />
+      </button>
     </form>
   );
 }
@@ -751,173 +763,209 @@ function Shell() {
   const params = useSearchParams();
   const setP = useParamsSetter();
   const raw = params.get("view");
-  const view: View = VIEWS.includes(raw as View) ? (raw as View) : "library";
+  const view: View = VIEWS.includes(raw as View)
+    ? (raw as View)
+    : !raw &&
+        (params.has("item") || params.has("libraryId") || params.has("search"))
+      ? "library"
+      : "discover";
   const isAdmin = session.account.role === "admin";
-
+  const navigation = useRef<HTMLDialogElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
   const nav = [
-    { id: "discover" as View, label: "Discover", show: true },
-    { id: "movies" as View, label: "Movies", show: true },
-    { id: "scenes" as View, label: "Scenes", show: true },
-    { id: "performers" as View, label: "Performers", show: true },
-    { id: "search" as View, label: "Search", show: true },
-    { id: "requests" as View, label: "Requests", show: true },
-    { id: "removals" as View, label: "Removals", show: true },
-    { id: "admin" as View, label: "Admin", show: isAdmin },
-    { id: "settings" as View, label: "Settings", show: isAdmin },
-  ].filter((n) => n.show);
-  const go = (v: View) => setP({ view: v === "library" ? null : v });
-
-  const navBtns = nav.map((n) => (
-    <button
-      key={n.id}
-      type="button"
-      className="nav-btn"
-      aria-current={view === n.id ? "page" : undefined}
-      onClick={() => go(n.id)}
-    >
-      {n.label}
-    </button>
+    { id: "discover", label: "Discover", icon: "discover", group: "browse" },
+    { id: "movies", label: "Movies", icon: "movie", group: "browse" },
+    { id: "scenes", label: "Scenes", icon: "scene", group: "browse" },
+    {
+      id: "performers",
+      label: "Performers",
+      icon: "performer",
+      group: "browse",
+    },
+    { id: "library", label: "Library", icon: "library", group: "manage" },
+    { id: "requests", label: "Requests", icon: "requests", group: "manage" },
+    { id: "removals", label: "Removals", icon: "removals", group: "manage" },
+    { id: "admin", label: "Users", icon: "users", group: "admin" },
+    { id: "settings", label: "Settings", icon: "settings", group: "admin" },
+  ] as const;
+  const visibleNav = nav.filter((item) => item.group !== "admin" || isAdmin);
+  const go = (next: View) => {
+    const updates: Record<string, string | null> = {};
+    for (const key of new URLSearchParams(window.location.search).keys())
+      updates[key] = null;
+    setP(
+      { ...updates, view: next === "discover" ? null : next },
+      { push: true },
+    );
+    navigation.current?.close();
+    window.scrollTo({ top: 0 });
+  };
+  useEffect(() => {
+    const desktop = window.matchMedia("(min-width: 1024px)");
+    const closeMenu = () => {
+      if (desktop.matches) navigation.current?.close();
+    };
+    desktop.addEventListener("change", closeMenu);
+    return () => desktop.removeEventListener("change", closeMenu);
+  }, []);
+  const navLinks = visibleNav.map((item, index) => (
+    <div key={item.id}>
+      {index > 0 && visibleNav[index - 1]?.group !== item.group && (
+        <div className="nav-section" />
+      )}
+      <a
+        href={item.id === "discover" ? "/" : `/?view=${item.id}`}
+        className="nav-btn"
+        aria-current={view === item.id ? "page" : undefined}
+        onClick={(event) => {
+          if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)
+            return;
+          event.preventDefault();
+          go(item.id);
+        }}
+      >
+        <Icon name={item.icon} />
+        {item.label}
+      </a>
+    </div>
   ));
+  const brand = (
+    <a
+      className="brand"
+      href="/"
+      onClick={(event) => {
+        if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)
+          return;
+        event.preventDefault();
+        go("discover");
+      }}
+    >
+      <span className="brand-mark">
+        <Icon name="play" />
+      </span>
+      Velvarr
+    </a>
+  );
 
   return (
-    <div className="min-h-screen md:flex">
-      <aside className="fixed inset-y-0 left-0 z-10 hidden w-56 shrink-0 flex-col border-r border-edge bg-panel p-4 md:flex">
-        <div className="mb-6 text-lg font-semibold tracking-tight">Velvarr</div>
-        <GlobalSearchForm id="global-search-desktop" className="mb-4" />
-        <nav className="space-y-1" aria-label="Main">
-          {navBtns}
+    <div className="app-shell">
+      <a className="skip-link" href="#main-content">
+        Skip to content
+      </a>
+      <aside className="app-sidebar">
+        {brand}
+        <nav className="app-nav" aria-label="Main">
+          {navLinks}
         </nav>
-        <div className="mt-auto space-y-2 pt-4">
-          <div className="truncate text-sm font-medium">
-            {session.account.name}
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="chip chip-accent capitalize">
-              {session.account.role}
+        <div className="sidebar-footer">
+          <strong>Your next watch, discovered.</strong>Powered by your own
+          library.
+        </div>
+      </aside>
+      <header className="app-topbar">
+        <button
+          type="button"
+          className="icon-button mobile-menu-button"
+          aria-label="Open navigation"
+          aria-expanded={menuOpen}
+          aria-controls="mobile-navigation"
+          onClick={() => {
+            navigation.current?.showModal();
+            setMenuOpen(true);
+          }}
+        >
+          <Icon name="menu" />
+        </button>
+        <GlobalSearchForm />
+        <details className="account-menu">
+          <summary aria-label="Account menu" title={session.account.name}>
+            <span className="account-avatar">
+              {session.account.name.slice(0, 1).toUpperCase()}
             </span>
+          </summary>
+          <div className="panel account-popover">
+            <div className="truncate font-semibold">{session.account.name}</div>
+            <div className="mt-1 text-sm text-muted capitalize">
+              {session.account.role}
+            </div>
             <button
               type="button"
               className="btn"
               onClick={() => void session.signOut()}
             >
+              <Icon name="logout" />
               Sign out
             </button>
           </div>
+        </details>
+      </header>
+      <main className="app-main" id="main-content" tabIndex={-1}>
+        {view === "discover" && <DiscoverShelves />}
+        {view === "movies" && <MoviesView />}
+        {view === "scenes" && <ScenesView />}
+        {view === "performers" && <PerformersView />}
+        {view === "library" && <LibraryView />}
+        {view === "requests" && <RequestsView />}
+        {view === "search" && <SearchView />}
+        {view === "removals" && <RemovalsView />}
+        {view === "admin" && (isAdmin ? <AdminView /> : <ForbiddenPanel />)}
+        {view === "settings" &&
+          (isAdmin ? <SettingsView /> : <ForbiddenPanel />)}
+      </main>
+      <nav className="mobile-bottom-nav" aria-label="Quick navigation">
+        {visibleNav
+          .filter((item) => item.group === "browse" || item.id === "requests")
+          .map((item) => (
+            <a
+              key={item.id}
+              href={item.id === "discover" ? "/" : `/?view=${item.id}`}
+              aria-current={view === item.id ? "page" : undefined}
+              onClick={(event) => {
+                if (
+                  event.ctrlKey ||
+                  event.metaKey ||
+                  event.shiftKey ||
+                  event.altKey
+                )
+                  return;
+                event.preventDefault();
+                go(item.id);
+              }}
+            >
+              <Icon name={item.icon} />
+              {item.label}
+            </a>
+          ))}
+      </nav>
+      <dialog
+        ref={navigation}
+        className="mobile-navigation"
+        id="mobile-navigation"
+        aria-label="Navigation"
+        onClose={() => setMenuOpen(false)}
+        onClick={(event) => {
+          if (
+            event.target === event.currentTarget &&
+            event.clientX > event.currentTarget.getBoundingClientRect().right
+          )
+            navigation.current?.close();
+        }}
+      >
+        <div className="drawer-heading">
+          {brand}
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Close navigation"
+            onClick={() => navigation.current?.close()}
+          >
+            <Icon name="close" />
+          </button>
         </div>
-      </aside>
-
-      <div className="min-w-0 flex-1 md:ml-56">
-        <header className="border-b border-edge bg-panel px-4 py-3 md:hidden">
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-lg font-semibold text-ink">Velvarr</div>
-            <div className="flex items-center gap-2">
-              <span className="chip chip-accent capitalize">
-                {session.account.role}
-              </span>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => void session.signOut()}
-              >
-                Sign out
-              </button>
-            </div>
-          </div>
-          <GlobalSearchForm id="global-search-mobile" className="mt-2" />
-          <nav className="mt-2 flex flex-wrap gap-1" aria-label="Main">
-            {nav.map((n) => (
-              <button
-                key={n.id}
-                type="button"
-                className="nav-chip"
-                aria-current={view === n.id ? "page" : undefined}
-                onClick={() => go(n.id)}
-              >
-                {n.label}
-              </button>
-            ))}
-          </nav>
-        </header>
-
-        <main className="mx-auto max-w-6xl p-4 md:p-8">
-          <h1 className="sr-only">Velvarr</h1>
-          {view === "library" && <LibraryView />}
-          {view === "admin" && (isAdmin ? <AdminView /> : <ForbiddenPanel />)}
-          {view === "settings" &&
-            (isAdmin ? <SettingsView /> : <ForbiddenPanel />)}
-          {view === "search" && <SearchView />}
-          {view === "removals" && <RemovalsView />}
-          {view !== "library" &&
-            view !== "admin" &&
-            view !== "settings" &&
-            view !== "search" &&
-            view !== "removals" && (
-              <ProviderSurface view={view} onLibrary={() => go("library")} />
-            )}
-        </main>
-      </div>
-    </div>
-  );
-}
-
-function ProviderSurface({
-  view,
-  onLibrary,
-}: {
-  view: ProviderView;
-  onLibrary: () => void;
-}) {
-  const { providers } = useSession();
-  const { label, needs } = PROVIDER_VIEWS[view];
-  const missing = needs.filter((p) => providers?.[p] === "not_configured");
-  if (missing.length > 0)
-    return (
-      <ProviderNotice
-        label={label}
-        missing={[...missing]}
-        providers={providers}
-        onLibrary={onLibrary}
-      />
-    );
-  if (view === "discover") return <DiscoverShelves />;
-  if (view === "movies") return <MoviesView />;
-  if (view === "scenes") return <ScenesView />;
-  if (view === "performers") return <PerformersView />;
-  return <RequestsView />;
-}
-
-// Honesty panel for a provider-gated surface: a missing key is stated as a
-// missing key — never as an outage and never as an empty catalog.
-function ProviderNotice({
-  label,
-  missing,
-  providers,
-  onLibrary,
-}: {
-  label: string;
-  missing: string[];
-  providers: ProviderStatus | null;
-  onLibrary: () => void;
-}) {
-  return (
-    <div className="panel p-6">
-      <h2 className="text-lg font-semibold">{label}</h2>
-      <p className="mt-2 text-sm text-muted">
-        {missing.join(" and ")} {missing.length === 1 ? "is" : "are"} not
-        configured — no API key is present for this surface. That is a missing
-        key, not an outage; add it under Settings.
-      </p>
-      <div className="mt-4">
-        <ProvidersCard providers={providers} />
-      </div>
-      <p className="mt-3 text-sm text-muted">
-        “Not configured” means no API key is present. “API key present — not
-        verified” means a key exists but nothing has been proven against the
-        provider yet.
-      </p>
-      <button type="button" className="btn mt-4" onClick={onLibrary}>
-        Back to Library
-      </button>
+        <nav className="app-nav" aria-label="Mobile navigation">
+          {navLinks}
+        </nav>
+      </dialog>
     </div>
   );
 }
@@ -998,12 +1046,23 @@ function LibraryView() {
     ? pageData.start + pageData.items.length < pageData.total
     : false;
 
+  if (itemId) return <ItemDetail id={itemId} onClose={closeItem} />;
+
   return (
-    <div>
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row">
+    <section aria-label="Library">
+      <div className="page-heading">
+        <div>
+          <h1 className="page-title">Your library</h1>
+          <p className="page-description">
+            Browse your collection. Play directly in Jellyfin.
+          </p>
+        </div>
+        <span className="chip">Jellyfin</span>
+      </div>
+      <div className="page-toolbar">
         <div className="sm:max-w-xs sm:flex-1">
           <label className="label" htmlFor="lib-search">
-            Search
+            Search your library
           </label>
           <input
             id="lib-search"
@@ -1052,12 +1111,9 @@ function LibraryView() {
           onRetry={() => setReload((n) => n + 1)}
         />
       ) : loading ? (
-        <div
-          className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
-          aria-label="Loading library"
-        >
-          {Array.from({ length: 10 }, (_, i) => (
-            <div key={i} className="skel aspect-[2/3]" />
+        <div className="scene-grid" aria-label="Loading library">
+          {Array.from({ length: 8 }, (_, i) => (
+            <div key={i} className="skel aspect-video" />
           ))}
         </div>
       ) : libs && libs.length === 0 ? (
@@ -1073,23 +1129,36 @@ function LibraryView() {
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+          {/* ponytail: this Jellyfin serves item art as 16:9 stills, so library
+              tiles are landscape. A server with 2:3 posters wants poster-grid +
+              aspect-[2/3] here and on the detail poster below. */}
+          <div className="scene-grid">
             {items.map((it) => (
               <button
                 key={it.id}
-                className="card"
-                onClick={() => setP({ item: it.id })}
+                type="button"
+                className="media-card"
+                onClick={() => setP({ item: it.id }, { push: true })}
               >
-                <div className="relative aspect-[2/3] w-full bg-raised">
+                <div className="media-art aspect-video">
                   <ItemImage
                     name={it.name}
                     src={it.image}
                     className="absolute inset-0 h-full w-full object-cover"
                   />
+                  <span className="media-badge">{it.kind}</span>
+                  {it.canPlay && (
+                    <span
+                      className="media-status"
+                      aria-label="Playable in Jellyfin"
+                    >
+                      <Icon name="check" />
+                    </span>
+                  )}
                 </div>
-                <div className="p-2">
-                  <div className="truncate text-sm font-medium">{it.name}</div>
-                  <div className="truncate text-xs text-muted">
+                <div className="media-meta">
+                  <div className="media-title">{it.name}</div>
+                  <div className="media-subtitle">
                     {[it.year, it.kind].filter(Boolean).join(" · ")}
                   </div>
                 </div>
@@ -1129,15 +1198,11 @@ function LibraryView() {
           </div>
         </>
       )}
-
-      {itemId && <ItemDetail id={itemId} onClose={closeItem} />}
-    </div>
+    </section>
   );
 }
 
-/* ---------- Item detail dialog ---------- */
-
-// ponytail: Esc + backdrop + initial focus, no full focus trap; add trap if tabbing out matters
+/* ---------- Library detail page ---------- */
 function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const [item, setItem] = useState<LibraryItem | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1157,106 +1222,102 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
   }, [id, reload]);
 
   useEffect(() => {
-    const prev = document.activeElement as HTMLElement | null;
-    panelRef.current?.focus();
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") onClose();
+    const scrollY = window.scrollY;
+    panelRef.current?.focus({ preventScroll: true });
+    window.scrollTo({ top: 0 });
+    const onKey = (event: KeyboardEvent) => {
+      if (
+        event.key === "Escape" &&
+        !(
+          event.target instanceof HTMLElement &&
+          event.target.matches("input, textarea, select")
+        )
+      )
+        onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
-      prev?.focus();
+      requestAnimationFrame(() => {
+        // Restore only on return to this library, not when global search or navigation leaves it.
+        const params = new URLSearchParams(window.location.search);
+        if (params.get("view") === "library" && !params.has("item"))
+          window.scrollTo({ top: scrollY });
+      });
     };
   }, [onClose]);
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 sm:items-center sm:p-6"
-      onClick={onClose}
+      ref={panelRef}
+      tabIndex={-1}
+      className="library-detail"
+      aria-label="Item details"
     >
-      <div
-        ref={panelRef}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Item details"
-        className="panel max-h-[90vh] w-full max-w-2xl overflow-y-auto p-5"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex justify-end">
-          <button
-            type="button"
-            className="btn"
-            onClick={onClose}
-            aria-label="Close details"
-          >
-            Close
-          </button>
-        </div>
-
-        {error ? (
-          <ErrorPanel
-            title="Item unavailable"
-            message={error}
-            onRetry={() => setReload((n) => n + 1)}
-          />
-        ) : !item ? (
-          <div className="flex gap-4" aria-label="Loading details">
-            <div className="skel aspect-[2/3] w-36 shrink-0" />
-            <div className="flex-1 space-y-3 pt-2">
-              <div className="skel h-6 w-3/4" />
-              <div className="skel h-4 w-1/3" />
-              <div className="skel h-4 w-full" />
-              <div className="skel h-4 w-5/6" />
-            </div>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-4 sm:flex-row">
-            <div className="relative aspect-[2/3] w-36 shrink-0 self-center bg-raised sm:self-start">
+      <div className="page-heading">
+        <button type="button" className="btn" onClick={onClose}>
+          <Icon name="chevron-left" />
+          Back to library
+        </button>
+        <span className="chip">In your library</span>
+      </div>
+      {error ? (
+        <ErrorPanel
+          title="Item unavailable"
+          message={error}
+          onRetry={() => setReload((n) => n + 1)}
+        />
+      ) : !item ? (
+        <div
+          className="skel h-96"
+          aria-label="Loading details"
+          aria-busy="true"
+        />
+      ) : (
+        <>
+          <div className="library-detail-hero">
+            {item.image && (
+              <img src={item.image} alt="" className="library-backdrop" />
+            )}
+            <div className="library-detail-poster">
               <ItemImage
                 name={item.name}
                 src={item.image}
-                className="absolute inset-0 h-full w-full rounded-lg object-cover"
+                className="h-full w-full object-cover"
               />
             </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
+            <div className="library-detail-copy">
+              <div className="flex flex-wrap gap-2">
                 <span className="chip">{item.kind}</span>
                 {item.year != null && <span className="chip">{item.year}</span>}
                 {runtime(item.durationTicks) && (
                   <span className="chip">{runtime(item.durationTicks)}</span>
                 )}
               </div>
-              <h2 className="mt-2 text-xl font-semibold">{item.name}</h2>
-              {item.overview ? (
-                <p className="mt-2 text-sm leading-relaxed text-muted">
-                  {item.overview}
-                </p>
+              <h2>{item.name}</h2>
+              {item.canPlay && item.watchUrl ? (
+                <a
+                  className="btn btn-accent"
+                  href={item.watchUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <Icon name="play" />
+                  Watch in Jellyfin
+                </a>
               ) : (
-                <p className="mt-2 text-sm text-muted">
-                  No synopsis available.
+                <p className="text-sm text-muted">
+                  Playback is not available for this item or your account.
                 </p>
               )}
-              <div className="mt-4">
-                {item.canPlay && item.watchUrl ? (
-                  <a
-                    className="btn btn-accent"
-                    href={item.watchUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    Watch in Jellyfin
-                  </a>
-                ) : (
-                  <div className="panel p-3 text-sm text-muted">
-                    Playback is not available for this item or your account.
-                  </div>
-                )}
-              </div>
             </div>
           </div>
-        )}
-      </div>
+          <section className="library-overview" aria-label="Overview">
+            <h3 className="mb-3 text-xl font-semibold text-ink">Overview</h3>
+            <p>{item.overview || "No synopsis available."}</p>
+          </section>
+        </>
+      )}
     </div>
   );
 }
@@ -1313,9 +1374,14 @@ function AdminView() {
   if (forbidden) return <ForbiddenPanel />;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold">Accounts</h2>
+    <div className="settings-page space-y-6">
+      <div className="page-heading">
+        <div>
+          <h1 className="page-title">Users</h1>
+          <p className="page-description">
+            Manage library access, requests, and account permissions.
+          </p>
+        </div>
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -1558,19 +1624,54 @@ function AccountRow({
 function SettingsView() {
   const { providers } = useSession();
   const [forbidden, setForbidden] = useState(false);
-
+  const [section, setSection] = useState("connections");
   if (forbidden) return <ForbiddenPanel />;
 
   return (
-    <div className="space-y-6">
-      <h2 className="text-lg font-semibold">Settings</h2>
-      <IntegrationsForm onForbidden={() => setForbidden(true)} />
-      <JellyfinCard onForbidden={() => setForbidden(true)} />
-      <WhisparrCard onForbidden={() => setForbidden(true)} />
-      <ProvidersCard providers={providers} />
-      <LimitsPanel />
-      <ReleaseStatusPanel />
-    </div>
+    <section className="settings-page" aria-label="Settings">
+      <div className="page-heading">
+        <div>
+          <h1 className="page-title">Settings</h1>
+          <p className="page-description">
+            Connect your services and make Velvarr yours.
+          </p>
+        </div>
+      </div>
+      <nav className="settings-tabs" aria-label="Settings sections">
+        {[
+          ["connections", "Connections"],
+          ["metadata", "Metadata providers"],
+          ["system", "System"],
+        ].map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            aria-pressed={section === id}
+            onClick={() => setSection(id!)}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+      <div hidden={section !== "connections"}>
+        <div className="settings-content">
+          <div className="connection-status-grid">
+            <JellyfinCard onForbidden={() => setForbidden(true)} />
+            <WhisparrCard onForbidden={() => setForbidden(true)} />
+          </div>
+          <IntegrationsForm onForbidden={() => setForbidden(true)} />
+        </div>
+      </div>
+      <div hidden={section !== "metadata"}>
+        <ProvidersCard providers={providers} />
+      </div>
+      <div hidden={section !== "system"}>
+        <div className="settings-content">
+          <LimitsPanel />
+          <ReleaseStatusPanel />
+        </div>
+      </div>
+    </section>
   );
 }
 
