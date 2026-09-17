@@ -63,6 +63,8 @@ bun run dev      # http://127.0.0.1:6699
 
 Production: `docker compose up -d` pulls the release image `ghcr.io/skare69/velvarr` (see compose.yaml; to build from source, uncomment `build: .`). The image runs the Next standalone server (`node server.js`), which is the supported path for this build's `output: "standalone"`; image build, readiness, non-root, restart, and no-secrets checks run in CI. `bun run build` then `bun run start` is a local preview only; Next prints a warning that `next start` is not the standalone entry point. Checks: `bun run check` (TypeScript strict), `bun run test` (node:test).
 
+Releases: every milestone bumps `package.json` and the `compose.yaml` image tag, lands on `main`, and is tagged `vX.Y.Z`. Publication is opt-in — `gh workflow run ci.yml --ref vX.Y.Z -f publish=true` runs the gates and container checks first, then pushes `X.Y.Z`, `vX.Y.Z`, and `latest` to GHCR. Pulling a specific tag is the supported upgrade path; `docker compose pull && docker compose up -d` after bumping the tag in compose.yaml.
+
 ## Environment variables
 
 `bun run setup` writes `VELVARR_SECRET_KEY` and `VELVARR_SETUP_SECRET` to the git-ignored `.env.local` (plus an optional `VELVARR_ORIGIN`). The container reads them from the environment at runtime only; no credential enters the image as a build argument, copied file, or layer.
