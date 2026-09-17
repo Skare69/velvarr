@@ -1,14 +1,24 @@
 "use client";
 
-import { createContext, useCallback, useContext, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useRouter } from "next/navigation";
 import type {
   Account,
+  AcquisitionState,
   CatalogDetail,
   CatalogProvider,
   CatalogReference,
   MediaReference,
+  PlaybackAccess,
   ProviderStatus,
+  RequestRecord,
 } from "../lib/contracts.ts";
 
 /* ---------- API helper ---------- */
@@ -267,6 +277,223 @@ export function GridSkeleton({
   );
 }
 
+type CardStatus = {
+  detail: CatalogDetail;
+  myRequest: Pick<RequestRecord, "decision"> | null;
+  acquisition: { state: AcquisitionState } | null;
+  availability: PlaybackAccess;
+};
+
+function RequestableCard({
+  item,
+  onOpen,
+}: {
+  item: CatalogDetail;
+  onOpen: (r: CatalogReference) => void;
+}) {
+  const [status, setStatus] = useState<CardStatus | null>(null);
+  const [busy, setBusy] = useState<"checking" | "requesting" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const working = useRef(false);
+  const controller = useRef<AbortController | null>(null);
+  const media = item.reference;
+  const scene = media.kind === "scene";
+  const performers = scene ? item.credits.map((c) => c.name).join(", ") : "";
+  useEffect(() => () => controller.current?.abort(), []);
+
+  // ponytail: check on hover/focus, not one Jellyfin sweep per card on load.
+  // Batch/index these reads only if interaction-time checks become too costly.
+  async function check() {
+    if (working.current) return;
+    working.current = true;
+    const abort = new AbortController();
+    controller.current = abort;
+    setBusy("checking");
+    setError(null);
+    try {
+      const path = `${media.provider}/${media.kind}/${encodeURIComponent(media.id)}`;
+      const [detail, availability] = await Promise.all([
+        api<Omit<CardStatus, "availability">>(`/api/catalog/${path}`, {
+          signal: abort.signal,
+        }),
+        api<PlaybackAccess>(`/api/availability/${path}`, {
+          signal: abort.signal,
+        }),
+      ]);
+      if (!abort.signal.aborted) setStatus({ ...detail, availability });
+    } catch (e) {
+      if (!abort.signal.aborted) {
+        setStatus(null);
+        setError(messageOf(e));
+      }
+    } finally {
+      working.current = false;
+      if (!abort.signal.aborted) setBusy(null);
+    }
+  }
+
+  async function request() {
+    if (working.current) return;
+    working.current = true;
+    setBusy("requesting");
+    setError(null);
+    let exists = false;
+    try {
+      const result = await api<{ request: RequestRecord }>("/api/requests", {
+        method: "POST",
+        body: JSON.stringify({ media }),
+      });
+      setStatus((current) =>
+        current ? { ...current, myRequest: result.request } : current,
+      );
+    } catch (e) {
+      exists = e instanceof ApiError && e.code === "request_exists";
+      // Re-check before offering another POST: a lost response may have saved it.
+      setStatus(null);
+      if (!exists) setError(messageOf(e));
+    } finally {
+      working.current = false;
+      setBusy(null);
+    }
+    if (exists) await check();
+  }
+
+  const availability = status?.availability;
+  const available = availability?.outcome === "available" ? availability : null;
+  const requested = Boolean(status?.myRequest || status?.acquisition);
+  // A request intent does not depend on Jellyfin, so an outage or a denied
+  // verdict must not hide the button the detail page still offers: the note
+  // carries the truth instead.
+  const requestable =
+    status !== null &&
+    !requested &&
+    !available &&
+    (media.kind === "movie" || media.kind === "scene");
+  const label =
+    busy === "requesting"
+      ? "Requesting…"
+      : busy === "checking"
+        ? "Checking…"
+        : error
+          ? "Retry check"
+          : !status
+            ? "Check status"
+            : available
+              ? "In your library"
+              : requested
+                ? availability?.outcome === "awaiting_scan"
+                  ? "Awaiting scan"
+                  : status.myRequest?.decision === "approved"
+                    ? "Approved"
+                    : "Requested"
+                : "Request";
+  const note =
+    error ??
+    (availability?.outcome === "unavailable"
+      ? "Library status unavailable."
+      : availability?.outcome === "ambiguous"
+        ? "Library match needs review."
+        : availability?.outcome === "denied"
+          ? "No playback access."
+          : null);
+
+  return (
+    <div
+      className={`media-card media-request-card${scene ? " scene-card" : ""}`}
+      onPointerEnter={(e) => {
+        if (e.pointerType !== "touch") void check();
+      }}
+    >
+      <button
+        type="button"
+        className="media-open"
+        aria-label={`View details for ${item.title}`}
+        onFocus={() => void check()}
+        onClick={() => onOpen(media)}
+      >
+        <div className="media-art aspect-[2/3]">
+          <ItemImage
+            name={item.title}
+            src={imgSrc(item.imageUrl)}
+            className="h-full w-full object-cover"
+          />
+          <span className="media-badge">{scene ? "Scene" : "Movie"}</span>
+          {scene && duration(item.durationSeconds) && (
+            <span className="media-runtime">
+              {duration(item.durationSeconds)}
+            </span>
+          )}
+        </div>
+        <div className="media-meta">
+          <div className="media-title">{item.title}</div>
+          <div className="media-subtitle">
+            {(scene
+              ? [item.studio?.name, item.releaseDate]
+              : [item.releaseDate?.slice(0, 4), item.studio?.name]
+            )
+              .filter(Boolean)
+              .join(" · ")}
+          </div>
+          {performers && <div className="media-subtitle">{performers}</div>}
+        </div>
+      </button>
+      <div className="media-quick-overlay">
+        <div className="media-quick-summary" aria-hidden="true">
+          {item.releaseDate && <span>{item.releaseDate.slice(0, 4)}</span>}
+          <strong>{item.title}</strong>
+          {(status?.detail.description || item.description) && (
+            <p>{status?.detail.description || item.description}</p>
+          )}
+        </div>
+        {note && (
+          <p className="media-quick-note" role={error ? "alert" : "status"}>
+            {note}
+          </p>
+        )}
+        <div className="media-quick-action" aria-live="polite">
+          {!busy && available?.watchUrl ? (
+            <a
+              className="btn media-quick-watch"
+              href={available.watchUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`Watch ${item.title} in Jellyfin`}
+            >
+              <Icon name="play" /> Watch
+            </a>
+          ) : (
+            <button
+              type="button"
+              className={`btn${requestable && !error ? " btn-accent" : ""}`}
+              aria-disabled={busy !== null}
+              aria-label={`${label}: ${item.title}`}
+              onClick={() => {
+                if (working.current) return;
+                if (!status || error) void check();
+                else if (requestable) void request();
+                else onOpen(media);
+              }}
+            >
+              <Icon
+                name={
+                  busy || requested
+                    ? "requests"
+                    : requestable
+                      ? "plus"
+                      : available
+                        ? "check"
+                        : "arrow-right"
+                }
+              />
+              {label}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function MovieCard({
   item,
   onOpen,
@@ -275,31 +502,11 @@ export function MovieCard({
   onOpen: (r: CatalogReference) => void;
 }) {
   return (
-    <button
-      type="button"
-      className="media-card"
-      onClick={() => onOpen(item.reference)}
-    >
-      <div className="media-art aspect-[2/3]">
-        <ItemImage
-          name={item.title}
-          src={imgSrc(item.imageUrl)}
-          className="h-full w-full object-cover"
-        />
-        <span className="media-badge">Movie</span>
-        <span className="media-reveal">
-          <Icon name="plus" /> View details
-        </span>
-      </div>
-      <div className="media-meta">
-        <div className="media-title">{item.title}</div>
-        <div className="media-subtitle">
-          {[item.releaseDate?.slice(0, 4), item.studio?.name]
-            .filter(Boolean)
-            .join(" · ")}
-        </div>
-      </div>
-    </button>
+    <RequestableCard
+      key={`${item.reference.provider}:${item.reference.kind}:${item.reference.id}`}
+      item={item}
+      onOpen={onOpen}
+    />
   );
 }
 
@@ -310,37 +517,12 @@ export function SceneCard({
   item: CatalogDetail;
   onOpen: (r: CatalogReference) => void;
 }) {
-  const performers = item.credits.map((c) => c.name).join(", ");
   return (
-    <button
-      type="button"
-      className="media-card scene-card"
-      onClick={() => onOpen(item.reference)}
-    >
-      <div className="media-art aspect-[2/3]">
-        <ItemImage
-          name={item.title}
-          src={imgSrc(item.imageUrl)}
-          className="h-full w-full object-cover"
-        />
-        <span className="media-badge">Scene</span>
-        {duration(item.durationSeconds) && (
-          <span className="media-runtime">
-            {duration(item.durationSeconds)}
-          </span>
-        )}
-        <span className="media-reveal">
-          <Icon name="plus" /> View details
-        </span>
-      </div>
-      <div className="media-meta">
-        <div className="media-title">{item.title}</div>
-        <div className="media-subtitle">
-          {[item.studio?.name, item.releaseDate].filter(Boolean).join(" · ")}
-        </div>
-        {performers && <div className="media-subtitle">{performers}</div>}
-      </div>
-    </button>
+    <RequestableCard
+      key={`${item.reference.provider}:${item.reference.kind}:${item.reference.id}`}
+      item={item}
+      onOpen={onOpen}
+    />
   );
 }
 
