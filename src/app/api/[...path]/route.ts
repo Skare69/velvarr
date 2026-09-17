@@ -14,6 +14,7 @@ import type {
   RemovalLevel,
   RequestRecord,
   Role,
+  WhisparrDelivery,
   WhisparrPathMapping,
 } from "../../../lib/contracts.ts";
 import {
@@ -725,6 +726,148 @@ function nextProviderCredentials(
   return providers;
 }
 
+/** Jellyfin connection patch: address and key may change, server identity
+ * may not. Authorization for this change is the admin session itself:
+ * requireAdmin re-validates the caller upstream on every request (identity,
+ * disabled, remote access) and guardMutation rejects foreign origins. No
+ * password re-auth: it would re-authenticate under the shared DeviceId,
+ * invalidating the caller's own Jellyfin token and logging the admin out. */
+async function nextJellyfin(
+  current: IntegrationConfig["jellyfin"],
+  body: Record<string, unknown>,
+): Promise<IntegrationConfig["jellyfin"]> {
+  const url = fieldUrl(body, "jellyfinUrl");
+  const externalUrl = fieldUrl(body, "jellyfinExternalUrl");
+  const supplied = optionalText(body, "jellyfinApiKey", 512);
+  const apiKey =
+    supplied !== undefined && supplied !== "" ? supplied : current.apiKey;
+  const server = await getServer(url);
+  if (server.id !== current.serverId) {
+    throw new AppError(
+      400,
+      "server_mismatch",
+      "Jellyfin server identity cannot change, only its address.",
+    );
+  }
+  const jellyfin = {
+    url,
+    externalUrl,
+    apiKey,
+    serverId: current.serverId,
+    libraryIds: current.libraryIds,
+  };
+  // Prove the prospective key still enumerates users as the administrator key.
+  await listUsers({ jellyfin });
+  return jellyfin;
+}
+
+/** Omitted key preserves what is stored; present key must be complete. */
+function parseDelivery(raw: unknown): WhisparrDelivery | undefined {
+  if (raw === undefined) return undefined;
+  const invalid = () =>
+    new AppError(400, "invalid_field", "Invalid Whisparr delivery settings.");
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw invalid();
+  }
+  const d = raw as Record<string, unknown>;
+  if (
+    typeof d.enabled !== "boolean" ||
+    typeof d.rootFolderPath !== "string" ||
+    d.rootFolderPath.length > 1024 ||
+    typeof d.qualityProfileId !== "number" ||
+    !Number.isInteger(d.qualityProfileId) ||
+    d.qualityProfileId < 1 ||
+    typeof d.searchOnAdd !== "boolean" ||
+    (d.enabled && d.rootFolderPath === "")
+  ) {
+    throw invalid();
+  }
+  return {
+    enabled: d.enabled,
+    rootFolderPath: d.rootFolderPath,
+    qualityProfileId: d.qualityProfileId,
+    searchOnAdd: d.searchOnAdd,
+  };
+}
+
+function parsePathMappings(raw: unknown): WhisparrPathMapping[] | undefined {
+  if (raw === undefined) return undefined;
+  const invalid = () =>
+    new AppError(400, "invalid_field", "Invalid Whisparr path mappings.");
+  if (!Array.isArray(raw) || raw.length > 50) throw invalid();
+  const mapped: WhisparrPathMapping[] = [];
+  for (const entry of raw) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      throw invalid();
+    }
+    const e = entry as Record<string, unknown>;
+    if (
+      typeof e.whisparrPrefix !== "string" ||
+      e.whisparrPrefix === "" ||
+      e.whisparrPrefix.length > 1024 ||
+      typeof e.jellyfinPrefix !== "string" ||
+      e.jellyfinPrefix === "" ||
+      e.jellyfinPrefix.length > 1024
+    ) {
+      throw invalid();
+    }
+    mapped.push({
+      whisparrPrefix: e.whisparrPrefix,
+      jellyfinPrefix: e.jellyfinPrefix,
+    });
+  }
+  return mapped;
+}
+
+/** Whisparr patch: a blank URL removes the connection, delivery settings are
+ * stored only with one. Omitted keys preserve what is already configured. */
+function nextWhisparr(
+  current: IntegrationConfig["whisparr"],
+  body: Record<string, unknown>,
+): IntegrationConfig["whisparr"] {
+  let whisparr = current;
+  const url = optionalText(body, "whisparrUrl", 2048);
+  if (url === "") {
+    if (optionalText(body, "whisparrApiKey", 512) !== undefined)
+      throw new AppError(
+        400,
+        "invalid_field",
+        "A Whisparr API key requires a Whisparr URL; clear the key to remove Whisparr.",
+      );
+    whisparr = undefined;
+  } else if (url !== undefined) {
+    const supplied = optionalText(body, "whisparrApiKey", 512);
+    const apiKey =
+      supplied !== undefined && supplied !== "" ? supplied : whisparr?.apiKey;
+    if (!apiKey)
+      throw new AppError(
+        400,
+        "invalid_field",
+        "Whisparr API key is required with a Whisparr URL.",
+      );
+    whisparr = { url: validateBaseUrl(url), apiKey };
+  }
+  const delivery = parseDelivery(body.delivery) ?? whisparr?.delivery;
+  const pathMappings =
+    parsePathMappings(body.pathMappings) ?? whisparr?.pathMappings;
+  if (
+    (body.delivery !== undefined || body.pathMappings !== undefined) &&
+    !whisparr
+  ) {
+    throw new AppError(
+      400,
+      "invalid_field",
+      "Whisparr must be configured to set delivery settings.",
+    );
+  }
+  if (!whisparr) return undefined;
+  return {
+    ...whisparr,
+    ...(delivery ? { delivery } : {}),
+    ...(pathMappings ? { pathMappings } : {}),
+  };
+}
+
 async function adminUpdateIntegrations(
   request: Request,
   ctx: AuthContext,
@@ -740,164 +883,16 @@ async function adminUpdateIntegrations(
     bodyKeys.every((k) => k === "tpdbApiToken" || k === "stashdbApiKey")
   ) {
     const providers = nextProviderCredentials(ctx.config.providers, body);
-    const config: IntegrationConfig = {
+    const patched: IntegrationConfig = {
       jellyfin: ctx.config.jellyfin,
       ...(ctx.config.whisparr ? { whisparr: ctx.config.whisparr } : {}),
       ...(providers ? { providers } : {}),
     };
-    saveConfig(config);
-    return json(integrationsShape(config));
+    saveConfig(patched);
+    return json(integrationsShape(patched));
   }
-  const jellyfinUrl = fieldUrl(body, "jellyfinUrl");
-  const jellyfinExternalUrl = fieldUrl(body, "jellyfinExternalUrl");
-  // Authorization for this change is the admin session itself: requireAdmin
-  // re-validates the caller upstream on every request (identity, disabled,
-  // remote access) and guardMutation rejects foreign origins. No password
-  // re-auth here: it re-authenticated under the shared DeviceId, which
-  // invalidated the caller's own Jellyfin token and logged the admin out.
-  const jellyfinApiKey = optionalText(body, "jellyfinApiKey", 512);
-  const apiKey =
-    jellyfinApiKey !== undefined && jellyfinApiKey !== ""
-      ? jellyfinApiKey
-      : ctx.config.jellyfin.apiKey;
-  const server = await getServer(jellyfinUrl);
-  if (server.id !== ctx.config.jellyfin.serverId) {
-    throw new AppError(
-      400,
-      "server_mismatch",
-      "Jellyfin server identity cannot change, only its address.",
-    );
-  }
-  const jellyfin = {
-    url: jellyfinUrl,
-    externalUrl: jellyfinExternalUrl,
-    apiKey,
-    serverId: ctx.config.jellyfin.serverId,
-    libraryIds: ctx.config.jellyfin.libraryIds,
-  };
-  // Prove the prospective key still enumerates users as the administrator key.
-  await listUsers({ jellyfin });
-  let whisparr = ctx.config.whisparr;
-  const whisparrUrl = optionalText(body, "whisparrUrl", 2048);
-  if (whisparrUrl !== undefined) {
-    if (whisparrUrl === "") {
-      if (optionalText(body, "whisparrApiKey", 512) !== undefined)
-        throw new AppError(
-          400,
-          "invalid_field",
-          "A Whisparr API key requires a Whisparr URL; clear the key to remove Whisparr.",
-        );
-      whisparr = undefined;
-    } else {
-      const whisparrApiKey = optionalText(body, "whisparrApiKey", 512);
-      const key =
-        whisparrApiKey !== undefined && whisparrApiKey !== ""
-          ? whisparrApiKey
-          : whisparr?.apiKey;
-      if (!key)
-        throw new AppError(
-          400,
-          "invalid_field",
-          "Whisparr API key is required with a Whisparr URL.",
-        );
-      whisparr = { url: validateBaseUrl(whisparrUrl), apiKey: key };
-    }
-  }
-  // Delivery and pathMappings: validated here, stored only with a Whisparr
-  // connection; omitted keys preserve what is already configured.
-  let delivery = whisparr?.delivery;
-  let pathMappings = whisparr?.pathMappings;
-  const nextDelivery = body.delivery;
-  if (nextDelivery !== undefined) {
-    if (
-      nextDelivery === null ||
-      typeof nextDelivery !== "object" ||
-      Array.isArray(nextDelivery)
-    ) {
-      throw new AppError(
-        400,
-        "invalid_field",
-        "Invalid Whisparr delivery settings.",
-      );
-    }
-    const d = nextDelivery as Record<string, unknown>;
-    if (
-      typeof d.enabled !== "boolean" ||
-      typeof d.rootFolderPath !== "string" ||
-      d.rootFolderPath.length > 1024 ||
-      typeof d.qualityProfileId !== "number" ||
-      !Number.isInteger(d.qualityProfileId) ||
-      d.qualityProfileId < 1 ||
-      typeof d.searchOnAdd !== "boolean" ||
-      (d.enabled && d.rootFolderPath === "")
-    ) {
-      throw new AppError(
-        400,
-        "invalid_field",
-        "Invalid Whisparr delivery settings.",
-      );
-    }
-    delivery = {
-      enabled: d.enabled,
-      rootFolderPath: d.rootFolderPath,
-      qualityProfileId: d.qualityProfileId,
-      searchOnAdd: d.searchOnAdd,
-    };
-  }
-  const nextMappings = body.pathMappings;
-  if (nextMappings !== undefined) {
-    if (!Array.isArray(nextMappings) || nextMappings.length > 50) {
-      throw new AppError(
-        400,
-        "invalid_field",
-        "Invalid Whisparr path mappings.",
-      );
-    }
-    const mapped: WhisparrPathMapping[] = [];
-    for (const entry of nextMappings) {
-      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-        throw new AppError(
-          400,
-          "invalid_field",
-          "Invalid Whisparr path mappings.",
-        );
-      }
-      const e = entry as Record<string, unknown>;
-      if (
-        typeof e.whisparrPrefix !== "string" ||
-        e.whisparrPrefix === "" ||
-        e.whisparrPrefix.length > 1024 ||
-        typeof e.jellyfinPrefix !== "string" ||
-        e.jellyfinPrefix === "" ||
-        e.jellyfinPrefix.length > 1024
-      ) {
-        throw new AppError(
-          400,
-          "invalid_field",
-          "Invalid Whisparr path mappings.",
-        );
-      }
-      mapped.push({
-        whisparrPrefix: e.whisparrPrefix,
-        jellyfinPrefix: e.jellyfinPrefix,
-      });
-    }
-    pathMappings = mapped;
-  }
-  if ((nextDelivery !== undefined || nextMappings !== undefined) && !whisparr) {
-    throw new AppError(
-      400,
-      "invalid_field",
-      "Whisparr must be configured to set delivery settings.",
-    );
-  }
-  if (whisparr) {
-    whisparr = {
-      ...whisparr,
-      ...(delivery ? { delivery } : {}),
-      ...(pathMappings ? { pathMappings } : {}),
-    };
-  }
+  const jellyfin = await nextJellyfin(ctx.config.jellyfin, body);
+  const whisparr = nextWhisparr(ctx.config.whisparr, body);
   const providers = nextProviderCredentials(ctx.config.providers, body);
   const config: IntegrationConfig = {
     jellyfin,
