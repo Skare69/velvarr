@@ -193,20 +193,25 @@ const ICON_PATHS = {
   "arrow-right": "M4 12h16m-6-6 6 6-6 6",
   check: "m5 12 4 4L19 6",
   plus: "M12 4v16M4 12h16",
+  star: "m12 3.6 2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.2-4.1 5.8-.8L12 3.6Z",
+  tag: "M20 12.5 12.5 20a2 2 0 0 1-2.8 0L4 14.2V4h10.2l5.8 5.7a2 2 0 0 1 0 2.8ZM8.5 8.5h.01",
 } as const;
 
 export function Icon({
   name,
   className,
+  filled,
 }: {
   name: keyof typeof ICON_PATHS;
   className?: string;
+  /** Solid fill instead of outline — used for on/off states (followed star). */
+  filled?: boolean;
 }) {
   return (
     <svg
       className={`icon ${className ?? ""}`}
       viewBox="0 0 24 24"
-      fill="none"
+      fill={filled ? "currentColor" : "none"}
       stroke="currentColor"
       strokeWidth="1.7"
       strokeLinecap="round"

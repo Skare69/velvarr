@@ -65,6 +65,17 @@ export type CatalogRecord = {
   updatedAt: number;
 };
 
+/** One account's performer follow. `name`/`imageUrl` are snapshots taken at
+ * follow time: a rename or new photo upstream does not silently rewrite
+ * history. */
+export type PerformerFollow = {
+  id: string; // app-owned uuid
+  reference: CatalogReference; // kind is always "performer"
+  name: string; // snapshot taken at follow time
+  imageUrl: string | null; // snapshot taken at follow time
+  createdAt: number; // unix ms
+};
+
 export type RequestDecision = "pending" | "approved" | "declined" | "cancelled";
 
 /** One user's durable intent. Independent of acquisition and playback state. */

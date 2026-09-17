@@ -24,6 +24,7 @@ import type {
   IntegrationConfig,
   MediaKind,
   MediaReference,
+  PerformerFollow,
   RemovalAttemptOutcome,
   RemovalExecution,
   RemovalDecision,
@@ -40,7 +41,7 @@ import { AppError } from "./http.ts";
 
 // Schema identity: application_id spells 'VLVR', user_version is the schema version.
 const APP_ID = 0x564c5652;
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 // ponytail: fixed 7-day session TTL; make it an env knob only if an operator asks.
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const BUSY_TIMEOUT_MS = 5000;
@@ -119,6 +120,15 @@ type RequestRow = {
   decision: string;
   created_at: number;
   decided_at: number | null;
+};
+type PerformerFollowRow = {
+  id: string;
+  account_id: string;
+  provider: string;
+  external_id: string;
+  name: string;
+  image_url: string | null;
+  created_at: number;
 };
 type AcquisitionRow = {
   id: string;
@@ -244,6 +254,12 @@ type Statements = {
   recoverExecutingRemovals: StatementSync;
   releaseRemovalClaim: StatementSync;
   releaseAllRemovalClaims: StatementSync;
+  insertPerformerFollow: StatementSync;
+  getPerformerFollow: StatementSync;
+  listPerformerFollows: StatementSync;
+  listPerformerFollowsByProvider: StatementSync;
+  deletePerformerFollow: StatementSync;
+  isFollowingPerformer: StatementSync;
 };
 
 const MIGRATIONS: Record<number, string> = {
@@ -461,6 +477,22 @@ const MIGRATIONS: Record<number, string> = {
           AND r.decision = 'approved'
       );
     END;
+  `,
+  6: `
+    CREATE TABLE performer_follows (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
+      provider TEXT NOT NULL CHECK (provider IN ('tpdb', 'stashdb')),
+      external_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      image_url TEXT,
+      created_at INTEGER NOT NULL
+    );
+    -- One follow per account per performer.
+    CREATE UNIQUE INDEX performer_follows_account
+      ON performer_follows (account_id, provider, external_id);
+    CREATE INDEX performer_follows_newest
+      ON performer_follows (account_id, created_at DESC);
   `,
 };
 
@@ -775,6 +807,24 @@ function S(): Statements {
       ),
       releaseAllRemovalClaims: d.prepare(
         "UPDATE removal_executions SET claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE claim_token IS NOT NULL",
+      ),
+      insertPerformerFollow: d.prepare(
+        "INSERT INTO performer_follows (id, account_id, provider, external_id, name, image_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ),
+      getPerformerFollow: d.prepare(
+        "SELECT * FROM performer_follows WHERE id = ?",
+      ),
+      listPerformerFollows: d.prepare(
+        "SELECT * FROM performer_follows WHERE account_id = ? ORDER BY created_at DESC, id DESC",
+      ),
+      listPerformerFollowsByProvider: d.prepare(
+        "SELECT * FROM performer_follows WHERE account_id = ? AND provider = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+      ),
+      deletePerformerFollow: d.prepare(
+        "DELETE FROM performer_follows WHERE account_id = ? AND provider = ? AND external_id = ?",
+      ),
+      isFollowingPerformer: d.prepare(
+        "SELECT 1 FROM performer_follows WHERE account_id = ? AND provider = ? AND external_id = ?",
       ),
     };
   }
@@ -1379,6 +1429,20 @@ function rowToRequest(row: RequestRow): RequestRecord {
   };
 }
 
+function rowToPerformerFollow(row: PerformerFollowRow): PerformerFollow {
+  return {
+    id: row.id,
+    reference: {
+      provider: row.provider as CatalogProvider,
+      kind: "performer",
+      id: row.external_id,
+    },
+    name: row.name,
+    imageUrl: row.image_url,
+    createdAt: row.created_at,
+  };
+}
+
 function rowToAcquisition(row: AcquisitionRow): AcquisitionRecord {
   return {
     id: row.id,
@@ -1541,6 +1605,117 @@ export function createRequest(
     }
     return rowToRequest(S().getRequest.get(id) as RequestRow);
   });
+}
+
+// --- performer follows ---
+
+/** Records one account's performer follow. Admission is read from the current
+ * stored account, never from a caller-supplied stale Account. */
+export function followPerformer(
+  accountId: string,
+  reference: CatalogReference,
+  name: string,
+  imageUrl: string | null,
+): PerformerFollow {
+  if (!validCatalogRef(reference, ["performer"])) {
+    throw new AppError(
+      400,
+      "invalid_reference",
+      "performer reference is invalid",
+    );
+  }
+  const trimmed = name.trim();
+  if (!nonemptyString(trimmed, 500)) {
+    throw new AppError(400, "invalid_field", "performer name is required");
+  }
+  const d = open();
+  return inTransaction(d, () => {
+    const account = S().getAccount.get(accountId) as AccountRow | undefined;
+    if (!account || account.enabled !== 1) {
+      throw new AppError(
+        403,
+        "account_not_admitted",
+        "only admitted accounts may follow performers",
+      );
+    }
+    const id = randomUUID();
+    try {
+      S().insertPerformerFollow.run(
+        id,
+        accountId,
+        reference.provider,
+        reference.id,
+        trimmed,
+        imageUrl ?? null,
+        Date.now(),
+      );
+    } catch (e) {
+      if (
+        isUniqueConflict(e, [
+          "performer_follows.account_id",
+          "performer_follows.external_id",
+        ])
+      ) {
+        throw new AppError(
+          409,
+          "already_following",
+          "this performer is already followed",
+        );
+      }
+      throw e;
+    }
+    return rowToPerformerFollow(
+      S().getPerformerFollow.get(id) as PerformerFollowRow,
+    );
+  });
+}
+
+/** Follows are personal: own rows only, newest first. There is deliberately
+ * no elevated sees-everything variant here, unlike listRequests. */
+export function listFollows(accountId: string): PerformerFollow[] {
+  return (S().listPerformerFollows.all(accountId) as PerformerFollowRow[]).map(
+    rowToPerformerFollow,
+  );
+}
+
+export function listFollowsByProvider(
+  accountId: string,
+  provider: CatalogProvider,
+  limit: number,
+): PerformerFollow[] {
+  // ponytail: hard 1..500 clamp — a shelf never needs more; upgrade path is a
+  // cursor page if a follower count ever justifies it.
+  const capped = Math.min(Math.max(Math.trunc(limit) || 0, 1), 500);
+  return (
+    S().listPerformerFollowsByProvider.all(
+      accountId,
+      provider,
+      capped,
+    ) as PerformerFollowRow[]
+  ).map(rowToPerformerFollow);
+}
+
+export function unfollowPerformer(
+  accountId: string,
+  provider: string,
+  externalId: string,
+): void {
+  // The account is part of the WHERE: one account can never delete another's
+  // follow, and a missing or foreign row is indistinguishable 404.
+  const res = S().deletePerformerFollow.run(accountId, provider, externalId);
+  if (res.changes === 0) {
+    throw new AppError(404, "follow_not_found", "follow not found");
+  }
+}
+
+export function isFollowing(
+  accountId: string,
+  provider: string,
+  externalId: string,
+): boolean {
+  return (
+    S().isFollowingPerformer.get(accountId, provider, externalId) !== undefined
+  );
 }
 
 /** Durable request view, filtered by the viewer's role: requesters see only

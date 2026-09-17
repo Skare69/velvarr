@@ -216,40 +216,56 @@ export function SearchView() {
         id: null,
       };
       // The reset must come first: spreading it last silently overwrote every
-      // destination value, so no result could navigate anywhere.
+      // destination value, so no result could navigate anywhere. Every branch
+      // leaves the results behind for another surface, so every branch pushes:
+      // replacing here destroyed the search entry, and Back then skipped past
+      // the result the user had just opened.
+      const push = { push: true };
       if (r.kind === "movie")
-        setP({
-          ...clear,
-          view: "movies",
-          provider: r.provider,
-          kind: "movie",
-          id: r.id,
-        });
+        setP(
+          {
+            ...clear,
+            view: "movies",
+            provider: r.provider,
+            kind: "movie",
+            id: r.id,
+          },
+          push,
+        );
       else if (r.kind === "scene")
-        setP({
-          ...clear,
-          view: "scenes",
-          provider: r.provider,
-          kind: "scene",
-          id: r.id,
-        });
+        setP(
+          {
+            ...clear,
+            view: "scenes",
+            provider: r.provider,
+            kind: "scene",
+            id: r.id,
+          },
+          push,
+        );
       else if (r.kind === "performer")
-        setP({
-          ...clear,
-          view: "performers",
-          provider: r.provider,
-          kind: "performer",
-          id: r.id,
-        });
+        setP(
+          {
+            ...clear,
+            view: "performers",
+            provider: r.provider,
+            kind: "performer",
+            id: r.id,
+          },
+          push,
+        );
       else if (r.provider === "stashdb")
-        setP({
-          ...clear,
-          view: "scenes",
-          provider: "stashdb",
-          kind: "scene",
-          studio: r.id,
-        });
-      else setP({ ...clear, view: "movies", studio: r.id });
+        setP(
+          {
+            ...clear,
+            view: "scenes",
+            provider: "stashdb",
+            kind: "scene",
+            studio: r.id,
+          },
+          push,
+        );
+      else setP({ ...clear, view: "movies", studio: r.id }, push);
     },
     [setP],
   );

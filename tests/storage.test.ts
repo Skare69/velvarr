@@ -2263,3 +2263,219 @@ test("a non-media kind is refused for removals exactly as for acquisitions", () 
     (e: { code: string }) => e.code === "invalid_reference",
   );
 });
+
+// --- performer follows (per-account follow graph) ---
+
+const FOLLOW_TPDB_A: CatalogReference = {
+  provider: "tpdb",
+  kind: "performer",
+  id: "e1a7c3d9-4f2b-4c8e-a5d6-1b2c3d4e5f01",
+};
+const FOLLOW_TPDB_B: CatalogReference = {
+  provider: "tpdb",
+  kind: "performer",
+  id: "e1a7c3d9-4f2b-4c8e-a5d6-1b2c3d4e5f02",
+};
+const FOLLOW_TPDB_C: CatalogReference = {
+  provider: "tpdb",
+  kind: "performer",
+  id: "e1a7c3d9-4f2b-4c8e-a5d6-1b2c3d4e5f03",
+};
+const FOLLOW_STASH_A: CatalogReference = {
+  provider: "stashdb",
+  kind: "performer",
+  id: "f2b8d4e0-5a3c-4d9f-b6e7-2c3d4e5f6a01",
+};
+
+test("a performer follow round-trips with its snapshot and a second unfollow reports follow_not_found", () => {
+  freshDir();
+  const grant = storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  const follow = storage.followPerformer(
+    grant.account.id,
+    FOLLOW_TPDB_A,
+    "Fixture Performer",
+    "https://cdn.theporndb.net/fixture-poster.jpg",
+  );
+  assert.deepEqual(follow.reference, {
+    provider: "tpdb",
+    kind: "performer",
+    id: FOLLOW_TPDB_A.id,
+  });
+  assert.equal(follow.name, "Fixture Performer");
+  assert.equal(follow.imageUrl, "https://cdn.theporndb.net/fixture-poster.jpg");
+  assert.ok(follow.id);
+  assert.ok(follow.createdAt > 0);
+
+  assert.deepEqual(storage.listFollows(grant.account.id), [follow]);
+  assert.equal(
+    storage.isFollowing(grant.account.id, "tpdb", FOLLOW_TPDB_A.id),
+    true,
+  );
+
+  storage.unfollowPerformer(grant.account.id, "tpdb", FOLLOW_TPDB_A.id);
+  assert.deepEqual(storage.listFollows(grant.account.id), []);
+  assert.equal(
+    storage.isFollowing(grant.account.id, "tpdb", FOLLOW_TPDB_A.id),
+    false,
+  );
+  assert.throws(
+    () => storage.unfollowPerformer(grant.account.id, "tpdb", FOLLOW_TPDB_A.id),
+    (e: { code: string }) => e.code === "follow_not_found",
+  );
+});
+
+test("following the same performer twice is already_following while two accounts follow it independently", () => {
+  freshDir();
+  const grant = storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  const [imported] = storage.importAccounts([otherUser()]);
+  assert.ok(imported);
+  const other = admit(imported.id);
+  const follow = storage.followPerformer(
+    grant.account.id,
+    FOLLOW_STASH_A,
+    "Fixture Performer",
+    null,
+  );
+  assert.throws(
+    () =>
+      storage.followPerformer(
+        grant.account.id,
+        FOLLOW_STASH_A,
+        "Fixture Performer",
+        null,
+      ),
+    (e: { code: string }) => e.code === "already_following",
+  );
+  // The unique index is per account: another account follows the same
+  // performer side by side.
+  const theirs = storage.followPerformer(
+    other.id,
+    FOLLOW_STASH_A,
+    "Fixture Performer",
+    null,
+  );
+  assert.notEqual(follow.id, theirs.id);
+  assert.deepEqual(storage.listFollows(other.id), [theirs]);
+  assert.equal(
+    storage.isFollowing(other.id, "stashdb", FOLLOW_STASH_A.id),
+    true,
+  );
+});
+
+test("follows are private: another account neither lists nor deletes them", () => {
+  freshDir();
+  const grant = storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  const [imported] = storage.importAccounts([otherUser()]);
+  assert.ok(imported);
+  const other = admit(imported.id);
+  const follow = storage.followPerformer(
+    grant.account.id,
+    FOLLOW_TPDB_A,
+    "Fixture Performer",
+    null,
+  );
+
+  assert.deepEqual(storage.listFollows(other.id), []);
+  assert.equal(storage.isFollowing(other.id, "tpdb", FOLLOW_TPDB_A.id), false);
+  // A cross-account delete is the same 404 as a missing row — and the row
+  // survives it.
+  assert.throws(
+    () => storage.unfollowPerformer(other.id, "tpdb", FOLLOW_TPDB_A.id),
+    (e: { code: string }) => e.code === "follow_not_found",
+  );
+  assert.deepEqual(storage.listFollows(grant.account.id), [follow]);
+});
+
+test("follow validation refuses non-performer references, unknown providers, non-UUID ids, blank names, and un-admitted accounts", () => {
+  freshDir();
+  const grant = storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  const [imported] = storage.importAccounts([otherUser()]);
+  assert.ok(imported);
+  const refusesReference = (reference: CatalogReference) =>
+    assert.throws(
+      () =>
+        storage.followPerformer(
+          grant.account.id,
+          reference,
+          "Fixture Performer",
+          null,
+        ),
+      (e: { code: string }) => e.code === "invalid_reference",
+    );
+  // Not a performer kind.
+  refusesReference({ provider: "tpdb", kind: "movie", id: MOVIE.id });
+  // Unknown provider.
+  refusesReference({
+    provider: "junk",
+    kind: "performer",
+    id: FOLLOW_TPDB_A.id,
+  } as unknown as CatalogReference);
+  // Non-UUID id.
+  refusesReference({ provider: "tpdb", kind: "performer", id: "not-a-uuid" });
+
+  // Blank (whitespace-only) name.
+  assert.throws(
+    () => storage.followPerformer(grant.account.id, FOLLOW_TPDB_A, "   ", null),
+    (e: { code: string }) => e.code === "invalid_field",
+  );
+  // The imported account is still disabled: import admits nothing.
+  assert.throws(
+    () =>
+      storage.followPerformer(
+        imported.id,
+        FOLLOW_TPDB_A,
+        "Fixture Performer",
+        null,
+      ),
+    (e: { code: string }) => e.code === "account_not_admitted",
+  );
+  // No refused call wrote anything.
+  assert.deepEqual(storage.listFollows(grant.account.id), []);
+});
+
+test("listFollowsByProvider is provider-scoped, newest-first, and honours its limit", async () => {
+  freshDir();
+  const grant = storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  // Separate the rows in time so newest-first is deterministic (the list
+  // breaks created_at ties by id, which is random). The stamp is read inside
+  // storage from the real clock — no seam for fake timers — so a genuine
+  // few-ms spacing is the only way to order the inserts.
+  const followLater = async (reference: CatalogReference) => {
+    const follow = storage.followPerformer(
+      grant.account.id,
+      reference,
+      reference.id,
+      null,
+    );
+    const spaced = Promise.withResolvers<void>();
+    setTimeout(spaced.resolve, 5);
+    await spaced.promise;
+    return follow;
+  };
+  await followLater(FOLLOW_TPDB_A);
+  await followLater(FOLLOW_STASH_A);
+  const second = await followLater(FOLLOW_TPDB_B);
+  const third = await followLater(FOLLOW_TPDB_C);
+
+  const tpdb = storage.listFollowsByProvider(grant.account.id, "tpdb", 10);
+  assert.deepEqual(
+    tpdb.map((f) => f.reference.id),
+    [FOLLOW_TPDB_C.id, FOLLOW_TPDB_B.id, FOLLOW_TPDB_A.id],
+  );
+  assert.ok(tpdb.every((f) => f.reference.provider === "tpdb"));
+  assert.deepEqual(
+    storage.listFollowsByProvider(grant.account.id, "tpdb", 2).map((f) => f.id),
+    [third.id, second.id],
+  );
+  assert.deepEqual(
+    storage
+      .listFollowsByProvider(grant.account.id, "stashdb", 10)
+      .map((f) => f.reference.id),
+    [FOLLOW_STASH_A.id],
+  );
+  // The unscoped list is newest-first across providers too.
+  assert.deepEqual(
+    storage.listFollows(grant.account.id).map((f) => f.reference.id),
+    [FOLLOW_TPDB_C.id, FOLLOW_TPDB_B.id, FOLLOW_STASH_A.id, FOLLOW_TPDB_A.id],
+  );
+});
