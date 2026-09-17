@@ -1730,8 +1730,10 @@ function avHandler(opts: {
     if (path === `/users/${ME_ID}/items`) {
       if (opts.sweepStatus) return sendJson(res, opts.sweepStatus, {});
       const items = opts.entries.map((e) => e.item);
+      const start = Number(q.get("startIndex") ?? 0);
+      const limit = Number(q.get("limit") ?? items.length);
       return sendJson(res, 200, {
-        Items: items,
+        Items: items.slice(start, start + limit),
         TotalRecordCount: items.length,
       });
     }
@@ -1814,6 +1816,50 @@ test("resolvePlaybackAccess matches exactly by provider id and links only playab
       fx.log.every((r) => r.method === "GET"),
       "read-only",
     );
+  });
+});
+
+test("resolvePlaybackAccess pages rich Jellyfin metadata without losing late matches or ambiguity", async () => {
+  // A 300-item sweep exceeds the 2 MiB response guard with realistic metadata.
+  const entries: AvEntry[] = Array.from({ length: 320 }, (_, i) => ({
+    lib: LIB_A,
+    item: {
+      ...avItem({
+        id: hexId(0x2000 + i),
+        name: `Library item ${i}`,
+        path: `/media/library/${i}.mkv`,
+      }),
+      Overview: "x".repeat(10_000),
+    },
+  }));
+  const match = avEntries()[0]!;
+  entries.push(match);
+  await withFixture(avHandler({ entries }), async (fx) => {
+    const config = avConfig(fx.origin, [LIB_A]);
+    const hints = {
+      provider: "tpdb",
+      kind: "movie",
+      id: "tpdb-movie-uuid",
+    } as const;
+    const verdict = await resolvePlaybackAccess(
+      config,
+      TOKEN,
+      account([LIB_A]),
+      hints,
+    );
+    assert.equal(verdict.outcome, "available", JSON.stringify(verdict));
+    assert.equal(avItemId(verdict), AV_PID);
+
+    // The same identity on an earlier page must prevent a false watch link.
+    entries[0]!.item.ProviderIds = match.item.ProviderIds;
+    const ambiguous = await resolvePlaybackAccess(
+      config,
+      TOKEN,
+      account([LIB_A]),
+      hints,
+    );
+    assert.equal(ambiguous.outcome, "ambiguous");
+    assert.equal("watchUrl" in ambiguous, false);
   });
 });
 

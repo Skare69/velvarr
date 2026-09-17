@@ -842,7 +842,9 @@ interface CandidateItem {
 // query filters, so identity matching must enumerate visible items once per
 // resolve and compare in-process. The caps bound that sweep; if a server's
 // library outgrows them, add a persisted item index keyed by provider id.
-const SWEEP_PAGE = 300;
+// Rich MediaSources made even 192 rows exceed the 2 MiB JSON guard.
+// Use the same bounded page size as cross-library browsing.
+const SWEEP_PAGE = 60;
 const SWEEP_MAX_ITEMS = 12_000;
 
 function pathComponents(path: string): string[] {
