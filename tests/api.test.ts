@@ -1708,6 +1708,47 @@ test("requests: lifecycle, autoApprove, privacy, roles, origin", async () => {
     }),
   );
 
+  // A path mapping needs both prefixes; an empty one is rejected by the
+  // request layer (`invalid_field`) before the storage guard ever sees it.
+  const badMapping = await errorShape(
+    await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: {
+        jellyfinUrl,
+        jellyfinExternalUrl: jellyfinUrl,
+        pathMappings: [{ whisparrPrefix: "", jellyfinPrefix: "/media" }],
+      },
+    }),
+  );
+  assert.equal(badMapping.code, "invalid_field");
+
+  // Delivery settings cannot outlive the Whisparr connection they configure:
+  // removing Whisparr in the same body that sets delivery is rejected, and
+  // the stored delivery settings survive the rejection.
+  await errorShape(
+    await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: {
+        jellyfinUrl,
+        jellyfinExternalUrl: jellyfinUrl,
+        whisparrUrl: "",
+        delivery: {
+          enabled: true,
+          rootFolderPath: "/movies",
+          qualityProfileId: 1,
+          searchOnAdd: true,
+        },
+      },
+    }),
+  );
+  const stillSet = await call("GET", "/api/admin/integrations", {
+    cookie: owner,
+  });
+  const kept = (await stillSet.json()) as {
+    whisparr: { delivery: { rootFolderPath: string } | null } | null;
+  };
+  assert.equal(kept.whisparr?.delivery?.rootFolderPath, "/movies");
+
   // Real provider verification on the admin surface; unconfigured stays honest.
   const providers = await call("GET", "/api/admin/providers", {
     cookie: owner,
