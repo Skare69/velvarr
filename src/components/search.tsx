@@ -132,7 +132,7 @@ function CategorySection({
             ))}
           </div>
         ) : cat.kind === "scene" ? (
-          <div className="scene-grid">
+          <div className="poster-grid">
             {cat.items.map((it) => (
               <SceneCard key={it.reference.id} item={it} onOpen={onOpen} />
             ))}

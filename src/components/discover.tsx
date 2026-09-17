@@ -127,17 +127,12 @@ const DATE_FMT = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
 
 /* ---------- Skeletons: same geometry as the final rail ---------- */
 
-function RailSkeleton({ poster, count }: { poster: boolean; count: number }) {
+function RailSkeleton({ count }: { count: number }) {
   return (
     <div className="discovery-rail" aria-hidden="true">
       {Array.from({ length: count }, (_, i) => (
-        <div
-          key={i}
-          className={`discovery-tile ${poster ? "discovery-tile-poster" : "discovery-tile-scene"}`}
-        >
-          <div
-            className={`skel w-full ${poster ? "aspect-[2/3]" : "aspect-video"}`}
-          />
+        <div key={i} className="discovery-tile discovery-tile-poster">
+          <div className="skel w-full aspect-[2/3]" />
         </div>
       ))}
     </div>
@@ -221,9 +216,7 @@ function CatalogTile({
 }) {
   const kind = item.reference.kind;
   return (
-    <div
-      className={`discovery-tile ${kind === "scene" ? "discovery-tile-scene" : "discovery-tile-poster"}`}
-    >
+    <div className="discovery-tile discovery-tile-poster">
       {kind === "scene" ? (
         <SceneCard item={item} onOpen={onOpen} />
       ) : kind === "performer" ? (
@@ -294,7 +287,7 @@ function RequestTile({
   const art = useRequestArt(item.media);
   const label = DECISION_LABELS[item.decision];
   return (
-    <div className="discovery-tile discovery-tile-scene">
+    <div className="discovery-tile discovery-tile-poster">
       <button
         type="button"
         className="discovery-art-card"
@@ -337,7 +330,7 @@ function LibraryTile({ item }: { item: LibraryItem }) {
       ? Math.round(item.durationTicks / 600000000)
       : null;
   return (
-    <div className="discovery-tile discovery-tile-scene">
+    <div className="discovery-tile discovery-tile-poster">
       <div className="discovery-art-card">
         <div className="discovery-art">
           <ItemImage name={item.name} src={item.image} />
@@ -357,8 +350,12 @@ function LibraryTile({ item }: { item: LibraryItem }) {
               href={item.watchUrl}
               target="_blank"
               rel="noreferrer"
+              aria-label={`Open ${item.name} in Jellyfin`}
             >
-              <Icon name="play" /> Open in Jellyfin
+              {/* ponytail: a 2:3 tile is 160px wide (122px on phones), so the
+                  visible label is the destination and the full action lives in
+                  aria-label. */}
+              <Icon name="play" /> Jellyfin
             </a>
           ) : (
             <span className="discovery-library-note">No playback access</span>
@@ -384,9 +381,6 @@ function ShelfSection({
   onBrowse: (updates: Record<string, string | null>) => void;
   onOpen: (r: CatalogReference) => void;
 }) {
-  const isSceneShelf = shelf.browse?.params.kind === "scene";
-  const posterShelf = shelf.kind === "catalog" && !isSceneShelf;
-
   /* One rail body per shelf kind; panel bodies (errors/empty) get none. */
   const catalogItems = shelf.items?.filter(
     (it): it is CatalogDetail => "reference" in it,
@@ -407,7 +401,7 @@ function ShelfSection({
   if (shelf.error) {
     if (busy) {
       // Retrying the page: keep the shelf slot reserved with its skeleton.
-      body = <RailSkeleton poster={posterShelf} count={6} />;
+      body = <RailSkeleton count={6} />;
     } else if (NOT_CONFIGURED_CODES.includes(shelf.error.code)) {
       // A missing key is stated as a missing key — never an outage, never
       // an empty catalog, never with a retry that cannot help.
@@ -578,11 +572,11 @@ export function DiscoverShelves() {
     return (
       <section aria-label="Discover" aria-busy="true">
         {PAGE_HEADING}
-        <RailSkeleton poster={false} count={5} />
-        <RailSkeleton poster={false} count={5} />
-        <RailSkeleton poster={true} count={6} />
-        <RailSkeleton poster={false} count={5} />
-        <RailSkeleton poster={false} count={5} />
+        <RailSkeleton count={5} />
+        <RailSkeleton count={5} />
+        <RailSkeleton count={6} />
+        <RailSkeleton count={5} />
+        <RailSkeleton count={5} />
       </section>
     );
   }

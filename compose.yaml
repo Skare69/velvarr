@@ -2,7 +2,7 @@ services:
   velvarr:
     # Pull-only deployment. To build from source instead, replace image with
     # "velvarr:local" and uncomment build.
-    image: ghcr.io/skare69/velvarr:v0.1.5
+    image: ghcr.io/skare69/velvarr:v0.2.0
     # build: .
     restart: unless-stopped
     ports:

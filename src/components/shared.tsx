@@ -312,7 +312,7 @@ export function SceneCard({
       className="media-card scene-card"
       onClick={() => onOpen(item.reference)}
     >
-      <div className="media-art aspect-video">
+      <div className="media-art aspect-[2/3]">
         <ItemImage
           name={item.title}
           src={imgSrc(item.imageUrl)}

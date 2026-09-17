@@ -44,15 +44,15 @@
   background:
     linear-gradient(
       180deg,
-      rgb(8 11 20 / 0.55) 0%,
-      rgb(8 11 20 / 0.35) 40%,
-      rgb(8 11 20 / 0.92) 100%
+      color-mix(in srgb, var(--color-canvas) 55%, transparent) 0%,
+      color-mix(in srgb, var(--color-canvas) 35%, transparent) 40%,
+      color-mix(in srgb, var(--color-canvas) 92%, transparent) 100%
     ),
     linear-gradient(
       90deg,
-      rgb(8 11 20 / 0.85) 0%,
-      rgb(8 11 20 / 0.55) 55%,
-      rgb(8 11 20 / 0.25) 100%
+      color-mix(in srgb, var(--color-canvas) 85%, transparent) 0%,
+      color-mix(in srgb, var(--color-canvas) 55%, transparent) 55%,
+      color-mix(in srgb, var(--color-canvas) 25%, transparent) 100%
     );
 }
 .cat-hero-inner {
@@ -72,10 +72,6 @@
   overflow: hidden;
   background: var(--color-raised);
   box-shadow: 0 10px 34px rgb(0 0 0 / 0.55);
-}
-.cat-poster-wide {
-  width: 19rem;
-  aspect-ratio: 16 / 9;
 }
 .cat-poster-square {
   aspect-ratio: 1;
@@ -153,9 +149,6 @@
   }
   .cat-poster {
     width: 8.5rem;
-  }
-  .cat-poster-wide {
-    width: 100%;
   }
   .cat-hero-copy {
     width: 100%;
@@ -251,7 +244,7 @@
   flex-direction: column;
 }
 .cat-drawer::backdrop {
-  background: rgb(5 8 15 / 0.6);
+  background: color-mix(in srgb, var(--color-canvas) 72%, transparent);
 }
 @media (prefers-reduced-motion: no-preference) {
   .cat-drawer[open] {

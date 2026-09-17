@@ -2,11 +2,6 @@
    Palette tokens and shared component classes (.btn, .panel, .chip, …) live
    in globals.css — this file only adds what those cannot express. */
 
-:root {
-  /* Approval green, mixed to the same softness as --color-danger. */
-  --views-ok: #93cfae;
-}
-
 /* ---------- Search ---------- */
 
 /* The quoted query in the heading carries the accent. */
@@ -109,9 +104,9 @@
 }
 
 .state-badge[data-state="approved"] {
-  border-color: color-mix(in srgb, var(--views-ok) 55%, transparent);
-  background: color-mix(in srgb, var(--views-ok) 14%, transparent);
-  color: var(--views-ok);
+  border-color: color-mix(in srgb, var(--color-ok) 55%, transparent);
+  background: color-mix(in srgb, var(--color-ok) 14%, transparent);
+  color: var(--color-ok);
 }
 
 .state-badge[data-state="declined"] {
