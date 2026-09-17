@@ -47,7 +47,13 @@ const TPDB_MOVIE = "2a2b3c4d-0000-0000-0000-000000000001";
 const TPDB_MOVIE2 = "2a2b3c4d-0000-0000-0000-000000000002";
 const TPDB_MOVIE3 = "2a2b3c4d-0000-0000-0000-000000000003";
 const TPDB_MOVIE4 = "2a2b3c4d-0000-0000-0000-000000000004";
+// Only used by the performer-filmography bulk test: TPDB_MOVIE3 already
+// carries approved intents from earlier tests, and an active-intent row
+// would collide with the bulk's new pending intent and show up in the
+// owner's request list.
+const TPDB_MOVIE5 = "2a2b3c4d-0000-0000-0000-000000000005";
 const TPDB_PERFORMER = "2a2b3c4d-0000-0000-0000-00000000000f";
+const TPDB_PERFORMER2 = "2a2b3c4d-0000-0000-0000-00000000000e";
 const TPDB_STUDIO = "2a2b3c4d-0000-0000-0000-0000000000a1";
 const STASH_STUDIO = "3b3c4d5e-0000-0000-0000-0000000000b2";
 const STASH_SCENE = "4c4d5e6f-0000-0000-0000-0000000000c3";
@@ -140,6 +146,8 @@ const fx = {
 // Sequential tests share session cookies through this module state.
 let owner = "";
 let member = "";
+let member2 = "";
+let nogrants = "";
 
 const PNG_1PX = Uint8Array.from(
   Buffer.from(
@@ -505,6 +513,31 @@ async function tpdbHandler(
   }
   if (p === `/sites/${TPDB_STUDIO}`)
     return json(res, 200, { data: tpdbSiteRow(TPDB_STUDIO) });
+  if (p === "/tags")
+    return json(res, 200, {
+      data: [{ uuid: TAG_A, name: "Fixture Tag A" }],
+      meta: { total: 1 },
+      links: {},
+    });
+  // Performer filmography (the paging-only route). The scenes route keeps a
+  // provider `next` link alive so the bulk cap is reachable across pages;
+  // the movies route has none, so a bulk pass stops after one page.
+  if (p === `/performers/${TPDB_PERFORMER}/scenes`)
+    return json(res, 200, {
+      data: [tpdbMovieRow(TPDB_MOVIE2)],
+      meta: { total: 1 },
+      links: { next: "https://fixture.test/next" },
+    });
+  if (p === `/performers/${TPDB_PERFORMER}/movies`)
+    // Fresh movie id: TPDB_MOVIE3 already carries approved intents from the
+    // autoApprove and availability tests, which would both collide with the
+    // bulk's new pending intent (active-intent unique index) and appear in
+    // the owner's request list below.
+    return json(res, 200, {
+      data: [tpdbMovieRow(TPDB_MOVIE5)],
+      meta: { total: 1 },
+      links: {},
+    });
   if (p === `/movies/${TPDB_MOVIE}`)
     return json(res, 200, { data: tpdbMovieRow(TPDB_MOVIE) });
   json(res, 404, {});
@@ -577,6 +610,11 @@ async function stashdbHandler(
       },
     });
   }
+  if (query.includes("searchTag")) {
+    return json(res, 200, {
+      data: { searchTag: [{ id: TAG_B, name: "Fixture Stash Tag" }] },
+    });
+  }
   json(res, 200, { data: null });
 }
 
@@ -608,13 +646,13 @@ type Handler = (
   request: Request,
   context: { params: Promise<{ path: string[] }> },
 ) => Promise<Response>;
-let api: { GET: Handler; POST: Handler; PATCH: Handler };
+let api: { GET: Handler; POST: Handler; PATCH: Handler; DELETE: Handler };
 let closeStorage: () => void;
 let getAcquisitionByReference: (media: {
   provider: "tpdb" | "stashdb";
   kind: "movie" | "scene";
   id: string;
-}) => { id: string } | null;
+}) => { id: string; state: string } | null;
 let recordAcquisitionObservation: (
   id: string,
   observation: unknown,
@@ -622,7 +660,7 @@ let recordAcquisitionObservation: (
 ) => unknown;
 
 async function call(
-  method: "GET" | "POST" | "PATCH",
+  method: "GET" | "POST" | "PATCH" | "DELETE",
   path: string,
   init: { origin?: string | null; cookie?: string; body?: unknown } = {},
 ): Promise<Response> {
@@ -637,7 +675,13 @@ async function call(
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
   });
   const handler =
-    method === "GET" ? api.GET : method === "POST" ? api.POST : api.PATCH;
+    method === "GET"
+      ? api.GET
+      : method === "POST"
+        ? api.POST
+        : method === "DELETE"
+          ? api.DELETE
+          : api.PATCH;
   return handler(request, {
     params: Promise.resolve({ path: segments(new URL(path, ORIGIN).pathname) }),
   });
@@ -704,6 +748,7 @@ before(async () => {
     GET: Handler;
     POST: Handler;
     PATCH: Handler;
+    DELETE: Handler;
   };
   const storageHref = pathToFileURL(
     fileURLToPath(new URL("../src/server/storage.ts", import.meta.url)),
@@ -715,7 +760,7 @@ before(async () => {
         provider: "tpdb" | "stashdb";
         kind: "movie" | "scene";
         id: string;
-      }) => { id: string } | null;
+      }) => { id: string; state: string } | null;
       recordAcquisitionObservation: (
         id: string,
         observation: unknown,
@@ -1180,11 +1225,11 @@ test("identity regressions: foreign identity, upstream invalidation, remote deni
   let cookie = await loginAs("member2");
 
   // Remote-disabled upstream account is rejected.
-  const member2 = fx.users.find((user) => user.id === MEMBER2_ID)!;
-  member2.remote = false;
+  const fxMember2 = fx.users.find((user) => user.id === MEMBER2_ID)!;
+  fxMember2.remote = false;
   const remote = await call("GET", "/api/me", { cookie });
   assert.equal(remote.status, 403);
-  member2.remote = true;
+  fxMember2.remote = true;
   // Permission denial does not revoke: still signed in after policy restored.
   assert.equal((await call("GET", "/api/me", { cookie })).status, 200);
 
@@ -1206,9 +1251,9 @@ test("identity regressions: foreign identity, upstream invalidation, remote deni
   cookie = await loginAs("member2");
 
   // Upstream disabled account: rejected and session revoked.
-  member2.disabled = true;
+  fxMember2.disabled = true;
   assert.equal((await call("GET", "/api/me", { cookie })).status, 403);
-  member2.disabled = false;
+  fxMember2.disabled = false;
   assert.equal(
     (await call("GET", "/api/me", { cookie })).status,
     401,
@@ -1216,6 +1261,10 @@ test("identity regressions: foreign identity, upstream invalidation, remote deni
   );
   cookie = await loginAs("member2");
   assert.equal((await call("GET", "/api/me", { cookie })).status, 200);
+  // The rotation proofs above spent four of the five login attempts the
+  // limiter allows for this account; the request and Wave A follow tests
+  // below share this live session instead of logging in again.
+  member2 = cookie;
 });
 
 test("integration rotation: no re-auth, pinned server, whisparr add/remove", async () => {
@@ -1827,7 +1876,7 @@ test("requests: lifecycle, autoApprove, privacy, roles, origin", async () => {
   );
 
   // member2 (no grant yet): own request stays pending.
-  const m2 = await loginAs("member2");
+  const m2 = member2; // live session from the identity test above — no fresh login (limiter).
   const m2Created = await call("POST", "/api/requests", {
     cookie: m2,
     body: { media: { provider: "tpdb", kind: "movie", id: TPDB_MOVIE2 } },
@@ -2040,7 +2089,10 @@ test("requests: lifecycle, autoApprove, privacy, roles, origin", async () => {
       .autoApprove,
     true,
   );
-  const autoCookie = await loginAs("nogrants");
+  // The autoApprove PATCH above revoked this account's earlier session by
+  // design (any grant change drops sessions), so the login lives here and
+  // every later nogrants call site reuses the cookie.
+  const autoCookie = (nogrants = await loginAs("nogrants"));
   const auto = await call("POST", "/api/requests", {
     cookie: autoCookie,
     body: { media: { provider: "tpdb", kind: "movie", id: TPDB_MOVIE3 } },
@@ -2100,7 +2152,7 @@ test("availability: distinct verdicts under the caller's own token", async () =>
 
   // denied: no granted libraries for this caller.
   fx.grants.set(NOGRANT_ID, []);
-  const noGrantCookie = await loginAs("nogrants");
+  const noGrantCookie = nogrants; // shared session from the autoApprove test above.
   const denied = await call(
     "GET",
     `/api/availability/tpdb/movie/${TPDB_MOVIE}`,
@@ -2374,6 +2426,15 @@ test("discover: five isolated shelves, honest scopes, grants, not-configured", a
       "velvarr-requests",
     ],
   );
+  // Premise for the follow-shelf tests below: this account follows nobody,
+  // so the standard five shelves are the whole page.
+  const memberFollows = await call("GET", "/api/follows", { cookie: member });
+  assert.equal(memberFollows.status, 200);
+  // json() is untyped and the suite has no validator; named const, then read.
+  const memberFollowsBody = (await memberFollows.json()) as {
+    follows: unknown[];
+  };
+  assert.deepEqual(memberFollowsBody.follows, []);
   const [movies, scenes, trending, library, requests] = shelves;
 
   // Every shelf carries items and an honest scope; none fails silently.
@@ -2453,6 +2514,518 @@ test("discover: five isolated shelves, honest scopes, grants, not-configured", a
   assert.equal(unconfTrending?.error?.code, "provider_not_configured");
   assert.equal(unconfTrending?.items, undefined);
   assert.ok((unconfMovies?.items?.length ?? 0) > 0);
+});
+
+// --- Wave A: follows, tag facet, bulk requests ---
+
+// json() arrives untyped and no schema validator exists in this suite; these
+// are the wire shapes the new routes return.
+interface FollowShape {
+  id: string;
+  reference: { provider: string; kind: string; id: string };
+  name: string;
+  imageUrl: string | null;
+  createdAt: number;
+}
+
+interface BulkCounters {
+  requested: number;
+  skipped: number;
+  autoApproved: number;
+  failed: { id: string; code: string }[];
+  scanned: number;
+  capped: boolean;
+}
+
+interface CatalogShelfItem {
+  reference: { provider: string; kind: string; id: string };
+}
+
+test("follows need a session, an accepted origin, and a performer reference", async () => {
+  assert.equal((await call("GET", "/api/follows")).status, 401);
+  assert.equal(
+    (
+      await call("POST", "/api/follows", {
+        body: {
+          performer: {
+            provider: "tpdb",
+            kind: "performer",
+            id: TPDB_PERFORMER,
+          },
+          name: "Fixture Performer",
+        },
+      })
+    ).status,
+    401,
+  );
+
+  // member2's live session comes from the identity test above; no fresh
+  // login here — the rotation proofs already spent four of the limiter's
+  // five attempts for this account.
+  // Mutations sit behind the same origin guard as every other route.
+  await errorShape(
+    await call("POST", "/api/follows", {
+      origin: null,
+      cookie: member2,
+      body: {
+        performer: { provider: "tpdb", kind: "performer", id: TPDB_PERFORMER },
+        name: "Fixture Performer",
+      },
+    }),
+    403,
+  );
+
+  // A movie is requestable media, never a followable performer.
+  const notPerformer = await errorShape(
+    await call("POST", "/api/follows", {
+      cookie: member2,
+      body: {
+        performer: { provider: "tpdb", kind: "movie", id: TPDB_MOVIE },
+        name: "Fixture Movie 1",
+      },
+    }),
+  );
+  assert.equal(notPerformer.code, "invalid_field");
+});
+
+test("a follow stores the performer snapshot, lists only for its owner, and repeats collide", async () => {
+  const created = await call("POST", "/api/follows", {
+    cookie: member2,
+    body: {
+      performer: { provider: "tpdb", kind: "performer", id: TPDB_PERFORMER },
+      name: "Fixture Performer",
+      imageUrl: "https://cdn.theporndb.net/fixture-poster.jpg",
+    },
+  });
+  assert.equal(created.status, 201);
+  const createdBody = (await created.json()) as { follow: FollowShape };
+  const follow = createdBody.follow;
+  assert.deepEqual(follow.reference, {
+    provider: "tpdb",
+    kind: "performer",
+    id: TPDB_PERFORMER,
+  });
+  assert.equal(follow.name, "Fixture Performer");
+  assert.equal(follow.imageUrl, "https://cdn.theporndb.net/fixture-poster.jpg");
+  assert.ok(follow.id);
+  assert.ok(follow.createdAt > 0);
+
+  const mine = await call("GET", "/api/follows", { cookie: member2 });
+  assert.equal(mine.status, 200);
+  const mineBody = (await mine.json()) as { follows: FollowShape[] };
+  assert.deepEqual(
+    mineBody.follows.map((f) => f.id),
+    [follow.id],
+  );
+  // Follows are personal: the owner's list stays empty.
+  const ownerList = await call("GET", "/api/follows", { cookie: owner });
+  assert.equal(ownerList.status, 200);
+  const ownerListBody = (await ownerList.json()) as { follows: unknown[] };
+  assert.deepEqual(ownerListBody.follows, []);
+
+  const dup = await call("POST", "/api/follows", {
+    cookie: member2,
+    body: {
+      performer: { provider: "tpdb", kind: "performer", id: TPDB_PERFORMER },
+      name: "Fixture Performer",
+    },
+  });
+  assert.equal(dup.status, 409);
+  const dupBody = (await dup.json()) as { error: { code: string } };
+  assert.equal(dupBody.error.code, "already_following");
+});
+
+test("a follow whose image URL is not provider artwork is accepted with a null snapshot", async () => {
+  // Deliberate degradation: the snapshot is cosmetic, the follow is not lost.
+  const created = await call("POST", "/api/follows", {
+    cookie: member2,
+    body: {
+      performer: {
+        provider: "stashdb",
+        kind: "performer",
+        id: STASH_PERFORMER,
+      },
+      name: "Fixture Stash Performer",
+      imageUrl: "https://evil.example/poster.jpg",
+    },
+  });
+  assert.equal(created.status, 201);
+  const createdBody = (await created.json()) as { follow: FollowShape };
+  assert.equal(createdBody.follow.imageUrl, null);
+  assert.equal(createdBody.follow.reference.id, STASH_PERFORMER);
+});
+
+test("unfollowing removes the follow once and then reports follow_not_found", async () => {
+  const created = await call("POST", "/api/follows", {
+    cookie: member2,
+    body: {
+      performer: { provider: "tpdb", kind: "performer", id: TPDB_PERFORMER2 },
+      name: "Second Fixture Performer",
+    },
+  });
+  assert.equal(created.status, 201);
+
+  await errorShape(
+    await call("DELETE", `/api/follows/tpdb/${TPDB_PERFORMER2}`, {
+      origin: null,
+      cookie: member2,
+    }),
+    403,
+  );
+  const gone = await call("DELETE", `/api/follows/tpdb/${TPDB_PERFORMER2}`, {
+    cookie: member2,
+  });
+  assert.equal(gone.status, 204);
+  assert.equal(await gone.text(), "");
+
+  // A repeat and a foreign delete are the same indistinguishable 404.
+  const again = await call("DELETE", `/api/follows/tpdb/${TPDB_PERFORMER2}`, {
+    cookie: member2,
+  });
+  assert.equal(again.status, 404);
+  const againBody = (await again.json()) as { error: { code: string } };
+  assert.equal(againBody.error.code, "follow_not_found");
+  const foreign = await call("DELETE", `/api/follows/tpdb/${TPDB_PERFORMER}`, {
+    cookie: owner,
+  });
+  assert.equal(foreign.status, 404);
+  const foreignBody = (await foreign.json()) as { error: { code: string } };
+  assert.equal(foreignBody.error.code, "follow_not_found");
+
+  // The foreign delete touched nothing, and the id was never removed.
+  const list = await call("GET", "/api/follows", { cookie: member2 });
+  const listBody = (await list.json()) as { follows: FollowShape[] };
+  assert.deepEqual(
+    listBody.follows.map((f) => f.reference.id).sort(),
+    [STASH_PERFORMER, TPDB_PERFORMER].sort(),
+  );
+
+  // A malformed id is refused before any deletion is attempted.
+  const malformed = await errorShape(
+    await call("DELETE", "/api/follows/tpdb/not-a-uuid", { cookie: member2 }),
+  );
+  assert.equal(malformed.code, "invalid_reference");
+});
+
+test("catalog tags are authenticated, provider-scoped, and refuse short terms and unknown providers", async () => {
+  assert.equal(
+    (await call("GET", "/api/catalog/tags?provider=tpdb&q=Fixture")).status,
+    401,
+  );
+
+  const tpdbTags = await call(
+    "GET",
+    "/api/catalog/tags?provider=tpdb&q=Fixture",
+    { cookie: member },
+  );
+  assert.equal(tpdbTags.status, 200);
+  const tpdbBody = (await tpdbTags.json()) as {
+    tags: { id: string; name: string }[];
+  };
+  // Exactly this provider's rows — never merged across providers.
+  assert.deepEqual(tpdbBody.tags, [{ id: TAG_A, name: "Fixture Tag A" }]);
+
+  const stashTags = await call(
+    "GET",
+    "/api/catalog/tags?provider=stashdb&q=Fixture",
+    { cookie: member },
+  );
+  assert.equal(stashTags.status, 200);
+  const stashBody = (await stashTags.json()) as {
+    tags: { id: string; name: string }[];
+  };
+  assert.deepEqual(stashBody.tags, [{ id: TAG_B, name: "Fixture Stash Tag" }]);
+
+  const tooShort = await errorShape(
+    await call("GET", "/api/catalog/tags?provider=tpdb&q=F", {
+      cookie: member,
+    }),
+  );
+  assert.equal(tooShort.code, "invalid_query");
+  const unknownProvider = await errorShape(
+    await call("GET", "/api/catalog/tags?provider=junk&q=Fixture", {
+      cookie: member,
+    }),
+  );
+  assert.equal(unknownProvider.code, "invalid_reference");
+});
+
+test("bulk requests file one pending intent per provider item with honest counters", async () => {
+  assert.equal(
+    (await call("POST", "/api/requests/bulk", { body: {} })).status,
+    401,
+  );
+  await errorShape(
+    await call("POST", "/api/requests/bulk", {
+      origin: null,
+      cookie: member,
+      body: {
+        performer: {
+          provider: "tpdb",
+          kind: "performer",
+          id: TPDB_PERFORMER,
+        },
+        kind: "movie",
+      },
+    }),
+    403,
+  );
+  // StashDB has no movie entity: refused before any upstream paging.
+  const noStashMovie = await errorShape(
+    await call("POST", "/api/requests/bulk", {
+      cookie: member,
+      body: {
+        performer: {
+          provider: "stashdb",
+          kind: "performer",
+          id: STASH_PERFORMER,
+        },
+        kind: "movie",
+      },
+    }),
+  );
+  assert.equal(noStashMovie.code, "invalid_query");
+
+  const body = {
+    performer: { provider: "tpdb", kind: "performer", id: TPDB_PERFORMER },
+    kind: "movie",
+  } as const;
+  const first = await call("POST", "/api/requests/bulk", {
+    cookie: member,
+    body,
+  });
+  assert.equal(first.status, 200);
+  const firstCounters = (await first.json()) as BulkCounters;
+  assert.deepEqual(firstCounters, {
+    requested: 1,
+    skipped: 0,
+    autoApproved: 0,
+    failed: [],
+    scanned: 1,
+    capped: false,
+  });
+
+  // A repeat run is skipped, never failed, and never duplicates the row.
+  const second = await call("POST", "/api/requests/bulk", {
+    cookie: member,
+    body,
+  });
+  assert.equal(second.status, 200);
+  const secondCounters = (await second.json()) as BulkCounters;
+  assert.equal(secondCounters.requested, 0);
+  assert.equal(secondCounters.skipped, 1);
+  assert.deepEqual(secondCounters.failed, []);
+
+  const listed = await call("GET", "/api/requests", { cookie: owner });
+  const listedBody = (await listed.json()) as {
+    requests: {
+      media: { provider: string; kind: string; id: string };
+      decision: string;
+    }[];
+  };
+  const rows = listedBody.requests.filter(
+    (r) =>
+      r.media.provider === "tpdb" &&
+      r.media.kind === "movie" &&
+      r.media.id === TPDB_MOVIE5,
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.decision, "pending");
+});
+
+test("bulk requests stop at the cap, report it, and re-run without duplicating", async () => {
+  const body = {
+    performer: { provider: "tpdb", kind: "performer", id: TPDB_PERFORMER },
+    kind: "scene",
+  } as const;
+  const pendingScenes = async (): Promise<number> => {
+    const listed = await call("GET", "/api/requests", { cookie: owner });
+    const listedBody = (await listed.json()) as {
+      requests: {
+        media: { provider: string; kind: string; id: string };
+        decision: string;
+      }[];
+    };
+    return listedBody.requests.filter(
+      (r) =>
+        r.media.provider === "tpdb" &&
+        r.media.kind === "scene" &&
+        r.media.id === TPDB_MOVIE2 &&
+        r.decision === "pending",
+    ).length;
+  };
+
+  const first = await call("POST", "/api/requests/bulk", {
+    cookie: member,
+    body,
+  });
+  assert.equal(first.status, 200);
+  const firstCounters = (await first.json()) as BulkCounters;
+  // The fixture's filmography chain never runs dry, so the pass reaches the
+  // hard cap: 100 titles scanned, one distinct row filed, repeats skipped.
+  assert.equal(firstCounters.capped, true);
+  assert.equal(firstCounters.scanned, 100);
+  assert.equal(firstCounters.requested, 1);
+  assert.equal(firstCounters.skipped, 99);
+  assert.deepEqual(firstCounters.failed, []);
+  assert.equal(await pendingScenes(), 1);
+
+  const second = await call("POST", "/api/requests/bulk", {
+    cookie: member,
+    body,
+  });
+  assert.equal(second.status, 200);
+  const secondCounters = (await second.json()) as BulkCounters;
+  // Re-running the capped backlog files nothing new and duplicates nothing.
+  assert.equal(secondCounters.requested, 0);
+  assert.equal(secondCounters.skipped, 100);
+  assert.deepEqual(secondCounters.failed, []);
+  assert.equal(await pendingScenes(), 1);
+});
+
+test("the autoApprove grant approves bulk requests and attaches the shared acquisition like the single path", async () => {
+  const autoCookie = nogrants; // shared session — no fresh login (limiter).
+  const bulk = await call("POST", "/api/requests/bulk", {
+    cookie: autoCookie,
+    body: {
+      performer: {
+        provider: "stashdb",
+        kind: "performer",
+        id: STASH_PERFORMER,
+      },
+      kind: "scene",
+    },
+  });
+  assert.equal(bulk.status, 200);
+  const bulkCounters = (await bulk.json()) as BulkCounters;
+  assert.deepEqual(bulkCounters, {
+    requested: 1,
+    skipped: 0,
+    autoApproved: 1,
+    failed: [],
+    scanned: 1,
+    capped: false,
+  });
+  const bulkAcquisition = getAcquisitionByReference({
+    provider: "stashdb",
+    kind: "scene",
+    id: STASH_SCENE,
+  });
+  assert.ok(bulkAcquisition);
+
+  // The single-request path attaches the same shape of shared work.
+  const single = await call("POST", "/api/requests", {
+    cookie: autoCookie,
+    body: { media: { provider: "tpdb", kind: "movie", id: TPDB_MOVIE4 } },
+  });
+  assert.equal(single.status, 201);
+  const singleBody = (await single.json()) as {
+    request: { decision: string };
+    autoApproved: boolean;
+  };
+  assert.equal(singleBody.autoApproved, true);
+  assert.equal(singleBody.request.decision, "approved");
+  const singleAcquisition = getAcquisitionByReference({
+    provider: "tpdb",
+    kind: "movie",
+    id: TPDB_MOVIE4,
+  });
+  assert.ok(singleAcquisition);
+  assert.equal(singleAcquisition.state, bulkAcquisition.state);
+  assert.notEqual(singleAcquisition.id, bulkAcquisition.id);
+});
+
+test("discover appends one followed-performer shelf per provider and isolates a provider outage", async () => {
+  // member2 follows one TPDB and one StashDB performer (from the tests above).
+  const ok = await call("GET", "/api/discover", { cookie: member2 });
+  assert.equal(ok.status, 200);
+  const shelves = await shelvesOf(ok);
+  assert.deepEqual(
+    shelves.map((shelf) => shelf.id),
+    [
+      "tpdb-recent-movies",
+      "tpdb-recent-scenes",
+      "stashdb-trending-scenes",
+      "jellyfin-recent",
+      "velvarr-requests",
+      "tpdb-followed-scenes",
+      "stashdb-followed-scenes",
+    ],
+  );
+  const tpdbFollow = shelves[5];
+  const stashFollow = shelves[6];
+  for (const shelf of [tpdbFollow, stashFollow]) {
+    assert.equal(shelf?.error, undefined, shelf?.id);
+    assert.ok((shelf?.scope ?? "").length > 10, shelf?.id);
+    assert.match(shelf?.scope ?? "", /follow/i, shelf?.id);
+    assert.equal(shelf?.browse?.view, "following", shelf?.id);
+    assert.ok((shelf?.items?.length ?? 0) > 0, `${shelf?.id} carries items`);
+  }
+  // Each follow shelf sources from its own provider only — json() is untyped;
+  // named const, then read.
+  const tpdbItems = (tpdbFollow?.items ?? []) as CatalogShelfItem[];
+  assert.equal(tpdbItems[0]?.reference.id, TPDB_MOVIE2);
+  for (const item of tpdbItems) {
+    assert.equal(item.reference.provider, "tpdb", tpdbFollow?.id);
+    assert.equal(item.reference.kind, "scene", tpdbFollow?.id);
+  }
+  const stashItems = (stashFollow?.items ?? []) as CatalogShelfItem[];
+  assert.equal(stashItems[0]?.reference.id, STASH_SCENE);
+  for (const item of stashItems) {
+    assert.equal(item.reference.provider, "stashdb", stashFollow?.id);
+    assert.equal(item.reference.kind, "scene", stashFollow?.id);
+  }
+
+  // A TPDB outage errors the TPDB shelves only; the rest of the page keeps
+  // its items — same isolation contract as the standard shelves.
+  resetMetaCache();
+  tpdbFx.fail = 3; // recent movies, recent scenes, and the filmography page
+  try {
+    const outage = await call("GET", "/api/discover", { cookie: member2 });
+    assert.equal(outage.status, 200, "shelf failure must not fail the page");
+    const outShelves = await shelvesOf(outage);
+    const byId = new Map(outShelves.map((shelf) => [shelf.id, shelf]));
+    for (const id of [
+      "tpdb-recent-movies",
+      "tpdb-recent-scenes",
+      "tpdb-followed-scenes",
+    ]) {
+      const shelf = byId.get(id);
+      assert.ok(shelf?.error, id);
+      assert.match(shelf?.error?.code ?? "", /unavailable/, id);
+      assert.equal(shelf?.items, undefined, id);
+    }
+    for (const id of [
+      "stashdb-trending-scenes",
+      "jellyfin-recent",
+      "velvarr-requests",
+      "stashdb-followed-scenes",
+    ]) {
+      const shelf = byId.get(id);
+      assert.equal(shelf?.error, undefined, id);
+    }
+    for (const id of [
+      "stashdb-trending-scenes",
+      "velvarr-requests",
+      "stashdb-followed-scenes",
+    ]) {
+      const shelf = byId.get(id);
+      assert.ok((shelf?.items?.length ?? 0) > 0, id);
+    }
+  } finally {
+    tpdbFx.fail = 0;
+  }
+
+  // Leave the standard five shelves for everyone after this test.
+  for (const [provider, id] of [
+    ["tpdb", TPDB_PERFORMER],
+    ["stashdb", STASH_PERFORMER],
+  ] as const) {
+    const removed = await call("DELETE", `/api/follows/${provider}/${id}`, {
+      cookie: member2,
+    });
+    assert.equal(removed.status, 204);
+  }
 });
 
 test("global search: seven isolated categories, auth, blank q 400", async () => {
@@ -2684,7 +3257,7 @@ test("scan lag: imported-but-unscanned is awaiting_scan; outage and denial stay 
   const denied = await call(
     "GET",
     `/api/availability/tpdb/movie/${TPDB_MOVIE4}`,
-    { cookie: await loginAs("nogrants") },
+    { cookie: nogrants },
   );
   assert.equal((await outcomeOf(denied)).outcome, "denied");
 
@@ -2780,7 +3353,7 @@ test("warmed library artwork and detail refuse anonymous, library-denied and rev
 
   // Library-denied: admitted but granted no libraries; denied without
   // upstream contact (anti-enumeration 404).
-  const denied = await loginAs("nogrants");
+  const denied = nogrants; // shared session — no fresh login (limiter).
   await errorShape(
     await call("GET", `/api/images/${ITEM_MOVIE}`, { cookie: denied }),
   );

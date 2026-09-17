@@ -212,6 +212,16 @@
   color: var(--color-ink);
   overflow-wrap: anywhere;
 }
+/* Each portrait card gains a sibling chip filtering the current surface by
+   that performer; the cell keeps the portrait grid layout intact. */
+.cat-person-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.cat-person-cell .chip {
+  align-self: center;
+}
 
 /* Loading skeleton for the detail page. */
 .cat-hero-skel {
@@ -295,4 +305,56 @@
   gap: 0.6rem;
   padding: 0.9rem 1rem;
   border-top: 1px solid var(--color-edge);
+}
+
+/* Honest small print inside the drawer: caps, exclusivity, failures. */
+.cat-note {
+  margin: 0.4rem 0 0;
+  font-size: 0.78rem;
+  color: var(--color-muted, var(--color-ink));
+  opacity: 0.75;
+}
+
+/* Picker result lists (performer/tag search inside the drawer). */
+.cat-picker {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  max-height: 16rem;
+  overflow-y: auto;
+}
+.cat-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--color-edge);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.cat-picker-row:hover {
+  border-color: var(--color-accent);
+}
+.cat-picker-img {
+  width: 2rem;
+  height: 2rem;
+  flex: none;
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--color-raised);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+.cat-picker-add {
+  margin-left: auto;
+  font-weight: 600;
 }

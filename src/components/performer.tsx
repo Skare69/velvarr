@@ -14,6 +14,7 @@ import {
   duration,
   ErrorPanel,
   GridSkeleton,
+  Icon,
   imgSrc,
   intOr,
   ItemImage,
@@ -28,6 +29,7 @@ import type {
   CatalogDetail,
   CatalogProvider,
   CatalogReference,
+  PerformerFollow,
 } from "../lib/contracts";
 import "./views.css";
 
@@ -232,9 +234,10 @@ function Listing({
     perPage,
     reload,
   );
+  // Same as the performer page: a detail is another surface, so it pushes.
   const open = useCallback(
     (r: CatalogReference) =>
-      setP({ provider: r.provider, kind: r.kind, id: r.id }),
+      setP({ provider: r.provider, kind: r.kind, id: r.id }, { push: true }),
     [setP],
   );
   const onPage = useCallback(
@@ -263,6 +266,13 @@ function Listing({
         </div>
       ) : (
         <>
+          <BulkRequest
+            key={performerId}
+            provider={provider}
+            kind={kind}
+            performerId={performerId}
+            performerName={performerName}
+          />
           <div className="poster-grid">
             {data.items.map((it) =>
               kind === "movie" ? (
@@ -281,6 +291,136 @@ function Listing({
           />
         </>
       )}
+    </div>
+  );
+}
+
+/* ---------- Bulk "request everything" ---------- */
+
+/* Only fields the response contained are rendered — a missing count is never
+ * shown as 0. StashDB movies never reach here: the tab renders the
+ * StashDbMoviesNote instead, so the action is hidden there by construction. */
+type BulkResponse = {
+  requested?: number;
+  skipped?: number;
+  autoApproved?: number;
+  failed?: { id: string; code: string }[];
+  scanned?: number;
+  capped?: boolean;
+};
+
+function BulkRequest({
+  provider,
+  kind,
+  performerId,
+  performerName,
+}: {
+  provider: CatalogProvider;
+  kind: "movie" | "scene";
+  performerId: string;
+  performerName: string;
+}) {
+  const confirmRef = useRef<HTMLDialogElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<BulkResponse | null>(null);
+  const noun = kind === "movie" ? "movie" : "scene";
+
+  const run = async () => {
+    confirmRef.current?.close();
+    setBusy(true);
+    setError(null);
+    try {
+      setResult(
+        await api<BulkResponse>("/api/requests/bulk", {
+          method: "POST",
+          body: JSON.stringify({
+            performer: { provider, kind: "performer", id: performerId },
+            kind,
+          }),
+        }),
+      );
+    } catch (e) {
+      setError(messageOf(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const counts = result
+    ? [
+        typeof result.requested === "number"
+          ? `${result.requested} requested`
+          : null,
+        typeof result.autoApproved === "number"
+          ? `${result.autoApproved} auto-approved`
+          : null,
+        typeof result.skipped === "number" && result.skipped > 0
+          ? `${result.skipped} skipped (already requested)`
+          : null,
+        result.failed ? `${result.failed.length} failed` : null,
+      ].filter(Boolean)
+    : [];
+
+  return (
+    <div className="mb-4">
+      <button
+        type="button"
+        className="btn"
+        disabled={busy}
+        onClick={() => {
+          setError(null);
+          confirmRef.current?.showModal();
+        }}
+      >
+        Request every {noun}
+      </button>
+      {counts.length > 0 && (
+        <p className="mt-2 text-sm" role="status">
+          {counts.join(" · ")}
+          {result?.capped
+            ? " — more titles remain; press again to continue where this stopped."
+            : "."}
+        </p>
+      )}
+      {error && (
+        <p className="bulk-error mt-2 text-sm" role="alert">
+          The bulk request did not run: {error}
+        </p>
+      )}
+      <dialog
+        ref={confirmRef}
+        className="bulk-dialog"
+        aria-labelledby="bulk-request-title"
+      >
+        <div className="p-5">
+          <h3 id="bulk-request-title" className="font-semibold">
+            Request every {noun}?
+          </h3>
+          <p className="mt-2 text-sm text-muted">
+            A request is filed for each {noun} {performerName} appears in on{" "}
+            {providerLabel(provider)}. Titles you already requested are skipped.
+            At most 100 titles are processed per press.
+          </p>
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              type="button"
+              className="btn"
+              onClick={() => confirmRef.current?.close()}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn-accent"
+              disabled={busy}
+              onClick={() => void run()}
+            >
+              File the requests
+            </button>
+          </div>
+        </div>
+      </dialog>
     </div>
   );
 }
@@ -324,6 +464,118 @@ function StashDbMoviesNote({
         <p className="mt-3 text-sm text-muted">
           No TPDB link is recorded for this performer, so their TPDB movies
           cannot be shown here.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Follow / unfollow the performer on this page ---------- */
+
+/** There is deliberately no per-performer status endpoint: the whole follow
+ * list is read and matched here. State only moves after the server confirms
+ * — never an optimistic flip. If the list cannot be read, the button says so
+ * and pressing it retries; it never guesses "not following". */
+function FollowStar({
+  provider,
+  id,
+  name,
+  imageUrl,
+}: {
+  provider: CatalogProvider;
+  id: string;
+  name: string;
+  imageUrl: string | null;
+}) {
+  const [status, setStatus] = useState<
+    "unknown" | "following" | "notFollowing"
+  >("unknown");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const check = useCallback(() => {
+    let live = true;
+    setError(null);
+    setStatus("unknown");
+    api<{ follows: PerformerFollow[] }>("/api/follows")
+      .then((d) => {
+        if (!live) return;
+        setStatus(
+          d.follows.some(
+            (f) => f.reference.provider === provider && f.reference.id === id,
+          )
+            ? "following"
+            : "notFollowing",
+        );
+      })
+      .catch((e) => {
+        if (live) setError(messageOf(e)); // status stays "unknown"
+      });
+    return () => {
+      live = false;
+    };
+  }, [provider, id]);
+  useEffect(check, [check]);
+
+  const toggle = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (status === "following") {
+        await api(`/api/follows/${provider}/${encodeURIComponent(id)}`, {
+          method: "DELETE",
+        });
+        setStatus("notFollowing");
+      } else {
+        await api("/api/follows", {
+          method: "POST",
+          body: JSON.stringify({
+            performer: { provider, kind: "performer", id },
+            name,
+            imageUrl,
+          }),
+        });
+        setStatus("following");
+      }
+    } catch (e) {
+      setError(messageOf(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <button
+        type="button"
+        className={`btn follow-toggle${status === "following" ? " is-following" : ""}`}
+        aria-pressed={
+          status === "following"
+            ? true
+            : status === "notFollowing"
+              ? false
+              : undefined
+        }
+        aria-label={
+          status === "following"
+            ? `Unfollow ${name}`
+            : status === "notFollowing"
+              ? `Follow ${name}`
+              : `Check whether you follow ${name}`
+        }
+        disabled={busy}
+        onClick={() => void (status === "unknown" ? check() : toggle())}
+      >
+        <Icon name="star" filled={status === "following"} />
+        {status === "following"
+          ? "Following"
+          : status === "notFollowing"
+            ? "Follow"
+            : "Follow status unavailable"}
+      </button>
+      {error && (
+        <p className="bulk-error mt-2 text-xs" role="alert">
+          {error}
         </p>
       )}
     </div>
@@ -394,9 +646,12 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
     [tab, onTab],
   );
 
+  // Opening a title leaves the performer page for a detail: push, so Back
+  // returns here. Replacing overwrote the performer entry, and Back jumped
+  // all the way to whatever preceded it.
   const open = useCallback(
     (r: CatalogReference) =>
-      setP({ provider: r.provider, kind: r.kind, id: r.id }),
+      setP({ provider: r.provider, kind: r.kind, id: r.id }, { push: true }),
     [setP],
   );
 
@@ -475,6 +730,15 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
                   <span className="chip">
                     {providerLabel(reference.provider)} · performer
                   </span>
+                </div>
+                <div className="mt-3">
+                  <FollowStar
+                    key={`${reference.provider}:${reference.id}`}
+                    provider={reference.provider}
+                    id={reference.id}
+                    name={d.title}
+                    imageUrl={d.imageUrl ?? null}
+                  />
                 </div>
                 {d.aliases.length > 0 && (
                   <p className="mt-2 text-xs text-muted">

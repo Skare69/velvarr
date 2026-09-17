@@ -120,3 +120,77 @@
   background: transparent;
   color: var(--color-muted);
 }
+
+/* ---------- Following ---------- */
+
+/* Same card anatomy as the catalog grids, but the card holds a second
+   control (unfollow), so the card is a div wrapping two buttons instead of
+   one big button. */
+.follow-card {
+  position: relative;
+}
+
+.follow-open {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* Filled star pinned over the portrait; the accent says "following". */
+.follow-star {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--color-edge);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-panel) 88%, transparent);
+  color: var(--color-accent);
+  cursor: pointer;
+}
+
+.follow-star:hover:not(:disabled) {
+  border-color: var(--color-accent);
+}
+
+.follow-star:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---------- Follow toggle (performer page) ---------- */
+
+/* The followed state carries the accent, matching .performer-tab and chips. */
+.follow-toggle.is-following {
+  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  color: var(--color-accent);
+}
+
+/* ---------- Bulk request confirm (native <dialog>) ---------- */
+
+.bulk-dialog {
+  width: min(26rem, calc(100vw - 2rem));
+  border: 1px solid var(--color-edge);
+  border-radius: 14px;
+  background: var(--color-panel);
+  color: var(--color-ink);
+}
+
+.bulk-dialog::backdrop {
+  background: color-mix(in srgb, var(--color-canvas) 72%, transparent);
+}
+
+/* Inline failure text for the star toggle and the bulk action. */
+.bulk-error {
+  color: var(--color-danger);
+}

@@ -11,9 +11,11 @@ import {
 import { useSearchParams } from "next/navigation";
 import type {
   Account,
+  CatalogReference,
   Library,
   LibraryItem,
   LibraryPage,
+  PerformerFollow,
   ProviderStatus,
   Role,
   WhisparrDelivery,
@@ -25,9 +27,11 @@ import {
   ErrorPanel,
   ForbiddenPanel,
   Icon,
+  imgSrc,
   intOr,
   ItemImage,
   messageOf,
+  providerLabel,
   SessionCtx,
   useParamsSetter,
   useSession,
@@ -673,6 +677,7 @@ const VIEWS = [
   "movies",
   "scenes",
   "performers",
+  "following",
   "search",
   "requests",
   "removals",
@@ -782,6 +787,7 @@ function Shell() {
       icon: "performer",
       group: "browse",
     },
+    { id: "following", label: "Following", icon: "star", group: "browse" },
     { id: "library", label: "Library", icon: "library", group: "manage" },
     { id: "requests", label: "Requests", icon: "requests", group: "manage" },
     { id: "removals", label: "Removals", icon: "removals", group: "manage" },
@@ -904,6 +910,7 @@ function Shell() {
         {view === "movies" && <MoviesView />}
         {view === "scenes" && <ScenesView />}
         {view === "performers" && <PerformersView />}
+        {view === "following" && <FollowingView />}
         {view === "library" && <LibraryView />}
         {view === "requests" && <RequestsView />}
         {view === "search" && <SearchView />}
@@ -914,7 +921,13 @@ function Shell() {
       </main>
       <nav className="mobile-bottom-nav" aria-label="Quick navigation">
         {visibleNav
-          .filter((item) => item.group === "browse" || item.id === "requests")
+          // "following" stays in the drawer/sidebar only: the bottom bar is a
+          // fixed five slots and Following is reachable from the sidebar.
+          .filter(
+            (item) =>
+              (item.group === "browse" && item.id !== "following") ||
+              item.id === "requests",
+          )
           .map((item) => (
             <a
               key={item.id}
@@ -967,6 +980,132 @@ function Shell() {
         </nav>
       </dialog>
     </div>
+  );
+}
+
+/* ---------- Following ---------- */
+
+function FollowingView() {
+  const setP = useParamsSetter();
+  const [follows, setFollows] = useState<PerformerFollow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    setError(null);
+    api<{ follows: PerformerFollow[] }>("/api/follows")
+      .then((d) => {
+        if (live) setFollows(d.follows);
+      })
+      .catch((e) => {
+        if (live) setError(messageOf(e));
+      });
+    return () => {
+      live = false;
+    };
+  }, [reload]);
+
+  // Opening a performer leaves this list for another surface: push, so
+  // browser Back returns to Following.
+  const open = useCallback(
+    (r: CatalogReference) =>
+      setP(
+        { view: "performers", provider: r.provider, kind: r.kind, id: r.id },
+        { push: true },
+      ),
+    [setP],
+  );
+
+  // The row leaves the list only after the server confirmed the delete; a
+  // failure keeps the row and says so.
+  const unfollow = (f: PerformerFollow) => {
+    setBusyId(f.id);
+    setRowError(null);
+    api<void>(
+      `/api/follows/${f.reference.provider}/${encodeURIComponent(f.reference.id)}`,
+      { method: "DELETE" },
+    )
+      .then(() => {
+        setFollows((list) => (list ?? []).filter((x) => x.id !== f.id));
+      })
+      .catch((e) => {
+        setRowError(`${f.name} is still followed — ${messageOf(e)}`);
+      })
+      .finally(() => setBusyId(null));
+  };
+
+  return (
+    <section aria-label="Following">
+      <div className="page-heading">
+        <div>
+          <h1 className="page-title">Following</h1>
+          <p className="page-description">
+            Performers you follow, across your providers.
+          </p>
+        </div>
+      </div>
+      {rowError && <ErrorPanel title="Could not unfollow" message={rowError} />}
+      {error ? (
+        <ErrorPanel
+          title="Follow list unavailable"
+          message={error}
+          onRetry={() => setReload((n) => n + 1)}
+        />
+      ) : follows === null ? (
+        <div
+          className="performer-grid"
+          aria-label="Loading follows"
+          aria-busy="true"
+        >
+          {Array.from({ length: 8 }, (_, i) => (
+            <div key={i} className="skel aspect-square" />
+          ))}
+        </div>
+      ) : follows.length === 0 ? (
+        <div className="panel p-8 text-center text-sm text-muted">
+          You are not following anyone yet. Open a performer and press Follow —
+          the star on their page — and they will appear here.
+        </div>
+      ) : (
+        <div className="performer-grid">
+          {follows.map((f) => (
+            <div key={f.id} className="media-card follow-card">
+              <button
+                type="button"
+                className="follow-open"
+                onClick={() => open(f.reference)}
+              >
+                <div className="media-art aspect-square">
+                  <ItemImage
+                    name={f.name}
+                    src={imgSrc(f.imageUrl ?? undefined)}
+                    className="absolute inset-0 h-full w-full object-cover"
+                  />
+                </div>
+                <div className="media-meta">
+                  <div className="media-title">{f.name}</div>
+                  <span className="chip">
+                    {providerLabel(f.reference.provider)}
+                  </span>
+                </div>
+              </button>
+              <button
+                type="button"
+                className="follow-star"
+                aria-label={`Unfollow ${f.name}`}
+                disabled={busyId === f.id}
+                onClick={() => unfollow(f)}
+              >
+                <Icon name="star" filled />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 

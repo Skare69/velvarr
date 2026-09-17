@@ -27,6 +27,7 @@ import {
   createSession,
   decideRequest,
   declineRemovalRequest,
+  followPerformer,
   getAcquisitionByReference,
   getAccount,
   getConfig,
@@ -36,10 +37,13 @@ import {
   isInitialized,
   isObservationStale,
   listAccounts,
+  listFollows,
+  listFollowsByProvider,
   listRequests,
   listRemovalRequests,
   revokeSession,
   saveConfig,
+  unfollowPerformer,
   updateAccount,
   upsertCatalogRecord,
 } from "../../../server/storage.ts";
@@ -71,6 +75,7 @@ import {
   getProviderStatus,
   isProviderImageUrl,
   searchCatalog,
+  searchCatalogTags,
   type CatalogSearchQuery,
   type CatalogSortDirection,
   type CatalogSortKey,
@@ -1457,6 +1462,24 @@ async function catalogSearch(request: Request): Promise<Response> {
   return json(await searchCatalog(catalogSearchQuery(new URL(request.url))));
 }
 
+// Tag facet lookup for the catalog filter UI: the provider's own ids and
+// ordering come back verbatim — nothing is merged across providers and no
+// counts are invented here.
+async function catalogTagsRoute(request: Request): Promise<Response> {
+  await requireSession(request);
+  const params = new URL(request.url).searchParams;
+  const provider = parseCatalogProvider(params.get("provider"));
+  const q = (params.get("q") ?? "").trim();
+  if (q.length < 2) {
+    throw new AppError(
+      400,
+      "invalid_query",
+      "Enter at least 2 characters to search.",
+    );
+  }
+  return json({ tags: await searchCatalogTags(provider, q) });
+}
+
 async function catalogDetail(
   request: Request,
   providerRaw: string,
@@ -1621,6 +1644,165 @@ async function decideRequestRoute(
     "invalid_field",
     "decision must be approved, declined, or cancelled.",
   );
+}
+
+// --- follows: per-account performer follows ---
+
+// Server-validated performer reference from a request body. Mirrors
+// mediaFromBody but for the catalog-only performer kind: a movie/scene
+// reference must never land in a follow list.
+function performerFromBody(body: Record<string, unknown>): CatalogReference {
+  const performer = body.performer;
+  if (
+    performer === null ||
+    typeof performer !== "object" ||
+    Array.isArray(performer)
+  ) {
+    throw new AppError(400, "invalid_field", "Invalid performer reference.");
+  }
+  const p = performer as Record<string, unknown>;
+  if (
+    typeof p.provider !== "string" ||
+    typeof p.kind !== "string" ||
+    typeof p.id !== "string"
+  ) {
+    throw new AppError(400, "invalid_field", "Invalid performer reference.");
+  }
+  const reference = parseCatalogReference(p.provider, p.kind, p.id);
+  if (reference.kind !== "performer") {
+    throw new AppError(400, "invalid_field", "Invalid performer reference.");
+  }
+  return reference;
+}
+
+async function listFollowsRoute(request: Request): Promise<Response> {
+  const ctx = await requireSession(request);
+  return json({ follows: listFollows(ctx.account.id) });
+}
+
+async function createFollowRoute(request: Request): Promise<Response> {
+  guardMutation(request);
+  const ctx = await requireSession(request);
+  const body = await readJson(request);
+  // An image URL that fails the provider-artwork check degrades to null
+  // rather than sinking the whole follow: the snapshot is cosmetic.
+  const rawImage = body.imageUrl;
+  const imageUrl =
+    typeof rawImage === "string" &&
+    rawImage !== "" &&
+    isProviderImageUrl(rawImage).ok
+      ? rawImage
+      : null;
+  const follow = followPerformer(
+    ctx.account.id,
+    performerFromBody(body),
+    fieldText(body, "name", 200),
+    imageUrl,
+  );
+  return json({ follow }, 201);
+}
+
+async function deleteFollowRoute(
+  request: Request,
+  providerRaw: string,
+  idRaw: string,
+): Promise<Response> {
+  guardMutation(request);
+  const ctx = await requireSession(request);
+  const reference = parseCatalogReference(providerRaw, "performer", idRaw);
+  unfollowPerformer(ctx.account.id, reference.provider, reference.id);
+  return new Response(null, { status: 204 });
+}
+
+// --- bulk requests: everything a performer has ---
+
+const BULK_REQUEST_CAP = 100;
+// A provider page, not the cap: TPDB rejects (oversized response) a
+// filmography page of 100 rows. 24 is what the browse surfaces request.
+const BULK_SCAN_PAGE = 24;
+
+async function bulkRequestRoute(request: Request): Promise<Response> {
+  guardMutation(request);
+  const ctx = await requireSession(request);
+  const body = await readJson(request);
+  const performer = performerFromBody(body);
+  const kind = body.kind;
+  if (kind !== "movie" && kind !== "scene") {
+    throw new AppError(400, "invalid_field", "Invalid kind.");
+  }
+  if (performer.provider === "stashdb" && kind === "movie") {
+    throw new AppError(400, "invalid_query", "StashDB has no movie records.");
+  }
+  // ponytail: one sequential pass, hard-capped at BULK_REQUEST_CAP titles —
+  // a prolific performer needs re-runs to continue the backlog. Re-running
+  // is safe because the active-intent unique index makes every createRequest
+  // idempotent: already-requested titles surface as skipped, not duplicated.
+  const items: CatalogDetail[] = [];
+  let capped = false;
+  let scanned = 0;
+  for (let page = 1; items.length < BULK_REQUEST_CAP; page += 1) {
+    // TPDB's performer filter is paging-only: no other filter may travel
+    // with it. StashDB composes freely but has no movie entity.
+    //
+    // The page size is BULK_SCAN_PAGE, not the cap: a TPDB filmography page
+    // of 100 titles exceeds the provider client's response byte ceiling and
+    // comes back as 502 upstream_bad_response, so the scan pages in the same
+    // size the browse surfaces use.
+    const result = await searchCatalog(
+      performer.provider === "tpdb"
+        ? {
+            provider: "tpdb",
+            kind,
+            performer: performer.id,
+            page,
+            perPage: BULK_SCAN_PAGE,
+          }
+        : {
+            provider: "stashdb",
+            kind: "scene",
+            performer: performer.id,
+            page,
+            perPage: BULK_SCAN_PAGE,
+          },
+    );
+    scanned += result.items.length;
+    items.push(...result.items);
+    if (items.length >= BULK_REQUEST_CAP) {
+      capped = result.hasMore || items.length > BULK_REQUEST_CAP;
+      break;
+    }
+    if (!result.hasMore) break;
+  }
+  if (items.length > BULK_REQUEST_CAP) items.length = BULK_REQUEST_CAP;
+  let requested = 0;
+  let skipped = 0;
+  let autoApproved = 0;
+  const failed: { id: string; code: string }[] = [];
+  for (const item of items) {
+    // kind is pinned movie/scene above; the reference came from that query.
+    const media: MediaReference = {
+      provider: performer.provider,
+      kind,
+      id: item.reference.id,
+    };
+    try {
+      const record = createRequest(ctx.account.id, media);
+      requested += 1;
+      if (ctx.account.autoApprove) {
+        decideRequest(ctx.account, record.id, "approved");
+        autoApproved += 1;
+      }
+    } catch (err) {
+      if (err instanceof AppError && err.code === "request_exists") {
+        skipped += 1;
+      } else if (err instanceof AppError) {
+        failed.push({ id: media.id, code: err.code });
+      } else {
+        throw err;
+      }
+    }
+  }
+  return json({ requested, skipped, autoApproved, failed, scanned, capped });
 }
 
 // --- removals: guarded removal intents ---
@@ -1958,6 +2140,110 @@ function shelfError(err: unknown): ShelfError {
 
 const SHELF_ITEMS = 12;
 const SEARCH_PER_PAGE = 6;
+const FOLLOW_SHELF_PERFORMERS = 5;
+
+// First page of each followed performer's scene filmography, merged within
+// ONE provider and capped at SHELF_ITEMS. Partial failure survives: pages
+// that failed are dropped, and the shelf only reports an error when every
+// page failed — nothing truthful to show beats a quiet empty list.
+async function followedScenes(
+  accountId: string,
+  provider: CatalogProvider,
+): Promise<CatalogDetail[]> {
+  const follows = listFollowsByProvider(
+    accountId,
+    provider,
+    FOLLOW_SHELF_PERFORMERS,
+  );
+  const pages = await Promise.allSettled(
+    follows.map((follow) =>
+      (provider === "tpdb"
+        ? // TPDB's filmography route is paging-only: no sort exists there.
+          searchCatalog({
+            provider: "tpdb",
+            kind: "scene",
+            performer: follow.reference.id,
+            page: 1,
+            perPage: SHELF_ITEMS,
+          })
+        : searchCatalog({
+            provider: "stashdb",
+            kind: "scene",
+            performer: follow.reference.id,
+            sort: "date",
+            direction: "desc",
+            page: 1,
+            perPage: SHELF_ITEMS,
+          })
+      ).then((page) => page.items),
+    ),
+  );
+  const items: CatalogDetail[] = [];
+  const seen = new Set<string>();
+  let failed = false;
+  for (const page of pages) {
+    if (page.status === "rejected") {
+      failed = true;
+      continue;
+    }
+    for (const item of page.value) {
+      // Two followed performers can share a scene; keep one copy.
+      if (seen.has(item.reference.id)) continue;
+      seen.add(item.reference.id);
+      items.push(item);
+    }
+  }
+  if (items.length === 0 && failed) {
+    throw (pages.find((p) => p.status === "rejected") as PromiseRejectedResult)
+      .reason;
+  }
+  return items.slice(0, SHELF_ITEMS);
+}
+
+// Up to two followed-performer shelves, one per provider, present only when
+// this account actually follows performers there — an account with no
+// follows gets exactly the standard shelves.
+async function followShelves(ctx: AuthContext): Promise<Shelf[]> {
+  const shelves: Shelf[] = [];
+  for (const provider of ["tpdb", "stashdb"] as const) {
+    if (
+      listFollowsByProvider(ctx.account.id, provider, FOLLOW_SHELF_PERFORMERS)
+        .length === 0
+    ) {
+      continue;
+    }
+    const pages = await followedScenes(ctx.account.id, provider).then(
+      (items): PromiseSettledResult<ShelfItems> => ({
+        status: "fulfilled",
+        value: items,
+      }),
+      (reason): PromiseSettledResult<ShelfItems> => ({
+        status: "rejected",
+        reason,
+      }),
+    );
+    shelves.push(
+      shelfOf(
+        {
+          id: `${provider}-followed-scenes`,
+          title:
+            provider === "tpdb"
+              ? "Scenes from performers you follow"
+              : "Newest scenes from performers you follow",
+          scope:
+            provider === "tpdb"
+              ? "Scenes from performers you follow, in TPDB's own order — TPDB offers no sort for a performer's filmography, so these are not necessarily the newest."
+              : "Scenes from performers you follow, newest first by StashDB release date.",
+          source: provider,
+          kind: "catalog",
+          browse: { view: "following", params: {} },
+        },
+        pages,
+      ),
+    );
+  }
+  return shelves;
+}
 
 type ShelfItems = CatalogDetail[] | LibraryItem[] | RequestRecord[];
 
@@ -2010,8 +2296,12 @@ async function discover(request: Request): Promise<Response> {
         perPage: SHELF_ITEMS,
       }).then((page) => page.items),
       listRecentlyAddedItems(ctx.config, ctx.token, ctx.account, SHELF_ITEMS),
-      // storage is sync; defer so its failures settle like the rest.
-      Promise.resolve().then(() => listRequests(ctx.account)),
+      // storage is sync; defer so its failures settle like the rest. Capped
+      // like every other shelf: a bulk performer request can file a hundred
+      // intents at once, and a rail is not a list view.
+      Promise.resolve().then(() =>
+        listRequests(ctx.account).slice(0, SHELF_ITEMS),
+      ),
     ]);
   return json({
     shelves: [
@@ -2100,6 +2390,7 @@ async function discover(request: Request): Promise<Response> {
         },
         requests,
       ),
+      ...(await followShelves(ctx)),
     ],
   });
 }
@@ -2229,11 +2520,15 @@ async function routeRequest(
       return catalogSearch(request);
     if (root === "catalog" && a === "image" && segments.length === 3)
       return catalogImage(request);
+    if (root === "catalog" && a === "tags" && segments.length === 3)
+      return catalogTagsRoute(request);
     if (root === "catalog" && segments.length === 5)
       return catalogDetail(request, a!, b!, segments[4]!);
     if (root === "requests" && segments.length === 2)
       return listRequestsRoute(request);
     if (root === "discover" && segments.length === 2) return discover(request);
+    if (root === "follows" && segments.length === 2)
+      return listFollowsRoute(request);
     if (root === "search" && segments.length === 2)
       return globalSearch(request);
     if (root === "availability" && segments.length === 5)
@@ -2270,6 +2565,10 @@ async function routeRequest(
     }
     if (root === "requests" && segments.length === 2)
       return createRequestRoute(request);
+    if (root === "requests" && a === "bulk" && segments.length === 3)
+      return bulkRequestRoute(request);
+    if (root === "follows" && segments.length === 2)
+      return createFollowRoute(request);
     if (root === "removals" && segments.length === 2)
       return createRemovalRoute(request);
   } else if (method === "PATCH") {
@@ -2287,6 +2586,9 @@ async function routeRequest(
     if (root === "admin" && a === "integrations" && segments.length === 3) {
       return adminUpdateIntegrations(request, await requireAdmin(request));
     }
+  } else if (method === "DELETE") {
+    if (root === "follows" && segments.length === 4)
+      return deleteFollowRoute(request, a!, b!);
   }
   throw new AppError(404, "not_found", "Unknown route.");
 }
@@ -2316,4 +2618,8 @@ export async function POST(request: Request): Promise<Response> {
 
 export async function PATCH(request: Request): Promise<Response> {
   return dispatch(request, "PATCH");
+}
+
+export async function DELETE(request: Request): Promise<Response> {
+  return dispatch(request, "DELETE");
 }
