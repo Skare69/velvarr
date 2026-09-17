@@ -253,8 +253,8 @@ function Listing({
         />
       ) : loading || !data ? (
         <GridSkeleton
-          aspect={kind === "movie" ? "aspect-[2/3]" : "aspect-video"}
-          cols={kind === "movie" ? "poster-grid" : "scene-grid"}
+          aspect="aspect-[2/3]"
+          cols="poster-grid"
           count={kind === "movie" ? 10 : 6}
         />
       ) : data.items.length === 0 ? (
@@ -263,7 +263,7 @@ function Listing({
         </div>
       ) : (
         <>
-          <div className={kind === "movie" ? "poster-grid" : "scene-grid"}>
+          <div className="poster-grid">
             {data.items.map((it) =>
               kind === "movie" ? (
                 <MovieCard key={it.reference.id} item={it} onOpen={open} />

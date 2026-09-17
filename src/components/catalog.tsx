@@ -84,7 +84,6 @@ type DetailTarget = {
 /* ---------- Small helpers ---------- */
 
 const POSTER_GRID = "poster-grid";
-const SCENE_GRID = "scene-grid";
 const PERFORMER_GRID = "performer-grid";
 
 function providerOf(v: string | null): CatalogProvider {
@@ -1093,11 +1092,7 @@ function DetailBody({
       ? d.sourceUrl
       : null;
   const posterClass =
-    target.kind === "scene"
-      ? "cat-poster cat-poster-wide"
-      : target.kind === "performer"
-        ? "cat-poster cat-poster-square"
-        : "cat-poster";
+    target.kind === "performer" ? "cat-poster cat-poster-square" : "cat-poster";
   const backdrop = imgSrc(d.imageUrl);
   // Remember studio/tag names so browse chips can label the ids the URL
   // carries — details are where names are known.
@@ -2045,7 +2040,7 @@ export function ScenesView() {
               onRetry={retry}
             />
           ) : !data ? (
-            <GridSkeleton aspect="aspect-video" cols={SCENE_GRID} count={6} />
+            <GridSkeleton aspect="aspect-[2/3]" cols={POSTER_GRID} count={6} />
           ) : data.items.length === 0 ? (
             parentEmpty ? (
               <div className="panel p-8 text-center text-sm text-muted">
@@ -2071,7 +2066,7 @@ export function ScenesView() {
             )
           ) : (
             <>
-              <div className={SCENE_GRID}>
+              <div className={POSTER_GRID}>
                 {data.items.map((it) => (
                   <SceneCard key={it.reference.id} item={it} onOpen={open} />
                 ))}

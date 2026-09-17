@@ -1111,9 +1111,9 @@ function LibraryView() {
           onRetry={() => setReload((n) => n + 1)}
         />
       ) : loading ? (
-        <div className="scene-grid" aria-label="Loading library">
+        <div className="poster-grid" aria-label="Loading library">
           {Array.from({ length: 8 }, (_, i) => (
-            <div key={i} className="skel aspect-video" />
+            <div key={i} className="skel aspect-[2/3]" />
           ))}
         </div>
       ) : libs && libs.length === 0 ? (
@@ -1129,10 +1129,11 @@ function LibraryView() {
         </div>
       ) : (
         <>
-          {/* ponytail: this Jellyfin serves item art as 16:9 stills, so library
-              tiles are landscape. A server with 2:3 posters wants poster-grid +
-              aspect-[2/3] here and on the detail poster below. */}
-          <div className="scene-grid">
+          {/* ponytail: grid is uniformly 2:3 by operator choice, so a 16:9
+              Jellyfin still is centre-cropped to about the middle third of
+              its width by object-fit: cover. Upgrade path: per-item aspect
+              detection from the Jellyfin image tags. */}
+          <div className="poster-grid">
             {items.map((it) => (
               <button
                 key={it.id}
@@ -1140,7 +1141,7 @@ function LibraryView() {
                 className="media-card"
                 onClick={() => setP({ item: it.id }, { push: true })}
               >
-                <div className="media-art aspect-video">
+                <div className="media-art aspect-[2/3]">
                   <ItemImage
                     name={it.name}
                     src={it.image}
