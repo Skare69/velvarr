@@ -1413,6 +1413,105 @@ test("observations update changed facts; a proven absence is distinct from an ou
   );
 });
 
+test("observations persist monitored and progress facts without inventing or leaking them", () => {
+  freshDir();
+  storage.bootstrap(deliveryConfig(true), ownerUser(), "jf-owner-token");
+  const owner = storage.getAccount(ownerUser().id) as Account;
+  const request = storage.createRequest(owner.id, MOVIE);
+  storage.decideRequest(owner, request.id, "approved");
+  const work = storage.getAcquisitionByReference(MOVIE);
+  assert.ok(work);
+  assert.equal(
+    work.whisparrMonitored,
+    null,
+    "an unobserved item has never been seen monitored",
+  );
+  assert.equal(work.progress, null, "no download, no progress");
+
+  const started = storage.recordAcquisitionObservation(work.id, {
+    state: "downloading",
+    item: { whisparrId: 7, path: "/data/dl", monitored: true },
+    progress: { percent: 42, timeleft: "00:10:00" },
+  });
+  assert.deepEqual(started.progress, { percent: 42, timeleft: "00:10:00" });
+  assert.equal(started.whisparrMonitored, true);
+  assert.equal(started.whisparrPath, "/data/dl");
+
+  // An outage is an unknown check: it must not reset progress to 0% or
+  // touch any stored fact.
+  const outage = storage.recordAcquisitionObservation(work.id, {
+    unavailable: true,
+    reason: "whisparr timeout",
+  });
+  assert.equal(outage.state, "downloading");
+  assert.deepEqual(outage.progress, { percent: 42, timeleft: "00:10:00" });
+  assert.equal(outage.whisparrMonitored, true);
+  assert.equal(outage.whisparrPath, "/data/dl");
+
+  // An omitted monitored fact keeps the stored value (COALESCE, like the
+  // other item facts), while progress moves with the newest download.
+  const later = storage.recordAcquisitionObservation(work.id, {
+    state: "downloading",
+    item: { whisparrId: 7, path: "/data/dl" },
+    progress: { percent: 90, timeleft: "00:02:00" },
+  });
+  assert.equal(later.whisparrMonitored, true, "omitted monitored is preserved");
+  assert.deepEqual(later.progress, { percent: 90, timeleft: "00:02:00" });
+
+  // An explicit false is a real fact, distinct from null (never observed).
+  const unmonitored = storage.recordAcquisitionObservation(work.id, {
+    state: "downloading",
+    item: { whisparrId: 7, path: "/data/dl", monitored: false },
+    progress: { percent: 95, timeleft: "00:01:00" },
+  });
+  assert.equal(unmonitored.whisparrMonitored, false);
+
+  // Progress never outlives its download.
+  const done = storage.recordAcquisitionObservation(work.id, {
+    state: "imported",
+    item: { whisparrId: 7, path: "/data/dl", monitored: false },
+  });
+  assert.equal(done.state, "imported");
+  assert.equal(done.progress, null, "a finished download leaves no progress");
+  assert.equal(done.whisparrMonitored, false);
+
+  // Each progress field is validated on its own: an unusable percentage is
+  // dropped to null rather than faked, and it never discards a remaining-time
+  // string that is perfectly good on its own.
+  for (const progress of [
+    { percent: 130, timeleft: "00:01:00" },
+    { percent: -1, timeleft: "00:01:00" },
+    { percent: 12.5, timeleft: "00:01:00" },
+  ]) {
+    const bad = storage.recordAcquisitionObservation(work.id, {
+      state: "downloading",
+      item: { whisparrId: 7, path: "/data/dl" },
+      progress,
+    });
+    assert.deepEqual(
+      bad.progress,
+      { percent: null, timeleft: "00:01:00" },
+      `rejected percent: ${JSON.stringify(progress)}`,
+    );
+  }
+  const badTimeleft = storage.recordAcquisitionObservation(work.id, {
+    state: "downloading",
+    item: { whisparrId: 7, path: "/data/dl" },
+    progress: { percent: 50, timeleft: 7 as unknown as string },
+  });
+  assert.deepEqual(badTimeleft.progress, { percent: 50, timeleft: null });
+  const monitoring = storage.recordAcquisitionObservation(work.id, {
+    state: "monitoring",
+    item: { whisparrId: 7, path: "/data/dl" },
+    progress: { percent: 50, timeleft: "00:01:00" },
+  });
+  assert.equal(
+    monitoring.progress,
+    null,
+    "progress is a downloading-only fact",
+  );
+});
+
 // --- M5 durability: failed migrations, backup/restore, restart reconciliation ---
 
 const BACKUP_SCRIPT = fileURLToPath(

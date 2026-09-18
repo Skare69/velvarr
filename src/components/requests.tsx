@@ -142,6 +142,8 @@ function RequestRow({
     lastError: string | null;
     updatedAt: number;
     observationStale: boolean;
+    monitored: boolean | null;
+    progress: { percent: number | null; timeleft: string | null } | null;
   } | null;
   canApprove: boolean;
   canDecline: boolean;
@@ -155,6 +157,19 @@ function RequestRow({
   rowError: { id: string; message: string } | null;
 }) {
   const r = record;
+  const pill = acquisition
+    ? acquisition.monitored === false && acquisition.state !== "imported"
+      ? { label: "Paused", tone: "cancelled" }
+      : acquisition.state === "downloading"
+        ? {
+            label:
+              typeof acquisition.progress?.percent === "number"
+                ? `Processing ${acquisition.progress.percent}%`
+                : "Processing",
+            tone: "approved",
+          }
+        : null
+    : null;
   return (
     <li className="panel mgmt-row p-4">
       <div className="min-w-0">
@@ -177,9 +192,17 @@ function RequestRow({
         )}
       </div>
       <div className="flex flex-col items-start gap-2 sm:items-end">
-        <span className="chip state-badge" data-state={r.decision}>
-          {GROUP_LABEL[r.decision]}
-        </span>
+        <div className="flex flex-wrap gap-2">
+          <span className="chip state-badge" data-state={r.decision}>
+            {GROUP_LABEL[r.decision]}
+          </span>
+          {/* Reuse an existing chip tone; views.css has no download/pause variant. */}
+          {pill && (
+            <span className="chip state-badge" data-state={pill.tone}>
+              {pill.label}
+            </span>
+          )}
+        </div>
         <div className="flex flex-wrap gap-2">
           <a className="btn" href={detailHref(r.media)}>
             View in catalog
@@ -231,6 +254,8 @@ type Row = RequestRecord & {
     lastError: string | null;
     updatedAt: number;
     observationStale: boolean;
+    monitored: boolean | null;
+    progress: { percent: number | null; timeleft: string | null } | null;
   } | null;
 };
 
@@ -259,6 +284,27 @@ export function RequestsView() {
   }, []);
 
   useEffect(load, [load]);
+
+  // Poll only while something is actually moving and the tab is watching.
+  const anyDownloading =
+    rows?.some((r) => r.acquisition?.state === "downloading") ?? false;
+  useEffect(() => {
+    if (!anyDownloading) return;
+    // ponytail: fixed 15s client poll over the worker's 60s recheck; add a
+    // push channel only if operators need sub-minute progress movement.
+    const tick = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    const id = window.setInterval(tick, 15_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [anyDownloading, load]);
 
   const decide = useCallback(
     (

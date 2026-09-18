@@ -2447,7 +2447,59 @@ test("getWhisparrItem treats a proven 404 as absence and reports outages", async
 // --- observation mapping ---
 
 test("observeWhisparrItem maps monitoring, downloading, and imported from real fields", async () => {
+  // Eros QueueResource: size/sizeleft are C# decimals that may arrive as
+  // JSON numbers or numeric strings; timeleft is a verbatim duration string.
+  const queueRecord = (overrides: Record<string, unknown> = {}) => ({
+    movieId: 2,
+    movie: { id: 2, title: "Sample Movie" },
+    size: 4000000000,
+    sizeleft: 1000000000,
+    timeleft: "00:12:34",
+    estimatedCompletionTime: "2026-09-18T12:34:56Z",
+    status: "downloading",
+    trackedDownloadState: "downloading",
+    trackedDownloadStatus: "ok",
+    errorMessage: null,
+    ...overrides,
+  });
+  // Every progress case and the queue page that serves it, in call order.
+  const progressCases: Array<
+    [
+      Record<string, unknown>,
+      { percent: number | null; timeleft: string | null },
+    ]
+  > = [
+    // C# decimals may serialize as numeric strings — same parse.
+    [
+      { size: "4000000000", sizeleft: "1000000000" },
+      { percent: 75, timeleft: "00:12:34" },
+    ],
+    // No usable size means percent null, never a fabricated 0%.
+    [
+      { size: 0, sizeleft: 0 },
+      { percent: null, timeleft: "00:12:34" },
+    ],
+    [
+      { size: undefined, sizeleft: 0 },
+      { percent: null, timeleft: "00:12:34" },
+    ],
+    // A finished download (sizeleft 0) is 100%.
+    [
+      { sizeleft: 0, timeleft: "00:00:00" },
+      { percent: 100, timeleft: "00:00:00" },
+    ],
+    // Missing or empty timeleft is null; the item still downloads.
+    [{ timeleft: "" }, { percent: 75, timeleft: null }],
+    [{ timeleft: undefined }, { percent: 75, timeleft: null }],
+  ];
   const queueFixture = { reads: 0 };
+  // Read 1: empty queue (monitoring). Read 2: full record (downloading).
+  // Reads 3+: one record per progress case.
+  const queuePages: unknown[][] = [
+    [],
+    [queueRecord()],
+    ...progressCases.map(([overrides]) => [queueRecord(overrides)]),
+  ];
   await withFixture(
     (req, res) => {
       const p = pathOf(req.url ?? "");
@@ -2457,23 +2509,14 @@ test("observeWhisparrItem maps monitoring, downloading, and imported from real f
         return sendJson(res, 200, []);
       }
       if (p === "/api/v3/queue") {
-        // First read: empty queue (monitoring). Second read: the item is
-        // queued (downloading).
         queueFixture.reads += 1;
-        return sendJson(
-          res,
-          200,
-          queueFixture.reads > 1
-            ? {
-                page: 1,
-                pageSize: 200,
-                totalRecords: 1,
-                records: [
-                  { movieId: 2, movie: { id: 2, title: "Sample Movie" } },
-                ],
-              }
-            : { page: 1, pageSize: 200, totalRecords: 0, records: [] },
-        );
+        const records = queuePages[queueFixture.reads - 1] ?? [];
+        return sendJson(res, 200, {
+          page: 1,
+          pageSize: 200,
+          totalRecords: records.length,
+          records,
+        });
       }
       sendJson(res, 404, {});
     },
@@ -2490,12 +2533,31 @@ test("observeWhisparrItem maps monitoring, downloading, and imported from real f
         },
         { state: "monitoring", monitored: true },
       );
+      // Progress only exists while downloading.
+      assert.equal(idle.found ? (idle.progress ?? null) : null, null);
       // Queue presence (by movieId or nested movie.id) means downloading.
       const busy = await observeWhisparrItem(
         deliveryConfig(fx.origin, DELIVERY),
         movieRef,
       );
       assert.equal(busy.found && busy.state, "downloading");
+      // (4000000000 - 1000000000) / 4000000000 = 75; timeleft is verbatim.
+      assert.deepEqual(busy.found ? busy.progress : null, {
+        percent: 75,
+        timeleft: "00:12:34",
+      });
+      for (const [overrides, progress] of progressCases) {
+        const obs = await observeWhisparrItem(
+          deliveryConfig(fx.origin, DELIVERY),
+          movieRef,
+        );
+        assert.equal(obs.found && obs.state, "downloading");
+        assert.deepEqual(
+          obs.found ? obs.progress : null,
+          progress,
+          JSON.stringify(overrides),
+        );
+      }
       // Unknown identity is simply not found.
       const missing = await observeWhisparrItem(
         deliveryConfig(fx.origin, DELIVERY),
@@ -2522,6 +2584,7 @@ test("observeWhisparrItem maps monitoring, downloading, and imported from real f
         movieRef,
       );
       assert.equal(imported.found && imported.state, "imported");
+      assert.equal(imported.found ? (imported.progress ?? null) : null, null);
       assert.equal(
         fx.log.some((r) => r.url.includes("/queue")),
         false,
@@ -2542,6 +2605,7 @@ test("observeWhisparrItem maps monitoring, downloading, and imported from real f
         movieRef,
       );
       assert.equal(degraded.found && degraded.state, "monitoring");
+      assert.equal(degraded.found ? (degraded.progress ?? null) : null, null);
     },
   );
 });

@@ -11,6 +11,7 @@ import {
 import { useRouter } from "next/navigation";
 import type {
   Account,
+  AcquisitionProgress,
   AcquisitionState,
   CatalogDetail,
   CatalogProvider,
@@ -210,6 +211,8 @@ const ICON_PATHS = {
   plus: "M12 4v16M4 12h16",
   star: "m12 3.6 2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.2-4.1 5.8-.8L12 3.6Z",
   tag: "M20 12.5 12.5 20a2 2 0 0 1-2.8 0L4 14.2V4h10.2l5.8 5.7a2 2 0 0 1 0 2.8ZM8.5 8.5h.01",
+  download: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M7 10l5 5 5-5 M12 3v12",
+  pause: "M9 5v14M15 5v14",
 } as const;
 
 export function Icon({
@@ -253,7 +256,25 @@ export function CardTypeBadge({ kind }: { kind: "movie" | "scene" | string }) {
 }
 
 export type CardStatusKind =
-  "requested" | "approved" | "available" | "declined";
+  "requested" | "approved" | "available" | "declined" | "processing" | "paused";
+
+const STATUS_ICONS: Record<CardStatusKind, keyof typeof ICON_PATHS> = {
+  requested: "hourglass",
+  approved: "check",
+  available: "check-double",
+  declined: "close",
+  processing: "download",
+  paused: "pause",
+};
+
+const STATUS_LABELS: Record<CardStatusKind, string> = {
+  requested: "Requested",
+  approved: "Approved",
+  available: "In library",
+  declined: "Declined",
+  processing: "Processing",
+  paused: "Paused in Whisparr",
+};
 
 export function CardStatusBadge({
   status,
@@ -262,29 +283,15 @@ export function CardStatusBadge({
   status: CardStatusKind;
   title?: string;
 }) {
-  const icon =
-    status === "available"
-      ? "check-double"
-      : status === "approved"
-        ? "check"
-        : status === "requested"
-          ? "hourglass"
-          : "close";
-  const label =
-    status === "available"
-      ? "In library"
-      : status === "approved"
-        ? "Approved"
-        : status === "requested"
-          ? "Requested"
-          : "Declined";
   return (
     <span
       className={`media-status-badge media-status-${status}`}
-      aria-label={title ? `${title}: ${label}` : label}
-      title={label}
+      aria-label={
+        title ? `${title}: ${STATUS_LABELS[status]}` : STATUS_LABELS[status]
+      }
+      title={STATUS_LABELS[status]}
     >
-      <Icon name={icon} />
+      <Icon name={STATUS_ICONS[status]} />
     </span>
   );
 }
@@ -335,7 +342,11 @@ export function GridSkeleton({
 type CardStatus = {
   detail: CatalogDetail;
   myRequest: Pick<RequestRecord, "decision"> | null;
-  acquisition: { state: AcquisitionState } | null;
+  acquisition: {
+    state: AcquisitionState;
+    monitored: boolean | null;
+    progress: AcquisitionProgress | null;
+  } | null;
   availability: PlaybackAccess;
 };
 
@@ -441,13 +452,19 @@ function RequestableCard({
   const requested = Boolean(status?.myRequest || status?.acquisition);
   const approved =
     status?.myRequest?.decision === "approved" || Boolean(status?.acquisition);
+  // Badge precedence: playable beats downloading beats unmonitored — a card
+  // reflects the shared acquisition, not per-user request history.
   const statusKind: CardStatusKind | null = available
     ? "available"
-    : requested
-      ? approved
-        ? "approved"
-        : "requested"
-      : null;
+    : status?.acquisition?.state === "downloading"
+      ? "processing"
+      : status?.acquisition?.monitored === false
+        ? "paused"
+        : requested
+          ? approved
+            ? "approved"
+            : "requested"
+          : null;
   // A request intent does not depend on Jellyfin, so an outage or a denied
   // verdict must not hide the button the detail page still offers: the note
   // carries the truth instead.

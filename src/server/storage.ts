@@ -41,7 +41,7 @@ import { AppError } from "./http.ts";
 
 // Schema identity: application_id spells 'VLVR', user_version is the schema version.
 const APP_ID = 0x564c5652;
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 // ponytail: fixed 7-day session TTL; make it an env knob only if an operator asks.
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const BUSY_TIMEOUT_MS = 5000;
@@ -149,6 +149,9 @@ type AcquisitionRow = {
   whisparr_id: number | null;
   whisparr_path: string | null;
   whisparr_title: string | null;
+  whisparr_monitored: number | null;
+  whisparr_progress: number | null;
+  whisparr_timeleft: string | null;
   created_at: number;
   updated_at: number;
 };
@@ -494,6 +497,11 @@ const MIGRATIONS: Record<number, string> = {
     CREATE INDEX performer_follows_newest
       ON performer_follows (account_id, created_at DESC);
   `,
+  7: `
+    ALTER TABLE acquisitions ADD COLUMN whisparr_monitored INTEGER;
+    ALTER TABLE acquisitions ADD COLUMN whisparr_progress INTEGER;
+    ALTER TABLE acquisitions ADD COLUMN whisparr_timeleft TEXT;
+  `,
 };
 
 let db: DatabaseSync | null = null;
@@ -698,6 +706,8 @@ function S(): Statements {
            whisparr_id = COALESCE(?, whisparr_id),
            whisparr_path = COALESCE(?, whisparr_path),
            whisparr_title = COALESCE(?, whisparr_title),
+           whisparr_monitored = COALESCE(?, whisparr_monitored),
+           whisparr_progress = ?, whisparr_timeleft = ?,
            last_error = NULL, last_error_at = NULL, updated_at = ?
          WHERE id = ? AND (? IS NULL OR claim_token = ?)`,
       ),
@@ -706,7 +716,8 @@ function S(): Statements {
       ),
       recordAbsence: d.prepare(
         `UPDATE acquisitions SET last_error = ?, last_error_at = ?, due_at = ?,
-           whisparr_id = NULL, whisparr_path = NULL, whisparr_title = NULL, updated_at = ?
+           whisparr_id = NULL, whisparr_path = NULL, whisparr_title = NULL,
+           whisparr_progress = NULL, whisparr_timeleft = NULL, updated_at = ?
          WHERE id = ? AND (? IS NULL OR claim_token = ?)`,
       ),
       withdrawUndispatched: d.prepare(
@@ -1465,6 +1476,17 @@ function rowToAcquisition(row: AcquisitionRow): AcquisitionRecord {
     whisparrId: row.whisparr_id ?? null,
     whisparrPath: row.whisparr_path ?? null,
     whisparrTitle: row.whisparr_title ?? null,
+    whisparrMonitored:
+      row.whisparr_monitored === null || row.whisparr_monitored === undefined
+        ? null
+        : row.whisparr_monitored === 1,
+    progress:
+      row.whisparr_progress === null && row.whisparr_timeleft === null
+        ? null
+        : {
+            percent: row.whisparr_progress ?? null,
+            timeleft: row.whisparr_timeleft ?? null,
+          },
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -2026,6 +2048,22 @@ export function recordAcquisitionObservation(
     const whisparrTitle = nonemptyString(item?.title, 300)
       ? (item?.title as string)
       : null;
+    const monitored =
+      typeof item?.monitored === "boolean" ? (item.monitored ? 1 : 0) : null;
+    // Progress belongs to an in-flight grab only: any other observed state
+    // writes NULL, so a percentage can never outlive its download. Invalid
+    // values are dropped rather than stored.
+    const p = observation.state === "downloading" ? observation.progress : null;
+    const percent =
+      typeof p?.percent === "number" &&
+      Number.isInteger(p.percent) &&
+      p.percent >= 0 &&
+      p.percent <= 100
+        ? p.percent
+        : null;
+    const timeleft = nonemptyString(p?.timeleft, 64)
+      ? (p?.timeleft as string)
+      : null;
     res = S().recordObservation.run(
       observation.state,
       now,
@@ -2033,6 +2071,9 @@ export function recordAcquisitionObservation(
       whisparrId,
       whisparrPath,
       whisparrTitle,
+      monitored,
+      percent,
+      timeleft,
       now,
       id,
       claim,

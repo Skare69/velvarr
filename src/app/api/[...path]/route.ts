@@ -1529,6 +1529,8 @@ async function catalogDetail(
       lastError: acquisition.lastError,
       updatedAt: acquisition.updatedAt,
       observationStale: isObservationStale(acquisition),
+      monitored: acquisition.whisparrMonitored,
+      progress: acquisition.progress,
     },
   });
 }
@@ -1617,6 +1619,8 @@ async function listRequestsRoute(request: Request): Promise<Response> {
         lastError: a.lastError,
         updatedAt: a.updatedAt,
         observationStale: isObservationStale(a),
+        monitored: a.whisparrMonitored,
+        progress: a.progress,
       },
     };
   });

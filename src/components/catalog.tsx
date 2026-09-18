@@ -73,6 +73,8 @@ type DetailPayload = {
     state: AcquisitionState;
     lastError: string | null;
     updatedAt: number;
+    monitored: boolean | null;
+    progress: { percent: number | null; timeleft: string | null } | null;
   } | null;
 };
 
@@ -1060,7 +1062,12 @@ const DECISION_TEXT: Record<RequestDecision, string> = {
 export function acquisitionText(a: {
   state: AcquisitionState;
   lastError: string | null;
+  monitored?: boolean | null;
+  progress?: { percent: number | null; timeleft: string | null } | null;
 }): string {
+  // Unmonitored outranks every state but imported — Whisparr will never deliver it.
+  if (a.monitored === false && a.state !== "imported")
+    return "Paused — Whisparr is not monitoring this item";
   switch (a.state) {
     case "unsent":
       return "Queued — not submitted yet";
@@ -1068,8 +1075,13 @@ export function acquisitionText(a: {
       return "Queued — being submitted";
     case "monitoring":
       return "Watching for a release (this is not a failure)";
-    case "downloading":
-      return "Downloading";
+    case "downloading": {
+      if (typeof a.progress?.percent !== "number") return "Downloading";
+      const left = a.progress.timeleft;
+      return left
+        ? `Downloading — ${a.progress.percent}% (${left} left)`
+        : `Downloading — ${a.progress.percent}%`;
+    }
     case "imported":
       return "Imported — in your library";
     case "uncertain":

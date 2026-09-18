@@ -193,8 +193,27 @@ export type AcquisitionRecord = {
   whisparrId: number | null;
   whisparrPath: string | null;
   whisparrTitle: string | null;
+  /** Whether Whisparr is still monitoring the item. `false` means an operator
+   * (or an M7 unmonitor) paused it: no release will ever be grabbed, which is
+   * not the same as "watching for a release". */
+  whisparrMonitored: boolean | null;
+  /** Download progress of the current grab, observed with the state. Non-null
+   * only while downloading; cleared by any other observed state so a stale
+   * percentage can never outlive its download. */
+  progress: AcquisitionProgress | null;
   createdAt: number;
   updatedAt: number;
+};
+
+/** Progress of one in-flight Whisparr grab, as observed. Never recomputed
+ * against the client clock: `timeleft` is Whisparr's own remaining-time
+ * string, passed through verbatim. */
+export type AcquisitionProgress = {
+  /** Integer 0–100 from (size - sizeleft) / size. Absent when the queue
+   * record carries no usable size, rather than a fake 0. */
+  percent: number | null;
+  /** Whisparr's `timeleft`, e.g. "00:12:34". */
+  timeleft: string | null;
 };
 
 export type AttemptOutcome = "accepted" | "failed" | "uncertain";
@@ -207,7 +226,15 @@ export type AcquisitionObservation =
   | {
       state: "monitoring" | "downloading" | "imported";
       /** Observed external item facts to persist alongside the state. */
-      item?: { whisparrId?: number; path?: string; title?: string };
+      item?: {
+        whisparrId?: number;
+        path?: string;
+        title?: string;
+        monitored?: boolean;
+      };
+      /** Progress of the observed grab. Only meaningful for `downloading`;
+       * any other state clears the stored progress. */
+      progress?: AcquisitionProgress;
     }
   | { absent: true; reason: string }
   | { unavailable: true; reason: string };

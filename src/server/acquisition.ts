@@ -153,11 +153,13 @@ function itemFacts(item: WhisparrItem): {
   whisparrId: number;
   path: string;
   title?: string;
+  monitored: boolean;
 } {
   return {
     whisparrId: item.whisparrId,
     path: item.path,
     ...(item.title !== undefined ? { title: item.title } : {}),
+    monitored: item.monitored,
   };
 }
 
@@ -546,7 +548,7 @@ async function observe(
   if (obs.found) {
     storage.recordAcquisitionObservation(
       record.id,
-      { state: obs.state, item: itemFacts(obs.item) },
+      { state: obs.state, item: itemFacts(obs.item), progress: obs.progress },
       claimToken,
     );
     summary.observed++;

@@ -7,6 +7,7 @@
 
 import { AppError, requestJson } from "./http.ts";
 import type {
+  AcquisitionProgress,
   IntegrationConfig,
   MediaKind,
   MediaReference,
@@ -199,6 +200,9 @@ interface MovieResourceDto {
 interface QueueRecordDto {
   movieId?: unknown;
   movie?: { id?: unknown };
+  size?: unknown;
+  sizeleft?: unknown;
+  timeleft?: unknown;
 }
 
 interface QueuePageDto {
@@ -207,6 +211,35 @@ interface QueuePageDto {
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/** Queue-record numbers: Whisparr's size/sizeleft are C# decimals that may
+ * serialize as JSON numbers or strings. Anything else is not a number. */
+function asNumber(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string" && value.trim() !== "") {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/** Derive progress from a matched queue record. percent is null — never a
+ * fake 0 — without a usable size; a fully downloaded record (sizeleft 0)
+ * is 100, not null. */
+function progressOf(r: QueueRecordDto): AcquisitionProgress {
+  const size = asNumber(r.size);
+  const sizeleft = asNumber(r.sizeleft);
+  const usable =
+    size !== null && size > 0 && sizeleft !== null && sizeleft >= 0;
+  const percent = usable ? Math.round(((size - sizeleft) / size) * 100) : null;
+  const timeleft = asString(r.timeleft)?.trim() ?? "";
+  return {
+    percent: percent === null ? null : Math.min(100, Math.max(0, percent)),
+    // ponytail: timeleft truncated at 32 chars — Whisparr emits "D.HH:MM:SS";
+    // truncate rather than reject if upstream ever lengthens it.
+    timeleft: timeleft === "" ? null : timeleft.slice(0, 32),
+  };
 }
 
 /** Stored identity and kind of a Whisparr movie/scene resource, read from
@@ -541,6 +574,8 @@ export type WhisparrObservation =
        * enum: both were observed unrelated to download state. */
       state: "monitoring" | "downloading" | "imported";
       item: WhisparrItem;
+      /** Present only while downloading; absent otherwise. */
+      progress?: AcquisitionProgress;
     }
   | { found: false };
 
@@ -570,12 +605,22 @@ export async function observeWhisparrItem(
   } catch {
     records = [];
   }
-  const inQueue = records.some(
+  // First queue page only (pageSize=200): a known ceiling — a record that
+  // scrolled past it reads as monitoring until the next recheck.
+  const matched = records.find(
     (r) =>
       r.movieId === item.whisparrId ||
       (r.movie && r.movie.id) === item.whisparrId,
   );
-  return { found: true, state: inQueue ? "downloading" : "monitoring", item };
+  if (matched) {
+    return {
+      found: true,
+      state: "downloading",
+      item,
+      progress: progressOf(matched),
+    };
+  }
+  return { found: true, state: "monitoring", item };
 }
 
 // --- delivery ---
