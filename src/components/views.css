@@ -121,6 +121,19 @@
   color: var(--color-muted);
 }
 
+/* Active Whisparr work reads as work, not as a second "approved". */
+.state-badge[data-state="processing"] {
+  border-color: color-mix(in srgb, var(--color-info) 55%, transparent);
+  background: color-mix(in srgb, var(--color-info) 16%, transparent);
+  color: var(--color-info);
+}
+
+.state-badge[data-state="paused"] {
+  border-color: var(--color-edge);
+  background: transparent;
+  color: var(--color-muted);
+}
+
 /* ---------- Following ---------- */
 
 /* Same card anatomy as the catalog grids, but the card holds a second

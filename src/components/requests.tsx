@@ -159,14 +159,14 @@ function RequestRow({
   const r = record;
   const pill = acquisition
     ? acquisition.monitored === false && acquisition.state !== "imported"
-      ? { label: "Paused", tone: "cancelled" }
+      ? { label: "Paused", tone: "paused" }
       : acquisition.state === "downloading"
         ? {
             label:
               typeof acquisition.progress?.percent === "number"
                 ? `Processing ${acquisition.progress.percent}%`
                 : "Processing",
-            tone: "approved",
+            tone: "processing",
           }
         : null
     : null;
@@ -196,7 +196,6 @@ function RequestRow({
           <span className="chip state-badge" data-state={r.decision}>
             {GROUP_LABEL[r.decision]}
           </span>
-          {/* Reuse an existing chip tone; views.css has no download/pause variant. */}
           {pill && (
             <span className="chip state-badge" data-state={pill.tone}>
               {pill.label}
