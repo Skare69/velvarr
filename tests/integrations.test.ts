@@ -2491,6 +2491,20 @@ test("observeWhisparrItem maps monitoring, downloading, and imported from real f
     // Missing or empty timeleft is null; the item still downloads.
     [{ timeleft: "" }, { percent: 75, timeleft: null }],
     [{ timeleft: undefined }, { percent: 75, timeleft: null }],
+    // Verbatim shape captured from the homelab (Whisparr 3.6.0.1660 `eros`,
+    // 2026-09-18): no nested `movie`, numeric size/sizeleft, "hh:mm:ss".
+    [
+      {
+        movie: undefined,
+        size: 1892418550,
+        sizeleft: 1441858550,
+        timeleft: "00:17:38",
+        estimatedCompletionTime: "2026-09-18T23:40:24Z",
+        downloadClient: "qBittorrent",
+        protocol: "torrent",
+      },
+      { percent: 24, timeleft: "00:17:38" },
+    ],
   ];
   const queueFixture = { reads: 0 };
   // Read 1: empty queue (monitoring). Read 2: full record (downloading).
