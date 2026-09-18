@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { Buffer } from "node:buffer";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resetMetaCache } from "../src/server/http.ts";
+import { countPendingApprovals } from "../src/lib/approvals.ts";
 
 // Isolated environment BEFORE importing route/storage modules.
 process.env.VELVARR_DATA_DIR = mkdtempSync(join(tmpdir(), "velvarr-api-test-"));
@@ -3784,5 +3785,45 @@ test("removals impact: strictly read-only preview under the caller's own authori
     fx.journal.filter((entry) => entry.method !== "GET"),
     [],
     JSON.stringify(fx.journal),
+  );
+});
+
+// The sidebar approval badge counts only work the account may really decide:
+// staff see every pending request, an autoApprove holder only its own, and a
+// plain requester never gets a number for someone else's queue.
+test("pending approval count follows the same authority as the decision gate", () => {
+  const rows = [
+    { id: "1", accountId: "owner", decision: "pending" },
+    { id: "2", accountId: "guest", decision: "pending" },
+    { id: "3", accountId: "guest", decision: "approved" },
+    { id: "4", accountId: "owner", decision: "declined" },
+  ] as unknown as Parameters<typeof countPendingApprovals>[0];
+  const account = (role: string, id: string, autoApprove = false) =>
+    ({
+      id,
+      name: id,
+      role,
+      enabled: true,
+      libraryIds: [],
+      autoApprove,
+      canRemove: false,
+    }) as unknown as Parameters<typeof countPendingApprovals>[1];
+
+  assert.equal(countPendingApprovals(rows, account("admin", "owner")), 2);
+  assert.equal(countPendingApprovals(rows, account("moderator", "mod")), 2);
+  // A plain requester decides nothing, even their own pending row.
+  assert.equal(countPendingApprovals(rows, account("requester", "guest")), 0);
+  // The autoApprove grant reaches exactly one row: their own pending request.
+  assert.equal(
+    countPendingApprovals(rows, account("requester", "guest", true)),
+    1,
+  );
+  // Nothing pending means no badge at all, never a zero.
+  assert.equal(
+    countPendingApprovals(
+      rows.filter((r) => r.decision !== "pending"),
+      account("admin", "owner"),
+    ),
+    0,
   );
 });

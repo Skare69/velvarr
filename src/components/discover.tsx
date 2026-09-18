@@ -17,6 +17,9 @@ import type {
   RequestRecord,
 } from "../lib/contracts";
 import {
+  CardStatusBadge,
+  type CardStatusKind,
+  CardTypeBadge,
   ErrorPanel,
   Icon,
   imgSrc,
@@ -286,11 +289,18 @@ function RequestTile({
 }) {
   const art = useRequestArt(item.media);
   const label = DECISION_LABELS[item.decision];
+  const statusKind: CardStatusKind =
+    item.decision === "approved"
+      ? "approved"
+      : item.decision === "pending"
+        ? "requested"
+        : "declined";
+
   return (
     <div className="discovery-tile discovery-tile-poster">
       <button
         type="button"
-        className="discovery-art-card"
+        className="discovery-art-card media-card"
         onClick={() => onOpen(item.media)}
         aria-label={`Request ${art?.title ?? item.media.id} — ${label}; open catalog details`}
       >
@@ -299,21 +309,28 @@ function RequestTile({
             name={art?.title ?? "·"}
             src={art ? imgSrc(art.imageUrl) : undefined}
           />
-          <div className="discovery-shade">
-            <span className="discovery-art-title">
-              {art === undefined
-                ? "Loading…"
-                : (art?.title ??
-                  `${item.media.provider} · ${item.media.kind} · ${item.media.id}`)}
-            </span>
-            <span className="discovery-art-meta">
+          <CardTypeBadge kind={item.media.kind} />
+          <CardStatusBadge status={statusKind} title={art?.title} />
+          <div className="media-quick-overlay">
+            <div className="media-quick-summary" aria-hidden="true">
+              <strong>
+                {art === undefined
+                  ? "Loading…"
+                  : (art?.title ??
+                    `${item.media.provider} · ${item.media.kind} · ${item.media.id}`)}
+              </strong>
+              <p>{DATE_FMT.format(item.createdAt)}</p>
+            </div>
+            <div className="media-quick-action">
               <span
-                className={`chip ${item.decision === "pending" ? "chip-accent" : ""}`}
+                className={`btn${item.decision === "pending" ? " btn-accent" : ""}`}
               >
+                <Icon
+                  name={statusKind === "approved" ? "check" : "hourglass"}
+                />
                 {label}
               </span>
-              <span>{DATE_FMT.format(item.createdAt)}</span>
-            </span>
+            </div>
           </div>
         </div>
       </button>
@@ -331,35 +348,35 @@ function LibraryTile({ item }: { item: LibraryItem }) {
       : null;
   return (
     <div className="discovery-tile discovery-tile-poster">
-      <div className="discovery-art-card">
+      <div className="discovery-art-card media-card">
         <div className="discovery-art">
           <ItemImage name={item.name} src={item.image} />
-          <div className="discovery-shade">
-            <span className="discovery-art-title">{item.name}</span>
-            <span className="discovery-art-meta">
-              {[item.year, item.kind, mins === null ? null : `${mins} min`]
-                .filter(Boolean)
-                .join(" · ")}
-            </span>
+          <CardTypeBadge kind={item.kind} />
+          <CardStatusBadge status="available" title={item.name} />
+          <div className="media-quick-overlay">
+            <div className="media-quick-summary" aria-hidden="true">
+              {item.year && <span>{item.year}</span>}
+              <strong>{item.name}</strong>
+              {mins !== null && <p>{mins} min</p>}
+            </div>
+            <div className="media-quick-action">
+              {item.canPlay && item.watchUrl ? (
+                <a
+                  className="btn btn-accent media-quick-watch"
+                  href={item.watchUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={`Open ${item.name} in Jellyfin`}
+                >
+                  <Icon name="play" /> Jellyfin
+                </a>
+              ) : (
+                <span className="discovery-library-note">
+                  No playback access
+                </span>
+              )}
+            </div>
           </div>
-        </div>
-        <div className="discovery-library-foot">
-          {item.canPlay && item.watchUrl ? (
-            <a
-              className="btn btn-accent"
-              href={item.watchUrl}
-              target="_blank"
-              rel="noreferrer"
-              aria-label={`Open ${item.name} in Jellyfin`}
-            >
-              {/* ponytail: a 2:3 tile is 160px wide (122px on phones), so the
-                  visible label is the destination and the full action lives in
-                  aria-label. */}
-              <Icon name="play" /> Jellyfin
-            </a>
-          ) : (
-            <span className="discovery-library-note">No playback access</span>
-          )}
         </div>
       </div>
     </div>

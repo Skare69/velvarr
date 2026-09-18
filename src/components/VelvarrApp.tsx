@@ -17,13 +17,17 @@ import type {
   LibraryPage,
   PerformerFollow,
   ProviderStatus,
+  RequestRecord,
   Role,
   WhisparrDelivery,
   WhisparrPathMapping,
 } from "../lib/contracts.ts";
+import { countPendingApprovals } from "../lib/approvals.ts";
 import {
   ApiError,
   api,
+  CardStatusBadge,
+  CardTypeBadge,
   ErrorPanel,
   ForbiddenPanel,
   Icon,
@@ -763,6 +767,37 @@ function GlobalSearchForm() {
   );
 }
 
+/** How many requests this account may actually decide right now: staff see
+ * every pending row, an autoApprove holder only their own. A failed or
+ * forbidden read counts zero — a wrong number is worse than no badge.
+ * ponytail: refreshed on view changes, not pushed; add polling or SSE only if
+ * operators need the count to move without navigating. */
+function usePendingApprovals(account: Account, view: View): number {
+  const [count, setCount] = useState(0);
+  const eligible =
+    account.role === "admin" ||
+    account.role === "moderator" ||
+    account.autoApprove;
+  useEffect(() => {
+    if (!eligible) {
+      setCount(0);
+      return;
+    }
+    let live = true;
+    api<{ requests: RequestRecord[] }>("/api/requests")
+      .then((d) => {
+        if (live) setCount(countPendingApprovals(d.requests, account));
+      })
+      .catch(() => {
+        if (live) setCount(0);
+      });
+    return () => {
+      live = false;
+    };
+  }, [eligible, account, view]);
+  return count;
+}
+
 function Shell() {
   const session = useSession();
   const params = useSearchParams();
@@ -777,6 +812,7 @@ function Shell() {
   const isAdmin = session.account.role === "admin";
   const navigation = useRef<HTMLDialogElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const pendingApprovals = usePendingApprovals(session.account, view);
   const nav = [
     { id: "discover", label: "Discover", icon: "discover", group: "browse" },
     { id: "movies", label: "Movies", icon: "movie", group: "browse" },
@@ -832,6 +868,14 @@ function Shell() {
       >
         <Icon name={item.icon} />
         {item.label}
+        {item.id === "requests" && pendingApprovals > 0 && (
+          <span
+            className="nav-badge"
+            aria-label={`${pendingApprovals} request${pendingApprovals === 1 ? "" : "s"} awaiting approval`}
+          >
+            {pendingApprovals}
+          </span>
+        )}
       </a>
     </div>
   ));
@@ -1286,15 +1330,16 @@ function LibraryView() {
                     src={it.image}
                     className="absolute inset-0 h-full w-full object-cover"
                   />
-                  <span className="media-badge">{it.kind}</span>
+                  <CardTypeBadge kind={it.kind} />
                   {it.canPlay && (
-                    <span
-                      className="media-status"
-                      aria-label="Playable in Jellyfin"
-                    >
-                      <Icon name="check" />
-                    </span>
+                    <CardStatusBadge status="available" title={it.name} />
                   )}
+                  <div className="media-quick-overlay">
+                    <div className="media-quick-summary" aria-hidden="true">
+                      {it.year && <span>{it.year}</span>}
+                      <strong>{it.name}</strong>
+                    </div>
+                  </div>
                 </div>
                 <div className="media-meta">
                   <div className="media-title">{it.name}</div>

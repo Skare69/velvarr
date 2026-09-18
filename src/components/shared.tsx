@@ -202,6 +202,10 @@ const ICON_PATHS = {
   logout: "M10 3H4v18h6M10 12h11m-5-5 5 5-5 5",
   "arrow-right": "M4 12h16m-6-6 6 6-6 6",
   check: "m5 12 4 4L19 6",
+  "check-double": "M18 6 7 17l-5-5 M22 10l-7.5 7.5-1.5-1.5",
+  hourglass:
+    "M5 22h14M5 2h14M17 22v-4.2a2 2 0 0 0-.6-1.4L12 12l-4.4 4.4a2 2 0 0 0-.6 1.4V22M7 2v4.2a2 2 0 0 0 .6 1.4L12 12l4.4-4.4A2 2 0 0 0 17 6.2V2",
+  clock: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 4v6l4 2",
   plus: "M12 4v16M4 12h16",
   star: "m12 3.6 2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.2-4.1 5.8-.8L12 3.6Z",
   tag: "M20 12.5 12.5 20a2 2 0 0 1-2.8 0L4 14.2V4h10.2l5.8 5.7a2 2 0 0 1 0 2.8ZM8.5 8.5h.01",
@@ -231,6 +235,56 @@ export function Icon({
     >
       <path d={ICON_PATHS[name]} />
     </svg>
+  );
+}
+
+/* ---------- Card Badges (Seerr-style pill + status) ---------- */
+
+export function CardTypeBadge({ kind }: { kind: "movie" | "scene" | string }) {
+  const isScene = kind.toLowerCase() === "scene";
+  return (
+    <span
+      className={`media-type-badge ${isScene ? "media-type-scene" : "media-type-movie"}`}
+    >
+      {isScene ? "SCENE" : "MOVIE"}
+    </span>
+  );
+}
+
+export type CardStatusKind =
+  "requested" | "approved" | "available" | "declined";
+
+export function CardStatusBadge({
+  status,
+  title,
+}: {
+  status: CardStatusKind;
+  title?: string;
+}) {
+  const icon =
+    status === "available"
+      ? "check-double"
+      : status === "approved"
+        ? "check"
+        : status === "requested"
+          ? "hourglass"
+          : "close";
+  const label =
+    status === "available"
+      ? "In library"
+      : status === "approved"
+        ? "Approved"
+        : status === "requested"
+          ? "Requested"
+          : "Declined";
+  return (
+    <span
+      className={`media-status-badge media-status-${status}`}
+      aria-label={title ? `${title}: ${label}` : label}
+      title={label}
+    >
+      <Icon name={icon} />
+    </span>
   );
 }
 
@@ -383,6 +437,15 @@ function RequestableCard({
   const availability = status?.availability;
   const available = availability?.outcome === "available" ? availability : null;
   const requested = Boolean(status?.myRequest || status?.acquisition);
+  const approved =
+    status?.myRequest?.decision === "approved" || Boolean(status?.acquisition);
+  const statusKind: CardStatusKind | null = available
+    ? "available"
+    : requested
+      ? approved
+        ? "approved"
+        : "requested"
+      : null;
   // A request intent does not depend on Jellyfin, so an outage or a denied
   // verdict must not hide the button the detail page still offers: the note
   // carries the truth instead.
@@ -441,7 +504,10 @@ function RequestableCard({
             src={imgSrc(item.imageUrl)}
             className="h-full w-full object-cover"
           />
-          <span className="media-badge">{scene ? "Scene" : "Movie"}</span>
+          <CardTypeBadge kind={media.kind} />
+          {statusKind && (
+            <CardStatusBadge status={statusKind} title={item.title} />
+          )}
           {scene && duration(item.durationSeconds) && (
             <span className="media-runtime">
               {duration(item.durationSeconds)}
