@@ -362,7 +362,7 @@ function LibraryTile({ item }: { item: LibraryItem }) {
             <div className="media-quick-action">
               {item.canPlay && item.watchUrl ? (
                 <a
-                  className="btn btn-accent media-quick-watch"
+                  className="btn btn-accent"
                   href={item.watchUrl}
                   target="_blank"
                   rel="noreferrer"

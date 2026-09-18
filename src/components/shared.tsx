@@ -562,7 +562,7 @@ function RequestableCard({
         <div className="media-quick-action" aria-live="polite">
           {!busy && available?.watchUrl ? (
             <a
-              className="btn media-quick-watch"
+              className="btn btn-accent"
               href={available.watchUrl}
               target="_blank"
               rel="noopener noreferrer"

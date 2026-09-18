@@ -835,10 +835,6 @@ summary:focus-visible,
   cursor: wait;
   opacity: 0.7;
 }
-.media-quick-watch {
-  color: var(--color-ok);
-  border-color: var(--color-ok-fill);
-}
 @media (hover: none), (pointer: coarse) {
   .media-quick-overlay {
     opacity: 1;
