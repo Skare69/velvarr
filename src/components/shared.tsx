@@ -284,6 +284,10 @@ type CardStatus = {
   availability: PlaybackAccess;
 };
 
+// ponytail: two background lanes for bounded pages/rails; batch availability
+// server-side if per-card Jellyfin reads become the bottleneck.
+const cardPreloads: Promise<void>[] = [Promise.resolve(), Promise.resolve()];
+
 function RequestableCard({
   item,
   onOpen,
@@ -301,9 +305,7 @@ function RequestableCard({
   const performers = scene ? item.credits.map((c) => c.name).join(", ") : "";
   useEffect(() => () => controller.current?.abort(), []);
 
-  // ponytail: check on hover/focus, not one Jellyfin sweep per card on load.
-  // Batch/index these reads only if interaction-time checks become too costly.
-  async function check() {
+  const check = useCallback(async () => {
     if (working.current) return;
     working.current = true;
     const abort = new AbortController();
@@ -329,8 +331,28 @@ function RequestableCard({
     } finally {
       working.current = false;
       if (!abort.signal.aborted) setBusy(null);
+      abort.abort();
     }
-  }
+  }, [media.provider, media.kind, media.id]);
+
+  useEffect(() => {
+    if (status) return;
+    let cancelled = false;
+    const preload = () => {
+      const previous = cardPreloads.shift()!;
+      cardPreloads.push(
+        previous.then(() => {
+          if (!cancelled) return check();
+        }),
+      );
+    };
+    if (document.readyState === "complete") preload();
+    else window.addEventListener("load", preload, { once: true });
+    return () => {
+      cancelled = true;
+      window.removeEventListener("load", preload);
+    };
+  }, [check, status]);
 
   async function request() {
     if (working.current) return;
@@ -401,14 +423,16 @@ function RequestableCard({
     <div
       className={`media-card media-request-card${scene ? " scene-card" : ""}`}
       onPointerEnter={(e) => {
-        if (e.pointerType !== "touch") void check();
+        if (!status && e.pointerType !== "touch") void check();
       }}
     >
       <button
         type="button"
         className="media-open"
         aria-label={`View details for ${item.title}`}
-        onFocus={() => void check()}
+        onFocus={() => {
+          if (!status) void check();
+        }}
         onClick={() => onOpen(media)}
       >
         <div className="media-art aspect-[2/3]">
