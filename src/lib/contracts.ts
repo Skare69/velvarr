@@ -321,6 +321,17 @@ export type LibraryItem = {
   year?: number;
   overview?: string;
   durationTicks?: number;
+  /** File facts as the media server reports them; each field is absent rather
+   * than guessed when Jellyfin omits it. */
+  file?: {
+    sizeBytes?: number;
+    container?: string;
+    /** Release-style label, e.g. "2160p". */
+    resolution?: string;
+    videoCodec?: string;
+    /** On-disk path; only ever sent to Jellyfin administrators. */
+    path?: string;
+  };
   image?: string;
   canPlay: boolean;
   watchUrl?: string;

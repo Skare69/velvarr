@@ -28,7 +28,11 @@ import {
   validateUser,
 } from "../src/server/jellyfin.ts";
 import { getWhisparrStatus } from "../src/server/whisparr.ts";
-import type { Account, IntegrationConfig } from "../src/lib/contracts.ts";
+import type {
+  Account,
+  IntegrationConfig,
+  LibraryItem,
+} from "../src/lib/contracts.ts";
 
 // --- constants and fixture helpers ---
 
@@ -1232,6 +1236,84 @@ test("getLibraryItem proves membership under a granted library before detail", a
   });
 });
 
+test("library items carry the media server's own file facts, path only for admins", async () => {
+  // Field names source-verified against the lab's Jellyfin 12.0.0 OpenAPI:
+  // MediaSourceInfo.Size/Container/MediaStreams, MediaStream.Codec/Width/Height.
+  const sourceWith = (extra: Record<string, unknown>) => ({
+    Id: "ms1",
+    SupportsDirectStream: true,
+    ...extra,
+  });
+  const handlerFor = (
+    source: Record<string, unknown>,
+    isAdministrator: boolean,
+  ): FixtureHandler => {
+    const { handler } = membershipHandler();
+    return (req, res, body) => {
+      const path = pathOf(req.url ?? "");
+      if (path === "/users/me")
+        return sendJson(res, 200, {
+          ...ME,
+          Policy: { ...ME.Policy, IsAdministrator: isAdministrator },
+        });
+      if (path === `/items/${ITEM_ID}/playbackinfo`)
+        return sendJson(res, 200, { MediaSources: [source] });
+      return handler(req, res, body);
+    };
+  };
+  const read = async (
+    source: Record<string, unknown>,
+    isAdministrator = false,
+  ): Promise<LibraryItem> => {
+    let item: LibraryItem | null = null;
+    await withFixture(handlerFor(source, isAdministrator), async (fx) => {
+      item = await getLibraryItem(
+        jellyfinConfig(fx.origin, [LIB_A, LIB_B]),
+        TOKEN,
+        account([LIB_A, LIB_B]),
+        ITEM_ID,
+      );
+    });
+    assert.ok(item, "expected the item read to succeed");
+    return item;
+  };
+
+  const full = await read(
+    sourceWith({
+      Size: 6764573491,
+      Container: "mp4",
+      Path: "/mnt/secret/x.mkv",
+      MediaStreams: [
+        { Type: "Audio", Codec: "aac" },
+        { Type: "Video", Codec: "h264", Width: 3840, Height: 2160 },
+      ],
+    }),
+  );
+  assert.deepEqual(full.file, {
+    sizeBytes: 6764573491,
+    container: "mp4",
+    resolution: "2160p",
+    videoCodec: "h264",
+  });
+
+  // Same source, Jellyfin administrator: the on-disk path is included.
+  const asAdmin = await read(
+    sourceWith({ Size: 1, Path: "/mnt/secret/x.mkv" }),
+    true,
+  );
+  assert.equal(asAdmin.file?.path, "/mnt/secret/x.mkv");
+
+  // Missing facts are dropped, never faked: a zero size is no size, width
+  // stands in only when height is absent, and a source with nothing usable
+  // yields no file block at all.
+  const sparse = await read(
+    sourceWith({ Size: 0, MediaStreams: [{ Type: "Video", Width: 1920 }] }),
+  );
+  assert.deepEqual(sparse.file, { resolution: "1920w" });
+  const bare = await read(sourceWith({}));
+  assert.equal(bare.file, undefined);
+});
+
 test("getLibraryItem denies items that live outside granted libraries", async () => {
   const { handler } = membershipHandler();
   await withFixture(handler, async (fx) => {
@@ -1799,6 +1881,9 @@ test("resolvePlaybackAccess matches exactly by provider id and links only playab
         year: 2024,
         canPlay: true,
         watchUrl,
+        // The size is all this fixture's source carries; the non-admin
+        // caller gets no path and the absent facts are simply absent.
+        file: { sizeBytes: 21000 },
       },
       watchUrl,
     });

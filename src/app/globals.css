@@ -782,13 +782,15 @@ summary:focus-visible,
   pointer-events: none;
   transition: opacity 160ms ease-in-out;
 }
+/* The overlay covers the whole card, so it must never eat the click that
+ * opens the detail page: it stays pointer-transparent and only its own
+ * controls (.media-quick-action .btn) take pointer events. */
 .media-card:hover .media-quick-overlay,
 .media-card:focus-within .media-quick-overlay,
 .discovery-art-card:hover .media-quick-overlay,
 .discovery-art-card:focus-within .media-quick-overlay {
   opacity: 1;
   visibility: visible;
-  pointer-events: auto;
 }
 .media-quick-summary {
   min-height: 0;

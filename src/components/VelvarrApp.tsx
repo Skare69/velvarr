@@ -29,6 +29,7 @@ import {
   CardStatusBadge,
   CardTypeBadge,
   ErrorPanel,
+  FileFacts,
   ForbiddenPanel,
   Icon,
   imgSrc,
@@ -1502,6 +1503,7 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
                   Playback is not available for this item or your account.
                 </p>
               )}
+              <FileFacts item={item} />
             </div>
           </div>
           <section className="library-overview" aria-label="Overview">

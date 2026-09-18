@@ -39,10 +39,19 @@ interface UserDto {
   Policy?: UserPolicy;
 }
 
+interface MediaStream {
+  Type?: string;
+  Codec?: string;
+  Width?: number;
+  Height?: number;
+}
+
 interface MediaSource {
   Id?: string;
   Path?: string;
   Size?: number;
+  Container?: string;
+  MediaStreams?: MediaStream[];
   SupportsDirectPlay?: boolean;
   SupportsDirectStream?: boolean;
   SupportsTranscoding?: boolean;
@@ -370,6 +379,45 @@ function watchUrlFor(
   return `${base}/web/index.html#!/details?id=${itemId}&serverId=${config.jellyfin.serverId}`;
 }
 
+/** The file facts Jellyfin already returns with `MediaSources`, taken from the
+ * first source only: a second source is a second cut, not extra truth about
+ * this one. Source-verified against the lab's Jellyfin 12.0.0 OpenAPI
+ * (`MediaSourceInfo.Size`/`Container`/`MediaStreams`, `MediaStream.Codec`/
+ * `Width`/`Height`); every field is optional there, so each is dropped
+ * individually rather than faked. */
+function fileFacts(
+  sources: MediaSource[] | undefined,
+  isAdministrator: boolean,
+): LibraryItem["file"] | undefined {
+  const source = sources?.[0];
+  if (!source) return undefined;
+  const video = source.MediaStreams?.find((s) => s.Type === "Video");
+  const height = typeof video?.Height === "number" ? video.Height : null;
+  const width = typeof video?.Width === "number" ? video.Width : null;
+  const facts = {
+    ...(typeof source.Size === "number" && source.Size > 0
+      ? { sizeBytes: source.Size }
+      : {}),
+    ...(source.Container
+      ? { container: String(source.Container).slice(0, 40) }
+      : {}),
+    // Height names the resolution the way releases do (2160p); width only
+    // fills in when the server omits height.
+    ...(height && height > 0
+      ? { resolution: `${height}p` }
+      : width && width > 0
+        ? { resolution: `${width}w` }
+        : {}),
+    ...(video?.Codec ? { videoCodec: String(video.Codec).slice(0, 40) } : {}),
+    // The on-disk path is an operator fact: only accounts that are already
+    // Jellyfin administrators (and so see it in Jellyfin anyway) get it.
+    ...(isAdministrator && source.Path
+      ? { path: String(source.Path).slice(0, 4096) }
+      : {}),
+  };
+  return Object.keys(facts).length > 0 ? facts : undefined;
+}
+
 function mapLibraryItem(
   dto: BaseItemDto,
   user: ExternalUser,
@@ -381,15 +429,17 @@ function mapLibraryItem(
   const location = dto?.LocationType;
   // A playable, non-placeholder item needs: playback permission, a real file
   // location, and at least one source Jellyfin can actually deliver.
+  const sources = mediaSources ?? dto?.MediaSources ?? [];
   const canPlay =
     user.enableMediaPlayback &&
     location !== "Virtual" &&
-    (mediaSources ?? dto?.MediaSources ?? []).some(
+    sources.some(
       (s) =>
         s.SupportsDirectPlay === true ||
         s.SupportsDirectStream === true ||
         s.SupportsTranscoding === true,
     );
+  const file = fileFacts(sources, user.isAdministrator === true);
   return {
     id,
     name: String(dto?.Name ?? "").slice(0, 500),
@@ -400,6 +450,7 @@ function mapLibraryItem(
     ...(hasPrimaryImage ? { image: `/api/images/${id}` } : {}),
     canPlay,
     ...(canPlay ? { watchUrl: watchUrlFor(config, id) } : {}),
+    ...(file ? { file } : {}),
   };
 }
 

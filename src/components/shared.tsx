@@ -16,6 +16,7 @@ import type {
   CatalogDetail,
   CatalogProvider,
   CatalogReference,
+  LibraryItem,
   MediaReference,
   PlaybackAccess,
   ProviderStatus,
@@ -239,6 +240,28 @@ export function Icon({
     >
       <path d={ICON_PATHS[name]} />
     </svg>
+  );
+}
+
+/** What the media server actually holds: the facts Whisparr/Jellyfin show and
+ * Velvarr used to hide. Each one is optional upstream, so the line renders
+ * whatever arrived and nothing when nothing did. */
+export function FileFacts({ item }: { item: LibraryItem }) {
+  const f = item.file;
+  if (!f) return null;
+  const gib = f.sizeBytes ? f.sizeBytes / 1024 ** 3 : null;
+  const parts = [
+    f.resolution,
+    gib !== null ? `${gib < 10 ? gib.toFixed(2) : gib.toFixed(1)} GiB` : null,
+    f.videoCodec,
+    f.container ? f.container.toUpperCase() : null,
+  ].filter(Boolean);
+  if (parts.length === 0 && !f.path) return null;
+  return (
+    <div className="mt-1 text-xs text-muted">
+      {parts.length > 0 && <div>{parts.join(" · ")}</div>}
+      {f.path && <div className="mt-1 break-all font-mono">{f.path}</div>}
+    </div>
   );
 }
 

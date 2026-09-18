@@ -340,8 +340,12 @@ function RequestTile({
 
 /** Jellyfin tiles: the item image is already a same-origin /api/images path,
  * and the outward link appears only when playback is genuinely permitted;
- * otherwise the tile says so instead of implying availability. */
+ * otherwise the tile says so instead of implying availability. The art opens
+ * the library item page — a Jellyfin item has no provider identity, so the
+ * catalog detail page is not its destination, but a tile must still open
+ * something. */
 function LibraryTile({ item }: { item: LibraryItem }) {
+  const setP = useParamsSetter();
   const mins =
     item.durationTicks != null && item.durationTicks > 0
       ? Math.round(item.durationTicks / 600000000)
@@ -349,33 +353,44 @@ function LibraryTile({ item }: { item: LibraryItem }) {
   return (
     <div className="discovery-tile discovery-tile-poster">
       <div className="discovery-art-card media-card">
-        <div className="discovery-art">
-          <ItemImage name={item.name} src={item.image} />
-          <CardTypeBadge kind={item.kind} />
-          <CardStatusBadge status="available" title={item.name} />
-          <div className="media-quick-overlay">
-            <div className="media-quick-summary" aria-hidden="true">
-              {item.year && <span>{item.year}</span>}
-              <strong>{item.name}</strong>
-              {mins !== null && <p>{mins} min</p>}
-            </div>
-            <div className="media-quick-action">
-              {item.canPlay && item.watchUrl ? (
-                <a
-                  className="btn btn-accent"
-                  href={item.watchUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  aria-label={`Open ${item.name} in Jellyfin`}
-                >
-                  <Icon name="play" /> Jellyfin
-                </a>
-              ) : (
-                <span className="discovery-library-note">
-                  No playback access
-                </span>
-              )}
-            </div>
+        <button
+          type="button"
+          className="media-open"
+          onClick={() =>
+            setP({ view: "library", item: item.id }, { push: true })
+          }
+          aria-label={`Open ${item.name}`}
+        >
+          <div className="discovery-art">
+            <ItemImage name={item.name} src={item.image} />
+            <CardTypeBadge kind={item.kind} />
+            <CardStatusBadge status="available" title={item.name} />
+          </div>
+        </button>
+        <div className="media-quick-overlay">
+          <div className="media-quick-summary" aria-hidden="true">
+            {item.year && <span>{item.year}</span>}
+            <strong>{item.name}</strong>
+            {item.overview ? (
+              <p>{item.overview}</p>
+            ) : (
+              mins !== null && <p>{mins} min</p>
+            )}
+          </div>
+          <div className="media-quick-action">
+            {item.canPlay && item.watchUrl ? (
+              <a
+                className="btn btn-accent"
+                href={item.watchUrl}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={`Open ${item.name} in Jellyfin`}
+              >
+                <Icon name="play" /> Jellyfin
+              </a>
+            ) : (
+              <span className="discovery-library-note">No playback access</span>
+            )}
           </div>
         </div>
       </div>

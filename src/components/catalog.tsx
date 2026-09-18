@@ -14,6 +14,7 @@ import {
   ApiError,
   duration,
   ErrorPanel,
+  FileFacts,
   GridSkeleton,
   Icon,
   imgSrc,
@@ -1142,19 +1143,22 @@ function AvailabilityBox({
       ) : !avail ? (
         <div className="skel mt-1 h-10 w-full" aria-hidden="true" />
       ) : avail.outcome === "available" ? (
-        <div className="mt-1 flex flex-wrap items-center gap-2">
-          <span className="chip chip-accent">Available now</span>
-          {avail.watchUrl && (
-            <a
-              className="btn"
-              href={avail.watchUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <Icon name="play" /> Open in Jellyfin
-            </a>
-          )}
-        </div>
+        <>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <span className="chip chip-accent">Available now</span>
+            {avail.watchUrl && (
+              <a
+                className="btn"
+                href={avail.watchUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Icon name="play" /> Open in Jellyfin
+              </a>
+            )}
+          </div>
+          <FileFacts item={avail.item} />
+        </>
       ) : avail.outcome === "missing" ? (
         <p className="mt-1 text-sm text-muted">
           Not in your library. Request it above and Velvarr will watch for it.
