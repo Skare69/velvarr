@@ -18,3 +18,8 @@ export function countPendingApprovals(
   }
   return count;
 }
+
+/** Fired on `window` whenever a view has just read authoritative request rows
+ * (initial load, Refresh, or after a decision), so the sidebar badge can
+ * re-read instead of going stale until the next navigation. */
+export const REQUESTS_CHANGED = "velvarr:requests-changed";

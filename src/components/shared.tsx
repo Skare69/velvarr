@@ -20,6 +20,7 @@ import type {
   ProviderStatus,
   RequestRecord,
 } from "../lib/contracts.ts";
+import { REQUESTS_CHANGED } from "../lib/approvals.ts";
 
 /* ---------- API helper ---------- */
 
@@ -422,6 +423,7 @@ function RequestableCard({
       setStatus((current) =>
         current ? { ...current, myRequest: result.request } : current,
       );
+      window.dispatchEvent(new Event(REQUESTS_CHANGED));
     } catch (e) {
       exists = e instanceof ApiError && e.code === "request_exists";
       // Re-check before offering another POST: a lost response may have saved it.

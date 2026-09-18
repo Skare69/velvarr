@@ -31,6 +31,7 @@ import type {
   CatalogReference,
   PerformerFollow,
 } from "../lib/contracts";
+import { REQUESTS_CHANGED } from "../lib/approvals";
 import "./views.css";
 
 /* ---------- Local shapes ---------- */
@@ -340,6 +341,7 @@ function BulkRequest({
           }),
         }),
       );
+      window.dispatchEvent(new Event(REQUESTS_CHANGED));
     } catch (e) {
       setError(messageOf(e));
     } finally {

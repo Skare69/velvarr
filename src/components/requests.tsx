@@ -18,6 +18,7 @@ import type {
   RequestDecision,
   RequestRecord,
 } from "../lib/contracts";
+import { REQUESTS_CHANGED } from "../lib/approvals";
 
 /* Facts displayed per row, kept visibly separate:
  *  1. Decision  — one user's intent (this list, from RequestRecord).
@@ -250,7 +251,10 @@ export function RequestsView() {
   const load = useCallback(() => {
     setError(null);
     api<{ requests: Row[] }>("/api/requests")
-      .then((d) => setRows(d.requests))
+      .then((d) => {
+        setRows(d.requests);
+        window.dispatchEvent(new Event(REQUESTS_CHANGED));
+      })
       .catch((e: unknown) => setError(messageOf(e)));
   }, []);
 

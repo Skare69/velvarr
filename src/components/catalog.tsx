@@ -41,6 +41,7 @@ import type {
   RequestRecord,
   RemovalRequest,
 } from "../lib/contracts";
+import { REQUESTS_CHANGED } from "../lib/approvals";
 
 /* ---------- Local shapes for API responses ---------- */
 
@@ -1386,6 +1387,7 @@ function MediaActions({
         decidedAt: d.request.decidedAt,
       });
       setAutoApproved(d.autoApproved === true);
+      window.dispatchEvent(new Event(REQUESTS_CHANGED));
     } catch (e) {
       if (e instanceof ApiError && e.code === "request_exists") {
         // An existing request is a state, not an error: reload the detail so

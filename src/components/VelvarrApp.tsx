@@ -22,7 +22,7 @@ import type {
   WhisparrDelivery,
   WhisparrPathMapping,
 } from "../lib/contracts.ts";
-import { countPendingApprovals } from "../lib/approvals.ts";
+import { countPendingApprovals, REQUESTS_CHANGED } from "../lib/approvals.ts";
 import {
   ApiError,
   api,
@@ -770,8 +770,10 @@ function GlobalSearchForm() {
 /** How many requests this account may actually decide right now: staff see
  * every pending row, an autoApprove holder only their own. A failed or
  * forbidden read counts zero — a wrong number is worse than no badge.
- * ponytail: refreshed on view changes, not pushed; add polling or SSE only if
- * operators need the count to move without navigating. */
+ * Re-reads on navigation and whenever the Requests view has just read
+ * authoritative rows, so approving a request drops the count immediately.
+ * ponytail: no polling or SSE — another tab's decision lands on this one's
+ * next navigation; add a live channel only if operators need cross-tab counts. */
 function usePendingApprovals(account: Account, view: View): number {
   const [count, setCount] = useState(0);
   const eligible =
@@ -784,15 +786,20 @@ function usePendingApprovals(account: Account, view: View): number {
       return;
     }
     let live = true;
-    api<{ requests: RequestRecord[] }>("/api/requests")
-      .then((d) => {
-        if (live) setCount(countPendingApprovals(d.requests, account));
-      })
-      .catch(() => {
-        if (live) setCount(0);
-      });
+    const read = () => {
+      api<{ requests: RequestRecord[] }>("/api/requests")
+        .then((d) => {
+          if (live) setCount(countPendingApprovals(d.requests, account));
+        })
+        .catch(() => {
+          if (live) setCount(0);
+        });
+    };
+    read();
+    window.addEventListener(REQUESTS_CHANGED, read);
     return () => {
       live = false;
+      window.removeEventListener(REQUESTS_CHANGED, read);
     };
   }, [eligible, account, view]);
   return count;
