@@ -12,6 +12,7 @@ import type {
   MediaReference,
   ProviderStatus,
   RemovalLevel,
+  RequestListItem,
   RequestRecord,
   Role,
   WhisparrDelivery,
@@ -1609,11 +1610,20 @@ async function listRequestsRoute(request: Request): Promise<Response> {
   // rows carry the SHARED acquisition state for their identity, so the
   // requester can see whether the work actually went through — without
   // exposing anyone else's request history.
-  const requests = listRequests(ctx.account).map((r) => {
-    if (r.decision !== "approved") return r;
-    const a = getAcquisitionByReference(r.media);
+  const staff =
+    ctx.account.role === "admin" || ctx.account.role === "moderator";
+  // One map lookup per row instead of one account fetch per row.
+  const names = staff
+    ? new Map(listAccounts().map((a) => [a.id, a.name]))
+    : null;
+  const requests: RequestListItem[] = listRequests(ctx.account).map((r) => {
+    const item: RequestListItem = names
+      ? { ...r, requestedBy: names.get(r.accountId) }
+      : r;
+    if (item.decision !== "approved") return item;
+    const a = getAcquisitionByReference(item.media);
     return {
-      ...r,
+      ...item,
       acquisition: a && {
         state: a.state,
         lastError: a.lastError,

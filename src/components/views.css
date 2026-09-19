@@ -207,3 +207,71 @@
 .bulk-error {
   color: var(--color-danger);
 }
+
+/* ---------- Request cards ---------- */
+
+/* Poster + body at every width; actions join as a third column on sm+ and
+   drop to a full-width row below the body on narrow screens (auto-stacking,
+   nothing overflows at 390px). */
+.request-card {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
+  gap: 0.9rem;
+}
+
+/* Mirrors the catalog art: 2/3, rounded, clipped; position:relative anchors
+   the CardTypeBadge overlay. The anchor itself is aria-hidden in markup —
+   the title link beside it is the single keyboard stop. */
+.request-poster {
+  position: relative;
+  /* A stretched grid item takes the row's height, so the ratio never
+     applies; start-aligned, the 2/3 box is the poster's own. */
+  align-self: start;
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
+  border-radius: 9px;
+}
+
+.request-title {
+  font-weight: 600;
+}
+
+.request-title:hover {
+  color: var(--color-accent);
+}
+
+.request-meta {
+  font-size: 0.75rem;
+  color: var(--color-muted);
+}
+
+/* Same clamp pattern as .media-quick-summary p in globals.css. */
+.request-desc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 0.8rem;
+  color: var(--color-muted);
+}
+
+/* Below sm+ the actions are a full-width row under the body; on sm+ they
+   sit in their own right-aligned column like the old mgmt-row actions. */
+.request-card-actions {
+  grid-column: 1 / -1;
+}
+
+.request-card-error {
+  grid-column: 1 / -1;
+}
+
+@media (min-width: 640px) {
+  .request-card {
+    grid-template-columns: 86px minmax(0, 1fr) auto;
+  }
+
+  .request-card-actions {
+    grid-column: auto;
+    align-self: center;
+  }
+}

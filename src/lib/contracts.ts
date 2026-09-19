@@ -89,6 +89,22 @@ export type RequestRecord = {
   decidedAt: number | null;
 };
 
+export type RequestAcquisition = {
+  state: AcquisitionState;
+  lastError: string | null;
+  updatedAt: number;
+  observationStale: boolean;
+  monitored: boolean | null;
+  progress: AcquisitionProgress | null;
+};
+
+/** GET /api/requests row: the record plus the facts only that list carries. */
+export type RequestListItem = RequestRecord & {
+  /** Display name of the requesting account; present only for staff viewers. */
+  requestedBy?: string;
+  acquisition?: RequestAcquisition | null;
+};
+
 export type RemovalLevel =
   "unmonitor" | "drop" | "exclude" | "delete_files" | "delete_jellyfin_item";
 

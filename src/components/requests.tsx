@@ -4,18 +4,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
   api,
+  CardTypeBadge,
   detailHref,
   ErrorPanel,
+  imgSrc,
+  ItemImage,
   messageOf,
+  useCatalogSummary,
   useSession,
 } from "./shared";
 import { acquisitionText } from "./catalog";
 import "./views.css";
 import type {
-  AcquisitionState,
   MediaReference,
   ProviderStatus,
   RequestDecision,
+  RequestListItem,
   RequestRecord,
 } from "../lib/contracts";
 import { REQUESTS_CHANGED } from "../lib/approvals";
@@ -64,13 +68,7 @@ function decisionError(e: unknown): string {
   return messageOf(e);
 }
 
-/* ponytail: module-level title cache — titles are public provider facts keyed
- * by reference; unbounded only by distinct requested media. Drop if that grows. */
-const titleCache = new Map<string, string | null>();
-
-const keyOf = (m: MediaReference) => `${m.provider}:${m.kind}:${m.id}`;
-
-/** The provider reference — shown while (or instead of) a title. */
+/** The provider reference — shown when the catalog summary is unresolvable. */
 function ReferenceLine({ media }: { media: MediaReference }) {
   return (
     <span className="font-mono text-xs break-all text-muted">
@@ -79,55 +77,8 @@ function ReferenceLine({ media }: { media: MediaReference }) {
   );
 }
 
-/** Lazily resolves a row's title from the catalog detail. Renders the
- * reference immediately and never blocks on provider health: an outage, a 404
- * catalog_not_found, or a not-configured provider all degrade to the
- * reference. Null cache entries remember known-unresolvable references. */
-function MediaTitle({
-  media,
-  providers,
-}: {
-  media: MediaReference;
-  providers: ProviderStatus | null;
-}) {
-  const key = keyOf(media);
-  const [title, setTitle] = useState<string | null | undefined>(() =>
-    titleCache.get(key),
-  );
-
-  useEffect(() => {
-    if (title !== undefined) return;
-
-    // A not-configured provider can never answer; the reference is the honest display.
-    if (providers && providers[media.provider] === "not_configured") {
-      titleCache.set(key, null);
-      setTitle(null);
-      return;
-    }
-    let live = true;
-    api<{ detail: { title: string } }>(
-      `/api/catalog/${media.provider}/${media.kind}/${media.id}`,
-    )
-      .then((d) => {
-        titleCache.set(key, d.detail.title);
-        if (live) setTitle(d.detail.title);
-      })
-      .catch(() => {
-        titleCache.set(key, null);
-        if (live) setTitle(null);
-      });
-    return () => {
-      live = false;
-    };
-  }, [key, title, providers, media.provider, media.kind, media.id]);
-
-  if (title) return <span className="font-medium">{title}</span>;
-  return <ReferenceLine media={media} />;
-}
-
-function RequestRow({
-  record,
-  acquisition,
+function RequestCard({
+  record: r,
   canApprove,
   canDecline,
   canCancel,
@@ -136,15 +87,7 @@ function RequestRow({
   onDecide,
   rowError,
 }: {
-  record: RequestRecord;
-  acquisition: {
-    state: AcquisitionState;
-    lastError: string | null;
-    updatedAt: number;
-    observationStale: boolean;
-    monitored: boolean | null;
-    progress: { percent: number | null; timeleft: string | null } | null;
-  } | null;
+  record: RequestListItem;
   canApprove: boolean;
   canDecline: boolean;
   canCancel: boolean;
@@ -156,7 +99,8 @@ function RequestRow({
   ) => void;
   rowError: { id: string; message: string } | null;
 }) {
-  const r = record;
+  const summary = useCatalogSummary(r.media, providers);
+  const acquisition = r.acquisition ?? null;
   const pill = acquisition
     ? acquisition.monitored === false && acquisition.state !== "imported"
       ? { label: "Paused", tone: "paused" }
@@ -170,28 +114,32 @@ function RequestRow({
           }
         : null
     : null;
+  const meta = [
+    r.media.provider,
+    r.media.kind,
+    summary?.releaseDate?.slice(0, 4),
+    summary?.studio,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return (
-    <li className="panel mgmt-row p-4">
+    <li className="panel request-card p-4">
+      {/* aria-hidden + tabIndex -1: the title link beside it points at the
+          same detail — one keyboard stop, not two. */}
+      <a
+        className="request-poster"
+        href={detailHref(r.media)}
+        tabIndex={-1}
+        aria-hidden="true"
+      >
+        <ItemImage
+          name={summary?.title ?? "·"}
+          src={summary ? imgSrc(summary.imageUrl) : undefined}
+          className="h-full w-full object-cover"
+        />
+        <CardTypeBadge kind={r.media.kind} />
+      </a>
       <div className="min-w-0">
-        <div className="text-base">
-          <MediaTitle media={r.media} providers={providers} />
-        </div>
-        <p className="mt-1 text-xs text-muted">
-          {r.media.provider} · {r.media.kind}
-        </p>
-        <p className="mt-1 text-xs text-muted">
-          Requested {DATE_FMT.format(new Date(r.createdAt))}
-          {r.decidedAt !== null
-            ? ` · Decided ${DATE_FMT.format(new Date(r.decidedAt))}`
-            : ""}
-        </p>
-        {acquisition && (
-          <p className="mt-1 text-xs text-muted">
-            Acquisition status: {acquisitionText(acquisition)}
-          </p>
-        )}
-      </div>
-      <div className="flex flex-col items-start gap-2 sm:items-end">
         <div className="flex flex-wrap gap-2">
           <span className="chip state-badge" data-state={r.decision}>
             {GROUP_LABEL[r.decision]}
@@ -202,44 +150,68 @@ function RequestRow({
             </span>
           )}
         </div>
-        <div className="flex flex-wrap gap-2">
-          <a className="btn" href={detailHref(r.media)}>
-            View in catalog
-          </a>
-          {canApprove && (
-            <button
-              type="button"
-              className="btn btn-accent"
-              disabled={busy}
-              onClick={() => onDecide(r, "approved")}
-            >
-              Approve
-            </button>
-          )}
-          {canDecline && (
-            <button
-              type="button"
-              className="btn"
-              disabled={busy}
-              onClick={() => onDecide(r, "declined")}
-            >
-              Decline
-            </button>
-          )}
-          {canCancel && (
-            <button
-              type="button"
-              className="btn"
-              disabled={busy}
-              onClick={() => onDecide(r, "cancelled")}
-            >
-              Cancel request
-            </button>
+        <div className="mt-1 text-base">
+          {summary === undefined ? (
+            <span className="skel inline-block h-5 w-40" aria-hidden="true" />
+          ) : summary === null ? (
+            <ReferenceLine media={r.media} />
+          ) : (
+            <a className="request-title" href={detailHref(r.media)}>
+              {summary.title}
+            </a>
           )}
         </div>
+        {meta && <p className="request-meta mt-1">{meta}</p>}
+        <p className="request-meta mt-1">
+          Requested by {r.requestedBy ?? "you"} ·{" "}
+          {DATE_FMT.format(new Date(r.createdAt))}
+          {r.decidedAt !== null
+            ? ` · Decided ${DATE_FMT.format(new Date(r.decidedAt))}`
+            : ""}
+        </p>
+        {summary?.description && (
+          <p className="request-desc mt-1">{summary.description}</p>
+        )}
+        {acquisition && (
+          <p className="request-meta mt-1">
+            Acquisition status: {acquisitionText(acquisition)}
+          </p>
+        )}
+      </div>
+      <div className="request-card-actions flex flex-wrap gap-2 sm:flex-col sm:items-end">
+        {canApprove && (
+          <button
+            type="button"
+            className="btn btn-accent"
+            disabled={busy}
+            onClick={() => onDecide(r, "approved")}
+          >
+            Approve
+          </button>
+        )}
+        {canDecline && (
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            onClick={() => onDecide(r, "declined")}
+          >
+            Decline
+          </button>
+        )}
+        {canCancel && (
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            onClick={() => onDecide(r, "cancelled")}
+          >
+            Cancel request
+          </button>
+        )}
       </div>
       {rowError !== null && rowError.id === r.id && (
-        <div className="sm:col-span-2">
+        <div className="request-card-error">
           <ErrorPanel title="Update not applied" message={rowError.message} />
         </div>
       )}
@@ -247,16 +219,7 @@ function RequestRow({
   );
 }
 
-type Row = RequestRecord & {
-  acquisition: {
-    state: AcquisitionState;
-    lastError: string | null;
-    updatedAt: number;
-    observationStale: boolean;
-    monitored: boolean | null;
-    progress: { percent: number | null; timeleft: string | null } | null;
-  } | null;
-};
+type Row = RequestListItem;
 
 export function RequestsView() {
   const { account, providers } = useSession();
@@ -393,10 +356,9 @@ export function RequestsView() {
                 const mine = r.accountId === account.id;
                 const pending = r.decision === "pending";
                 return (
-                  <RequestRow
+                  <RequestCard
                     key={r.id}
                     record={r}
-                    acquisition={row.acquisition}
                     providers={providers}
                     busy={busyId !== null}
                     rowError={rowError}
@@ -407,8 +369,14 @@ export function RequestsView() {
                     canApprove={
                       pending && (isStaff || (mine && account.autoApprove))
                     }
-                    canDecline={pending && isStaff}
-                    canCancel={mine && (pending || r.decision === "approved")}
+                    canDecline={pending && isStaff && !mine}
+                    canCancel={
+                      mine &&
+                      (pending || r.decision === "approved") &&
+                      // imported work is past withdrawUndispatched — cancel
+                      // would change nothing shared, so the button is noise.
+                      row.acquisition?.state !== "imported"
+                    }
                   />
                 );
               })}
@@ -450,7 +418,8 @@ export function RequestsView() {
         A request is one person&rsquo;s intent. Downloading is shared work that
         several requests can attach to, and playback access is decided per
         person — neither is changed here. Cancelling removes only that
-        request&rsquo;s intent; it never deletes shared media.
+        request&rsquo;s intent — never shared media — and a title already
+        imported into the library has nothing left to cancel.
       </p>
 
       {content}

@@ -12,7 +12,6 @@ import type {
   CatalogDetail,
   CatalogReference,
   LibraryItem,
-  MediaReference,
   RequestDecision,
   RequestRecord,
 } from "../lib/contracts";
@@ -30,6 +29,7 @@ import {
   PerformerCard,
   SceneCard,
   useParamsSetter,
+  useCatalogSummary,
 } from "./shared";
 
 /* Wire shapes mirroring the server's discover response (route.ts Shelf).
@@ -231,46 +231,6 @@ function CatalogTile({
   );
 }
 
-/* Request tiles resolve title + artwork once via the existing detail endpoint.
- * Module cache (same pattern as requests.tsx): an unresolvable reference
- * stays the reference — never a fabricated title or image. */
-interface RequestArt {
-  title: string;
-  imageUrl?: string;
-}
-
-const requestArtCache: Record<string, RequestArt | null> = {};
-
-function useRequestArt(media: MediaReference): RequestArt | null | undefined {
-  const key = `${media.provider}:${media.kind}:${media.id}`;
-  const [art, setArt] = useState<RequestArt | null | undefined>(
-    () => requestArtCache[key],
-  );
-  useEffect(() => {
-    if (art !== undefined) return;
-    let live = true;
-    api<{ detail: CatalogDetail }>(
-      `/api/catalog/${media.provider}/${media.kind}/${media.id}`,
-    )
-      .then((d) => {
-        const found: RequestArt = {
-          title: d.detail.title,
-          imageUrl: d.detail.imageUrl,
-        };
-        requestArtCache[key] = found;
-        if (live) setArt(found);
-      })
-      .catch(() => {
-        requestArtCache[key] = null;
-        if (live) setArt(null);
-      });
-    return () => {
-      live = false;
-    };
-  }, [key, art, media.provider, media.kind, media.id]);
-  return art;
-}
-
 /** The decision is the request's state, not playback: an approval means the
  * request was accepted, never that the title is watchable. */
 const DECISION_LABELS: Record<RequestDecision, string> = {
@@ -287,7 +247,7 @@ function RequestTile({
   item: RequestRecord;
   onOpen: (r: CatalogReference) => void;
 }) {
-  const art = useRequestArt(item.media);
+  const art = useCatalogSummary(item.media);
   const label = DECISION_LABELS[item.decision];
   const statusKind: CardStatusKind =
     item.decision === "approved"

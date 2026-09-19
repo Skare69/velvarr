@@ -141,6 +141,75 @@ export function intOr(v: string | null, dflt: number): number {
   return Number.isInteger(n) ? n : dflt;
 }
 
+/* ---------- Catalog summary hook ---------- */
+
+export type CatalogSummary = {
+  title: string;
+  imageUrl?: string;
+  description?: string;
+  /** ISO YYYY-MM-DD when the provider supplies one. */
+  releaseDate?: string;
+  durationSeconds?: number;
+  /** Studio name only. */
+  studio?: string;
+};
+
+/**
+ * Cache is module-level (mirrors requests.tsx titleCache): these are public
+ * provider facts shared by every viewer of the same media, bounded only by
+ * distinct requested media. Drop if that grows.
+ */
+const catalogSummaryCache = new Map<string, CatalogSummary | null>();
+
+/** undefined = still loading, null = unresolvable (caller degrades to the
+ * reference). Consolidates the per-file detail caches from requests and
+ * discover. */
+export function useCatalogSummary(
+  media: MediaReference,
+  providers?: ProviderStatus | null,
+): CatalogSummary | null | undefined {
+  const key = `${media.provider}:${media.kind}:${media.id}`;
+  const [summary, setSummary] = useState<CatalogSummary | null | undefined>(
+    () => catalogSummaryCache.get(key),
+  );
+
+  useEffect(() => {
+    if (summary !== undefined) return;
+
+    // A not-configured provider can never answer; null is the honest result.
+    if (providers && providers[media.provider] === "not_configured") {
+      catalogSummaryCache.set(key, null);
+      setSummary(null);
+      return;
+    }
+    let live = true;
+    api<{ detail: CatalogDetail }>(
+      `/api/catalog/${media.provider}/${media.kind}/${media.id}`,
+    )
+      .then((d) => {
+        const s: CatalogSummary = {
+          title: d.detail.title,
+          imageUrl: d.detail.imageUrl,
+          description: d.detail.description,
+          releaseDate: d.detail.releaseDate,
+          durationSeconds: d.detail.durationSeconds,
+          studio: d.detail.studio?.name,
+        };
+        catalogSummaryCache.set(key, s);
+        if (live) setSummary(s);
+      })
+      .catch(() => {
+        catalogSummaryCache.set(key, null);
+        if (live) setSummary(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [key, summary, providers, media.provider, media.kind, media.id]);
+
+  return summary;
+}
+
 /* ---------- Shared small components ---------- */
 
 interface SessionInfo {

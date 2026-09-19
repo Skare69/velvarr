@@ -1902,22 +1902,35 @@ test("requests: lifecycle, autoApprove, privacy, roles, origin", async () => {
     403,
   );
 
-  // Privacy: member2 sees only their own list entry.
+  // Privacy: member2 sees only their own list entry — and no requestedBy
+  // echo of their own name (requester lists never carry it).
   const m2List = await call("GET", "/api/requests", { cookie: m2 });
+  const m2Rows = (
+    (await m2List.json()) as { requests: Record<string, unknown>[] }
+  ).requests;
   assert.deepEqual(
-    ((await m2List.json()) as { requests: { id: string }[] }).requests.map(
-      (r) => r.id,
-    ),
+    m2Rows.map((r) => r.id),
     [m2RequestId],
   );
-  // The owner sees all requests.
-  const ownerIds = (
+  assert.ok(m2Rows.every((r) => !("requestedBy" in r)));
+  // The owner (staff) sees all requests, with the requester's display name
+  // attached to every row — including rows they did not create.
+  const ownerRows = (
     (await (await call("GET", "/api/requests", { cookie: owner })).json()) as {
-      requests: { id: string }[];
+      requests: { id: string; requestedBy?: string }[];
     }
-  ).requests.map((r) => r.id);
+  ).requests;
+  const ownerIds = ownerRows.map((r) => r.id);
   assert.ok(ownerIds.includes(memberRequestId));
   assert.ok(ownerIds.includes(m2RequestId));
+  assert.equal(
+    ownerRows.find((r) => r.id === memberRequestId)?.requestedBy,
+    "member",
+  );
+  assert.equal(
+    ownerRows.find((r) => r.id === m2RequestId)?.requestedBy,
+    "member2",
+  );
 
   // Detail: the caller's own decision only; no acquisition before approval.
   const detailForMember = await call(
@@ -1973,6 +1986,8 @@ test("requests: lifecycle, autoApprove, privacy, roles, origin", async () => {
       acquisition: { state: string } | null;
     }[];
   };
+  // Requester list: acquisition facts yes, requester names no.
+  assert.ok(listed.requests.every((r) => !("requestedBy" in r)));
   const approvedRow = listed.requests.find((r) => r.decision === "approved");
   assert.equal(approvedRow?.acquisition?.state, "unsent");
   assert.ok(
