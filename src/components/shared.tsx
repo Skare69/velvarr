@@ -70,6 +70,46 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+/* ---------- Touch: first tap reveals, second tap opens ---------- */
+
+/** A coarse pointer has no hover, so a single tap would open a card whose
+ * overlay (description, status, request action) the mouse user sees first.
+ * The first tap inside a card reveals that overlay instead; the next tap in
+ * the same card acts normally.
+ *
+ * ponytail: one delegated capture listener for every card kind, present and
+ * future, instead of touch state threaded through each card component. */
+export function useTapReveal(): void {
+  useEffect(() => {
+    if (window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+    const REVEALED = "tap-revealed";
+    const clear = (except?: Element) => {
+      for (const el of document.querySelectorAll(`.${REVEALED}`))
+        if (el !== except) el.classList.remove(REVEALED);
+    };
+    const onClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const card = target.closest(".media-card");
+      if (!card) return clear();
+      // A card with nothing to reveal (performer, follow) opens on one tap.
+      if (
+        card.classList.contains(REVEALED) ||
+        !card.querySelector(".media-quick-overlay")
+      )
+        return;
+      // Swallow only this first tap: the card stays un-opened and shows what
+      // hovering would have shown.
+      event.preventDefault();
+      event.stopPropagation();
+      clear(card);
+      card.classList.add(REVEALED);
+    };
+    document.addEventListener("click", onClick, true);
+    return () => document.removeEventListener("click", onClick, true);
+  }, []);
+}
+
 /* ---------- URL helpers ---------- */
 
 /** URL is the source of truth. Filter tweaks replace the entry so typing does

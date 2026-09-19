@@ -838,17 +838,14 @@ summary:focus-visible,
   opacity: 0.7;
 }
 @media (hover: none), (pointer: coarse) {
-  .media-quick-overlay {
+  /* No hover exists here, so the first tap reveals what a mouse would have
+   * shown and only the second tap opens the card (see shared.tsx tap reveal). */
+  .media-card.tap-revealed .media-quick-overlay {
     opacity: 1;
     visibility: visible;
-    padding: 8px;
-    background: linear-gradient(
-      transparent 65%,
-      color-mix(in srgb, var(--color-canvas) 95%, transparent)
-    );
   }
-  .media-quick-summary {
-    display: none;
+  .media-quick-overlay {
+    padding: 8px;
   }
   .media-quick-action .btn {
     min-height: 44px;

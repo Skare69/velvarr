@@ -40,6 +40,7 @@ import {
   SessionCtx,
   useParamsSetter,
   useSession,
+  useTapReveal,
 } from "./shared.tsx";
 import { MoviesView, PerformersView, ScenesView } from "./catalog.tsx";
 import { DiscoverShelves } from "./discover.tsx";
@@ -122,6 +123,7 @@ export default function VelvarrApp() {
   const [account, setAccount] = useState<Account | null>(null);
   const [providers, setProviders] = useState<ProviderStatus | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
+  useTapReveal();
 
   const enterApp = useCallback(async () => {
     const me = await api<{ account: Account; providers: ProviderStatus }>(
