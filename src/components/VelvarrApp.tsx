@@ -42,7 +42,8 @@ import {
   useSession,
   useTapReveal,
 } from "./shared.tsx";
-import { MoviesView, PerformersView, ScenesView } from "./catalog.tsx";
+import { MoviesView, ScenesView } from "./catalog.tsx";
+import { PerformerView } from "./performer.tsx";
 import { DiscoverShelves } from "./discover.tsx";
 import { SearchView } from "./search.tsx";
 import { RequestsView } from "./requests.tsx";
@@ -683,7 +684,6 @@ const VIEWS = [
   "discover",
   "movies",
   "scenes",
-  "performers",
   "following",
   "search",
   "requests",
@@ -827,13 +827,14 @@ function Shell() {
     { id: "discover", label: "Discover", icon: "discover", group: "browse" },
     { id: "movies", label: "Movies", icon: "movie", group: "browse" },
     { id: "scenes", label: "Scenes", icon: "scene", group: "browse" },
+    // One performer surface: the ones you follow. Discovery of new
+    // performers is the top search bar, which already searches them.
     {
-      id: "performers",
+      id: "following",
       label: "Performers",
       icon: "performer",
       group: "browse",
     },
-    { id: "following", label: "Following", icon: "star", group: "browse" },
     { id: "library", label: "Library", icon: "library", group: "manage" },
     { id: "requests", label: "Requests", icon: "requests", group: "manage" },
     { id: "removals", label: "Removals", icon: "removals", group: "manage" },
@@ -963,7 +964,6 @@ function Shell() {
         {view === "discover" && <DiscoverShelves />}
         {view === "movies" && <MoviesView />}
         {view === "scenes" && <ScenesView />}
-        {view === "performers" && <PerformersView />}
         {view === "following" && <FollowingView />}
         {view === "library" && <LibraryView />}
         {view === "requests" && <RequestsView />}
@@ -975,13 +975,7 @@ function Shell() {
       </main>
       <nav className="mobile-bottom-nav" aria-label="Quick navigation">
         {visibleNav
-          // "following" stays in the drawer/sidebar only: the bottom bar is a
-          // fixed five slots and Following is reachable from the sidebar.
-          .filter(
-            (item) =>
-              (item.group === "browse" && item.id !== "following") ||
-              item.id === "requests",
-          )
+          .filter((item) => item.group === "browse" || item.id === "requests")
           .map((item) => (
             <a
               key={item.id}
@@ -1040,6 +1034,7 @@ function Shell() {
 /* ---------- Following ---------- */
 
 function FollowingView() {
+  const params = useSearchParams();
   const setP = useParamsSetter();
   const [follows, setFollows] = useState<PerformerFollow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1062,14 +1057,11 @@ function FollowingView() {
     };
   }, [reload]);
 
-  // Opening a performer leaves this list for another surface: push, so
-  // browser Back returns to Following.
+  // Opening a performer stays on this view — the same URL carries the
+  // performer page below. Push, so Back returns to the list.
   const open = useCallback(
     (r: CatalogReference) =>
-      setP(
-        { view: "performers", provider: r.provider, kind: r.kind, id: r.id },
-        { push: true },
-      ),
+      setP({ provider: r.provider, kind: r.kind, id: r.id }, { push: true }),
     [setP],
   );
 
@@ -1091,14 +1083,23 @@ function FollowingView() {
       .finally(() => setBusyId(null));
   };
 
+  // Performer detail is this view's own detail page: provider + id in the
+  // URL open it, and Back drops straight to the follow list.
+  const id = params.get("id");
+  const provider = params.get("provider");
+  if (id && (provider === "tpdb" || provider === "stashdb")) {
+    return (
+      <section aria-label="Performer">
+        <PerformerView reference={{ provider, kind: "performer", id }} />
+      </section>
+    );
+  }
+
   return (
-    <section aria-label="Following">
+    <section aria-label="Performers you follow">
       <div className="page-heading">
         <div>
-          <h1 className="page-title">Following</h1>
-          <p className="page-description">
-            Performers you follow, across your providers.
-          </p>
+          <h1 className="page-title">Performers</h1>
         </div>
       </div>
       {rowError && <ErrorPanel title="Could not unfollow" message={rowError} />}
@@ -1126,7 +1127,7 @@ function FollowingView() {
       ) : (
         <div className="performer-grid">
           {follows.map((f) => (
-            <div key={f.id} className="media-card follow-card">
+            <div key={f.id} className="media-card performer-card follow-card">
               <button
                 type="button"
                 className="follow-open"

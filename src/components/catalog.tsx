@@ -22,14 +22,12 @@ import {
   ItemImage,
   messageOf,
   MovieCard,
-  PerformerCard,
   providerLabel,
   SceneCard,
   useParamsSetter,
   useSession,
 } from "./shared";
 import { levelLabel } from "./removals";
-import { PerformerView } from "./performer";
 import { isDeliverableMedia } from "../lib/contracts";
 import type {
   AcquisitionState,
@@ -89,11 +87,6 @@ type DetailTarget = {
 /* ---------- Small helpers ---------- */
 
 const POSTER_GRID = "poster-grid";
-const PERFORMER_GRID = "performer-grid";
-
-function providerOf(v: string | null): CatalogProvider {
-  return v === "stashdb" ? "stashdb" : "tpdb";
-}
 
 function kindStrict(v: string | null): CatalogKind | null {
   // "studio" admits the studio detail page; movie/scene heroes link to it.
@@ -887,33 +880,6 @@ function NotConfigured({ provider }: { provider: CatalogProvider }) {
         to search. Ask an administrator to add a key in Settings. This is
         different from a temporary outage — an outage would show a retry.
       </p>
-    </div>
-  );
-}
-
-function SourcePicker({
-  value,
-  onChange,
-}: {
-  value: CatalogProvider;
-  onChange: (p: CatalogProvider) => void;
-}) {
-  return (
-    <div role="group" aria-label="Source provider">
-      <div className="label">Source</div>
-      <div className="flex gap-2">
-        {(["tpdb", "stashdb"] as const).map((p) => (
-          <button
-            key={p}
-            type="button"
-            className={`btn ${value === p ? "btn-accent" : ""}`}
-            aria-pressed={value === p}
-            onClick={() => onChange(p)}
-          >
-            {providerLabel(p)}
-          </button>
-        ))}
-      </div>
     </div>
   );
 }
@@ -2064,9 +2030,10 @@ function CatalogDetail() {
           onNavigate={(r) =>
             setP(
               {
-                // A performer lives on the Performers surface; without the
-                // view switch the reference changed but nothing rendered it.
-                ...(r.kind === "performer" ? { view: "performers" } : {}),
+                // A performer page lives on the Performers (follow) surface;
+                // without the view switch the reference changed but nothing
+                // rendered it.
+                ...(r.kind === "performer" ? { view: "following" } : {}),
                 provider: r.provider,
                 kind: r.kind,
                 id: r.id,
@@ -2907,199 +2874,6 @@ export function ScenesView() {
             <div className="flex flex-wrap gap-2">{chips}</div>
           </div>
         )}
-      </FilterDrawer>
-    </section>
-  );
-}
-
-export function PerformersView() {
-  const params = useSearchParams();
-  const setP = useParamsSetter();
-  // A performer target in the URL is the performer page, not the detail
-  // page: kind=performer renders PerformerView; other kinds keep CatalogDetail.
-  const target = detailTarget(params);
-  const performerTarget =
-    target?.kind === "performer"
-      ? { provider: target.provider, kind: "performer" as const, id: target.id }
-      : null;
-  const hadPerformer = useRef(false);
-  // Scroll save/restore around the performer page: saved on entry, restored
-  // when it closes (Escape/Back to browse/Back). Filter changes never touch
-  // the store, so they never cause a jump.
-  useEffect(() => {
-    if (performerTarget) {
-      if (!hadPerformer.current) {
-        hadPerformer.current = true;
-        saveScroll(browseKeyOf(params));
-      }
-      return;
-    }
-    if (hadPerformer.current) {
-      hadPerformer.current = false;
-      restoreScroll(browseKeyOf(params));
-    }
-  });
-  const { providers } = useSession();
-  const provider = providerOf(params.get("provider"));
-  const q = params.get("q") ?? "";
-  const page = Math.max(1, intOr(params.get("page"), 1));
-  const perPage = Math.min(100, Math.max(1, intOr(params.get("perPage"), 24)));
-  const [reload, setReload] = useState(0);
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  // StashDB performer search is unpaged; TPDB performer search is paged but
-  // still query-only — year and performer filters are invalid for both.
-  const unpaged = provider === "stashdb";
-  const notConfigured = providers?.[provider] === "not_configured";
-  const needsQuery = q.trim() === "";
-  const enabled = !notConfigured && !needsQuery;
-  const { data, error } = useCatalogSearch({
-    provider,
-    kind: "performer",
-    q,
-    year: "",
-    performer: "",
-    studio: "",
-    tags: "",
-    tagsAll: "",
-    tagsExclude: "",
-    date: "",
-    dateOperation: "",
-    sort: "",
-    direction: "",
-    page,
-    perPage,
-    paged: !unpaged,
-    enabled,
-    reload,
-  });
-  const open = useCallback(
-    (r: CatalogReference) =>
-      setP({ provider: r.provider, kind: r.kind, id: r.id }, { push: true }),
-    [setP],
-  );
-  const onPage = useCallback(
-    (p: number) => setP({ page: p > 1 ? String(p) : null }),
-    [setP],
-  );
-  const onQ = useCallback(
-    (v: string) => setP({ q: v || null, page: null }),
-    [setP],
-  );
-  const onProvider = useCallback(
-    (p: CatalogProvider) => setP({ provider: p, page: null }),
-    [setP],
-  );
-  const clearFilters = useCallback(() => setP({ q: null, page: null }), [setP]);
-  const retry = useCallback(() => setReload((n) => n + 1), []);
-  if (performerTarget) {
-    return (
-      <section aria-label="Performers">
-        <PerformerView reference={performerTarget} />
-      </section>
-    );
-  }
-  return (
-    <section aria-label="Performers">
-      <div hidden={target !== null}>
-        <div className="page-heading">
-          <div>
-            <h2 className="page-title">Performers</h2>
-            <p className="page-description">
-              Performer search needs a name. {providerLabel(provider)}{" "}
-              {unpaged ? "results come back unpaged." : "results are paged."}
-            </p>
-          </div>
-          <div className="page-toolbar">
-            <SourcePicker value={provider} onChange={onProvider} />
-            <FiltersButton
-              count={q ? 1 : 0}
-              onClick={() => setFiltersOpen(true)}
-            />
-          </div>
-        </div>
-        {q && (
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted">Filters:</span>
-            <FilterChip label={`“${q}”`} onRemove={() => onQ("")} />
-          </div>
-        )}
-        <div className="mt-4">
-          {notConfigured ? (
-            <NotConfigured provider={provider} />
-          ) : needsQuery ? (
-            <div className="panel p-8 text-center text-sm text-muted">
-              Type a name to search {providerLabel(provider)} performers —
-              performer search requires a query.
-              <br />
-              <button
-                type="button"
-                className="btn mt-3"
-                aria-haspopup="dialog"
-                onClick={() => setFiltersOpen(true)}
-              >
-                <Icon name="search" /> Open search
-              </button>
-            </div>
-          ) : error ? (
-            <ErrorPanel
-              title={`${providerLabel(provider)} unavailable`}
-              message={error}
-              onRetry={retry}
-            />
-          ) : !data ? (
-            <GridSkeleton
-              aspect="aspect-square"
-              cols={PERFORMER_GRID}
-              count={10}
-            />
-          ) : data.items.length === 0 ? (
-            <div className="panel p-8 text-center text-sm text-muted">
-              No {providerLabel(provider)} performers match “{q}”.
-            </div>
-          ) : (
-            <>
-              <div className={PERFORMER_GRID}>
-                {data.items.map((it) => (
-                  <PerformerCard
-                    key={it.reference.id}
-                    item={it}
-                    onOpen={open}
-                  />
-                ))}
-              </div>
-              {unpaged ? (
-                <div className="mt-6 text-sm text-muted">
-                  {data.totalCountKnown && data.total != null
-                    ? `${data.total} results`
-                    : `${data.items.length} results shown`}
-                </div>
-              ) : (
-                <Paging
-                  page={page}
-                  hasMore={data.hasMore}
-                  total={data.total}
-                  totalCountKnown={data.totalCountKnown}
-                  onPage={onPage}
-                />
-              )}
-            </>
-          )}
-        </div>
-      </div>
-      <CatalogDetail />
-      <FilterDrawer
-        open={filtersOpen}
-        onClose={() => setFiltersOpen(false)}
-        count={q ? 1 : 0}
-        onClear={clearFilters}
-      >
-        <SearchBox
-          id="performer-q"
-          label="Name"
-          value={q}
-          onCommit={onQ}
-          placeholder="Performer name…"
-        />
       </FilterDrawer>
     </section>
   );

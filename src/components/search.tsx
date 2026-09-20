@@ -247,7 +247,7 @@ export function SearchView() {
         setP(
           {
             ...clear,
-            view: "performers",
+            view: "following",
             provider: r.provider,
             kind: "performer",
             id: r.id,
