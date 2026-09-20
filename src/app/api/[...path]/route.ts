@@ -2147,8 +2147,6 @@ interface ShelfError {
 interface Shelf {
   id: string;
   title: string;
-  // The honest one-line explanation of what this shelf actually is.
-  scope: string;
   source: "tpdb" | "stashdb" | "jellyfin" | "velvarr";
   browse?: { view: string; params: Record<string, string> };
   kind: "catalog" | "library" | "requests";
@@ -2263,10 +2261,6 @@ async function followShelves(ctx: AuthContext): Promise<Shelf[]> {
             provider === "tpdb"
               ? "Scenes from performers you follow"
               : "Newest scenes from performers you follow",
-          scope:
-            provider === "tpdb"
-              ? "Scenes from performers you follow, in TPDB's own order — TPDB offers no sort for a performer's filmography, so these are not necessarily the newest."
-              : "Scenes from performers you follow, newest first by StashDB release date.",
           source: provider,
           kind: "catalog",
           browse: { view: "following", params: {} },
@@ -2293,10 +2287,6 @@ function shelfOf(
 
 async function discover(request: Request): Promise<Response> {
   const ctx = await requireSession(request);
-  const requestsScope =
-    ctx.account.role === "requester"
-      ? "Your recent requests."
-      : "Recent requests across all accounts you can moderate.";
   // UTC server date: the shared "today" cutoff for both TPDB recency shelves
   // and their browse-all links.
   const today = new Date().toISOString().slice(0, 10);
@@ -2342,7 +2332,6 @@ async function discover(request: Request): Promise<Response> {
         {
           id: "tpdb-recent-movies",
           title: "Recently released movies",
-          scope: `TPDB movies released on or before ${today} (UTC), newest first — records without a release date are not listed; release recency, not popularity.`,
           source: "tpdb",
           kind: "catalog",
           browse: {
@@ -2363,7 +2352,6 @@ async function discover(request: Request): Promise<Response> {
         {
           id: "tpdb-recent-scenes",
           title: "Recently released scenes",
-          scope: `TPDB scenes released on or before ${today} (UTC), newest first — records without a release date are not listed; release recency, not popularity.`,
           source: "tpdb",
           kind: "catalog",
           browse: {
@@ -2384,8 +2372,6 @@ async function discover(request: Request): Promise<Response> {
         {
           id: "stashdb-trending-scenes",
           title: "Trending scenes",
-          scope:
-            "StashDB scenes in StashDB's own TRENDING order, as the provider computes it.",
           source: "stashdb",
           kind: "catalog",
           browse: {
@@ -2404,8 +2390,6 @@ async function discover(request: Request): Promise<Response> {
         {
           id: "jellyfin-recent",
           title: "Recently added in your libraries",
-          scope:
-            "Recent additions in the Jellyfin libraries granted to your account, in the server's recently-added order.",
           source: "jellyfin",
           kind: "library",
           browse: { view: "library", params: {} },
@@ -2416,7 +2400,6 @@ async function discover(request: Request): Promise<Response> {
         {
           id: "velvarr-requests",
           title: "Recent requests",
-          scope: requestsScope,
           source: "velvarr",
           kind: "requests",
           browse: { view: "requests", params: {} },

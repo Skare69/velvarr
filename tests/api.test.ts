@@ -2423,7 +2423,6 @@ test("studio search per provider; studio references refused as media; unsupporte
 // json() arrives untyped and no schema validator exists in this suite.
 interface FixtureShelf {
   id: string;
-  scope: string;
   browse?: { view: string; params: Record<string, string> };
   items?: { id?: string; accountId?: string; reference?: unknown }[];
   error?: { code: string };
@@ -2452,7 +2451,7 @@ async function searchOf(res: Response): Promise<{
   };
 }
 
-test("discover: five isolated shelves, honest scopes, grants, not-configured", async () => {
+test("discover: five isolated shelves, grants, not-configured", async () => {
   assert.equal((await call("GET", "/api/discover")).status, 401);
 
   const ok = await call("GET", "/api/discover", { cookie: member });
@@ -2477,26 +2476,14 @@ test("discover: five isolated shelves, honest scopes, grants, not-configured", a
     follows: unknown[];
   };
   assert.deepEqual(memberFollowsBody.follows, []);
-  const [movies, scenes, trending, library, requests] = shelves;
+  // ponytail: scenes/trending slots stay positional — index still proves order.
+  const [movies, , , library, requests] = shelves;
 
-  // Every shelf carries items and an honest scope; none fails silently.
+  // Every shelf carries items; none fails silently.
   for (const shelf of shelves) {
     assert.equal(shelf.error, undefined, shelf.id);
     assert.ok((shelf.items?.length ?? 0) > 0, `${shelf.id} carries items`);
-    assert.ok(shelf.scope.length > 10, shelf.id);
   }
-
-  // Recency shelves say release recency and never claim trending/popular.
-  for (const shelf of [movies, scenes]) {
-    assert.match(shelf?.scope ?? "", /release/i, shelf?.id);
-    assert.doesNotMatch(
-      shelf?.scope ?? "",
-      /(?<!not )(trending|popular)/i,
-      shelf?.id,
-    );
-  }
-  assert.match(trending?.scope ?? "", /StashDB/);
-  assert.match(trending?.scope ?? "", /trending/i);
 
   // Browse destinations mirror the shelf's actual upstream query, including
   // the release-date bound, so clicking through shows the same set.
@@ -2998,8 +2985,6 @@ test("discover appends one followed-performer shelf per provider and isolates a 
   const stashFollow = shelves[6];
   for (const shelf of [tpdbFollow, stashFollow]) {
     assert.equal(shelf?.error, undefined, shelf?.id);
-    assert.ok((shelf?.scope ?? "").length > 10, shelf?.id);
-    assert.match(shelf?.scope ?? "", /follow/i, shelf?.id);
     assert.equal(shelf?.browse?.view, "following", shelf?.id);
     assert.ok((shelf?.items?.length ?? 0) > 0, `${shelf?.id} carries items`);
   }

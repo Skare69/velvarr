@@ -22,13 +22,6 @@
   letter-spacing: 0.01em;
 }
 
-.discovery-shelf-scope {
-  margin-top: 0.15rem;
-  max-width: 72ch;
-  font-size: 0.8rem;
-  color: var(--color-muted);
-}
-
 .discovery-shelf-tools {
   display: flex;
   align-items: center;
@@ -193,14 +186,6 @@ button.discovery-art-card {
   white-space: nowrap;
 }
 
-/* ---------- Honest states ---------- */
-
-.discovery-note {
-  margin-top: 0.4rem;
-  font-size: 0.78rem;
-  color: var(--color-muted);
-}
-
 .discovery-shelf-body.panel {
   margin-top: 0.25rem;
 }
@@ -208,8 +193,8 @@ button.discovery-art-card {
 /* ---------- Small screens ---------- */
 
 /* A phone gets ~440px of height between the topbar and the bottom nav, so a
- * shelf spends it on artwork: the scope sentence goes, the header tightens,
- * and tiles shrink until two of them (plus a peek of the third) fit a row. */
+ * shelf spends it on artwork: the header tightens and tiles shrink until two
+ * of them (plus a peek of the third) fit a row. */
 @media (max-width: 640px) {
   .discovery-shelf {
     margin-top: 1.6rem;
@@ -221,12 +206,6 @@ button.discovery-art-card {
   }
   .discovery-shelf-title {
     font-size: 0.98rem;
-  }
-  /* Scope and the request caveat are shelf-level prose, not state claims:
-   * both reappear on the surface each shelf links to. */
-  .discovery-shelf-scope,
-  .discovery-note {
-    display: none;
   }
   .discovery-rail {
     gap: 0.625rem;

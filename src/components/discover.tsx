@@ -43,7 +43,6 @@ interface ShelfError {
 interface Shelf {
   id: string;
   title: string;
-  scope: string;
   source: "tpdb" | "stashdb" | "jellyfin" | "velvarr";
   browse?: { view: string; params: Record<string, string> };
   kind: "catalog" | "library" | "requests";
@@ -358,7 +357,7 @@ function LibraryTile({ item }: { item: LibraryItem }) {
   );
 }
 
-/* ---------- One shelf: header + honest scope + body by kind ---------- */
+/* ---------- One shelf: header + body by kind ---------- */
 
 function ShelfSection({
   shelf,
@@ -455,13 +454,6 @@ function ShelfSection({
       <div className="discovery-shelf-head">
         <div>
           <h3 className="discovery-shelf-title">{shelf.title}</h3>
-          <p className="discovery-shelf-scope">{shelf.scope}</p>
-          {shelf.kind === "requests" && !shelf.error && (
-            <p className="discovery-note">
-              A decision records the request's outcome — approval is not
-              playback availability.
-            </p>
-          )}
         </div>
         <div className="discovery-shelf-tools">
           {shelf.browse && (
@@ -487,10 +479,6 @@ const PAGE_HEADING = (
   <header className="page-heading">
     <div>
       <h2 className="page-title">Discover</h2>
-      <p className="page-description">
-        Fresh from each source: new releases, trending scenes, recent additions
-        in your libraries, and the latest requests.
-      </p>
     </div>
   </header>
 );
@@ -548,8 +536,8 @@ export function DiscoverShelves() {
   );
 
   // Presentation order only: what was added (library), then requests, then
-  // the provider shelves in the server's order. Titles and scopes stay the
-  // server's own honest words.
+  // the provider shelves in the server's order. Titles stay the server's own
+  // honest words.
   const ORDER: Record<Shelf["kind"], number> = {
     library: 0,
     requests: 1,

@@ -1097,83 +1097,35 @@ export function acquisitionText(a: {
   }
 }
 
-const AVAIL_NOTE: Record<
-  "denied" | "ambiguous" | "unavailable" | "awaiting_scan",
-  string
-> = {
-  denied: "Your account is not permitted to play this item.",
-  ambiguous: "The library match is ambiguous — ask an administrator to check.",
-  unavailable: "Availability cannot be checked right now.",
-  awaiting_scan:
-    "Downloaded and imported — waiting for Jellyfin to scan it into your library.",
-};
-
-function AvailabilityBox({
-  target,
-}: {
-  target: { provider: CatalogProvider; kind: MediaKind; id: string };
-}) {
+/** Availability of the media target; null while loading or on error — a
+ * failed check renders nothing, no claim either way. No request for
+ * performer/studio targets. */
+function useAvailability(
+  target: {
+    provider: CatalogProvider;
+    kind: MediaKind;
+    id: string;
+  } | null,
+): PlaybackAccess | null {
   const [avail, setAvail] = useState<PlaybackAccess | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [reload, setReload] = useState(0);
   useEffect(() => {
+    if (!target) return;
     let live = true;
-    setError(null);
+    setAvail(null);
     api<PlaybackAccess>(
       `/api/availability/${target.provider}/${target.kind}/${encodeURIComponent(target.id)}`,
     )
       .then((d) => {
         if (live) setAvail(d);
       })
-      .catch((e) => {
-        if (live) setError(messageOf(e));
+      .catch(() => {
+        if (live) setAvail(null);
       });
     return () => {
       live = false;
     };
-  }, [target.provider, target.kind, target.id, reload]);
-  return (
-    <div className="mt-3">
-      <div className="label">In your library</div>
-      {error ? (
-        <div className="mt-1">
-          <ErrorPanel
-            title="Availability check failed"
-            message={error}
-            onRetry={() => setReload((n) => n + 1)}
-          />
-        </div>
-      ) : !avail ? (
-        <div className="skel mt-1 h-10 w-full" aria-hidden="true" />
-      ) : avail.outcome === "available" ? (
-        <>
-          <div className="mt-1 flex flex-wrap items-center gap-2">
-            <span className="chip chip-accent">Available now</span>
-            {avail.watchUrl && (
-              <a
-                className="btn"
-                href={avail.watchUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <Icon name="play" /> Open in Jellyfin
-              </a>
-            )}
-          </div>
-          <FileFacts item={avail.item} />
-        </>
-      ) : avail.outcome === "missing" ? (
-        <p className="mt-1 text-sm text-muted">
-          Not in your library. Request it above and Velvarr will watch for it.
-        </p>
-      ) : (
-        <p className="mt-1 text-sm text-muted">
-          {AVAIL_NOTE[avail.outcome]}
-          {avail.reason ? ` — ${avail.reason}` : ""}
-        </p>
-      )}
-    </div>
-  );
+  }, [target?.provider, target?.kind, target?.id]);
+  return avail;
 }
 
 /** Error codes from POST /api/removals, mapped faithfully. */
@@ -1190,8 +1142,6 @@ function removalRequestError(e: unknown): string {
         return "Give a reason for the removal.";
       case "invalid_reference":
         return "This item is not removable media.";
-      case "forbidden":
-        return "Removal is not available for your account.";
     }
   }
   return messageOf(e);
@@ -1199,7 +1149,7 @@ function removalRequestError(e: unknown): string {
 
 /** Requester-side removal entry: a reason, never a level — the level is the
  * approver's explicit choice. Rendered only for removable media kinds
- * (movie/scene) by MediaActions; visible-but-explained when unavailable. */
+ * (movie/scene), at the end of the detail aside. */
 function RemovalAction({
   target,
 }: {
@@ -1282,19 +1232,15 @@ function RemovalAction({
       .finally(() => setBusy(false));
   };
 
+  if (!grant) return null;
   return (
-    <div className="mt-4">
-      <div className="label">Removal</div>
+    <section className="cat-section" aria-label="Removal">
+      <h2 className="cat-section-title">Removal</h2>
       <div className="sr-only" role="status" aria-live="polite">
         {announcement}
       </div>
-      {!grant ? (
-        <p className="mt-1 text-sm text-muted">
-          Removal is not available for your account — an administrator has not
-          granted it.
-        </p>
-      ) : shown ? (
-        <div className="mt-1 flex flex-wrap items-center gap-2">
+      {shown ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
           <span
             className={`chip ${shown.decision === "pending" ? "chip-accent" : ""}`}
           >
@@ -1303,14 +1249,9 @@ function RemovalAction({
           {shown.level !== null && (
             <span className="chip">Level: {levelLabel(shown.level)}</span>
           )}
-          <span className="text-xs text-muted">
-            If approved, only the external media is removed — your catalog and
-            request history stay, and every attempt is recorded in the audit
-            trail.
-          </span>
         </div>
       ) : loadError !== null ? (
-        <div className="mt-1">
+        <div className="mt-2">
           <ErrorPanel
             title="Removal state unavailable"
             message={loadError}
@@ -1318,15 +1259,10 @@ function RemovalAction({
           />
         </div>
       ) : data === null ? (
-        <div className="skel mt-1 h-16 w-full" aria-hidden="true" />
-      ) : !data.enabled ? (
-        <p className="mt-1 text-sm text-muted">
-          Removal is turned off by the operator for this Velvarr instance, so it
-          cannot be requested right now.
-        </p>
-      ) : (
+        <div className="skel mt-2 h-16 w-full" aria-hidden="true" />
+      ) : data.enabled ? (
         <form
-          className="mt-1 max-w-prose"
+          className="mt-2 max-w-prose"
           onSubmit={(e) => {
             e.preventDefault();
             submit();
@@ -1342,10 +1278,6 @@ function RemovalAction({
             value={reason}
             onChange={(e) => setReason(e.target.value)}
           />
-          <p className="mt-1 text-xs text-muted">
-            You supply only the reason — the removal level is chosen later by an
-            approver, never by you.
-          </p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <button
               type="submit"
@@ -1361,20 +1293,20 @@ function RemovalAction({
             )}
           </div>
         </form>
-      )}
-    </div>
+      ) : null}
+    </section>
   );
 }
 
 function MediaActions({
   target,
   mine,
-  acquisition,
+  availability,
   onRefetch,
 }: {
   target: { provider: CatalogProvider; kind: MediaKind; id: string };
   mine: DetailPayload["myRequest"];
-  acquisition: DetailPayload["acquisition"];
+  availability: PlaybackAccess | null;
   onRefetch: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -1419,23 +1351,24 @@ function MediaActions({
       setBusy(false);
     }
   }, [target, onRefetch]);
+  // Already playable: the Play button is the only honest action left — a
+  // second request would file intent for something the library already has.
+  const available = availability?.outcome === "available";
   return (
-    <div>
-      <div className="label">Request</div>
-      {requested ? (
-        <div className="mt-1 flex flex-wrap items-center gap-2">
+    <div className="flex flex-col gap-2">
+      {available ? null : requested ? (
+        <div className="flex flex-wrap items-center gap-2">
           <span className="chip chip-accent">
             {DECISION_TEXT[requested.decision]}
           </span>
           {autoApproved && <span className="chip">Auto-approved</span>}
         </div>
       ) : !isDeliverableMedia(target) ? (
-        <p className="mt-1 text-sm text-muted">
-          Browse only — Whisparr resolves TPDB movies and StashDB scenes, and
-          has no metadata source for a TPDB scene.
+        <p className="text-xs text-muted">
+          Browse only — Whisparr has no metadata source for a TPDB scene.
         </p>
       ) : (
-        <div className="mt-1 flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
             className="btn btn-accent"
@@ -1451,18 +1384,15 @@ function MediaActions({
           )}
         </div>
       )}
-      {acquisition && (
-        <p className="mt-2 text-sm text-muted">
-          Acquisition status: {acquisitionText(acquisition)}
-        </p>
-      )}
-      <AvailabilityBox target={target} />
-      <RemovalAction target={target} />
-      {target.kind === "movie" && (
-        <p className="mt-2 text-xs text-muted">
-          Owning one scene does not make the movie itself available in your
-          library.
-        </p>
+      {availability?.outcome === "available" && availability.watchUrl && (
+        <a
+          className="btn btn-accent"
+          href={availability.watchUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <Icon name="play" /> Play on Jellyfin
+        </a>
       )}
     </div>
   );
@@ -1509,6 +1439,12 @@ function DetailBody({
   const tagBrowse = target.kind === "movie" || target.kind === "scene";
   const isStudio = target.kind === "studio";
   const mediaView = mediaKind === "movie" ? "movies" : "scenes";
+  // Availability is a media-target concept: no fetch for performer/studio.
+  const mediaTarget =
+    mediaKind !== null
+      ? { provider: target.provider, kind: mediaKind, id: target.id }
+      : null;
+  const availability = useAvailability(mediaTarget);
   // Year filtering exists on TPDB movie/scene lists only; StashDB has no
   // year or date filter (the route rejects it), so its dates stay plain.
   const releaseYear =
@@ -1585,7 +1521,23 @@ function DetailBody({
                 <span className="chip">{duration(d.durationSeconds)}</span>
               )}
             </div>
-            <h1 className="cat-hero-title">{d.title}</h1>
+            {availability?.outcome === "available" && (
+              <span className="cat-badge cat-badge-available">Available</span>
+            )}
+            {availability?.outcome === "denied" && (
+              <span className="cat-badge">No playback access</span>
+            )}
+            <h1 className="cat-hero-title">
+              {d.title}
+              {d.releaseDate?.slice(0, 4) ? (
+                <>
+                  {" "}
+                  <span className="cat-hero-year">
+                    ({d.releaseDate.slice(0, 4)})
+                  </span>
+                </>
+              ) : null}
+            </h1>
             {d.studio && (
               <p className="cat-hero-sub">
                 {studioRef ? (
@@ -1607,17 +1559,19 @@ function DetailBody({
                 )}
               </p>
             )}
+            {(payload.acquisition || availability?.outcome === "available") && (
+              <div className="cat-hero-facts">
+                {payload.acquisition && (
+                  <span>{acquisitionText(payload.acquisition)}</span>
+                )}
+                {availability?.outcome === "available" && (
+                  <FileFacts item={availability.item} />
+                )}
+              </div>
+            )}
           </div>
-        </div>
-      </header>
-
-      <div className="cat-cols">
-        <div>
           {mediaKind && (
-            <section
-              className="panel cat-actions-panel"
-              aria-label="Request and availability"
-            >
+            <div className="cat-hero-actions">
               <MediaActions
                 target={{
                   provider: target.provider,
@@ -1625,37 +1579,70 @@ function DetailBody({
                   id: target.id,
                 }}
                 mine={payload.myRequest}
-                acquisition={payload.acquisition}
+                availability={availability}
                 onRefetch={onRefetch}
               />
+            </div>
+          )}
+        </div>
+      </header>
+
+      <div className="cat-cols">
+        <div>
+          {(d.description || d.aliases.length > 0) && (
+            <section
+              className={mediaKind ? "cat-section" : undefined}
+              aria-label="Overview"
+            >
+              <h2 className="cat-section-title">Overview</h2>
+              {d.description && (
+                <p className="mt-2 text-sm leading-relaxed text-muted">
+                  {d.description}
+                </p>
+              )}
+              {d.aliases.length > 0 && (
+                <p className="mt-2 text-xs text-muted">
+                  Also known as: {d.aliases.join(", ")}
+                </p>
+              )}
             </section>
           )}
-          <section
-            className={mediaKind ? "cat-section" : undefined}
-            aria-label="Overview"
-          >
-            <h2 className="cat-section-title">Overview</h2>
-            {d.description ? (
-              <p className="mt-2 text-sm leading-relaxed text-muted">
-                {d.description}
-              </p>
-            ) : (
-              <p className="mt-2 text-sm text-muted">
-                No description available.
-              </p>
-            )}
-            {d.aliases.length > 0 && (
-              <p className="mt-2 text-xs text-muted">
-                Also known as: {d.aliases.join(", ")}
-              </p>
-            )}
-          </section>
-        </div>
 
-        <aside>
+          {d.tags.length > 0 && (
+            <section className="cat-section" aria-label="Tags">
+              <h2 className="cat-section-title">Tags</h2>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {d.tags.map((t) =>
+                  // TPDB sometimes emits numeric-string tag ids that the
+                  // filter layer rejects with 400 — those stay plain text.
+                  tagBrowse && UUID_RE.test(t.id) ? (
+                    <button
+                      key={t.id}
+                      type="button"
+                      className="chip"
+                      onClick={() =>
+                        onBrowse(mediaView, {
+                          param: "tags",
+                          provider: target.provider,
+                          id: t.id,
+                        })
+                      }
+                    >
+                      {t.name}
+                    </button>
+                  ) : (
+                    <span key={t.id} className="chip">
+                      {t.name}
+                    </span>
+                  ),
+                )}
+              </div>
+            </section>
+          )}
+
           {d.credits.length > 0 && (
-            <section className="cat-section" aria-label="Performers">
-              <h2 className="cat-section-title">Performers</h2>
+            <section className="cat-section cat-cast" aria-label="Performers">
+              <h2 className="cat-section-title">Cast</h2>
               <div className="cat-people mt-2">
                 {d.credits.map((c) => (
                   <div
@@ -1702,7 +1689,9 @@ function DetailBody({
               )}
             </section>
           )}
+        </div>
 
+        <aside>
           {studioRef && !isStudio && (
             <section className="cat-section" aria-label="Studio">
               <h2 className="cat-section-title">Studio</h2>
@@ -1836,38 +1825,6 @@ function DetailBody({
             </section>
           )}
 
-          {d.tags.length > 0 && (
-            <section className="cat-section" aria-label="Tags">
-              <h2 className="cat-section-title">Tags</h2>
-              <div className="mt-2 flex flex-wrap gap-1">
-                {d.tags.map((t) =>
-                  // TPDB sometimes emits numeric-string tag ids that the
-                  // filter layer rejects with 400 — those stay plain text.
-                  tagBrowse && UUID_RE.test(t.id) ? (
-                    <button
-                      key={t.id}
-                      type="button"
-                      className="chip"
-                      onClick={() =>
-                        onBrowse(mediaView, {
-                          param: "tags",
-                          provider: target.provider,
-                          id: t.id,
-                        })
-                      }
-                    >
-                      {t.name}
-                    </button>
-                  ) : (
-                    <span key={t.id} className="chip">
-                      {t.name}
-                    </span>
-                  ),
-                )}
-              </div>
-            </section>
-          )}
-
           <section className="cat-section" aria-label="Cross-provider link">
             <h2 className="cat-section-title">Cross-provider link</h2>
             {linked ? (
@@ -1936,6 +1893,16 @@ function DetailBody({
                 ))}
               </div>
             </section>
+          )}
+
+          {mediaKind && (
+            <RemovalAction
+              target={{
+                provider: target.provider,
+                kind: mediaKind,
+                id: target.id,
+              }}
+            />
           )}
         </aside>
       </div>
