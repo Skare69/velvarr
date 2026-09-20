@@ -39,6 +39,30 @@ const DATE_FMT = new Intl.DateTimeFormat(undefined, {
   timeStyle: "short",
 });
 
+/* Relative ages, like Seerr's list. Rendered once per load — no ticking
+   timer: the list reloads on every decision, and a minute of drift on
+   "3 hours ago" is not worth a re-render loop. The exact stamp stays in the
+   tooltip. */
+const REL_FMT = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+const REL_UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+  ["year", 31_536_000_000],
+  ["month", 2_592_000_000],
+  ["week", 604_800_000],
+  ["day", 86_400_000],
+  ["hour", 3_600_000],
+  ["minute", 60_000],
+];
+
+function RelTime({ at }: { at: number }) {
+  const diff = at - Date.now();
+  const unit = REL_UNITS.find(([, ms]) => Math.abs(diff) >= ms);
+  return (
+    <time dateTime={new Date(at).toISOString()} title={DATE_FMT.format(at)}>
+      {unit ? REL_FMT.format(Math.round(diff / unit[1]), unit[0]) : "just now"}
+    </time>
+  );
+}
+
 const GROUP_ORDER: RequestDecision[] = [
   "pending",
   "approved",
@@ -114,33 +138,58 @@ function RequestCard({
           }
         : null
     : null;
-  const meta = [
-    r.media.provider,
-    r.media.kind,
-    summary?.releaseDate?.slice(0, 4),
-    summary?.studio,
-  ]
+  const year = summary?.releaseDate?.slice(0, 4);
+  const meta = [r.media.provider, r.media.kind, summary?.studio]
     .filter(Boolean)
     .join(" · ");
+  const art = summary ? imgSrc(summary.imageUrl) : undefined;
   return (
-    <li className="panel request-card p-4">
-      {/* aria-hidden + tabIndex -1: the title link beside it points at the
-          same detail — one keyboard stop, not two. */}
-      <a
-        className="request-poster"
-        href={detailHref(r.media)}
-        tabIndex={-1}
-        aria-hidden="true"
-      >
-        <ItemImage
-          name={summary?.title ?? "·"}
-          src={summary ? imgSrc(summary.imageUrl) : undefined}
-          className="h-full w-full object-cover"
+    <li className="panel request-card">
+      {/* The only art the providers give us is the portrait poster, so the
+          banner is that poster blurred out to an ambient wash — no second
+          image request, and it never competes with the text over it. */}
+      {art && (
+        <div
+          className="request-card-bg"
+          style={{ backgroundImage: `url(${art})` }}
+          aria-hidden="true"
         />
-        <CardTypeBadge kind={r.media.kind} />
-      </a>
-      <div className="min-w-0">
-        <div className="flex flex-wrap gap-2">
+      )}
+      <div className="request-card-head">
+        {/* aria-hidden + tabIndex -1: the title link beside it points at the
+            same detail — one keyboard stop, not two. */}
+        <a
+          className="request-poster"
+          href={detailHref(r.media)}
+          tabIndex={-1}
+          aria-hidden="true"
+        >
+          <ItemImage
+            name={summary?.title ?? "·"}
+            src={art}
+            className="h-full w-full object-cover"
+          />
+          <CardTypeBadge kind={r.media.kind} />
+        </a>
+        <div className="min-w-0">
+          {year && <p className="request-year">{year}</p>}
+          <div className="text-base">
+            {summary === undefined ? (
+              <span className="skel inline-block h-5 w-40" aria-hidden="true" />
+            ) : summary === null ? (
+              <ReferenceLine media={r.media} />
+            ) : (
+              <a className="request-title" href={detailHref(r.media)}>
+                {summary.title}
+              </a>
+            )}
+          </div>
+          {meta && <p className="request-meta">{meta}</p>}
+        </div>
+      </div>
+      <dl className="request-facts">
+        <dt>Status</dt>
+        <dd className="flex flex-wrap gap-2">
           <span className="chip state-badge" data-state={r.decision}>
             {GROUP_LABEL[r.decision]}
           </span>
@@ -149,35 +198,32 @@ function RequestCard({
               {pill.label}
             </span>
           )}
-        </div>
-        <div className="mt-1 text-base">
-          {summary === undefined ? (
-            <span className="skel inline-block h-5 w-40" aria-hidden="true" />
-          ) : summary === null ? (
-            <ReferenceLine media={r.media} />
-          ) : (
-            <a className="request-title" href={detailHref(r.media)}>
-              {summary.title}
-            </a>
+        </dd>
+        <dt>Requested</dt>
+        <dd>
+          <RelTime at={r.createdAt} />
+          {r.requestedBy && (
+            <>
+              {" by "}
+              <span className="request-who">{r.requestedBy}</span>
+            </>
           )}
-        </div>
-        {meta && <p className="request-meta mt-1">{meta}</p>}
-        <p className="request-meta mt-1">
-          Requested by {r.requestedBy ?? "you"} ·{" "}
-          {DATE_FMT.format(new Date(r.createdAt))}
-          {r.decidedAt !== null
-            ? ` · Decided ${DATE_FMT.format(new Date(r.decidedAt))}`
-            : ""}
-        </p>
-        {summary?.description && (
-          <p className="request-desc mt-1">{summary.description}</p>
+        </dd>
+        {r.decidedAt !== null && (
+          <>
+            <dt>{GROUP_LABEL[r.decision]}</dt>
+            <dd>
+              <RelTime at={r.decidedAt} />
+            </dd>
+          </>
         )}
         {acquisition && (
-          <p className="request-meta mt-1">
-            Acquisition status: {acquisitionText(acquisition)}
-          </p>
+          <>
+            <dt>Acquisition</dt>
+            <dd>{acquisitionText(acquisition)}</dd>
+          </>
         )}
-      </div>
+      </dl>
       <div className="request-card-actions flex flex-wrap gap-2 sm:flex-col sm:items-end">
         {canApprove && (
           <button
