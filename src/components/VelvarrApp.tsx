@@ -11,6 +11,7 @@ import {
 import { useSearchParams } from "next/navigation";
 import type {
   Account,
+  AdminAccount,
   CatalogReference,
   Library,
   LibraryItem,
@@ -1520,8 +1521,12 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
 }
 
 /* ---------- Admin: accounts ---------- */
+// Locale-aware joined dates for the admin user table.
+const JOINED_FMT = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
+
 function AdminView() {
-  const [accounts, setAccounts] = useState<Account[] | null>(null);
+  const [accounts, setAccounts] = useState<AdminAccount[] | null>(null);
+  const [editing, setEditing] = useState<AdminAccount | null>(null);
   const [libs, setLibs] = useState<Library[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
@@ -1532,7 +1537,7 @@ function AdminView() {
   const load = useCallback(() => {
     setError(null);
     setForbidden(false);
-    api<{ accounts: Account[]; libraries: Library[] }>("/api/admin/users")
+    api<{ accounts: AdminAccount[]; libraries: Library[] }>("/api/admin/users")
       .then((d) => {
         setAccounts(d.accounts);
         setLibs(d.libraries);
@@ -1625,37 +1630,115 @@ function AdminView() {
           No Velvarr accounts yet. Import Jellyfin users to get started.
         </div>
       ) : (
-        <div className="space-y-3">
-          {accounts.map((a) => (
-            <AccountRow
-              key={a.id}
-              account={a}
-              libraries={libs}
-              onSaved={(acc) =>
-                setAccounts(
-                  (cur) => cur?.map((x) => (x.id === acc.id ? acc : x)) ?? cur,
-                )
-              }
-            />
-          ))}
-        </div>
+        <table className="user-table">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Requests</th>
+              <th>Role</th>
+              <th>Joined</th>
+              <th>Status</th>
+              <th aria-label="Actions" />
+            </tr>
+          </thead>
+          <tbody>
+            {accounts.map((a) => (
+              <tr key={a.id}>
+                <td>
+                  <div className="user-name-cell">
+                    <UserAvatar account={a} />
+                    <span className="font-medium">{a.name}</span>
+                    {a.isOwner && (
+                      <span className="chip chip-accent">Owner</span>
+                    )}
+                  </div>
+                </td>
+                <td>{a.requestCount}</td>
+                <td>
+                  {a.isOwner
+                    ? "Owner"
+                    : a.role.slice(0, 1).toUpperCase() + a.role.slice(1)}
+                </td>
+                <td>{JOINED_FMT.format(a.joinedAt)}</td>
+                <td>
+                  <span
+                    className={`chip ${a.enabled || a.isOwner ? "chip-accent" : ""}`}
+                  >
+                    {a.enabled || a.isOwner ? "Active" : "Disabled"}
+                  </span>
+                </td>
+                <td className="user-actions">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => setEditing(a)}
+                  >
+                    Edit
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {editing && (
+        <AccountDialog
+          key={editing.id}
+          account={editing}
+          libraries={libs}
+          onClose={() => setEditing(null)}
+          onSaved={(acc) => {
+            setAccounts(
+              (cur) => cur?.map((x) => (x.id === acc.id ? acc : x)) ?? cur,
+            );
+            setEditing(null);
+          }}
+        />
       )}
     </div>
   );
 }
 
-function AccountRow({
+/** Jellyfin avatar, initials when there is none — or when the stored tag went
+ *  stale between this list load and the image fetch. Never a broken image. */
+function UserAvatar({ account }: { account: AdminAccount }) {
+  const [failed, setFailed] = useState(false);
+  const tag = account.avatarTag;
+  return (
+    <div className="user-avatar">
+      {tag && !failed ? (
+        <img
+          src={`/api/admin/users/${account.id}/avatar?tag=${encodeURIComponent(tag)}`}
+          alt=""
+          loading="lazy"
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <span aria-hidden="true">
+          {account.name.slice(0, 1).toUpperCase() || "·"}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function AccountDialog({
   account: initial,
   libraries,
+  onClose,
   onSaved,
 }: {
-  account: Account;
+  account: AdminAccount;
   libraries: Library[];
-  onSaved: (a: Account) => void;
+  onClose: () => void;
+  onSaved: (a: AdminAccount) => void;
 }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const [enabled, setEnabled] = useState(initial.enabled);
   const [role, setRole] = useState<Role>(initial.role);
   const [autoApprove, setAutoApprove] = useState(initial.autoApprove);
+  const [canRemove, setCanRemove] = useState(initial.canRemove);
   const [libIds, setLibIds] = useState<string[]>(initial.libraryIds);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1664,8 +1747,15 @@ function AccountRow({
     (!owner && enabled !== initial.enabled) ||
     (!owner && role !== initial.role) ||
     (!owner && autoApprove !== initial.autoApprove) ||
+    canRemove !== initial.canRemove ||
     libIds.length !== initial.libraryIds.length ||
     !libIds.every((x) => initial.libraryIds.includes(x));
+
+  // Native <dialog>: open on mount; Escape fires close, which unmounts via onClose.
+  useEffect(() => {
+    const d = dialogRef.current;
+    if (d && !d.open) d.showModal();
+  }, []);
 
   const toggleLib = (id: string) =>
     setLibIds((cur) =>
@@ -1676,6 +1766,7 @@ function AccountRow({
     setEnabled(initial.enabled);
     setRole(initial.role);
     setAutoApprove(initial.autoApprove);
+    setCanRemove(initial.canRemove);
     setLibIds(initial.libraryIds);
     setError(null);
   };
@@ -1692,11 +1783,12 @@ function AccountRow({
             enabled: owner ? initial.enabled : enabled,
             role: owner ? initial.role : role,
             autoApprove: owner ? initial.autoApprove : autoApprove,
+            canRemove,
             libraryIds: libIds,
           }),
         },
       );
-      onSaved(r.account);
+      onSaved({ ...initial, ...r.account });
     } catch (e) {
       setError(messageOf(e));
     } finally {
@@ -1705,17 +1797,16 @@ function AccountRow({
   };
 
   return (
-    <div className="panel p-4">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
-        <div className="min-w-40 flex items-center gap-2">
-          <span className="font-medium">{initial.name}</span>
-          {owner && <span className="chip chip-accent">Owner</span>}
-          {!owner && (
-            <span className={`chip ${initial.enabled ? "chip-accent" : ""}`}>
-              {initial.enabled ? "Active" : "Disabled"}
-            </span>
-          )}
-        </div>
+    <dialog
+      ref={dialogRef}
+      className="user-dialog"
+      aria-labelledby="user-dialog-title"
+      onClose={onClose}
+    >
+      <div className="user-dialog-body">
+        <h3 id="user-dialog-title" className="font-semibold">
+          Edit {initial.name}
+        </h3>
 
         <div>
           <label className="label" htmlFor={`role-${initial.id}`}>
@@ -1764,55 +1855,71 @@ function AccountRow({
             Lets this user approve their own requests without a moderator.
           </p>
         </div>
-      </div>
 
-      <fieldset className="mt-3">
-        <legend className="label">Libraries</legend>
-        {libraries.length === 0 ? (
-          <div className="text-sm text-muted">No libraries configured.</div>
-        ) : (
-          <div className="flex flex-wrap gap-x-4 gap-y-2">
-            {libraries.map((l) => (
-              <label key={l.id} className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="check"
-                  checked={libIds.includes(l.id)}
-                  disabled={pending}
-                  onChange={() => toggleLib(l.id)}
-                />
-                {l.name}
-              </label>
-            ))}
+        <div>
+          <span className="label">Removals</span>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="check"
+              checked={canRemove}
+              disabled={pending}
+              onChange={(e) => setCanRemove(e.target.checked)}
+            />
+            Can request and approve removals
+          </label>
+          <p className="mt-1 text-xs text-muted">
+            Removal requests also need the operator to enable removals.
+          </p>
+        </div>
+
+        <fieldset>
+          <legend className="label">Libraries</legend>
+          {libraries.length === 0 ? (
+            <div className="text-sm text-muted">No libraries configured.</div>
+          ) : (
+            <div className="flex flex-wrap gap-x-4 gap-y-2">
+              {libraries.map((l) => (
+                <label key={l.id} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="check"
+                    checked={libIds.includes(l.id)}
+                    disabled={pending}
+                    onChange={() => toggleLib(l.id)}
+                  />
+                  {l.name}
+                </label>
+              ))}
+            </div>
+          )}
+        </fieldset>
+
+        {error && (
+          <div role="alert">
+            <ErrorPanel message={error} />
           </div>
         )}
-      </fieldset>
 
-      {error && (
-        <div className="mt-3" role="alert">
-          <ErrorPanel message={error} />
+        <div className="flex gap-2">
+          <button
+            type="button"
+            className="btn btn-accent"
+            disabled={!dirty || pending}
+            onClick={() => void save()}
+          >
+            {pending ? "Saving…" : "Save"}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => dialogRef.current?.close()}
+          >
+            Cancel
+          </button>
         </div>
-      )}
-
-      <div className="mt-3 flex gap-2">
-        <button
-          type="button"
-          className="btn btn-accent"
-          disabled={!dirty || pending}
-          onClick={() => void save()}
-        >
-          {pending ? "Saving…" : "Save"}
-        </button>
-        <button
-          type="button"
-          className="btn"
-          disabled={!dirty || pending}
-          onClick={reset}
-        >
-          Discard
-        </button>
       </div>
-    </div>
+    </dialog>
   );
 }
 

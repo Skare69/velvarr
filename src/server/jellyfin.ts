@@ -36,6 +36,7 @@ interface UserPolicy {
 interface UserDto {
   Id?: string;
   Name?: string;
+  PrimaryImageTag?: string;
   Policy?: UserPolicy;
 }
 
@@ -136,6 +137,7 @@ function mapUser(dto: UserDto): ExternalUser {
     enableRemoteAccess: policy.EnableRemoteAccess === true,
     enableMediaPlayback: policy.EnableMediaPlayback === true,
     isAdministrator: policy.IsAdministrator === true,
+    ...(dto?.PrimaryImageTag ? { imageTag: dto.PrimaryImageTag } : {}),
   };
 }
 
@@ -852,6 +854,31 @@ export async function getLibraryImage(
       service: "jellyfin",
       sizeLimit: IMAGE_BYTE_LIMIT,
     },
+  );
+  const mime = res.contentType.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (IMAGE_MIME_TYPES[mime] !== true) {
+    throw new AppError(
+      502,
+      "image_type",
+      "Upstream returned an unsupported image type.",
+    );
+  }
+  return { bytes: res.bytes, contentType: mime };
+}
+
+// Admin-only avatar proxy. Tag-keyed client URLs keep caching correct: a new
+// upstream avatar is a new URL, so a stale tag surfaces as a sanitized 404.
+export async function getUserImage(
+  config: IntegrationConfig,
+  userId: string,
+): Promise<{ bytes: Uint8Array; contentType: string }> {
+  requireJellyfinConfig(config);
+  const id = normalizeItemId(userId);
+  const res = await requestBytes(
+    config.jellyfin.url,
+    `/Users/${id}/Images/Primary?maxHeight=128`,
+    config.jellyfin.apiKey,
+    { service: "jellyfin", sizeLimit: IMAGE_BYTE_LIMIT },
   );
   const mime = res.contentType.split(";")[0]?.trim().toLowerCase() ?? "";
   if (IMAGE_MIME_TYPES[mime] !== true) {

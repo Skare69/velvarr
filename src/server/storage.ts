@@ -97,6 +97,7 @@ type AccountRow = {
   is_owner: number;
   auto_approve: number;
   can_remove: number;
+  created_at: number;
 };
 type SessionJoinRow = AccountRow & {
   jellyfin_token: Buffer;
@@ -217,6 +218,7 @@ type Statements = {
   decideRequest: StatementSync;
   cancelOwnRequest: StatementSync;
   countActiveRequestsExcept: StatementSync;
+  countRequestsByAccount: StatementSync;
   insertAcquisition: StatementSync;
   getAcquisition: StatementSync;
   getAcquisitionByIdentity: StatementSync;
@@ -670,6 +672,9 @@ function S(): Statements {
       countActiveRequestsExcept: d.prepare(
         "SELECT COUNT(*) AS n FROM requests WHERE provider = ? AND kind = ? AND external_id = ? AND decision IN ('pending', 'approved') AND id != ?",
       ),
+      countRequestsByAccount: d.prepare(
+        "SELECT account_id, COUNT(*) AS n FROM requests GROUP BY account_id",
+      ),
       insertAcquisition: d.prepare(
         "INSERT OR IGNORE INTO acquisitions (id, instance_id, provider, kind, external_id, state, due_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ),
@@ -908,6 +913,7 @@ function rowToAccount(row: AccountRow): Account {
     isOwner: row.is_owner === 1,
     autoApprove: row.auto_approve === 1,
     canRemove: row.can_remove === 1,
+    joinedAt: row.created_at,
   };
 }
 
@@ -1231,6 +1237,7 @@ export function bootstrap(
       isOwner: true,
       autoApprove: false,
       canRemove: false,
+      joinedAt: Date.now(),
     };
     S().insertAccount.run(
       account.id,
@@ -1239,7 +1246,7 @@ export function bootstrap(
       account.enabled ? 1 : 0,
       JSON.stringify(account.libraryIds),
       1,
-      Date.now(),
+      account.joinedAt,
     );
     S().insertConfig.run(
       encryptString(loadKey(), JSON.stringify(resolved)),
@@ -1289,6 +1296,15 @@ export function importAccounts(users: ExternalUser[]): Account[] {
 
 export function listAccounts(): Account[] {
   return (S().listAccounts.all() as AccountRow[]).map(rowToAccount);
+}
+
+/** Request intents per account id, all decisions included. One grouped query. */
+export function countRequestsByAccount(): Map<string, number> {
+  const rows = S().countRequestsByAccount.all() as {
+    account_id: string;
+    n: number;
+  }[];
+  return new Map(rows.map((row) => [row.account_id, row.n]));
 }
 
 export function getAccount(id: string): Account | null {

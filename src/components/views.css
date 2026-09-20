@@ -287,3 +287,147 @@
     grid-column: auto;
   }
 }
+
+/* ---------- Admin users ---------- */
+
+/* Seerr-shaped account list: one compact row per Jellyfin identity. The table
+   is its own panel surface (not wrapped in .panel) so the header border and
+   row separators read as one sheet. Rows separate via td border-top only —
+   with border-collapse the header's bottom border merges into the first row's
+   top, and no row ever carries a bottom border, so the last row is closed by
+   the table border alone. */
+
+.user-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--color-panel);
+  border: 1px solid var(--color-edge);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.user-table th {
+  padding: 0.7rem 0.9rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--color-muted);
+  border-bottom: 1px solid var(--color-edge);
+}
+
+.user-table td {
+  padding: 0.7rem 0.9rem;
+  border-top: 1px solid var(--color-edge);
+}
+
+.user-table tr:hover td {
+  background: var(--color-raised);
+}
+
+/* The cell is the flex box: min-width: 0 lets the table shrink this column
+   below the name's min-content width, so a long name ellipsises instead of
+   pushing the table wider than the viewport. */
+.user-name-cell {
+  display: flex;
+  gap: 0.7rem;
+  align-items: center;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+/* Name (and the owner chip beside it) shrink to nothing before widening the
+   row; the avatar opts out via flex: none. */
+.user-name-cell > :not(.user-avatar) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--color-raised);
+}
+
+.user-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Initials fallback: the avatar's grid centring carries the glyph, only its
+   size and tone are set here. */
+.user-avatar > :not(img) {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-muted);
+}
+
+.user-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Same dialog system as the bulk-request confirm above: width formula, edge,
+   radius, panel fill and backdrop wash are reused so the two read as one. */
+.user-dialog {
+  width: min(34rem, calc(100vw - 2rem));
+  /* Preflight zeroes dialog margins, which pins showModal() output to the
+     top-left; auto restores the centred modal box. */
+  margin: auto;
+  padding: 1.1rem;
+  border: 1px solid var(--color-edge);
+  border-radius: 14px;
+  background: var(--color-panel);
+  color: var(--color-ink);
+}
+
+.user-dialog::backdrop {
+  background: color-mix(in srgb, var(--color-canvas) 72%, transparent);
+}
+
+.user-dialog-body {
+  display: grid;
+  gap: 0.9rem;
+}
+
+/* Column order is 1 name · 2 requests · 3 role · 4 joined · 5 status ·
+   6 actions. Requests and Joined are context, not action — dropped on phones
+   so name, role, status and Edit keep a legible width. */
+@media (max-width: 720px) {
+  .user-table :is(th, td):nth-child(2),
+  .user-table :is(th, td):nth-child(4) {
+    display: none;
+  }
+  /* The Owner chip repeats the Role column; on phones that duplicate costs
+     the name its width, so the name wins. */
+  .user-name-cell .chip {
+    display: none;
+  }
+  /* Fixed layout so the four survivors share the viewport instead of the
+     name pushing the Edit button off-screen; the name truncates instead. */
+  .user-table {
+    table-layout: fixed;
+  }
+  .user-table :is(th, td) {
+    padding: 0.6rem 0.5rem;
+  }
+  .user-table :is(th, td):nth-child(3) {
+    width: 5.4rem;
+  }
+  .user-table :is(th, td):nth-child(5) {
+    width: 5rem;
+  }
+  .user-table :is(th, td):nth-child(6) {
+    width: 4.4rem;
+  }
+}

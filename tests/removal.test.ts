@@ -108,6 +108,7 @@ function account(libraryIds: string[]): Account {
     isOwner: false,
     autoApprove: false,
     canRemove: false,
+    joinedAt: 0,
   };
 }
 

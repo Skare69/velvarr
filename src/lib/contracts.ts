@@ -336,6 +336,8 @@ export type Account = {
   /** Explicit removal grant, required (with the operator flag) to create or
    * approve removal requests; default false, set by an administrator. */
   canRemove: boolean;
+  /** Unix milliseconds the account row was created (Jellyfin import time). */
+  joinedAt: number;
 };
 
 export type ExternalUser = {
@@ -345,6 +347,17 @@ export type ExternalUser = {
   enableRemoteAccess: boolean;
   enableMediaPlayback: boolean;
   isAdministrator: boolean;
+  /** Jellyfin PrimaryImageTag; absent when the user has no avatar upstream. */
+  imageTag?: string;
+};
+
+/** One account as the admin user list sees it: the stored account plus two
+ *  live facts (request volume, Jellyfin avatar) that no other surface needs. */
+export type AdminAccount = Account & {
+  /** Request intents this account has filed, all decisions included. */
+  requestCount: number;
+  /** Present only when Jellyfin has an avatar for this user. */
+  avatarTag?: string;
 };
 
 export type Library = { id: string; name: string };

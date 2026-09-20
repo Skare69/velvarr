@@ -1,5 +1,6 @@
 import type {
   Account,
+  AdminAccount,
   CatalogDetail,
   CatalogKind,
   CatalogProvider,
@@ -27,6 +28,7 @@ import {
   bootstrap,
   cancelRemovalRequest,
   cancelRequest,
+  countRequestsByAccount,
   createRemovalRequest,
   createRequest,
   createSession,
@@ -65,6 +67,7 @@ import {
   getLibraryImage,
   getLibraryItem,
   getServer,
+  getUserImage,
   listLibraries,
   listLibraryItems,
   listRecentlyAddedItems,
@@ -649,11 +652,42 @@ function providerShape(
 }
 
 async function adminUsers(ctx: AuthContext): Promise<Response> {
-  const views = await listLibraries(ctx.config, ctx.token);
+  const [views, users] = await Promise.all([
+    listLibraries(ctx.config, ctx.token),
+    listUsers(ctx.config),
+  ]);
   const configured = new Set(ctx.config.jellyfin.libraryIds);
+  const avatarTags = new Map(
+    users.filter((u) => u.imageTag).map((u) => [u.id, u.imageTag as string]),
+  );
+  const counts = countRequestsByAccount();
   return json({
-    accounts: listAccounts(),
+    accounts: listAccounts().map((account): AdminAccount => {
+      const tag = avatarTags.get(account.id);
+      return {
+        ...account,
+        requestCount: counts.get(account.id) ?? 0,
+        ...(tag ? { avatarTag: tag } : {}),
+      };
+    }),
     libraries: views.filter((library) => configured.has(library.id)),
+  });
+}
+
+async function adminUserAvatar(
+  request: Request,
+  id: string,
+): Promise<Response> {
+  const ctx = await requireAdmin(request);
+  const image = await getUserImage(ctx.config, requireId(id));
+  return new Response(image.bytes as unknown as BodyInit, {
+    status: 200,
+    headers: {
+      "content-type": image.contentType,
+      // Tag-keyed URL: a changed avatar is a different URL, so caching is safe.
+      "cache-control": "private, max-age=3600",
+      "x-content-type-options": "nosniff",
+    },
   });
 }
 
@@ -2518,6 +2552,13 @@ async function routeRequest(
       return listRemovalsRoute(request);
     if (root === "removals" && a === "impact" && segments.length === 3)
       return removalImpact(request);
+    if (
+      root === "admin" &&
+      a === "users" &&
+      segments[4] === "avatar" &&
+      segments.length === 5
+    )
+      return adminUserAvatar(request, segments[3]!);
     if (root === "admin" && a === "users" && segments.length === 3)
       return adminUsers(await requireAdmin(request));
     if (root === "admin" && a === "integrations" && segments.length === 3) {

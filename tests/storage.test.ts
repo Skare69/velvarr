@@ -79,6 +79,7 @@ function accountFixture(): Account {
     isOwner: true,
     autoApprove: false,
     canRemove: false,
+    joinedAt: 0,
   };
 }
 

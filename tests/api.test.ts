@@ -57,6 +57,10 @@ const TPDB_MOVIE5 = "2a2b3c4d-0000-0000-0000-000000000005";
 // (see the TPDB_PERFORMER3 branch) files this id over and over, so it must
 // not collide with any other test's intents.
 const TPDB_MOVIE6 = "2a2b3c4d-0000-0000-0000-000000000006";
+// The admin user-row test's own movies: never filed elsewhere, so the
+// owner's request count moves 0 -> 2 with no duplicate-intent collisions.
+const TPDB_MOVIE7 = "2a2b3c4d-0000-0000-0000-000000000007";
+const TPDB_MOVIE8 = "2a2b3c4d-0000-0000-0000-000000000008";
 const TPDB_PERFORMER3 = "2a2b3c4d-0000-0000-0000-00000000000d";
 const TPDB_PERFORMER = "2a2b3c4d-0000-0000-0000-00000000000f";
 const TPDB_PERFORMER2 = "2a2b3c4d-0000-0000-0000-00000000000e";
@@ -74,6 +78,8 @@ interface FxUser {
   disabled: boolean;
   remote: boolean;
   playback: boolean;
+  /** Jellyfin PrimaryImageTag; absent when the user has no avatar upstream. */
+  imageTag?: string;
 }
 
 const fx = {
@@ -104,6 +110,9 @@ const fx = {
       disabled: false,
       remote: true,
       playback: true,
+      // The only avatar holder; the owner deliberately has none so avatar
+      // absence is asserted on a stable identity.
+      imageTag: "member2-image-1",
     },
     {
       id: DISABLED_ID,
@@ -172,6 +181,7 @@ function jfUser(user: FxUser) {
       EnableRemoteAccess: user.remote,
       EnableMediaPlayback: user.playback,
     },
+    ...(user.imageTag ? { PrimaryImageTag: user.imageTag } : {}),
   };
 }
 
@@ -267,6 +277,17 @@ async function jellyfinHandler(
   if (p === "/Users") {
     if (token !== fx.adminKey) return json(res, 401, {});
     return json(res, 200, fx.users.map(jfUser));
+  }
+  // User avatar: mirrors the item image handler — same bytes, same
+  // content-type, admin-key callers only, 404 without an upstream tag.
+  if (/^\/Users\/[0-9a-f]{32}\/Images\/Primary$/.test(p)) {
+    if (token !== fx.adminKey) return json(res, 401, {});
+    const uid = /Users\/([0-9a-f]{32})\/Images/.exec(p)?.[1];
+    const user = fx.users.find((entry) => entry.id === uid);
+    if (!user?.imageTag) return json(res, 404, {});
+    res.writeHead(200, { "content-type": "image/png" });
+    res.end(Buffer.from(PNG_1PX));
+    return;
   }
   if (/^\/Users\/[^/]+\/Views$/.test(p) || p === "/Library/MediaFolders") {
     if (fx.fail.views > 0) {
@@ -3849,4 +3870,95 @@ test("pending approval count follows the same authority as the decision gate", (
     ),
     0,
   );
+});
+
+// The admin user table is one row per account: the stored account plus the
+// two live facts only that surface needs — how many intents the account
+// filed, and whether Jellyfin holds an avatar for it.
+test("admin user rows carry live request counts and avatar tags only when upstream has one", async () => {
+  const rowsOf = async () => {
+    const res = await call("GET", "/api/admin/users", { cookie: owner });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      accounts: {
+        id: string;
+        requestCount: number;
+        joinedAt: number;
+        avatarTag?: string;
+      }[];
+    };
+    return body.accounts;
+  };
+
+  // The owner files no intents anywhere else in this suite: the count
+  // starts at a true zero, not an accumulated unknown.
+  assert.equal(
+    (await rowsOf()).find((row) => row.id === OWNER_ID)?.requestCount,
+    0,
+  );
+
+  // Two intents filed through the real request API move the owner's count
+  // from 0 to exactly 2.
+  for (const id of [TPDB_MOVIE7, TPDB_MOVIE8]) {
+    assert.equal(
+      (
+        await call("POST", "/api/requests", {
+          cookie: owner,
+          body: { media: { provider: "tpdb", kind: "movie", id } },
+        })
+      ).status,
+      201,
+    );
+  }
+  const rows = await rowsOf();
+  assert.equal(rows.find((row) => row.id === OWNER_ID)?.requestCount, 2);
+  // An account that never filed stays at zero.
+  assert.equal(rows.find((row) => row.id === DISABLED_ID)?.requestCount, 0);
+
+  // Every row carries a real import timestamp.
+  for (const row of rows) assert.ok(row.joinedAt > 0);
+
+  // member2 has a PrimaryImageTag upstream; the owner does not. Absence is
+  // a missing key, never an undefined value.
+  assert.equal(
+    typeof rows.find((row) => row.id === MEMBER2_ID)?.avatarTag,
+    "string",
+  );
+  const ownerRow = rows.find((row) => row.id === OWNER_ID);
+  assert.ok(ownerRow);
+  assert.ok(!("avatarTag" in ownerRow));
+});
+
+// The avatar route is the only image proxy for user rows: admins get the
+// upstream bytes; requesters are refused by authority before any upstream
+// contact.
+test("user avatar proxy serves Jellyfin bytes to admins and refuses requesters", async () => {
+  const listed = await call("GET", "/api/admin/users", { cookie: owner });
+  const listedBody = (await listed.json()) as {
+    accounts: { id: string; avatarTag?: string }[];
+  };
+  const rows = listedBody.accounts;
+  const tag = rows.find((row) => row.id === MEMBER2_ID)?.avatarTag;
+  assert.equal(typeof tag, "string");
+
+  const ok = await call(
+    "GET",
+    `/api/admin/users/${MEMBER2_ID}/avatar?tag=${tag}`,
+    { cookie: owner },
+  );
+  assert.equal(ok.status, 200);
+  assert.match(ok.headers.get("content-type") ?? "", /^image\//);
+  assert.ok(Buffer.from(await ok.arrayBuffer()).equals(PNG_1PX));
+
+  const refused = await call(
+    "GET",
+    `/api/admin/users/${MEMBER2_ID}/avatar?tag=${tag}`,
+    { cookie: member },
+  );
+  assert.equal(refused.status, 403);
+  const refusedBody = (await refused.json()) as {
+    error: { code: unknown; message: unknown };
+  };
+  assert.equal(typeof refusedBody.error.code, "string");
+  assert.equal(typeof refusedBody.error.message, "string");
 });

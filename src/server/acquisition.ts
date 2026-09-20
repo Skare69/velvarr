@@ -106,6 +106,7 @@ const ALL_REQUESTS_VIEWER = {
   isOwner: false,
   autoApprove: false,
   canRemove: false,
+  joinedAt: 0,
 } as const satisfies Account;
 
 function reasonOf(e: unknown): string {
