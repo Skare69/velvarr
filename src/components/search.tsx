@@ -289,11 +289,6 @@ export function SearchView() {
               "Search"
             )}
           </h2>
-          <p className="page-description">
-            One query, seven separate sections. Each section is that source’s
-            own results — nothing is merged across providers and nothing is
-            globally ranked.
-          </p>
         </div>
       </div>
 

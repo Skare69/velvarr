@@ -490,7 +490,7 @@ test("tpdb pagination continuation follows pages until the provider stops offeri
     const params = new URLSearchParams(req.url.split("?")[1] ?? "");
     const page = Number(params.get("page") ?? "1");
     const next =
-      page < 2 ? `${fixture.origin}/scenes?page=${page + 1}&per_page=1` : null;
+      page < 2 ? `${fixture.origin}/movies?page=${page + 1}&per_page=1` : null;
     replyJson(res, 200, {
       data:
         page <= 2
@@ -515,7 +515,7 @@ test("tpdb pagination continuation follows pages until the provider stops offeri
     process.env.TPDB_BASE_URL = fixture.origin;
     const page1 = await searchCatalog({
       provider: "tpdb",
-      kind: "scene",
+      kind: "movie",
       perPage: 1,
     });
     assert.equal(page1.page, 1);
@@ -524,7 +524,7 @@ test("tpdb pagination continuation follows pages until the provider stops offeri
 
     const page2 = await searchCatalog({
       provider: "tpdb",
-      kind: "scene",
+      kind: "movie",
       page: 2,
       perPage: 1,
     });
@@ -916,7 +916,7 @@ test("tpdb filmography pages the canonical performer route and rejects mixed fil
   const fixture = await startFixture((req, res) => {
     const params = new URLSearchParams(req.url.split("?")[1] ?? "");
     assert.equal(params.get("per_page"), "2");
-    if (req.url.startsWith(`/performers/${CANON_PERFORMER_ID}/scenes`)) {
+    if (req.url.startsWith(`/performers/${CANON_PERFORMER_ID}/movies`)) {
       replyJson(res, 200, {
         data: [
           {
@@ -941,7 +941,7 @@ test("tpdb filmography pages the canonical performer route and rejects mixed fil
     process.env.TPDB_BASE_URL = fixture.origin;
     const page = await searchCatalog({
       provider: "tpdb",
-      kind: "scene",
+      kind: "movie",
       performer: CANON_PERFORMER_ID,
       perPage: 2,
     });
@@ -950,7 +950,7 @@ test("tpdb filmography pages the canonical performer route and rejects mixed fil
     await assert.rejects(
       searchCatalog({
         provider: "tpdb",
-        kind: "scene",
+        kind: "movie",
         performer: CANON_PERFORMER_ID,
         query: "nope",
       }),
@@ -962,7 +962,7 @@ test("tpdb filmography pages the canonical performer route and rejects mixed fil
     await assert.rejects(
       searchCatalog({
         provider: "tpdb",
-        kind: "scene",
+        kind: "movie",
         performer: "not-a-uuid",
       }),
       (err: unknown) => {
@@ -1352,7 +1352,7 @@ test("tpdb studio search and detail map sites rows with provider-supplied parent
 
 // --- TPDB studio filter: uuid -> numeric site_id resolution, capped totals ---
 
-test("tpdb studio-filtered scene queries resolve uuid to numeric site_id and keep capped totals suppressed", async () => {
+test("tpdb studio-filtered movie queries resolve uuid to numeric site_id and keep capped totals suppressed", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   const fixture = await startFixture((req, res) => {
     if (req.url.startsWith(`/sites/${TPDB_STUDIO_ID}`)) {
@@ -1361,12 +1361,12 @@ test("tpdb studio-filtered scene queries resolve uuid to numeric site_id and kee
       });
       return;
     }
-    if (req.url.startsWith("/scenes?")) {
+    if (req.url.startsWith("/movies?")) {
       replyJson(res, 200, {
         data: [
           {
             id: SCENE_ID,
-            title: "Vixen Scene",
+            title: "Vixen Movie",
             site: { uuid: TPDB_STUDIO_ID, name: "Vixen" },
             posters: {},
             background: {},
@@ -1387,7 +1387,7 @@ test("tpdb studio-filtered scene queries resolve uuid to numeric site_id and kee
     process.env.TPDB_BASE_URL = fixture.origin;
     const page = await searchCatalog({
       provider: "tpdb",
-      kind: "scene",
+      kind: "movie",
       studio: TPDB_STUDIO_ID,
     });
     const params = queryParams(fixture, 1);
@@ -1587,7 +1587,7 @@ test("studio and tag filters produce the right upstream query for each provider"
       });
       return;
     }
-    if (req.url.startsWith("/scenes?") || req.url.startsWith("/movies?")) {
+    if (req.url.startsWith("/movies?")) {
       replyJson(res, 200, {
         data: [],
         links: { next: null },
@@ -1601,16 +1601,16 @@ test("studio and tag filters produce the right upstream query for each provider"
     process.env.TPDB_BASE_URL = fixture.origin;
     await searchCatalog({
       provider: "tpdb",
-      kind: "scene",
+      kind: "movie",
       studio: TPDB_STUDIO_ID,
       tags: [TPDB_TAG_A, TPDB_TAG_B],
     });
     // request 0 resolved the uuid; request 1 is the filtered query
-    const sceneParams = queryParams(fixture, 1);
-    assert.equal(sceneParams.get("site_id"), String(TPDB_STUDIO_NUMERIC));
-    assert.deepEqual(sceneParams.getAll("tags[]"), [TPDB_TAG_A, TPDB_TAG_B]);
-    assert.equal(sceneParams.get("tag_and"), null);
-    assert.equal(sceneParams.get("orderBy"), null);
+    const anyOfParams = queryParams(fixture, 1);
+    assert.equal(anyOfParams.get("site_id"), String(TPDB_STUDIO_NUMERIC));
+    assert.deepEqual(anyOfParams.getAll("tags[]"), [TPDB_TAG_A, TPDB_TAG_B]);
+    assert.equal(anyOfParams.get("tag_and"), null);
+    assert.equal(anyOfParams.get("orderBy"), null);
 
     await searchCatalog({
       provider: "tpdb",
@@ -1705,7 +1705,7 @@ test("unsupported filter and sort combinations are rejected explicitly", async (
     await assert.rejects(
       searchCatalog({
         provider: "tpdb",
-        kind: "scene",
+        kind: "movie",
         performer: CANON_PERFORMER_ID,
         studio: TPDB_STUDIO_ID,
       }),
@@ -1716,7 +1716,7 @@ test("unsupported filter and sort combinations are rejected explicitly", async (
     );
     // TRENDING is refused for TPDB: no popularity or trending order exists
     await assert.rejects(
-      searchCatalog({ provider: "tpdb", kind: "scene", sort: "trending" }),
+      searchCatalog({ provider: "tpdb", kind: "movie", sort: "trending" }),
       (err: unknown) => {
         assert.ok(err instanceof AppError);
         assert.equal(err.status, 400);
@@ -1737,7 +1737,7 @@ test("unsupported filter and sort combinations are rejected explicitly", async (
     await assert.rejects(
       searchCatalog({
         provider: "tpdb",
-        kind: "scene",
+        kind: "movie",
         sort: "relevance",
         direction: "asc",
       }),
@@ -1759,7 +1759,7 @@ test("unsupported filter and sort combinations are rejected explicitly", async (
     await assert.rejects(
       searchCatalog({
         provider: "tpdb",
-        kind: "scene",
+        kind: "movie",
         tags: [TPDB_TAG_A],
         tagsAll: [TPDB_TAG_B],
       }),
@@ -1784,7 +1784,16 @@ test("unsupported filter and sort combinations are rejected explicitly", async (
     );
     // malformed tag filter ids are rejected, not passed upstream
     await assert.rejects(
-      searchCatalog({ provider: "tpdb", kind: "scene", tags: ["70"] }),
+      searchCatalog({ provider: "tpdb", kind: "movie", tags: ["70"] }),
+      (err: unknown) => {
+        assertProviderError(err, 400, "invalid_search");
+        return true;
+      },
+    );
+    // tpdb scenes are not listed at all: the pairing guard fires outright,
+    // before any upstream request (proven by the zero-request count below)
+    await assert.rejects(
+      searchCatalog({ provider: "tpdb", kind: "scene" }),
       (err: unknown) => {
         assertProviderError(err, 400, "invalid_search");
         return true;
@@ -2094,7 +2103,7 @@ test("stashdb studio detail carries provider-supplied child count; absent stays 
 test("tpdb releaseDate emits the upstream date + date_operation pair; ordinary browse stays unbounded", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   const fixture = await startFixture((req, res) => {
-    if (req.url.startsWith("/movies?") || req.url.startsWith("/scenes?")) {
+    if (req.url.startsWith("/movies?")) {
       replyJson(res, 200, {
         data: [{ ...tpdbMovieRow() }],
         links: { next: null },
@@ -2120,13 +2129,13 @@ test("tpdb releaseDate emits the upstream date + date_operation pair; ordinary b
     assert.equal(movieParams.get("orderBy"), "recently_released");
     await searchCatalog({
       provider: "tpdb",
-      kind: "scene",
+      kind: "movie",
       releaseDate: { cutoff: "2026-01-01", operation: ">" },
     });
-    const sceneParams = queryParams(fixture, 1);
-    assert.equal(sceneParams.get("date"), "2026-01-01");
-    assert.equal(sceneParams.get("date_operation"), ">");
-    assert.equal(sceneParams.get("orderBy"), null);
+    const unsortedParams = queryParams(fixture, 1);
+    assert.equal(unsortedParams.get("date"), "2026-01-01");
+    assert.equal(unsortedParams.get("date_operation"), ">");
+    assert.equal(unsortedParams.get("orderBy"), null);
 
     // Ordinary browse without the bound is byte-for-byte today's request:
     // neither param appears at all.
@@ -2153,7 +2162,7 @@ test("releaseDate is rejected explicitly where unsupported or malformed, before 
         kind: "scene",
         releaseDate: bound,
       } as CatalogSearchQuery,
-      match: /only supported on TPDB movie and scene/,
+      match: /only supported on TPDB movie searches/,
     },
     {
       query: {
@@ -2162,7 +2171,7 @@ test("releaseDate is rejected explicitly where unsupported or malformed, before 
         query: "anna",
         releaseDate: bound,
       } as CatalogSearchQuery,
-      match: /only supported on TPDB movie and scene/,
+      match: /only supported on TPDB movie searches/,
     },
     {
       query: {
@@ -2171,7 +2180,7 @@ test("releaseDate is rejected explicitly where unsupported or malformed, before 
         query: "vixen",
         releaseDate: bound,
       } as CatalogSearchQuery,
-      match: /only supported on TPDB movie and scene/,
+      match: /only supported on TPDB movie searches/,
     },
     {
       query: {
@@ -2180,7 +2189,7 @@ test("releaseDate is rejected explicitly where unsupported or malformed, before 
         query: "anna",
         releaseDate: bound,
       } as CatalogSearchQuery,
-      match: /only supported on TPDB movie and scene/,
+      match: /only supported on TPDB movie searches/,
     },
     {
       query: {
@@ -2189,7 +2198,7 @@ test("releaseDate is rejected explicitly where unsupported or malformed, before 
         query: "vixen",
         releaseDate: bound,
       } as CatalogSearchQuery,
-      match: /only supported on TPDB movie and scene/,
+      match: /only supported on TPDB movie searches/,
     },
     {
       // filmography paging cannot carry the bound either
@@ -2214,7 +2223,7 @@ test("releaseDate is rejected explicitly where unsupported or malformed, before 
     {
       query: {
         provider: "tpdb",
-        kind: "scene",
+        kind: "movie",
         releaseDate: { cutoff: "2026-02-30", operation: "<=" },
       } as CatalogSearchQuery,
       match: /ISO cutoff date/,

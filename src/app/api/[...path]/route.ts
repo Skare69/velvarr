@@ -2173,11 +2173,11 @@ const SHELF_ITEMS = 12;
 const SEARCH_PER_PAGE = 6;
 const FOLLOW_SHELF_PERFORMERS = 5;
 
-// First page of each followed performer's scene filmography, merged within
+// First page of each followed performer's title filmography, merged within
 // ONE provider and capped at SHELF_ITEMS. Partial failure survives: pages
 // that failed are dropped, and the shelf only reports an error when every
 // page failed — nothing truthful to show beats a quiet empty list.
-async function followedScenes(
+async function followedTitles(
   accountId: string,
   provider: CatalogProvider,
 ): Promise<CatalogDetail[]> {
@@ -2192,7 +2192,7 @@ async function followedScenes(
         ? // TPDB's filmography route is paging-only: no sort exists there.
           searchCatalog({
             provider: "tpdb",
-            kind: "scene",
+            kind: "movie",
             performer: follow.reference.id,
             page: 1,
             perPage: SHELF_ITEMS,
@@ -2218,7 +2218,7 @@ async function followedScenes(
       continue;
     }
     for (const item of page.value) {
-      // Two followed performers can share a scene; keep one copy.
+      // Two followed performers can share a title; keep one copy.
       if (seen.has(item.reference.id)) continue;
       seen.add(item.reference.id);
       items.push(item);
@@ -2243,7 +2243,7 @@ async function followShelves(ctx: AuthContext): Promise<Shelf[]> {
     ) {
       continue;
     }
-    const pages = await followedScenes(ctx.account.id, provider).then(
+    const pages = await followedTitles(ctx.account.id, provider).then(
       (items): PromiseSettledResult<ShelfItems> => ({
         status: "fulfilled",
         value: items,
@@ -2256,10 +2256,13 @@ async function followShelves(ctx: AuthContext): Promise<Shelf[]> {
     shelves.push(
       shelfOf(
         {
-          id: `${provider}-followed-scenes`,
+          id:
+            provider === "tpdb"
+              ? "tpdb-followed-movies"
+              : "stashdb-followed-scenes",
           title:
             provider === "tpdb"
-              ? "Scenes from performers you follow"
+              ? "Movies from performers you follow"
               : "Newest scenes from performers you follow",
           source: provider,
           kind: "catalog",
@@ -2287,23 +2290,14 @@ function shelfOf(
 
 async function discover(request: Request): Promise<Response> {
   const ctx = await requireSession(request);
-  // UTC server date: the shared "today" cutoff for both TPDB recency shelves
-  // and their browse-all links.
+  // UTC server date: the shared "today" cutoff for the TPDB recency shelf
+  // and its browse-all link.
   const today = new Date().toISOString().slice(0, 10);
-  const [tpdbMovies, tpdbScenes, stashTrending, recentlyAdded, requests] =
+  const [tpdbMovies, stashTrending, recentlyAdded, requests] =
     await Promise.allSettled([
       searchCatalog({
         provider: "tpdb",
         kind: "movie",
-        releaseDate: { cutoff: today, operation: "<=" },
-        sort: "recency",
-        direction: "desc",
-        page: 1,
-        perPage: SHELF_ITEMS,
-      }).then((page) => page.items),
-      searchCatalog({
-        provider: "tpdb",
-        kind: "scene",
         releaseDate: { cutoff: today, operation: "<=" },
         sort: "recency",
         direction: "desc",
@@ -2347,26 +2341,6 @@ async function discover(request: Request): Promise<Response> {
           },
         },
         tpdbMovies,
-      ),
-      shelfOf(
-        {
-          id: "tpdb-recent-scenes",
-          title: "Recently released scenes",
-          source: "tpdb",
-          kind: "catalog",
-          browse: {
-            view: "catalog",
-            params: {
-              provider: "tpdb",
-              kind: "scene",
-              sort: "recency",
-              direction: "desc",
-              date: today,
-              date_operation: "<=",
-            },
-          },
-        },
-        tpdbScenes,
       ),
       shelfOf(
         {
@@ -2435,7 +2409,6 @@ async function globalSearch(request: Request): Promise<Response> {
   }
   const [
     tpdbMovies,
-    tpdbScenes,
     stashdbScenes,
     tpdbPerformers,
     stashdbPerformers,
@@ -2445,13 +2418,6 @@ async function globalSearch(request: Request): Promise<Response> {
     searchCatalog({
       provider: "tpdb",
       kind: "movie",
-      query: term,
-      page: 1,
-      perPage: SEARCH_PER_PAGE,
-    }).then((page) => page.items),
-    searchCatalog({
-      provider: "tpdb",
-      kind: "scene",
       query: term,
       page: 1,
       perPage: SEARCH_PER_PAGE,
@@ -2488,13 +2454,12 @@ async function globalSearch(request: Request): Promise<Response> {
       query: term,
     }).then((page) => page.items),
   ]);
-  // Seven source-labeled categories, never merged across providers. Each is
+  // Six source-labeled categories, never merged across providers. Each is
   // the provider's own search order — no global ranking is computed here.
   return json({
     query: term,
     categories: [
       categoryOf("tpdb-movies", "tpdb", "movie", tpdbMovies),
-      categoryOf("tpdb-scenes", "tpdb", "scene", tpdbScenes),
       categoryOf("stashdb-scenes", "stashdb", "scene", stashdbScenes),
       categoryOf("tpdb-performers", "tpdb", "performer", tpdbPerformers),
       categoryOf(

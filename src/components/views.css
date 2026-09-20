@@ -55,31 +55,6 @@
   );
 }
 
-/* Underline tabs, not boxed buttons; selection carries the accent. */
-.performer-tabs {
-  display: flex;
-  gap: 1.5rem;
-  border-bottom: 1px solid var(--color-edge);
-}
-
-.performer-tab {
-  margin-bottom: -1px;
-  padding: 0.6rem 0.15rem;
-  border-bottom: 2px solid transparent;
-  color: var(--color-muted);
-  font-size: 0.95rem;
-  font-weight: 600;
-}
-
-.performer-tab:hover {
-  color: var(--color-ink);
-}
-
-.performer-tab[aria-selected="true"] {
-  border-bottom-color: var(--color-accent);
-  color: var(--color-accent);
-}
-
 /* ---------- Requests / Removals rows ---------- */
 
 /* Two-column row on sm+: facts left, badge + actions right; a clean single
@@ -182,7 +157,7 @@
 
 /* ---------- Follow toggle (performer page) ---------- */
 
-/* The followed state carries the accent, matching .performer-tab and chips. */
+/* The followed state carries the accent, matching the chips. */
 .follow-toggle.is-following {
   border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
   background: color-mix(in srgb, var(--color-accent) 16%, transparent);

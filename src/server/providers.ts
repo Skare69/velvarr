@@ -1233,19 +1233,27 @@ export async function searchCatalog(
       );
     }
   }
-  // releaseDate is real only on TPDB movie/scene searches (upstream `date` +
+  // One metadata source per item type: Whisparr pairs movies with TPDB and
+  // scenes with StashDB, so a surface that lists TPDB scenes can only lead
+  // to a request that must fail. Refuse the listing here, before any
+  // upstream request is issued.
+  if (query.provider === "tpdb" && query.kind === "scene") {
+    throw new AppError(
+      400,
+      "invalid_search",
+      "Scenes are listed from StashDB only — TPDB scenes cannot be acquired.",
+    );
+  }
+  // releaseDate is real only on TPDB movie searches (upstream `date` +
   // `date_operation`). Every other carrier is rejected before any upstream
   // request — a bound is never silently dropped, and StashDB's date criterion
   // with modifiers is never emulated through it.
   if (raw.releaseDate !== undefined) {
-    if (
-      query.provider !== "tpdb" ||
-      (query.kind !== "movie" && query.kind !== "scene")
-    ) {
+    if (query.provider !== "tpdb" || query.kind !== "movie") {
       throw new AppError(
         400,
         "invalid_search",
-        "releaseDate is only supported on TPDB movie and scene searches.",
+        "releaseDate is only supported on TPDB movie searches.",
       );
     }
   }

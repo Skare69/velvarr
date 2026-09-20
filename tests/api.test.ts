@@ -1509,7 +1509,7 @@ test("catalog search: auth, filter combos, honest totals, outage honesty", async
     "provider=tpdb&kind=performer&q=x&year=2020",
     `provider=tpdb&kind=performer&q=x&performer=${TPDB_PERFORMER}`,
     "provider=stashdb&kind=performer&q=x&page=2",
-    "provider=tpdb&kind=scene&performer=",
+    "provider=stashdb&kind=scene&performer=",
     "provider=junk&kind=movie",
     "provider=tpdb&kind=movie&page=0",
     "provider=tpdb&kind=movie&perPage=101",
@@ -1533,6 +1533,17 @@ test("catalog search: auth, filter combos, honest totals, outage honesty", async
   );
   const err = await errorShape(outage, 500);
   assert.equal(err.code, "upstream_unavailable");
+});
+
+test("catalog search refuses the tpdb scene pairing before any upstream call", async () => {
+  // One metadata source per kind: scenes list from StashDB only, so the
+  // pairing itself is the error — not a filter, not an empty page.
+  const refused = await call(
+    "GET",
+    "/api/catalog/search?provider=tpdb&kind=scene",
+    { cookie: member },
+  );
+  assert.equal((await errorShape(refused)).code, "invalid_search");
 });
 
 test("provider credentials: stored config wins over environment, clear falls back", async () => {
@@ -2359,7 +2370,6 @@ test("studio search per provider; studio references refused as media; unsupporte
   // Unsupported provider+kind+parameter combinations: explicit 400
   // invalid_query, never a silent ignore.
   const rejected = [
-    `provider=tpdb&kind=scene&sort=trending`,
     `provider=tpdb&kind=movie&sort=popularity`,
     `provider=stashdb&kind=scene&sort=relevance`,
     `provider=tpdb&kind=movie&tagsExclude=${TAG_A}`,
@@ -2370,9 +2380,6 @@ test("studio search per provider; studio references refused as media; unsupporte
     `provider=tpdb&kind=studio&q=x&tags=${TAG_A}`,
     `provider=tpdb&kind=performer&q=x&sort=recency`,
     `provider=tpdb&kind=movie&sort=bogus`,
-    `provider=tpdb&kind=scene&direction=asc`,
-    `provider=tpdb&kind=scene&sort=recency&direction=sideways`,
-    `provider=tpdb&kind=scene&tags=${TAG_A},${TAG_B}&tagsAll=${TAG_B}`,
   ] as const;
   for (const query of rejected) {
     const res = await call("GET", `/api/catalog/search?${query}`, {
@@ -2389,7 +2396,7 @@ test("studio search per provider; studio references refused as media; unsupporte
   // A supported sort wires through: the page reports the exact applied order.
   const sorted = await call(
     "GET",
-    "/api/catalog/search?provider=tpdb&kind=scene&sort=recency&direction=asc",
+    "/api/catalog/search?provider=tpdb&kind=movie&sort=recency&direction=asc",
     { cookie: member },
   );
   assert.equal(sorted.status, 200);
@@ -2405,13 +2412,13 @@ test("studio search per provider; studio references refused as media; unsupporte
   // Repeatable and comma-separated tag lists both parse into one filter.
   const tagged = await call(
     "GET",
-    `/api/catalog/search?provider=tpdb&kind=scene&tags=${TAG_A}&tags=${TAG_B}`,
+    `/api/catalog/search?provider=tpdb&kind=movie&tags=${TAG_A}&tags=${TAG_B}`,
     { cookie: member },
   );
   assert.equal(tagged.status, 200);
   const commaed = await call(
     "GET",
-    `/api/catalog/search?provider=tpdb&kind=scene&tags=${TAG_A},${TAG_B}`,
+    `/api/catalog/search?provider=tpdb&kind=movie&tags=${TAG_A},${TAG_B}`,
     { cookie: member },
   );
   assert.equal(commaed.status, 200);
@@ -2451,7 +2458,7 @@ async function searchOf(res: Response): Promise<{
   };
 }
 
-test("discover: five isolated shelves, grants, not-configured", async () => {
+test("discover: four isolated shelves, grants, not-configured", async () => {
   assert.equal((await call("GET", "/api/discover")).status, 401);
 
   const ok = await call("GET", "/api/discover", { cookie: member });
@@ -2461,14 +2468,13 @@ test("discover: five isolated shelves, grants, not-configured", async () => {
     shelves.map((shelf) => shelf.id),
     [
       "tpdb-recent-movies",
-      "tpdb-recent-scenes",
       "stashdb-trending-scenes",
       "jellyfin-recent",
       "velvarr-requests",
     ],
   );
   // Premise for the follow-shelf tests below: this account follows nobody,
-  // so the standard five shelves are the whole page.
+  // so the standard four shelves are the whole page.
   const memberFollows = await call("GET", "/api/follows", { cookie: member });
   assert.equal(memberFollows.status, 200);
   // json() is untyped and the suite has no validator; named const, then read.
@@ -2476,8 +2482,8 @@ test("discover: five isolated shelves, grants, not-configured", async () => {
     follows: unknown[];
   };
   assert.deepEqual(memberFollowsBody.follows, []);
-  // ponytail: scenes/trending slots stay positional — index still proves order.
-  const [movies, , , library, requests] = shelves;
+  // ponytail: trending slot stays positional — index still proves order.
+  const [movies, , library, requests] = shelves;
 
   // Every shelf carries items; none fails silently.
   for (const shelf of shelves) {
@@ -2515,15 +2521,15 @@ test("discover: five isolated shelves, grants, not-configured", async () => {
     assert.equal(record.accountId, MEMBER_ID);
   }
 
-  // A TPDB outage fills only the TPDB shelves' errors; others keep items.
+  // A TPDB outage fills only the TPDB shelf's error; others keep items.
   // First-contact: the earlier discover cached these shelves.
   resetMetaCache();
-  tpdbFx.fail = 2;
+  tpdbFx.fail = 1;
   const outage = await call("GET", "/api/discover", { cookie: member });
   assert.equal(outage.status, 200, "shelf failure must not fail the page");
-  const [outMovies, outScenes, outTrending, outLibrary, outRequests] =
+  const [outMovies, outTrending, outLibrary, outRequests] =
     await shelvesOf(outage);
-  for (const shelf of [outMovies, outScenes]) {
+  for (const shelf of [outMovies]) {
     assert.ok(shelf?.error, shelf?.id);
     assert.match(shelf?.error?.code ?? "", /unavailable/, shelf?.id);
     assert.equal(shelf?.items, undefined, shelf?.id);
@@ -2539,7 +2545,7 @@ test("discover: five isolated shelves, grants, not-configured", async () => {
   const unconfigured = await call("GET", "/api/discover", { cookie: member });
   process.env.STASHDB_API_KEY = key;
   assert.equal(unconfigured.status, 200);
-  const [unconfMovies, , unconfTrending] = await shelvesOf(unconfigured);
+  const [unconfMovies, unconfTrending] = await shelvesOf(unconfigured);
   assert.equal(unconfTrending?.error?.code, "provider_not_configured");
   assert.equal(unconfTrending?.items, undefined);
   assert.ok((unconfMovies?.items?.length ?? 0) > 0);
@@ -2973,16 +2979,15 @@ test("discover appends one followed-performer shelf per provider and isolates a 
     shelves.map((shelf) => shelf.id),
     [
       "tpdb-recent-movies",
-      "tpdb-recent-scenes",
       "stashdb-trending-scenes",
       "jellyfin-recent",
       "velvarr-requests",
-      "tpdb-followed-scenes",
+      "tpdb-followed-movies",
       "stashdb-followed-scenes",
     ],
   );
-  const tpdbFollow = shelves[5];
-  const stashFollow = shelves[6];
+  const tpdbFollow = shelves[4];
+  const stashFollow = shelves[5];
   for (const shelf of [tpdbFollow, stashFollow]) {
     assert.equal(shelf?.error, undefined, shelf?.id);
     assert.equal(shelf?.browse?.view, "following", shelf?.id);
@@ -2991,10 +2996,10 @@ test("discover appends one followed-performer shelf per provider and isolates a 
   // Each follow shelf sources from its own provider only — json() is untyped;
   // named const, then read.
   const tpdbItems = (tpdbFollow?.items ?? []) as CatalogShelfItem[];
-  assert.equal(tpdbItems[0]?.reference.id, TPDB_MOVIE2);
+  assert.equal(tpdbItems[0]?.reference.id, TPDB_MOVIE5);
   for (const item of tpdbItems) {
     assert.equal(item.reference.provider, "tpdb", tpdbFollow?.id);
-    assert.equal(item.reference.kind, "scene", tpdbFollow?.id);
+    assert.equal(item.reference.kind, "movie", tpdbFollow?.id);
   }
   const stashItems = (stashFollow?.items ?? []) as CatalogShelfItem[];
   assert.equal(stashItems[0]?.reference.id, STASH_SCENE);
@@ -3006,17 +3011,13 @@ test("discover appends one followed-performer shelf per provider and isolates a 
   // A TPDB outage errors the TPDB shelves only; the rest of the page keeps
   // its items — same isolation contract as the standard shelves.
   resetMetaCache();
-  tpdbFx.fail = 3; // recent movies, recent scenes, and the filmography page
+  tpdbFx.fail = 2; // recent movies and the filmography page
   try {
     const outage = await call("GET", "/api/discover", { cookie: member2 });
     assert.equal(outage.status, 200, "shelf failure must not fail the page");
     const outShelves = await shelvesOf(outage);
     const byId = new Map(outShelves.map((shelf) => [shelf.id, shelf]));
-    for (const id of [
-      "tpdb-recent-movies",
-      "tpdb-recent-scenes",
-      "tpdb-followed-scenes",
-    ]) {
+    for (const id of ["tpdb-recent-movies", "tpdb-followed-movies"]) {
       const shelf = byId.get(id);
       assert.ok(shelf?.error, id);
       assert.match(shelf?.error?.code ?? "", /unavailable/, id);
@@ -3055,7 +3056,7 @@ test("discover appends one followed-performer shelf per provider and isolates a 
   }
 });
 
-test("global search: seven isolated categories, auth, blank q 400", async () => {
+test("global search: six isolated categories, auth, blank q 400", async () => {
   assert.equal((await call("GET", "/api/search?q=Fixture")).status, 401);
 
   // Missing or too-short q is an explicit 400, never an empty result.
@@ -3074,7 +3075,6 @@ test("global search: seven isolated categories, auth, blank q 400", async () => 
     search.categories.map((category) => category.id),
     [
       "tpdb-movies",
-      "tpdb-scenes",
       "stashdb-scenes",
       "tpdb-performers",
       "stashdb-performers",
@@ -3084,7 +3084,6 @@ test("global search: seven isolated categories, auth, blank q 400", async () => 
   );
   const [
     moviesCat,
-    ,
     stashScenesCat,
     performersCat,
     stashPerformersCat,
@@ -3139,7 +3138,6 @@ test("global search: seven isolated categories, auth, blank q 400", async () => 
   const outageSearch = await searchOf(outage);
   const [
     outMovies,
-    outScenes,
     outStashScenes,
     outPerformers,
     outStashPerformers,
@@ -3155,7 +3153,7 @@ test("global search: seven isolated categories, auth, blank q 400", async () => 
     assert.match(category?.error?.code ?? "", /unavailable/, category?.id);
     assert.deepEqual(category?.items, [], category?.id);
   }
-  for (const category of [outMovies, outScenes, outPerformers, outStudios]) {
+  for (const category of [outMovies, outPerformers, outStudios]) {
     assert.equal(category?.error, undefined, category?.id);
     assert.ok((category?.items.length ?? 0) > 0, category?.id);
   }
@@ -3180,7 +3178,6 @@ test("studioMode: withChildren reaches provider; every other combo is a 400 befo
   // Explicit rejections before any upstream call.
   const before = stashdbFx.calls;
   const rejected = [
-    `provider=tpdb&kind=scene&studio=${TPDB_STUDIO}&studioMode=withChildren`,
     `provider=stashdb&kind=performer&q=x&studio=${STASH_STUDIO}&studioMode=exact`,
     `provider=stashdb&kind=studio&q=x&studio=${STASH_STUDIO}&studioMode=exact`,
     `provider=stashdb&kind=scene&studioMode=exact`,

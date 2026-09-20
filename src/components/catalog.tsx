@@ -109,7 +109,7 @@ function asMediaKind(kind: CatalogKind): MediaKind | null {
 /* ---------- Browse-context helpers ---------- */
 
 /** Sorts each provider+kind genuinely supports, mirroring the route's
- * SORT_SUPPORT: TPDB movie/scene has relevance|recency|duration, StashDB
+ * SORT_SUPPORT: TPDB movie has relevance|recency|duration, StashDB
  * scene has title|date|duration|trending|popularity|created|updated.
  * Unsupported options are never offered, and trending/popularity are
  * labeled as StashDB's own ordering — recency is never called trending. */
@@ -140,7 +140,7 @@ function sortsFor(
   provider: CatalogProvider,
   kind: CatalogKind,
 ): readonly SortKey[] {
-  if (provider === "tpdb" && (kind === "movie" || kind === "scene"))
+  if (provider === "tpdb" && kind === "movie")
     return ["relevance", "recency", "duration"];
   if (provider === "stashdb" && kind === "scene")
     return [
@@ -490,7 +490,7 @@ function dateOpLabel(v: string): string {
   return DATE_OPS.find((o) => o.v === v)?.label ?? v;
 }
 
-/** TPDB movie/scene only: `date` + `date_operation` commit as one pair —
+/** TPDB movie only: `date` + `date_operation` commit as one pair —
  * either half alone is a 400. Setting a date clears `year` (the views wire
  * that in onCommit); StashDB has no date filter so this is never rendered
  * there. */
@@ -934,7 +934,7 @@ type CatalogQuery = {
   tagsAll: string;
   /** StashDB scene only: excluded tag list; mutually exclusive with `tags`. */
   tagsExclude: string;
-  /** TPDB movie/scene only; date_operation must always ride along. */
+  /** TPDB movie only; date_operation must always ride along. */
   date: string;
   dateOperation: string;
   sort: string;
@@ -1435,20 +1435,26 @@ function DetailBody({
       ? d.studio.reference
       : null;
   // Tag-filtered search exists for movie/scene only; performer and studio
-  // details keep their tags as plain text rather than dead controls.
-  const tagBrowse = target.kind === "movie" || target.kind === "scene";
+  // details keep their tags as plain text rather than dead controls. A
+  // TPDB scene's tags stay plain too — its kind has no listing to filter.
+  const tagBrowse =
+    target.kind === "movie" ||
+    (target.kind === "scene" && target.provider === "stashdb");
   const isStudio = target.kind === "studio";
   const mediaView = mediaKind === "movie" ? "movies" : "scenes";
+  // One listing source per kind: a TPDB scene has no browse surface, so
+  // its detail renders none of the "browse scenes" entry points.
+  const tpdbScene = target.kind === "scene" && target.provider === "tpdb";
   // Availability is a media-target concept: no fetch for performer/studio.
   const mediaTarget =
     mediaKind !== null
       ? { provider: target.provider, kind: mediaKind, id: target.id }
       : null;
   const availability = useAvailability(mediaTarget);
-  // Year filtering exists on TPDB movie/scene lists only; StashDB has no
+  // Year filtering exists on TPDB movie lists only; StashDB has no
   // year or date filter (the route rejects it), so its dates stay plain.
   const releaseYear =
-    mediaKind && target.provider === "tpdb"
+    mediaKind === "movie" && target.provider === "tpdb"
       ? (d.releaseDate?.slice(0, 4) ?? null)
       : null;
   const showSourceUrl =
@@ -1495,7 +1501,7 @@ function DetailBody({
               <span className="chip">
                 {providerLabel(target.provider)} · {target.kind}
               </span>
-              {/* Year filter on TPDB movie/scene lists only; StashDB has
+              {/* Year filter on TPDB movie lists only; StashDB has
                   no year or date filter, so its dates stay plain text. */}
               {d.releaseDate &&
                 (releaseYear ? (
@@ -1662,8 +1668,9 @@ function DetailBody({
                       <span className="cat-person-name">{c.name}</span>
                     </button>
                     {/* Second entry point: the current surface filtered by
-                        this performer, not their detail page. */}
-                    {mediaKind && (
+                        this performer, not their detail page. A TPDB scene
+                        has no listing, so the chip only exists there. */}
+                    {mediaKind && !tpdbScene && (
                       <button
                         type="button"
                         className="chip cat-person-filter"
@@ -1681,7 +1688,7 @@ function DetailBody({
                   </div>
                 ))}
               </div>
-              {mediaKind && target.provider === "tpdb" && (
+              {target.kind === "movie" && target.provider === "tpdb" && (
                 <p className="mt-2 text-xs text-muted">
                   On TPDB a performer filter opens their whole filmography — it
                   replaces other filters rather than combining with them.
@@ -1692,7 +1699,7 @@ function DetailBody({
         </div>
 
         <aside>
-          {studioRef && !isStudio && (
+          {studioRef && !isStudio && !tpdbScene && (
             <section className="cat-section" aria-label="Studio">
               <h2 className="cat-section-title">Studio</h2>
               <button
@@ -1721,34 +1728,19 @@ function DetailBody({
               <h2 className="cat-section-title">Titles from this studio</h2>
               <div className="mt-2 flex flex-wrap gap-2">
                 {target.provider === "tpdb" ? (
-                  <>
-                    <button
-                      type="button"
-                      className="chip"
-                      onClick={() =>
-                        onBrowse("movies", {
-                          param: "studio",
-                          provider: target.provider,
-                          id: target.id,
-                        })
-                      }
-                    >
-                      Movies from this studio
-                    </button>
-                    <button
-                      type="button"
-                      className="chip"
-                      onClick={() =>
-                        onBrowse("scenes", {
-                          param: "studio",
-                          provider: target.provider,
-                          id: target.id,
-                        })
-                      }
-                    >
-                      Scenes from this studio
-                    </button>
-                  </>
+                  <button
+                    type="button"
+                    className="chip"
+                    onClick={() =>
+                      onBrowse("movies", {
+                        param: "studio",
+                        provider: target.provider,
+                        id: target.id,
+                      })
+                    }
+                  >
+                    Movies from this studio
+                  </button>
                 ) : (
                   <>
                     <button
@@ -1806,19 +1798,21 @@ function DetailBody({
                         Movies from {d.studio?.name}
                       </button>
                     )}
-                    <button
-                      type="button"
-                      className="chip"
-                      onClick={() =>
-                        onBrowse("scenes", {
-                          param: "studio",
-                          provider: studioRef.provider,
-                          id: studioRef.id,
-                        })
-                      }
-                    >
-                      Scenes from {d.studio?.name}
-                    </button>
+                    {target.provider === "stashdb" && (
+                      <button
+                        type="button"
+                        className="chip"
+                        onClick={() =>
+                          onBrowse("scenes", {
+                            param: "studio",
+                            provider: studioRef.provider,
+                            id: studioRef.id,
+                          })
+                        }
+                      >
+                        Scenes from {d.studio?.name}
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
@@ -2490,66 +2484,36 @@ export function ScenesView() {
   const params = useSearchParams();
   const setP = useParamsSetter();
   const { providers } = useSession();
-  const provider = providerOf(params.get("provider"));
+  // Scenes are StashDB-only. The URL's provider param is ignored — a
+  // stale ?provider=tpdb bookmark renders StashDB scenes, never a 400.
+  const provider: CatalogProvider = "stashdb";
   const q = params.get("q") ?? "";
-  // Year/date exist only on TPDB; stale values from the other source are
-  // ignored here so they are never sent for an explicit 400.
-  const year = provider === "tpdb" ? (params.get("year") ?? "") : "";
   const performer = params.get("performer") ?? "";
   const studio = params.get("studio") ?? "";
-  // studioMode is real only for a StashDB scene browse with a studio
-  // filter active; every other combination is ignored here so a stale
-  // URL value can never trigger the server's 400.
+  // studioMode is real only for a scene browse with a studio filter
+  // active; every other combination is ignored here so a stale URL
+  // value can never trigger the server's 400.
   const studioMode =
-    provider === "stashdb" &&
-    studio !== "" &&
-    params.get("studioMode") === "withChildren"
+    studio !== "" && params.get("studioMode") === "withChildren"
       ? "withChildren"
       : "";
+  // tagsExclude is StashDB-scene-only; a stale tagsAll never leaves here.
   const tags = params.get("tags") ?? "";
-  // tagsAll is TPDB-only, tagsExclude StashDB-scene-only; the other
-  // provider's parameter never leaves this component.
-  const tagsAll = provider === "tpdb" ? (params.get("tagsAll") ?? "") : "";
-  const tagsExclude =
-    provider === "stashdb" ? (params.get("tagsExclude") ?? "") : "";
-  // TPDB scene: a performer filter is the filmography route — it composes
-  // with nothing (and rejects studio specifically). StashDB composes freely.
-  const tpdbPerf = provider === "tpdb" && performer !== "";
-  const effQ = tpdbPerf ? "" : q;
-  const effYear = tpdbPerf ? "" : year;
-  const dateRaw =
-    provider === "tpdb" && !tpdbPerf ? (params.get("date") ?? "") : "";
-  const opRaw =
-    provider === "tpdb" && !tpdbPerf
-      ? (params.get("date_operation") ?? "")
-      : "";
-  // A complete pair only; an orphan half from an old URL never ships.
-  const effDate = dateRaw !== "" && opRaw !== "" ? dateRaw : "";
-  const effDateOp = effDate !== "" ? opRaw : "";
-  const effStudio = tpdbPerf ? "" : studio;
-  const effStudioMode = tpdbPerf ? "" : studioMode;
-  // Within each provider's exclusive tag pair, the include list wins when a
+  const tagsExclude = params.get("tagsExclude") ?? "";
+  // Within StashDB's single tag criterion, the include list wins when a
   // stale URL holds both.
-  const effTags = tpdbPerf ? "" : tags;
-  const effTagsAll =
-    provider === "tpdb" && !tpdbPerf && effTags === "" ? tagsAll : "";
-  const effTagsExclude =
-    provider === "stashdb" && effTags === "" ? tagsExclude : "";
-  const tagList = [...new Set(effTags.split(",").filter(Boolean))];
-  const tagAllList = [...new Set(effTagsAll.split(",").filter(Boolean))];
+  const effTagsExclude = tags === "" ? tagsExclude : "";
+  const tagList = [...new Set(tags.split(",").filter(Boolean))];
   const excludeList = [...new Set(effTagsExclude.split(",").filter(Boolean))];
-  const tagAllMode = tagAllList.length > 0;
-  // A sort from the other provider, or one no longer supported, is ignored
-  // rather than sent upstream for an explicit 400.
+  // A sort no longer supported is ignored rather than sent upstream for
+  // an explicit 400.
   const sortParam = params.get("sort");
   const sorts = sortsFor(provider, "scene");
   const sortKey = sorts.some((s) => s === sortParam)
     ? (sortParam as SortKey)
     : null;
-  const effSortKey = tpdbPerf ? null : sortKey;
   const dirRaw = params.get("direction");
   const direction = dirRaw === "asc" || dirRaw === "desc" ? dirRaw : "";
-  const effDirection = tpdbPerf ? "" : direction;
   const page = Math.max(1, intOr(params.get("page"), 1));
   const perPage = Math.min(100, Math.max(1, intOr(params.get("perPage"), 24)));
   const [reload, setReload] = useState(0);
@@ -2557,29 +2521,26 @@ export function ScenesView() {
   const notConfigured = providers?.[provider] === "not_configured";
   const target = detailTarget(params);
   const filterCount =
-    (effQ ? 1 : 0) +
-    (provider === "tpdb" && effYear ? 1 : 0) +
-    (effDate ? 1 : 0) +
+    (q ? 1 : 0) +
     (performer ? 1 : 0) +
-    (effStudio ? 1 : 0) +
+    (studio ? 1 : 0) +
     tagList.length +
-    tagAllList.length +
     excludeList.length;
   const { data, error } = useCatalogSearch({
     provider,
     kind: "scene",
-    q: effQ,
-    year: effYear,
+    q,
+    year: "",
     performer,
-    studio: effStudio,
-    studioMode: effStudioMode,
-    tags: effTags,
-    tagsAll: effTagsAll,
+    studio,
+    studioMode,
+    tags,
+    tagsAll: "",
     tagsExclude: effTagsExclude,
-    date: effDate,
-    dateOperation: effDateOp,
-    sort: effSortKey ?? "",
-    direction: effDirection,
+    date: "",
+    dateOperation: "",
+    sort: sortKey ?? "",
+    direction,
     page,
     perPage,
     paged: true,
@@ -2599,68 +2560,14 @@ export function ScenesView() {
     (v: string) => setP({ q: v || null, page: null }),
     [setP],
   );
-  // Year and the release-date pair are mutually exclusive in this UI:
-  // setting one clears the other (the server rejects some combined forms).
-  const onYear = useCallback(
-    (v: string) =>
-      setP({ year: v || null, date: null, date_operation: null, page: null }),
-    [setP],
-  );
-  // Both halves commit together — one without the other is a 400.
-  const onDate = useCallback(
-    (d: string | null, op: string | null) =>
-      setP({ date: d, date_operation: d ? op : null, year: null, page: null }),
-    [setP],
-  );
+  // StashDB composes a performer with everything else.
   const onPerformerPick = useCallback(
-    (id: string) => {
-      if (provider === "tpdb") {
-        // The filmography route: everything else must go, including sort.
-        setP({
-          performer: id,
-          q: null,
-          year: null,
-          date: null,
-          date_operation: null,
-          studio: null,
-          studioMode: null,
-          tags: null,
-          tagsAll: null,
-          tagsExclude: null,
-          sort: null,
-          direction: null,
-          page: null,
-        });
-        return;
-      }
-      // StashDB composes a performer with everything else.
-      setP({ performer: id, page: null });
-    },
-    [provider, setP],
+    (id: string) => setP({ performer: id, page: null }),
+    [setP],
   );
   const onPerformerClear = useCallback(
     () => setP({ performer: null, page: null }),
     [setP],
-  );
-  const onProvider = useCallback(
-    (p: CatalogProvider) =>
-      setP({
-        provider: p,
-        page: null,
-        // Every tag/date/sort/studio filter is provider-scoped; none is
-        // carried into the other provider's query.
-        year: p === "stashdb" ? null : year || null,
-        date: null,
-        date_operation: null,
-        sort: null,
-        direction: null,
-        studio: null,
-        studioMode: null,
-        tags: null,
-        tagsAll: null,
-        tagsExclude: null,
-      }),
-    [setP, year],
   );
   const onSort = useCallback(
     (v: string) => setP({ sort: v || null, direction: null, page: null }),
@@ -2670,17 +2577,15 @@ export function ScenesView() {
     (v: "asc" | "desc") => setP({ direction: v, page: null }),
     [setP],
   );
-  // Applying a studio clears the performer filter on TPDB, which rejects
-  // the pair; StashDB composes them freely.
   const onStudio = useCallback(
     (v: string) =>
       setP({
         studio: v || null,
         studioMode: null,
-        performer: provider === "tpdb" ? null : performer || null,
+        performer: performer || null,
         page: null,
       }),
-    [performer, provider, setP],
+    [performer, setP],
   );
   const onStudioMode = useCallback(
     (v: string) =>
@@ -2690,40 +2595,18 @@ export function ScenesView() {
       }),
     [setP],
   );
-  const onTagMode = useCallback(
-    (m: "any" | "all") => {
-      const ids = (m === "all" ? tagList : tagAllList).join(",");
-      setP(
-        m === "all"
-          ? { tagsAll: ids || null, tags: null, page: null }
-          : { tags: ids || null, tagsAll: null, page: null },
-      );
-    },
-    [setP, tagAllList, tagList],
-  );
   // StashDB allows one tag criterion per search: adding to either list
   // clears the other. The picker's cap keeps each list at 25 ids.
   const addTag = useCallback(
     (tg: { id: string; name: string }) => {
-      if (provider === "stashdb") {
-        if (tagList.length >= TAG_CAP) return;
-        setP({
-          tags: [...new Set([...tagList, tg.id])].join(","),
-          tagsExclude: null,
-          page: null,
-        });
-        return;
-      }
-      const list = tagAllMode ? tagAllList : tagList;
-      if (list.length >= TAG_CAP) return;
-      const next = [...new Set([...list, tg.id])].join(",");
-      setP(
-        tagAllMode
-          ? { tagsAll: next, tags: null, page: null }
-          : { tags: next, tagsAll: null, page: null },
-      );
+      if (tagList.length >= TAG_CAP) return;
+      setP({
+        tags: [...new Set([...tagList, tg.id])].join(","),
+        tagsExclude: null,
+        page: null,
+      });
     },
-    [provider, setP, tagAllList, tagAllMode, tagList],
+    [setP, tagList],
   );
   const addExcludeTag = useCallback(
     (tg: { id: string; name: string }) => {
@@ -2737,14 +2620,12 @@ export function ScenesView() {
     [excludeList, setP],
   );
   const removeTag = useCallback(
-    (id: string) => {
-      const list = tagAllMode ? tagAllList : tagList;
-      const next = list.filter((t) => t !== id).join(",") || null;
-      setP(
-        tagAllMode ? { tagsAll: next, page: null } : { tags: next, page: null },
-      );
-    },
-    [setP, tagAllList, tagAllMode, tagList],
+    (id: string) =>
+      setP({
+        tags: tagList.filter((t) => t !== id).join(",") || null,
+        page: null,
+      }),
+    [setP, tagList],
   );
   const removeExcludeTag = useCallback(
     (id: string) =>
@@ -2758,14 +2639,10 @@ export function ScenesView() {
     () =>
       setP({
         q: null,
-        year: null,
-        date: null,
-        date_operation: null,
         performer: null,
         studio: null,
         studioMode: null,
         tags: null,
-        tagsAll: null,
         tagsExclude: null,
         page: null,
       }),
@@ -2800,10 +2677,7 @@ export function ScenesView() {
   // label" from a genuinely empty result; a failed fetch keeps the wording
   // honest without asserting a number.
   const emptyStashStudio =
-    provider === "stashdb" &&
-    studio !== "" &&
-    data !== null &&
-    data.items.length === 0;
+    studio !== "" && data !== null && data.items.length === 0;
   const [studioInfo, setStudioInfo] = useState<
     { title: string; childStudioCount?: number } | "failed" | null
   >(null);
@@ -2843,25 +2717,9 @@ export function ScenesView() {
   // Every active filter, labelled; reused by the chip row and the drawer's
   // "From details" block.
   const chips: ReactNode[] = [];
-  if (effQ)
+  if (q)
     chips.push(
-      <FilterChip key="q" label={`“${effQ}”`} onRemove={() => onQ("")} />,
-    );
-  if (provider === "tpdb" && effYear)
-    chips.push(
-      <FilterChip
-        key="year"
-        label={`Year ${effYear}`}
-        onRemove={() => onYear("")}
-      />,
-    );
-  if (effDate)
-    chips.push(
-      <FilterChip
-        key="date"
-        label={`Released ${dateOpLabel(effDateOp)} ${effDate}`}
-        onRemove={() => onDate(null, null)}
-      />,
+      <FilterChip key="q" label={`“${q}”`} onRemove={() => onQ("")} />,
     );
   if (performer)
     chips.push(
@@ -2871,7 +2729,7 @@ export function ScenesView() {
         onRemove={onPerformerClear}
       />,
     );
-  if (effStudio)
+  if (studio)
     chips.push(
       <FilterChip
         key="studio"
@@ -2879,7 +2737,7 @@ export function ScenesView() {
         onRemove={() => onStudio("")}
       />,
     );
-  if (effStudioMode === "withChildren")
+  if (studioMode === "withChildren")
     chips.push(
       <FilterChip
         key="studioMode"
@@ -2892,14 +2750,6 @@ export function ScenesView() {
       <FilterChip
         key={`tag-${id}`}
         label={`Tag: ${filterName(provider, "tag", id)}`}
-        onRemove={() => removeTag(id)}
-      />,
-    );
-  for (const id of tagAllList)
-    chips.push(
-      <FilterChip
-        key={`tagall-${id}`}
-        label={`Tag (all): ${filterName(provider, "tag", id)}`}
         onRemove={() => removeTag(id)}
       />,
     );
@@ -2917,20 +2767,14 @@ export function ScenesView() {
         <div className="page-heading">
           <div>
             <h2 className="page-title">Scenes</h2>
-            <p className="page-description">
-              Results are labeled by source and never merged — pick TPDB or
-              StashDB explicitly.
-            </p>
           </div>
           <div className="page-toolbar">
-            <SourcePicker value={provider} onChange={onProvider} />
             <SortSelect
               id="scene-sort"
               provider={provider}
               kind="scene"
-              sort={effSortKey ?? ""}
-              direction={effDirection}
-              disabled={tpdbPerf}
+              sort={sortKey ?? ""}
+              direction={direction}
               onSort={onSort}
               onDirection={onDirection}
             />
@@ -2940,13 +2784,13 @@ export function ScenesView() {
             />
           </div>
         </div>
-        {(filterCount > 0 || effSortKey) && (
+        {(filterCount > 0 || sortKey) && (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <span className="text-xs text-muted">Filters:</span>
             {chips}
-            {effSortKey && (
+            {sortKey && (
               <FilterChip
-                label={`Sort: ${SORT_LABELS[effSortKey]}${effDirection ? ` (${effDirection})` : ""}`}
+                label={`Sort: ${SORT_LABELS[sortKey]}${direction ? ` (${direction})` : ""}`}
                 onRemove={() => onSort("")}
               />
             )}
@@ -2981,12 +2825,9 @@ export function ScenesView() {
               </div>
             ) : (
               <div className="panel p-8 text-center text-sm text-muted">
-                {provider === "tpdb" &&
-                (tagList.length > 0 || tagAllList.length > 0)
-                  ? "No TPDB scenes match your filters. TPDB accepts a tag filter but has returned no rows for one on every attempt measured here — the filter is wired, the provider answers empty. StashDB scenes do filter by tag."
-                  : filterCount > 0
-                    ? `No ${providerLabel(provider)} scenes match your filters.`
-                    : `No ${providerLabel(provider)} scenes found.`}
+                {filterCount > 0
+                  ? `No ${providerLabel(provider)} scenes match your filters.`
+                  : `No ${providerLabel(provider)} scenes found.`}
               </div>
             )
           ) : (
@@ -3014,87 +2855,37 @@ export function ScenesView() {
         count={filterCount}
         onClear={clearFilters}
       >
-        <SearchBox
-          id="scene-q"
-          label="Title"
-          value={effQ}
-          onCommit={onQ}
-          disabled={tpdbPerf}
-        />
-        {provider === "tpdb" && (
-          <YearBox
-            id="scene-year"
-            value={effYear}
-            onCommit={onYear}
-            disabled={tpdbPerf}
-          />
-        )}
-        {provider === "tpdb" && (
-          <DateCutoff
-            id="scene-date"
-            date={effDate}
-            operation={effDateOp}
-            disabled={tpdbPerf}
-            onCommit={onDate}
-          />
-        )}
+        <SearchBox id="scene-q" label="Title" value={q} onCommit={onQ} />
         <PerformerPicker
           id="scene-performer"
           provider={provider}
           onPick={onPerformerPick}
         />
-        {tpdbPerf && (
-          <p className="cat-note">
-            TPDB serves a performer's whole filmography — it replaces the other
-            filters, which are unavailable until it is removed.
-          </p>
-        )}
-        {provider === "tpdb" && (
-          <TagPicker
-            id="scene-tags"
-            provider="tpdb"
-            label="Tags"
-            selected={tagAllMode ? tagAllList : tagList}
-            disabled={tpdbPerf}
-            onAdd={addTag}
-          />
-        )}
-        {provider === "tpdb" &&
-          (tagList.length > 0 || tagAllList.length > 0) && (
-            <TagModeSwitch
-              mode={tagAllMode ? "all" : "any"}
-              onMode={onTagMode}
-            />
-          )}
-        {provider === "stashdb" && (
-          <>
-            <TagPicker
-              id="scene-tags"
-              provider="stashdb"
-              label="Include tags"
-              selected={tagList}
-              onAdd={addTag}
-              note={
-                excludeList.length > 0
-                  ? "Adding an included tag clears the excluded list — StashDB allows only one tag criterion per search."
-                  : undefined
-              }
-            />
-            <TagPicker
-              id="scene-tags-exclude"
-              provider="stashdb"
-              label="Exclude tags"
-              selected={excludeList}
-              onAdd={addExcludeTag}
-              note={
-                tagList.length > 0
-                  ? "Adding an excluded tag clears the included list — StashDB allows only one tag criterion per search."
-                  : undefined
-              }
-            />
-          </>
-        )}
-        {provider === "stashdb" && studio && (
+        <TagPicker
+          id="scene-tags"
+          provider="stashdb"
+          label="Include tags"
+          selected={tagList}
+          onAdd={addTag}
+          note={
+            excludeList.length > 0
+              ? "Adding an included tag clears the excluded list — StashDB allows only one tag criterion per search."
+              : undefined
+          }
+        />
+        <TagPicker
+          id="scene-tags-exclude"
+          provider="stashdb"
+          label="Exclude tags"
+          selected={excludeList}
+          onAdd={addExcludeTag}
+          note={
+            tagList.length > 0
+              ? "Adding an excluded tag clears the included list — StashDB allows only one tag criterion per search."
+              : undefined
+          }
+        />
+        {studio && (
           <div>
             <label className="label" htmlFor="scene-studio-scope">
               Studio scope

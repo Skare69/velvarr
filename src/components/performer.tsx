@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type KeyboardEvent,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   ApiError,
@@ -25,7 +19,6 @@ import {
   useParamsSetter,
   useSession,
 } from "./shared";
-import { isDeliverableMedia } from "../lib/contracts";
 import type {
   CatalogDetail,
   CatalogProvider,
@@ -50,8 +43,6 @@ type SearchPage = {
   totalCountKnown: boolean;
   items: CatalogDetail[];
 };
-
-type Tab = "scenes" | "movies";
 
 /* ---------- Small helpers (same conventions as catalog.tsx) ---------- */
 
@@ -209,7 +200,7 @@ function Paging({
   );
 }
 
-/* ---------- One paged tab listing (scenes, or TPDB movies) ---------- */
+/* ---------- One paged listing: the provider's only kind ---------- */
 
 function Listing({
   provider,
@@ -250,6 +241,9 @@ function Listing({
   const kindLabel = kind === "movie" ? "movies" : "scenes";
   return (
     <div>
+      <h3 className="font-semibold">
+        {performerName}&rsquo;s {kindLabel}
+      </h3>
       {error ? (
         <ErrorPanel
           title={`${providerLabel(provider)} unavailable`}
@@ -300,8 +294,7 @@ function Listing({
 /* ---------- Bulk "request everything" ---------- */
 
 /* Only fields the response contained are rendered — a missing count is never
- * shown as 0. StashDB movies never reach here: the tab renders the
- * StashDbMoviesNote instead, so the action is hidden there by construction. */
+ * shown as 0. */
 type BulkResponse = {
   requested?: number;
   skipped?: number;
@@ -327,9 +320,6 @@ function BulkRequest({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BulkResponse | null>(null);
   const noun = kind === "movie" ? "movie" : "scene";
-  // Whisparr has no metadata source for TPDB scenes, so the whole batch
-  // would be rejected; the tab stays browsable without the dead action.
-  if (!isDeliverableMedia({ provider, kind })) return null;
 
   const run = async () => {
     confirmRef.current?.close();
@@ -427,51 +417,6 @@ function BulkRequest({
           </div>
         </div>
       </dialog>
-    </div>
-  );
-}
-
-/* ---------- StashDB has no movies: say so, never an empty grid ---------- */
-
-function StashDbMoviesNote({
-  performerName,
-  linked,
-  onOpen,
-}: {
-  performerName: string;
-  linked?: CatalogReference;
-  onOpen: (r: CatalogReference) => void;
-}) {
-  const tpdbPerformer =
-    linked && linked.provider === "tpdb" && linked.kind === "performer"
-      ? linked
-      : undefined;
-  return (
-    <div className="panel p-6" role="note">
-      <h3 className="font-semibold">Movies come from TPDB</h3>
-      <p className="mt-2 text-sm text-muted">
-        StashDB has no movie records, so this page lists {performerName}
-        &rsquo;s StashDB scenes only.
-      </p>
-      {tpdbPerformer ? (
-        <div className="mt-3">
-          <button
-            type="button"
-            className="btn btn-accent"
-            onClick={() => onOpen(tpdbPerformer)}
-          >
-            Open {performerName} on TPDB
-          </button>
-          <p className="mt-2 text-xs text-muted">
-            Their TPDB page lists their TPDB movies.
-          </p>
-        </div>
-      ) : (
-        <p className="mt-3 text-sm text-muted">
-          No TPDB link is recorded for this performer, so their TPDB movies
-          cannot be shown here.
-        </p>
-      )}
     </div>
   );
 }
@@ -590,23 +535,19 @@ function FollowStar({
 
 /* ---------- The performer page ---------- */
 
-const TAB_IDS = ["scenes", "movies"] as const;
-const TAB_LABEL: Record<Tab, string> = { scenes: "Scenes", movies: "Movies" };
-
 export function PerformerView({ reference }: { reference: CatalogReference }) {
   const params = useSearchParams();
   const setP = useParamsSetter();
   const { providers } = useSession();
-  // URL-driven: tab (default scenes) and page survive reload and Back.
-  const tab: Tab = params.get("tab") === "movies" ? "movies" : "scenes";
+  // URL-driven: page survives reload and Back.
   const page = Math.max(1, intOr(params.get("page"), 1));
   const perPage = Math.min(100, Math.max(1, intOr(params.get("perPage"), 24)));
   const notConfigured = providers?.[reference.provider] === "not_configured";
   const [reload, setReload] = useState(0);
-  const tabRefs = useRef<Record<Tab, HTMLButtonElement | null>>({
-    scenes: null,
-    movies: null,
-  });
+  // One metadata source per provider: TPDB performers only have movies,
+  // StashDB performers only have scenes.
+  const kind: "movie" | "scene" =
+    reference.provider === "tpdb" ? "movie" : "scene";
 
   const { payload, err, loading } = usePerformerDetail(
     reference.provider,
@@ -624,33 +565,6 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
       ? payload.link.unlinkedReason
       : undefined
     : undefined;
-
-  const onTab = useCallback(
-    (t: Tab) => setP({ tab: t === "movies" ? "movies" : null, page: null }),
-    [setP],
-  );
-
-  // Roving focus over the tablist; selection follows focus (automatic
-  // activation). Arrow keys cycle — Home/End jump to the ends.
-  const onTablistKeyDown = useCallback(
-    (e: KeyboardEvent<HTMLDivElement>) => {
-      const next: Tab | null =
-        e.key === "ArrowRight" || e.key === "ArrowLeft"
-          ? tab === "scenes"
-            ? "movies"
-            : "scenes"
-          : e.key === "Home"
-            ? "scenes"
-            : e.key === "End"
-              ? "movies"
-              : null;
-      if (!next) return;
-      e.preventDefault();
-      onTab(next);
-      tabRefs.current[next]?.focus();
-    },
-    [tab, onTab],
-  );
 
   // Opening a title leaves the performer page for a detail: push, so Back
   // returns here. Replacing overwrote the performer entry, and Back jumped
@@ -809,55 +723,15 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
           </div>
 
           <div className="mt-8">
-            <div
-              role="tablist"
-              aria-label={`${d.title} catalogs`}
-              className="performer-tabs"
-              onKeyDown={onTablistKeyDown}
-            >
-              {TAB_IDS.map((t) => (
-                <button
-                  key={t}
-                  ref={(el) => {
-                    tabRefs.current[t] = el;
-                  }}
-                  type="button"
-                  role="tab"
-                  id={`performer-tab-${t}`}
-                  aria-selected={tab === t}
-                  aria-controls={`performer-panel-${t}`}
-                  tabIndex={tab === t ? 0 : -1}
-                  className="performer-tab"
-                  onClick={() => onTab(t)}
-                >
-                  {TAB_LABEL[t]}
-                </button>
-              ))}
-            </div>
-            <div
-              role="tabpanel"
-              id={`performer-panel-${tab}`}
-              aria-labelledby={`performer-tab-${tab}`}
-              className="mt-4"
-            >
-              {tab === "movies" && reference.provider === "stashdb" ? (
-                <StashDbMoviesNote
-                  performerName={d.title}
-                  linked={linked}
-                  onOpen={open}
-                />
-              ) : (
-                <Listing
-                  key={tab}
-                  provider={reference.provider}
-                  kind={tab === "movies" ? "movie" : "scene"}
-                  performerId={reference.id}
-                  performerName={d.title}
-                  page={page}
-                  perPage={perPage}
-                />
-              )}
-            </div>
+            <Listing
+              key={kind}
+              provider={reference.provider}
+              kind={kind}
+              performerId={reference.id}
+              performerName={d.title}
+              page={page}
+              perPage={perPage}
+            />
           </div>
         </>
       )}
