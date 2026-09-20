@@ -25,6 +25,7 @@ import {
   useParamsSetter,
   useSession,
 } from "./shared";
+import { isDeliverableMedia } from "../lib/contracts";
 import type {
   CatalogDetail,
   CatalogProvider,
@@ -326,6 +327,9 @@ function BulkRequest({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BulkResponse | null>(null);
   const noun = kind === "movie" ? "movie" : "scene";
+  // Whisparr has no metadata source for TPDB scenes, so the whole batch
+  // would be rejected; the tab stays browsable without the dead action.
+  if (!isDeliverableMedia({ provider, kind })) return null;
 
   const run = async () => {
     confirmRef.current?.close();

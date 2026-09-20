@@ -24,6 +24,25 @@ export type MediaReference = {
   id: string;
 };
 
+/** Whisparr routes exactly one metadata source per item type: TPDB for
+ * movies, StashDB for scenes. A TPDB scene has no lookup path upstream
+ * (`/api/v3/movie/lookup/tpdb` is the movie endpoint, and `term=stash:<id>`
+ * only matches StashDB ids), so it can be browsed but never acquired.
+ * Checked before a request is filed, not discovered by a worker an hour
+ * later. */
+export function isDeliverableMedia(ref: {
+  provider: CatalogProvider;
+  kind: CatalogKind;
+}): boolean {
+  return (
+    (ref.kind === "movie" && ref.provider === "tpdb") ||
+    (ref.kind === "scene" && ref.provider === "stashdb")
+  );
+}
+
+export const UNDELIVERABLE_REASON =
+  "Whisparr can acquire TPDB movies and StashDB scenes only — it has no metadata source for this identity.";
+
 export type ExternalLink = { url: string; label?: string };
 
 export type CatalogCredit = {

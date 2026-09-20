@@ -115,6 +115,19 @@ function reasonOf(e: unknown): string {
   return (raw.trim().slice(0, 2000) || "unknown error").slice(0, 2000);
 }
 
+/** Errors that prove this identity can never be delivered, whatever the
+ * network does next: a reference Whisparr has no metadata source for
+ * (`invalid_reference`), and a lookup that answered successfully without the
+ * identity in it (`identity_mismatch`). Both used to fall into the unknown
+ * bucket and loop as "uncertain" every 60s forever; they are a definitive
+ * failure with a reason the requester can read. */
+function permanentFailure(e: unknown): string | null {
+  if (!(e instanceof AppError)) return null;
+  return e.code === "invalid_reference" || e.code === "identity_mismatch"
+    ? reasonOf(e)
+    : null;
+}
+
 /** Fire-and-forget household notification. The pass never awaits the
  * notifier, so a slow or hanging webhook cannot delay delivery or fail the
  * work; the catch is belt-and-braces — notifyRequestEvent already never
@@ -396,8 +409,12 @@ async function dispatch(
   try {
     result = await deliverToWhisparr(config, record.media);
   } catch (e) {
+    const permanent = permanentFailure(e);
     const proven = e instanceof AppError ? e.upstreamStatus : undefined;
-    if (proven !== undefined && proven >= 400 && proven < 500) {
+    if (
+      permanent !== null ||
+      (proven !== undefined && proven >= 400 && proven < 500)
+    ) {
       // Definitive client-side rejection before any add was accepted. A
       // generic 400 is a failure, never "already exists".
       storage.completeSubmission(
@@ -488,6 +505,14 @@ async function reconcileUncertain(
   try {
     existing = await findWhisparrItem(config, record.media);
   } catch (e) {
+    // A permanently undeliverable identity is not an inconclusive check: let
+    // dispatch record it as the failure it is instead of rechecking forever.
+    // deliverToWhisparr rejects it before any network call, so this costs
+    // nothing upstream.
+    if (permanentFailure(e) !== null) {
+      await dispatch(record, config, claimToken, summary);
+      return;
+    }
     storage.recordAcquisitionObservation(
       record.id,
       { unavailable: true, reason: reasonOf(e) },

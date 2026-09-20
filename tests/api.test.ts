@@ -53,6 +53,11 @@ const TPDB_MOVIE4 = "2a2b3c4d-0000-0000-0000-000000000004";
 // would collide with the bulk's new pending intent and show up in the
 // owner's request list.
 const TPDB_MOVIE5 = "2a2b3c4d-0000-0000-0000-000000000005";
+// The bulk cap test's own movie: a filmography page that never runs dry
+// (see the TPDB_PERFORMER3 branch) files this id over and over, so it must
+// not collide with any other test's intents.
+const TPDB_MOVIE6 = "2a2b3c4d-0000-0000-0000-000000000006";
+const TPDB_PERFORMER3 = "2a2b3c4d-0000-0000-0000-00000000000d";
 const TPDB_PERFORMER = "2a2b3c4d-0000-0000-0000-00000000000f";
 const TPDB_PERFORMER2 = "2a2b3c4d-0000-0000-0000-00000000000e";
 const TPDB_STUDIO = "2a2b3c4d-0000-0000-0000-0000000000a1";
@@ -538,6 +543,15 @@ async function tpdbHandler(
       data: [tpdbMovieRow(TPDB_MOVIE5)],
       meta: { total: 1 },
       links: {},
+    });
+  // TPDB_PERFORMER3's movie filmography keeps a provider `next` link alive,
+  // so a bulk pass reaches the hard cap. (TPDB_PERFORMER's movie route stops
+  // after one page, which is what the single-page bulk test asserts.)
+  if (p === `/performers/${TPDB_PERFORMER3}/movies`)
+    return json(res, 200, {
+      data: [tpdbMovieRow(TPDB_MOVIE6)],
+      meta: { total: 1 },
+      links: { next: "https://fixture.test/next" },
     });
   if (p === `/movies/${TPDB_MOVIE}`)
     return json(res, 200, { data: tpdbMovieRow(TPDB_MOVIE) });
@@ -1876,6 +1890,18 @@ test("requests: lifecycle, autoApprove, privacy, roles, origin", async () => {
     "request_exists",
   );
 
+  // Whisparr has no metadata source for a TPDB scene: refused at the click,
+  // never filed as a request that can only fail in the worker.
+  const undeliverable = await call("POST", "/api/requests", {
+    cookie: member,
+    body: {
+      media: { provider: "tpdb", kind: "scene", id: TPDB_MOVIE2 },
+    },
+  });
+  const undeliverableError = await errorShape(undeliverable, 400);
+  assert.equal(undeliverable.status, 400);
+  assert.equal(undeliverableError.code, "invalid_reference");
+
   // member2 (no grant yet): own request stays pending.
   const m2 = member2; // live session from the identity test above — no fresh login (limiter).
   const m2Created = await call("POST", "/api/requests", {
@@ -2851,10 +2877,10 @@ test("bulk requests file one pending intent per provider item with honest counte
 
 test("bulk requests stop at the cap, report it, and re-run without duplicating", async () => {
   const body = {
-    performer: { provider: "tpdb", kind: "performer", id: TPDB_PERFORMER },
-    kind: "scene",
+    performer: { provider: "tpdb", kind: "performer", id: TPDB_PERFORMER3 },
+    kind: "movie",
   } as const;
-  const pendingScenes = async (): Promise<number> => {
+  const pendingTitles = async (): Promise<number> => {
     const listed = await call("GET", "/api/requests", { cookie: owner });
     const listedBody = (await listed.json()) as {
       requests: {
@@ -2865,8 +2891,8 @@ test("bulk requests stop at the cap, report it, and re-run without duplicating",
     return listedBody.requests.filter(
       (r) =>
         r.media.provider === "tpdb" &&
-        r.media.kind === "scene" &&
-        r.media.id === TPDB_MOVIE2 &&
+        r.media.kind === "movie" &&
+        r.media.id === TPDB_MOVIE6 &&
         r.decision === "pending",
     ).length;
   };
@@ -2884,7 +2910,7 @@ test("bulk requests stop at the cap, report it, and re-run without duplicating",
   assert.equal(firstCounters.requested, 1);
   assert.equal(firstCounters.skipped, 99);
   assert.deepEqual(firstCounters.failed, []);
-  assert.equal(await pendingScenes(), 1);
+  assert.equal(await pendingTitles(), 1);
 
   const second = await call("POST", "/api/requests/bulk", {
     cookie: member,
@@ -2896,7 +2922,7 @@ test("bulk requests stop at the cap, report it, and re-run without duplicating",
   assert.equal(secondCounters.requested, 0);
   assert.equal(secondCounters.skipped, 100);
   assert.deepEqual(secondCounters.failed, []);
-  assert.equal(await pendingScenes(), 1);
+  assert.equal(await pendingTitles(), 1);
 });
 
 test("the autoApprove grant approves bulk requests and attaches the shared acquisition like the single path", async () => {

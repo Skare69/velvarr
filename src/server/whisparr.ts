@@ -6,6 +6,7 @@
 // deletes) is out of scope and never issued.
 
 import { AppError, requestJson } from "./http.ts";
+import { isDeliverableMedia, UNDELIVERABLE_REASON } from "../lib/contracts.ts";
 import type {
   AcquisitionProgress,
   IntegrationConfig,
@@ -157,15 +158,10 @@ function requireMediaReference(ref: MediaReference): {
   kind: MediaKind;
   id: string;
 } {
-  const kind = ref?.kind;
-  const provider = ref?.provider;
-  const valid =
-    (kind === "movie" && provider === "tpdb") ||
-    (kind === "scene" && provider === "stashdb");
-  if (!valid) {
-    throw new AppError(400, "invalid_reference", "media reference is invalid");
+  if (!ref || !isDeliverableMedia(ref)) {
+    throw new AppError(400, "invalid_reference", UNDELIVERABLE_REASON);
   }
-  return { kind, id: canonicalProviderId(ref.id) };
+  return { kind: ref.kind, id: canonicalProviderId(ref.id) };
 }
 
 // --- upstream DTOs ---

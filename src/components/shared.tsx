@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { useRouter } from "next/navigation";
+import { isDeliverableMedia } from "../lib/contracts.ts";
 import type {
   Account,
   AcquisitionProgress,
@@ -600,11 +601,9 @@ function RequestableCard({
   // A request intent does not depend on Jellyfin, so an outage or a denied
   // verdict must not hide the button the detail page still offers: the note
   // carries the truth instead.
+  const deliverable = isDeliverableMedia(media);
   const requestable =
-    status !== null &&
-    !requested &&
-    !available &&
-    (media.kind === "movie" || media.kind === "scene");
+    status !== null && !requested && !available && deliverable;
   const label =
     busy === "requesting"
       ? "Requesting…"
@@ -623,15 +622,16 @@ function RequestableCard({
                     ? "Approved"
                     : "Requested"
                 : "Request";
-  const note =
-    error ??
-    (availability?.outcome === "unavailable"
-      ? "Library status unavailable."
-      : availability?.outcome === "ambiguous"
-        ? "Library match needs review."
-        : availability?.outcome === "denied"
-          ? "No playback access."
-          : null);
+  const note = !deliverable
+    ? "Browse only — Whisparr cannot acquire TPDB scenes."
+    : (error ??
+      (availability?.outcome === "unavailable"
+        ? "Library status unavailable."
+        : availability?.outcome === "ambiguous"
+          ? "Library match needs review."
+          : availability?.outcome === "denied"
+            ? "No playback access."
+            : null));
 
   return (
     <div

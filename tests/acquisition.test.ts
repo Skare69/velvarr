@@ -445,6 +445,32 @@ test("a rejected add is failed once and never blind-retried", async () => {
   assert.equal(probe(id).state, "failed");
 });
 
+test("an identity the lookup cannot resolve fails with a reason instead of looping as uncertain", async () => {
+  const owner = boot();
+  approve(owner.id, MOVIE_A);
+  const id = workId(MOVIE_A);
+
+  // A successful lookup that does not contain the identity is proof of
+  // absence, not an inconclusive check: Whisparr has no metadata source for
+  // it (a TPDB scene in production), so no number of retries can change it.
+  knobs.lookupOk = false;
+  const first = await acquisition.runDueWork();
+  assert.equal(first.failed, 1);
+  assert.equal(first.uncertain, 0);
+  assert.equal(postCount(), 0, "an unresolvable identity is never POSTed");
+  const failed = probe(id);
+  assert.equal(failed.state, "failed");
+  assert.ok(failed.lastError);
+
+  // A later pass rechecks by identity and keeps saying so, rather than
+  // drifting back to uncertain or blind-retrying the add.
+  const second = await acquisition.runDueWork(later());
+  assert.equal(second.uncertain, 0);
+  assert.equal(second.absent, 1);
+  assert.equal(postCount(), 0);
+  assert.equal(probe(id).state, "failed");
+});
+
 test("observations track monitoring, downloading, and imported", async () => {
   const owner = boot();
   approve(owner.id, MOVIE_A);

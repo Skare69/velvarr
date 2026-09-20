@@ -19,6 +19,10 @@ import type {
   WhisparrPathMapping,
 } from "../../../lib/contracts.ts";
 import {
+  isDeliverableMedia,
+  UNDELIVERABLE_REASON,
+} from "../../../lib/contracts.ts";
+import {
   approveRemovalRequest,
   bootstrap,
   cancelRemovalRequest,
@@ -1580,7 +1584,17 @@ function mediaFromBody(body: Record<string, unknown>): MediaReference {
   ) {
     throw new AppError(400, "invalid_field", "Invalid media reference.");
   }
-  return { provider: m.provider, kind: m.kind, id: m.id.toLowerCase() };
+  const ref: MediaReference = {
+    provider: m.provider,
+    kind: m.kind,
+    id: m.id.toLowerCase(),
+  };
+  // Whisparr has no metadata source for a TPDB scene, so a request for one
+  // could only ever fail in the worker. Refuse it at the click instead.
+  if (!isDeliverableMedia(ref)) {
+    throw new AppError(400, "invalid_reference", UNDELIVERABLE_REASON);
+  }
+  return ref;
 }
 
 // Creates one user's request intent from a server-validated MediaReference.
@@ -1746,6 +1760,11 @@ async function bulkRequestRoute(request: Request): Promise<Response> {
   }
   if (performer.provider === "stashdb" && kind === "movie") {
     throw new AppError(400, "invalid_query", "StashDB has no movie records.");
+  }
+  // Same rule as a single request: filing a hundred requests Whisparr can
+  // never resolve is the same mistake, a hundred times.
+  if (!isDeliverableMedia({ provider: performer.provider, kind })) {
+    throw new AppError(400, "invalid_reference", UNDELIVERABLE_REASON);
   }
   // ponytail: one sequential pass, hard-capped at BULK_REQUEST_CAP titles —
   // a prolific performer needs re-runs to continue the backlog. Re-running

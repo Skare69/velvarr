@@ -30,6 +30,7 @@ import {
 } from "./shared";
 import { levelLabel } from "./removals";
 import { PerformerView } from "./performer";
+import { isDeliverableMedia } from "../lib/contracts";
 import type {
   AcquisitionState,
   CatalogDetail,
@@ -1086,7 +1087,9 @@ export function acquisitionText(a: {
     case "imported":
       return "Imported — in your library";
     case "uncertain":
-      return "Being reconciled — the last check was inconclusive";
+      return a.lastError
+        ? `Being reconciled — last check: ${a.lastError}`
+        : "Being reconciled — the last check was inconclusive";
     case "failed":
       return a.lastError ? `Failed — ${a.lastError}` : "Failed";
     case "blocked":
@@ -1288,7 +1291,7 @@ function RemovalAction({
       {!grant ? (
         <p className="mt-1 text-sm text-muted">
           Removal is not available for your account — an administrator has not
-          granted it. You can still request the title instead.
+          granted it.
         </p>
       ) : shown ? (
         <div className="mt-1 flex flex-wrap items-center gap-2">
@@ -1426,6 +1429,11 @@ function MediaActions({
           </span>
           {autoApproved && <span className="chip">Auto-approved</span>}
         </div>
+      ) : !isDeliverableMedia(target) ? (
+        <p className="mt-1 text-sm text-muted">
+          Browse only — Whisparr resolves TPDB movies and StashDB scenes, and
+          has no metadata source for a TPDB scene.
+        </p>
       ) : (
         <div className="mt-1 flex flex-wrap items-center gap-3">
           <button
