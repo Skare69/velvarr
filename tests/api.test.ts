@@ -59,6 +59,11 @@ const TPDB_MOVIE8 = "2a2b3c4d-0000-0000-0000-000000000008";
 const TPDB_PERFORMER3 = "2a2b3c4d-0000-0000-0000-00000000000d";
 const TPDB_PERFORMER = "2a2b3c4d-0000-0000-0000-00000000000f";
 const TPDB_PERFORMER2 = "2a2b3c4d-0000-0000-0000-00000000000e";
+// A published cross-provider pair: the TPDB record links to the StashDB one,
+// so following either follows both. Fresh ids — every other performer follow
+// in this file must stay single-provider.
+const TPDB_PERFORMER4 = "2a2b3c4d-0000-0000-0000-00000000000c";
+const STASH_PERFORMER2 = "4c4d5e6f-0000-0000-0000-0000000000d5";
 const TPDB_STUDIO = "2a2b3c4d-0000-0000-0000-0000000000a1";
 const STASH_STUDIO = "3b3c4d5e-0000-0000-0000-0000000000b2";
 const STASH_SCENE = "4c4d5e6f-0000-0000-0000-0000000000c3";
@@ -526,6 +531,21 @@ async function tpdbHandler(
       links: {},
     });
   }
+  // The only performer record with a published counterpart URL; TPDB carries
+  // these in extras.links, keyed by site name.
+  if (p === `/performers/${TPDB_PERFORMER4}`) {
+    return json(res, 200, {
+      data: {
+        id: TPDB_PERFORMER4,
+        name: "Linked Fixture Performer",
+        extras: {
+          links: {
+            stashdb: `https://stashdb.org/performers/${STASH_PERFORMER2}`,
+          },
+        },
+      },
+    });
+  }
   if (p === "/sites") {
     return json(res, 200, {
       data: [tpdbSiteRow(TPDB_STUDIO)],
@@ -639,6 +659,26 @@ async function stashdbHandler(
           ],
         },
       },
+    });
+  }
+  // Only the counterpart of the linked TPDB record resolves; every other
+  // StashDB performer detail stays absent (data null), as before.
+  if (query.includes("findPerformer")) {
+    const wanted = (body.variables as { id?: unknown } | undefined)?.id;
+    return json(res, 200, {
+      data:
+        wanted === STASH_PERFORMER2
+          ? {
+              findPerformer: {
+                id: STASH_PERFORMER2,
+                name: "Linked Fixture Performer",
+                deleted: false,
+                aliases: [],
+                urls: [],
+                images: [],
+              },
+            }
+          : null,
     });
   }
   if (query.includes("searchTag")) {
@@ -2577,6 +2617,7 @@ interface FollowShape {
   name: string;
   imageUrl: string | null;
   createdAt: number;
+  linked: { provider: string; kind: string; id: string } | null;
 }
 
 interface BulkCounters {
@@ -2756,6 +2797,54 @@ test("unfollowing removes the follow once and then reports follow_not_found", as
     await call("DELETE", "/api/follows/tpdb/not-a-uuid", { cookie: member2 }),
   );
   assert.equal(malformed.code, "invalid_reference");
+});
+
+test("one follow covers both metadata sources, lists the performer once, and unfollows as one", async () => {
+  const created = await call("POST", "/api/follows", {
+    cookie: member2,
+    body: {
+      performer: { provider: "tpdb", kind: "performer", id: TPDB_PERFORMER4 },
+      name: "Linked Fixture Performer",
+    },
+  });
+  assert.equal(created.status, 201);
+  const follow = ((await created.json()) as { follow: FollowShape }).follow;
+  // The counterpart comes from the provider's own published URL, resolved on
+  // the way in; the response says so.
+  assert.deepEqual(follow.linked, {
+    provider: "stashdb",
+    kind: "performer",
+    id: STASH_PERFORMER2,
+  });
+
+  // One person, one entry: the StashDB row exists but never doubles the list.
+  const listed = async () => {
+    const res = await call("GET", "/api/follows", { cookie: member2 });
+    return ((await res.json()) as { follows: FollowShape[] }).follows;
+  };
+  const after = await listed();
+  assert.equal(
+    after.filter((f) => f.reference.id === TPDB_PERFORMER4).length,
+    1,
+  );
+  assert.equal(
+    after.some((f) => f.reference.id === STASH_PERFORMER2),
+    false,
+  );
+
+  // Unfollowing from the StashDB side proves that row was really created,
+  // and takes the pair with it.
+  const dropped = await call(
+    "DELETE",
+    `/api/follows/stashdb/${STASH_PERFORMER2}`,
+    { cookie: member2 },
+  );
+  assert.equal(dropped.status, 204);
+  const remaining = await listed();
+  assert.equal(
+    remaining.some((f) => f.reference.id === TPDB_PERFORMER4),
+    false,
+  );
 });
 
 test("catalog tags are authenticated, provider-scoped, and refuse short terms and unknown providers", async () => {

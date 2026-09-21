@@ -37,7 +37,6 @@ import {
   intOr,
   ItemImage,
   messageOf,
-  providerLabel,
   SessionCtx,
   useApiGet,
   useParamsSetter,
@@ -1133,11 +1132,11 @@ function FollowingView() {
                     className="absolute inset-0 h-full w-full object-cover"
                   />
                 </div>
+                {/* No provider chip: a follow covers both metadata sources,
+                    so naming one here would be a half-truth. The performer's
+                    own page still says which source it is reading. */}
                 <div className="media-meta">
                   <div className="media-title">{f.name}</div>
-                  <span className="chip">
-                    {providerLabel(f.reference.provider)}
-                  </span>
                 </div>
               </button>
               <button

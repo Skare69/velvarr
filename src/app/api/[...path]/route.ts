@@ -50,6 +50,7 @@ import {
   listRemovalRequests,
   revokeSession,
   saveConfig,
+  linkFollows,
   unfollowPerformer,
   updateAccount,
   upsertCatalogRecord,
@@ -1715,26 +1716,75 @@ async function listFollowsRoute(ctx: AuthContext): Promise<Response> {
   return json({ follows: listFollows(ctx.account.id) });
 }
 
+/** The same performer on the other provider, taken only from the link the
+ * providers themselves published (crossProviderLink never name-matches), with
+ * its own snapshot read from that provider. Null when there is no link, or
+ * when the lookup fails: a metadata outage must not sink the follow the user
+ * asked for. */
+async function performerCounterpart(reference: CatalogReference): Promise<{
+  reference: CatalogReference;
+  name: string;
+  imageUrl: string | null;
+} | null> {
+  try {
+    const detail = await getCatalogDetail(reference);
+    const linked = detail ? crossProviderLink(detail).linked : undefined;
+    if (!linked) return null;
+    const counterpart = await getCatalogDetail(linked);
+    if (!counterpart) return null;
+    return {
+      reference: linked,
+      name: counterpart.title,
+      imageUrl: followImage(counterpart.imageUrl),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** An image URL that fails the provider-artwork check degrades to null
+ * rather than sinking the whole follow: the snapshot is cosmetic. */
+function followImage(raw: unknown): string | null {
+  return typeof raw === "string" && raw !== "" && isProviderImageUrl(raw).ok
+    ? raw
+    : null;
+}
+
 async function createFollowRoute(
   request: Request,
   ctx: AuthContext,
 ): Promise<Response> {
   const body = await readJson(request);
-  // An image URL that fails the provider-artwork check degrades to null
-  // rather than sinking the whole follow: the snapshot is cosmetic.
-  const rawImage = body.imageUrl;
-  const imageUrl =
-    typeof rawImage === "string" &&
-    rawImage !== "" &&
-    isProviderImageUrl(rawImage).ok
-      ? rawImage
-      : null;
+  const reference = performerFromBody(body);
+  // A performer is one person on both metadata sources, so one Follow press
+  // follows both: the pair then answers as one identity everywhere.
+  const counterpart = await performerCounterpart(reference);
   const follow = followPerformer(
     ctx.account.id,
-    performerFromBody(body),
+    reference,
     fieldText(body, "name", 200),
-    imageUrl,
+    followImage(body.imageUrl),
+    counterpart?.reference ?? null,
   );
+  if (counterpart) {
+    try {
+      // The counterpart row exists so the per-provider follow shelves read
+      // both metadata sources; only the row above names the pair, and the
+      // list folds this one away.
+      followPerformer(
+        ctx.account.id,
+        counterpart.reference,
+        counterpart.name,
+        counterpart.imageUrl,
+      );
+    } catch (e) {
+      // Already followed on its own: nothing to insert, only the pair to
+      // record. Any other failure leaves the asked-for follow standing.
+      if (e instanceof AppError && e.status === 409) {
+        linkFollows(ctx.account.id, reference, counterpart.reference);
+      }
+    }
+  }
   return json({ follow }, 201);
 }
 

@@ -391,9 +391,11 @@ function BulkRequest({
 /* ---------- Follow / unfollow the performer on this page ---------- */
 
 /** There is deliberately no per-performer status endpoint: the whole follow
- * list is read and matched here. State only moves after the server confirms
- * — never an optimistic flip. If the list cannot be read, the button says so
- * and pressing it retries; it never guesses "not following". */
+ * list is read and matched here. A follow covers both providers, so this page
+ * counts as followed when either side of the stored pair names it. State only
+ * moves after the server confirms — never an optimistic flip. If the list
+ * cannot be read, the button says so and pressing it retries; it never
+ * guesses "not following". */
 function FollowStar({
   provider,
   id,
@@ -420,7 +422,9 @@ function FollowStar({
         if (!live) return;
         setStatus(
           d.follows.some(
-            (f) => f.reference.provider === provider && f.reference.id === id,
+            (f) =>
+              (f.reference.provider === provider && f.reference.id === id) ||
+              (f.linked?.provider === provider && f.linked.id === id),
           )
             ? "following"
             : "notFollowing",

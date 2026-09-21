@@ -2579,3 +2579,70 @@ test("listFollowsByProvider is provider-scoped, newest-first, and honours its li
     [FOLLOW_TPDB_C.id, FOLLOW_TPDB_B.id, FOLLOW_STASH_A.id, FOLLOW_TPDB_A.id],
   );
 });
+
+test("a linked pair is one entry in the list, both rows for the shelves, and one unfollow from either side", () => {
+  freshDir();
+  const grant = storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  // What the route does for one Follow press: the asked-for performer names
+  // her published counterpart, and the counterpart is stored plainly.
+  const primary = storage.followPerformer(
+    grant.account.id,
+    FOLLOW_TPDB_A,
+    "Fixture Performer",
+    null,
+    FOLLOW_STASH_A,
+  );
+  storage.followPerformer(
+    grant.account.id,
+    FOLLOW_STASH_A,
+    "Fixture Performer",
+    null,
+  );
+
+  // One person, one tile: the row the user actually followed survives.
+  assert.deepEqual(storage.listFollows(grant.account.id), [primary]);
+  // Both rows still exist, or the per-provider follow shelves would only
+  // ever read one metadata source.
+  assert.deepEqual(
+    storage
+      .listFollowsByProvider(grant.account.id, "stashdb", 10)
+      .map((f) => f.reference.id),
+    [FOLLOW_STASH_A.id],
+  );
+  assert.equal(
+    storage.isFollowing(grant.account.id, "stashdb", FOLLOW_STASH_A.id),
+    true,
+  );
+
+  // Unfollowing the counterpart's side drops the pair, not half of it.
+  storage.unfollowPerformer(grant.account.id, "stashdb", FOLLOW_STASH_A.id);
+  assert.deepEqual(storage.listFollows(grant.account.id), []);
+  assert.equal(
+    storage.isFollowing(grant.account.id, "tpdb", FOLLOW_TPDB_A.id),
+    false,
+  );
+});
+
+test("linkFollows folds two separately-followed rows into one identity and never creates a follow", () => {
+  freshDir();
+  const grant = storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  // The upgrade case: both sides were followed before pairing existed, so
+  // neither row carries a link and the list shows the same person twice.
+  storage.followPerformer(grant.account.id, FOLLOW_TPDB_A, "Fixture", null);
+  storage.followPerformer(grant.account.id, FOLLOW_STASH_A, "Fixture", null);
+  assert.equal(storage.listFollows(grant.account.id).length, 2);
+
+  storage.linkFollows(grant.account.id, FOLLOW_TPDB_A, FOLLOW_STASH_A);
+  assert.deepEqual(
+    storage.listFollows(grant.account.id).map((f) => f.reference.id),
+    [FOLLOW_TPDB_A.id],
+  );
+
+  // Linking an unfollowed performer writes nothing: this is not a follow.
+  storage.linkFollows(grant.account.id, FOLLOW_TPDB_B, FOLLOW_TPDB_C);
+  assert.equal(
+    storage.isFollowing(grant.account.id, "tpdb", FOLLOW_TPDB_B.id),
+    false,
+  );
+  assert.equal(storage.listFollows(grant.account.id).length, 1);
+});

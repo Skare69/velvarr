@@ -42,7 +42,7 @@ import { REMOVAL_LEVELS, removalLevelRank } from "../lib/contracts.ts";
 
 // Schema identity: application_id spells 'VLVR', user_version is the schema version.
 const APP_ID = 0x564c5652;
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 // ponytail: fixed 7-day session TTL; make it an env knob only if an operator asks.
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const BUSY_TIMEOUT_MS = 5000;
@@ -115,6 +115,8 @@ type PerformerFollowRow = {
   name: string;
   image_url: string | null;
   created_at: number;
+  linked_provider: string | null;
+  linked_external_id: string | null;
 };
 type AcquisitionRow = {
   id: string;
@@ -248,7 +250,10 @@ type Statements = {
   getPerformerFollow: StatementSync;
   listPerformerFollows: StatementSync;
   listPerformerFollowsByProvider: StatementSync;
+  getPerformerFollowByRef: StatementSync;
+  updatePerformerFollowLink: StatementSync;
   deletePerformerFollow: StatementSync;
+  deletePerformerFollowsLinkedTo: StatementSync;
   isFollowingPerformer: StatementSync;
 };
 
@@ -488,6 +493,14 @@ const MIGRATIONS: Record<number, string> = {
     ALTER TABLE acquisitions ADD COLUMN whisparr_monitored INTEGER;
     ALTER TABLE acquisitions ADD COLUMN whisparr_progress INTEGER;
     ALTER TABLE acquisitions ADD COLUMN whisparr_timeleft TEXT;
+  `,
+  8: `
+    -- A followed performer is one identity across both metadata sources; the
+    -- pair is stored, not re-derived, so unfollowing never needs a provider
+    -- read. Nullable: a performer with no published counterpart link, and
+    -- every row followed before this migration, has none.
+    ALTER TABLE performer_follows ADD COLUMN linked_provider TEXT;
+    ALTER TABLE performer_follows ADD COLUMN linked_external_id TEXT;
   `,
 };
 
@@ -810,7 +823,7 @@ function S(): Statements {
         "UPDATE removal_executions SET claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE claim_token IS NOT NULL",
       ),
       insertPerformerFollow: d.prepare(
-        "INSERT INTO performer_follows (id, account_id, provider, external_id, name, image_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO performer_follows (id, account_id, provider, external_id, name, image_url, created_at, linked_provider, linked_external_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ),
       getPerformerFollow: d.prepare(
         "SELECT * FROM performer_follows WHERE id = ?",
@@ -821,8 +834,17 @@ function S(): Statements {
       listPerformerFollowsByProvider: d.prepare(
         "SELECT * FROM performer_follows WHERE account_id = ? AND provider = ? ORDER BY created_at DESC, id DESC LIMIT ?",
       ),
+      getPerformerFollowByRef: d.prepare(
+        "SELECT * FROM performer_follows WHERE account_id = ? AND provider = ? AND external_id = ?",
+      ),
+      updatePerformerFollowLink: d.prepare(
+        "UPDATE performer_follows SET linked_provider = ?, linked_external_id = ? WHERE account_id = ? AND provider = ? AND external_id = ?",
+      ),
       deletePerformerFollow: d.prepare(
         "DELETE FROM performer_follows WHERE account_id = ? AND provider = ? AND external_id = ?",
+      ),
+      deletePerformerFollowsLinkedTo: d.prepare(
+        "DELETE FROM performer_follows WHERE account_id = ? AND linked_provider = ? AND linked_external_id = ?",
       ),
       isFollowingPerformer: d.prepare(
         "SELECT 1 FROM performer_follows WHERE account_id = ? AND provider = ? AND external_id = ?",
@@ -1452,6 +1474,14 @@ function rowToPerformerFollow(row: PerformerFollowRow): PerformerFollow {
     name: row.name,
     imageUrl: row.image_url,
     createdAt: row.created_at,
+    linked:
+      row.linked_provider === null || row.linked_external_id === null
+        ? null
+        : {
+            provider: row.linked_provider as CatalogProvider,
+            kind: "performer",
+            id: row.linked_external_id,
+          },
   };
 }
 
@@ -1633,12 +1663,15 @@ export function createRequest(
 // --- performer follows ---
 
 /** Records one account's performer follow. Admission is read from the current
- * stored account, never from a caller-supplied stale Account. */
+ * stored account, never from a caller-supplied stale Account. `linked` is the
+ * same performer on the other provider, resolved by the caller from published
+ * provider URLs; it is stored, never guessed here. */
 export function followPerformer(
   accountId: string,
   reference: CatalogReference,
   name: string,
   imageUrl: string | null,
+  linked: CatalogReference | null = null,
 ): PerformerFollow {
   if (!validCatalogRef(reference, ["performer"])) {
     throw new AppError(
@@ -1671,6 +1704,8 @@ export function followPerformer(
         trimmed,
         imageUrl ?? null,
         Date.now(),
+        linked?.provider ?? null,
+        linked?.id ?? null,
       );
     } catch (e) {
       if (
@@ -1694,10 +1729,41 @@ export function followPerformer(
 }
 
 /** Follows are personal: own rows only, newest first. There is deliberately
- * no elevated sees-everything variant here, unlike listRequests. */
+ * no elevated sees-everything variant here, unlike listRequests.
+ *
+ * A linked pair is one performer, so it is one entry. The link is written on
+ * one side only — the row the user actually followed names its counterpart —
+ * so the counterpart is the row to fold away, with no dependence on insert
+ * timestamps that can tie. Rows followed before pairing existed name nobody
+ * and stand alone. */
 export function listFollows(accountId: string): PerformerFollow[] {
-  return (S().listPerformerFollows.all(accountId) as PerformerFollowRow[]).map(
-    rowToPerformerFollow,
+  const follows = (
+    S().listPerformerFollows.all(accountId) as PerformerFollowRow[]
+  ).map(rowToPerformerFollow);
+  const key = (r: CatalogReference) => `${r.provider}:${r.id}`;
+  const counterparts = new Set<string>();
+  for (const f of follows) if (f.linked) counterparts.add(key(f.linked));
+  return follows.filter(
+    (f) => f.linked !== null || !counterparts.has(key(f.reference)),
+  );
+}
+
+/** Records an already-followed counterpart as this follow's other half, so
+ * the two rows read as one identity. Used when the counterpart was followed
+ * on its own before the pair was known. A missing row is a no-op: this never
+ * creates a follow. */
+export function linkFollows(
+  accountId: string,
+  follow: CatalogReference,
+  counterpart: CatalogReference,
+): void {
+  open();
+  S().updatePerformerFollowLink.run(
+    counterpart.provider,
+    counterpart.id,
+    accountId,
+    follow.provider,
+    follow.id,
   );
 }
 
@@ -1723,12 +1789,36 @@ export function unfollowPerformer(
   provider: string,
   externalId: string,
 ): void {
-  // The account is part of the WHERE: one account can never delete another's
-  // follow, and a missing or foreign row is indistinguishable 404.
-  const res = S().deletePerformerFollow.run(accountId, provider, externalId);
-  if (res.changes === 0) {
-    throw new AppError(404, "follow_not_found", "follow not found");
-  }
+  const d = open();
+  inTransaction(d, () => {
+    // The account is part of every WHERE: one account can never delete
+    // another's follow, and a missing or foreign row is indistinguishable 404.
+    const row = S().getPerformerFollowByRef.get(
+      accountId,
+      provider,
+      externalId,
+    ) as PerformerFollowRow | undefined;
+    // node:sqlite reports `changes` as number | bigint; only "did anything
+    // go" matters here.
+    const drop = (p: string, ext: string) =>
+      Number(S().deletePerformerFollow.run(accountId, p, ext).changes) > 0;
+    let dropped = drop(provider, externalId);
+    // The pair is one identity: unfollowing either side drops both, from
+    // whichever side carries the link. A performer followed only through her
+    // counterpart (the second insert failed) unfollows from her own page too,
+    // which is why the reverse direction counts as a delete.
+    if (row?.linked_provider != null && row.linked_external_id != null) {
+      dropped = drop(row.linked_provider, row.linked_external_id) || dropped;
+    }
+    const reverse = S().deletePerformerFollowsLinkedTo.run(
+      accountId,
+      provider,
+      externalId,
+    ).changes;
+    if (!dropped && Number(reverse) === 0) {
+      throw new AppError(404, "follow_not_found", "follow not found");
+    }
+  });
 }
 
 export function isFollowing(

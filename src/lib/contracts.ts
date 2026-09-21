@@ -94,6 +94,11 @@ export type PerformerFollow = {
   name: string; // snapshot taken at follow time
   imageUrl: string | null; // snapshot taken at follow time
   createdAt: number; // unix ms
+  /** The same performer's row on the other provider, when the providers
+   * published an explicit link between them. Following one follows both, so
+   * the pair is one identity: either side answers "are you following her",
+   * and unfollowing either drops both. */
+  linked: CatalogReference | null;
 };
 
 export type RequestDecision = "pending" | "approved" | "declined" | "cancelled";
