@@ -38,6 +38,7 @@ import type {
   SessionGrant,
 } from "../lib/contracts.ts";
 import { AppError } from "./http.ts";
+import { REMOVAL_LEVELS, removalLevelRank } from "../lib/contracts.ts";
 
 // Schema identity: application_id spells 'VLVR', user_version is the schema version.
 const APP_ID = 0x564c5652;
@@ -68,22 +69,6 @@ const SCHEDULABLE_STATES = [
   "downloading",
   "failed",
 ] as const;
-const REMOVAL_LEVELS: readonly RemovalLevel[] = [
-  "unmonitor",
-  "drop",
-  "exclude",
-  "delete_files",
-  "delete_jellyfin_item",
-];
-// Escalation ladder order: a later approval may raise an unstarted shared
-// execution to a level some approver explicitly chose, never lower it.
-const REMOVAL_LEVEL_RANK: Record<RemovalLevel, number> = {
-  unmonitor: 0,
-  drop: 1,
-  exclude: 2,
-  delete_files: 3,
-  delete_jellyfin_item: 4,
-};
 const REMOVAL_SCHEDULABLE_STATES = ["unsent", "uncertain"] as const;
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1915,6 +1900,12 @@ export function getAcquisitionByReference(
   return row ? rowToAcquisition(row) : null;
 }
 
+/** One acquisition by id, or null. */
+export function getAcquisition(id: string): AcquisitionRecord | null {
+  const row = S().getAcquisition.get(id) as AcquisitionRow | undefined;
+  return row ? rowToAcquisition(row) : null;
+}
+
 /** Schedulable work: due, unclaimed acquisitions ordered oldest-due first. */
 export function listDueAcquisitions(
   now: number,
@@ -2406,7 +2397,7 @@ export function approveRemovalRequest(
     if (
       exec.state === "unsent" &&
       exec.claim_token === null &&
-      REMOVAL_LEVEL_RANK[exec.level as RemovalLevel] < REMOVAL_LEVEL_RANK[level]
+      removalLevelRank(exec.level as RemovalLevel) < removalLevelRank(level)
     ) {
       S().escalateRemovalLevel.run(level, now, exec.id);
     }
@@ -2497,6 +2488,13 @@ export function getRemovalExecutionByReference(
     media.kind,
     media.id,
   ) as RemovalExecutionRow | undefined;
+  return row ? rowToRemovalExecution(row) : null;
+}
+
+/** One removal execution by id, or null. */
+export function getRemovalExecution(id: string): RemovalExecution | null {
+  const row = S().getRemovalExecution.get(id) as
+    RemovalExecutionRow | undefined;
   return row ? rowToRemovalExecution(row) : null;
 }
 

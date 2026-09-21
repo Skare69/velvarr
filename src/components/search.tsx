@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import type {
   CatalogDetail,
@@ -9,14 +9,13 @@ import type {
   CatalogReference,
 } from "../lib/contracts.ts";
 import {
-  api,
   ErrorPanel,
   GridSkeleton,
-  messageOf,
   MovieCard,
   PerformerCard,
   SceneCard,
   providerLabel,
+  useApiGet,
   useParamsSetter,
 } from "./shared.tsx";
 import "./views.css";
@@ -162,39 +161,16 @@ export function SearchView() {
   const setP = useParamsSetter();
   const q = (params.get("q") ?? "").trim();
   const ready = q.length >= 2;
-  const [data, setData] = useState<SearchPayload | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [reload, setReload] = useState(0);
-
   // Search fires on an explicit URL change only — never on keystrokes.
-  useEffect(() => {
-    if (!ready) {
-      setData(null);
-      setError(null);
-      setLoading(false);
-      return;
-    }
-    let live = true;
-    setError(null);
-    setLoading(true);
-    api<SearchPayload>(`/api/search?q=${encodeURIComponent(q)}`)
-      .then((d) => {
-        if (live) {
-          setData(d);
-          setLoading(false);
-        }
-      })
-      .catch((e) => {
-        if (live) {
-          setError(messageOf(e));
-          setLoading(false);
-        }
-      });
-    return () => {
-      live = false; // stale in-flight responses are ignored
-    };
-  }, [q, ready, reload]);
+  const {
+    data,
+    error,
+    loading,
+    reload: retry,
+  } = useApiGet<SearchPayload>(
+    ready ? `/api/search?q=${encodeURIComponent(q)}` : null,
+    [q, ready],
+  );
 
   const open = useCallback(
     (r: CatalogReference) => {
@@ -269,8 +245,6 @@ export function SearchView() {
     },
     [setP],
   );
-
-  const retry = useCallback(() => setReload((n) => n + 1), []);
 
   const focusGlobalSearch = useCallback(() => {
     document.getElementById("global-search")?.focus();

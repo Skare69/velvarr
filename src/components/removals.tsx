@@ -1,22 +1,28 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type {
-  MediaReference,
   ProviderStatus,
-  RemovalDecision,
   RemovalLevel,
   RemovalRequest,
 } from "../lib/contracts";
+import { isDestructiveLevel, requiresUserToken } from "../lib/contracts";
 import {
   api,
   ApiError,
   detailHref,
   ErrorPanel,
   messageOf,
+  useApiGet,
+  useCatalogSummary,
   useSession,
 } from "./shared";
 import "./views.css";
+import {
+  GROUP_LABEL,
+  GROUP_ORDER,
+  REMOVAL_DECISION_ERRORS,
+} from "../lib/decisions";
 
 /* Facts displayed per row, kept visibly separate (the domain model):
  *  1. Removal request — one user's durable intent (this list).
@@ -32,56 +38,37 @@ const DATE_FMT = new Intl.DateTimeFormat(undefined, {
   timeStyle: "short",
 });
 
-const GROUP_ORDER: RemovalDecision[] = [
-  "pending",
-  "approved",
-  "declined",
-  "cancelled",
-];
-
-const GROUP_LABEL: Record<RemovalDecision, string> = {
-  pending: "Pending",
-  approved: "Approved",
-  declined: "Declined",
-  cancelled: "Cancelled",
-};
-
 /** The five-rung ladder, least → most destructive. The UI never preselects a
- * rung; the approver's explicit pick is the only source of the level. */
+ * rung; the approver's explicit pick is the only source of the level.
+ * Irreversibility is not repeated here — isDestructiveLevel owns that fact. */
 const LEVELS: readonly {
   id: RemovalLevel;
   label: string;
-  destructive: boolean;
   hint: string;
 }[] = [
   {
     id: "unmonitor",
     label: "Unmonitor",
-    destructive: false,
     hint: "Whisparr stops watching for this item. Files and the Jellyfin item stay.",
   },
   {
     id: "drop",
     label: "Drop from Whisparr",
-    destructive: false,
     hint: "Removed from Whisparr. Files stay on disk and in Jellyfin.",
   },
   {
     id: "exclude",
     label: "Drop + import exclusion",
-    destructive: false,
     hint: "Removed from Whisparr and blocked from being re-imported. Files stay on disk.",
   },
   {
     id: "delete_files",
     label: "Delete files from disk",
-    destructive: true,
     hint: "Irreversible — permanently deletes the files from disk. There is no undo.",
   },
   {
     id: "delete_jellyfin_item",
     label: "Delete the Jellyfin item",
-    destructive: true,
     hint: "Irreversible — deletes the item from the Jellyfin library and withdraws the watch link immediately. There is no undo.",
   },
 ];
@@ -124,18 +111,21 @@ function rungGate(
   impact: RemovalImpact | null,
   impactError: string | null,
 ): string | null {
-  if (level !== "delete_files" && level !== "delete_jellyfin_item") return null;
+  if (!isDestructiveLevel(level)) return null;
   if (impactError !== null || impact === null)
     return "The impact preview is not loaded, so this irreversible level is not offered — nothing is deleted on a guess.";
-  if (level === "delete_files") {
-    if (impact.whisparr?.found !== true)
-      return "The item was not found in Whisparr, so file deletion is not offered — nothing is deleted on a guess.";
+  // The two destructive rungs check different surfaces: the Jellyfin rung is
+  // the ladder's only user-token rung and needs a deletable matched item;
+  // file deletion needs the item found in Whisparr.
+  if (requiresUserToken(level)) {
+    if (impact.jellyfin?.matched !== true)
+      return "No matching Jellyfin item was found, so this level is not offered — nothing is deleted on a guess.";
+    if (!impact.canDeleteInJellyfin)
+      return "Your Jellyfin account may not delete library items, so this level is not offered.";
     return null;
   }
-  if (impact.jellyfin?.matched !== true)
-    return "No matching Jellyfin item was found, so this level is not offered — nothing is deleted on a guess.";
-  if (!impact.canDeleteInJellyfin)
-    return "Your Jellyfin account may not delete library items, so this level is not offered.";
+  if (impact.whisparr?.found !== true)
+    return "The item was not found in Whisparr, so file deletion is not offered — nothing is deleted on a guess.";
   return null;
 }
 
@@ -180,68 +170,13 @@ function confirmCopy(
 }
 
 /* ---------- Row helpers ---------- */
-/* ponytail: MediaName duplicated from requests.tsx (frozen this wave);
- * hoist into shared.tsx when it unfreezes. */
-const titleCache = new Map<string, string | null>();
-function MediaName({
-  media,
-  providers,
-}: {
-  media: MediaReference;
-  providers: ProviderStatus | null;
-}) {
-  const key = `${media.provider}:${media.kind}:${media.id}`;
-  const [title, setTitle] = useState<string | null | undefined>(() =>
-    titleCache.get(key),
-  );
-  useEffect(() => {
-    if (title !== undefined) return;
-    if (providers && providers[media.provider] === "not_configured") {
-      titleCache.set(key, null);
-      setTitle(null);
-      return;
-    }
-    let live = true;
-    api<{ detail: { title: string } }>(
-      `/api/catalog/${media.provider}/${media.kind}/${media.id}`,
-    )
-      .then((d) => {
-        titleCache.set(key, d.detail.title);
-        if (live) setTitle(d.detail.title);
-      })
-      .catch(() => {
-        titleCache.set(key, null);
-        if (live) setTitle(null);
-      });
-    return () => {
-      live = false;
-    };
-  }, [key, title, providers, media.provider, media.kind, media.id]);
-  if (title) return <span className="font-medium">{title}</span>;
-  return (
-    <span className="font-mono text-xs break-all text-muted">
-      {media.provider} · {media.kind} · {media.id}
-    </span>
-  );
-}
 
-/** Error codes from PATCH /api/removals/:id, mapped faithfully per row. */
+/** PATCH error wording lives in lib/decisions; this adds the ApiError
+ * fallback for everything the table does not name. */
 function decisionError(e: unknown): string {
   if (e instanceof ApiError) {
-    switch (e.code) {
-      case "forbidden":
-        return "You do not have permission to decide this removal request.";
-      case "request_not_found":
-        return "This removal request no longer exists — refresh to update the list.";
-      case "request_not_pending":
-        return "This removal request was already decided — refresh to see the current state.";
-      case "invalid_level":
-        return "Choose a removal level first — the level is always the approver's explicit choice.";
-      case "removal_disabled":
-        return "Removal is turned off by the operator, so this request cannot be decided right now.";
-      case "invalid_decision":
-        return "That decision is not valid here.";
-    }
+    const mapped = REMOVAL_DECISION_ERRORS[e.code];
+    if (mapped !== undefined) return mapped;
   }
   return messageOf(e);
 }
@@ -271,47 +206,33 @@ function RemovalRow({
 }) {
   const r = record;
   const needsImpact = canApprove && r.decision === "pending";
-  const [impact, setImpact] = useState<RemovalImpact | null>(null);
-  const [impactError, setImpactError] = useState<string | null>(null);
-  const [impactLoading, setImpactLoading] = useState(needsImpact);
-  const [reload, setReload] = useState(0);
+  // Read-only impact check for the approver's pending rows; fetched before
+  // any approval so the confirmation names real facts, never guesses. A
+  // missing or failed read leaves impact null so rungGate keeps refusing.
+  const impactQuery = new URLSearchParams({
+    provider: r.media.provider,
+    kind: r.media.kind,
+    id: r.media.id,
+  });
+  const {
+    data: impact,
+    error: impactError,
+    loading: impactLoading,
+    reload: reloadImpact,
+  } = useApiGet<RemovalImpact>(
+    needsImpact ? `/api/removals/impact?${impactQuery}` : null,
+    [needsImpact, r.media.provider, r.media.kind, r.media.id],
+  );
   const [level, setLevel] = useState<RemovalLevel | "">("");
   const [confirming, setConfirming] = useState(false);
-
-  // Read-only impact check for the approver's pending rows; fetched before
-  // any approval so the confirmation names real facts, never guesses.
-  useEffect(() => {
-    if (!needsImpact) return;
-    let live = true;
-    setImpactLoading(true);
-    setImpactError(null);
-    const q = new URLSearchParams({
-      provider: r.media.provider,
-      kind: r.media.kind,
-      id: r.media.id,
-    });
-    api<RemovalImpact>(`/api/removals/impact?${q}`)
-      .then((d) => {
-        if (live) {
-          setImpact(d);
-          setImpactLoading(false);
-        }
-      })
-      .catch((e: unknown) => {
-        if (live) {
-          setImpactError(messageOf(e));
-          setImpactLoading(false);
-        }
-      });
-    return () => {
-      live = false;
-    };
-  }, [needsImpact, r.media.provider, r.media.kind, r.media.id, reload]);
+  // Title degrades to the reference line while loading or unresolvable,
+  // same as every other list.
+  const art = useCatalogSummary(r.media, providers);
 
   const selected =
     level === "" ? null : (LEVELS.find((l) => l.id === level) ?? null);
   const selectedGate =
-    selected !== null && selected.destructive
+    selected !== null && isDestructiveLevel(selected.id)
       ? rungGate(selected.id, impact, impactError)
       : null;
 
@@ -319,7 +240,7 @@ function RemovalRow({
     if (selected === null || selectedGate !== null) return;
     // A single click can never reach an irreversible rung: destructive picks
     // stop here and require the separate confirmation below.
-    if (selected.destructive) {
+    if (isDestructiveLevel(selected.id)) {
       setConfirming(true);
       return;
     }
@@ -327,7 +248,7 @@ function RemovalRow({
   };
 
   const copy =
-    confirming && selected?.destructive === true
+    confirming && selected !== null && isDestructiveLevel(selected.id)
       ? confirmCopy(selected.id, r, impact)
       : null;
 
@@ -335,7 +256,13 @@ function RemovalRow({
     <li className="panel mgmt-row p-4">
       <div className="min-w-0">
         <div className="text-base">
-          <MediaName media={r.media} providers={providers} />
+          {art?.title ? (
+            <span className="font-medium">{art.title}</span>
+          ) : (
+            <span className="font-mono text-xs break-all text-muted">
+              {r.media.provider} · {r.media.kind} · {r.media.id}
+            </span>
+          )}
         </div>
         <p className="mt-1 text-xs text-muted">
           {r.media.provider} · {r.media.kind} · {r.media.id}
@@ -383,7 +310,7 @@ function RemovalRow({
               return (
                 <option key={l.id} value={l.id} disabled={gate !== null}>
                   {l.label}
-                  {l.destructive ? " — irreversible" : ""}
+                  {isDestructiveLevel(l.id) ? " — irreversible" : ""}
                   {gate !== null ? " — unavailable" : ""}
                 </option>
               );
@@ -408,7 +335,7 @@ function RemovalRow({
               <ErrorPanel
                 title="Impact preview failed"
                 message={`${impactError} Irreversible levels stay unavailable until the preview loads.`}
-                onRetry={() => setReload((n) => n + 1)}
+                onRetry={reloadImpact}
               />
             </div>
           ) : (
@@ -515,11 +442,15 @@ function RemovalRow({
 
 export function RemovalsView() {
   const { account, providers } = useSession();
-  const [data, setData] = useState<{
-    removals: RemovalRequest[];
-    enabled: boolean;
-  } | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Re-read after every successful decision — the UI never guesses a result.
+  const {
+    data,
+    error,
+    reload: load,
+  } = useApiGet<{ removals: RemovalRequest[]; enabled: boolean }>(
+    "/api/removals",
+    [],
+  );
   const [busyId, setBusyId] = useState<string | null>(null);
   const busyRef = useRef(false);
   const [rowError, setRowError] = useState<{
@@ -532,15 +463,6 @@ export function RemovalsView() {
   // Approving needs the elevated role AND the removal grant; the server
   // re-reads the grant anyway — this only hides controls that would 403.
   const canApprove = isStaff && account.canRemove;
-
-  // Re-read after every successful decision — the UI never guesses a result.
-  const load = useCallback(() => {
-    setError(null);
-    api<{ removals: RemovalRequest[]; enabled: boolean }>("/api/removals")
-      .then((d) => setData(d))
-      .catch((e: unknown) => setError(messageOf(e)));
-  }, []);
-  useEffect(load, [load]);
 
   const decide = useCallback(
     (

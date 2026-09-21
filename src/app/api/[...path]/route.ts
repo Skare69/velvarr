@@ -12,7 +12,6 @@ import type {
   MediaKind,
   MediaReference,
   ProviderStatus,
-  RemovalLevel,
   RequestListItem,
   RequestRecord,
   Role,
@@ -21,6 +20,7 @@ import type {
 } from "../../../lib/contracts.ts";
 import {
   isDeliverableMedia,
+  isRemovalLevel,
   UNDELIVERABLE_REASON,
 } from "../../../lib/contracts.ts";
 import {
@@ -57,6 +57,7 @@ import {
 import {
   consumeLoginAttempt,
   guardMutation,
+  readSessionToken,
   sessionCookie,
   isSecureRequest,
   verifySetupSecret,
@@ -249,18 +250,6 @@ function queryInt(
   return value;
 }
 
-function readSessionToken(request: Request): string | null {
-  const header = request.headers.get("cookie");
-  if (!header) return null;
-  for (const part of header.split(";")) {
-    const eq = part.indexOf("=");
-    if (eq > 0 && part.slice(0, eq).trim() === "velvarr_session") {
-      return part.slice(eq + 1).trim() || null;
-    }
-  }
-  return null;
-}
-
 // --- environment-derived status ---
 
 function setupReady(): boolean {
@@ -378,7 +367,6 @@ async function verifySetupSelection(fields: SetupFields): Promise<{
 }
 
 async function setupInspect(request: Request): Promise<Response> {
-  guardMutation(request);
   if (isInitialized())
     throw new AppError(
       409,
@@ -397,7 +385,6 @@ async function setupInspect(request: Request): Promise<Response> {
 }
 
 async function setupCommit(request: Request): Promise<Response> {
-  guardMutation(request);
   if (isInitialized())
     throw new AppError(
       409,
@@ -454,7 +441,6 @@ async function setupCommit(request: Request): Promise<Response> {
 // --- auth routes ---
 
 async function login(request: Request): Promise<Response> {
-  guardMutation(request);
   const body = await readJson(request);
   const username = fieldText(body, "username", 200);
   const password = fieldText(body, "password", 512);
@@ -492,7 +478,6 @@ async function login(request: Request): Promise<Response> {
 }
 
 async function logout(request: Request): Promise<Response> {
-  guardMutation(request);
   await readJson(request);
   const raw = readSessionToken(request);
   if (raw) revokeSession(raw);
@@ -503,8 +488,7 @@ async function logout(request: Request): Promise<Response> {
 
 // --- user routes ---
 
-async function me(request: Request): Promise<Response> {
-  const ctx = await requireSession(request);
+async function me(ctx: AuthContext): Promise<Response> {
   const [tpdb, stashdb] = await Promise.all([
     providerPresence("tpdb"),
     providerPresence("stashdb"),
@@ -531,8 +515,7 @@ async function providerPresence(
   }
 }
 
-async function libraries(request: Request): Promise<Response> {
-  const ctx = await requireSession(request);
+async function libraries(ctx: AuthContext): Promise<Response> {
   const views = await listLibraries(ctx.config, ctx.token);
   const grants = new Set(ctx.account.libraryIds);
   const configured = new Set(ctx.config.jellyfin.libraryIds);
@@ -543,8 +526,10 @@ async function libraries(request: Request): Promise<Response> {
   });
 }
 
-async function libraryPage(request: Request): Promise<Response> {
-  const ctx = await requireSession(request);
+async function libraryPage(
+  request: Request,
+  ctx: AuthContext,
+): Promise<Response> {
   const url = new URL(request.url);
   const start = queryInt(url, "start", 0, 0, 100000);
   const limit = queryInt(url, "limit", 24, 1, 60);
@@ -579,8 +564,7 @@ async function libraryPage(request: Request): Promise<Response> {
   return json(page);
 }
 
-async function libraryItem(request: Request, id: string): Promise<Response> {
-  const ctx = await requireSession(request);
+async function libraryItem(ctx: AuthContext, id: string): Promise<Response> {
   const item = await getLibraryItem(
     ctx.config,
     ctx.token,
@@ -590,8 +574,7 @@ async function libraryItem(request: Request, id: string): Promise<Response> {
   return json({ item });
 }
 
-async function libraryImage(request: Request, id: string): Promise<Response> {
-  const ctx = await requireSession(request);
+async function libraryImage(ctx: AuthContext, id: string): Promise<Response> {
   const image = await getLibraryImage(
     ctx.config,
     ctx.token,
@@ -675,10 +658,9 @@ async function adminUsers(ctx: AuthContext): Promise<Response> {
 }
 
 async function adminUserAvatar(
-  request: Request,
+  ctx: AuthContext,
   id: string,
 ): Promise<Response> {
-  const ctx = await requireAdmin(request);
   const image = await getUserImage(ctx.config, requireId(id));
   return new Response(image.bytes as unknown as BodyInit, {
     status: 200,
@@ -695,7 +677,6 @@ async function adminImport(
   request: Request,
   ctx: AuthContext,
 ): Promise<Response> {
-  guardMutation(request);
   await readJson(request);
   const imported = importAccounts(await listUsers(ctx.config));
   return json({ accounts: imported });
@@ -706,7 +687,6 @@ async function adminUpdateUser(
   ctx: AuthContext,
   id: string,
 ): Promise<Response> {
-  guardMutation(request);
   const body = await readJson(request);
   const target = getAccount(requireId(id));
   if (!target) throw new AppError(404, "not_found", "Account not found.");
@@ -916,7 +896,6 @@ async function adminUpdateIntegrations(
   request: Request,
   ctx: AuthContext,
 ): Promise<Response> {
-  guardMutation(request);
   const body = await readJson(request);
   // Provider-only saves never touch Jellyfin/Whisparr: the provider card
   // sends just its fields, and re-validating the Jellyfin connection would
@@ -1494,7 +1473,6 @@ function tpdbSearchQuery(
 }
 
 async function catalogSearch(request: Request): Promise<Response> {
-  await requireSession(request);
   // Pass-through page: total/totalCountKnown report exactly what the
   // provider attests (a capped TPDB total surfaces as totalCountKnown:
   // false), and an outage propagates as an error, never an empty page.
@@ -1505,7 +1483,6 @@ async function catalogSearch(request: Request): Promise<Response> {
 // ordering come back verbatim — nothing is merged across providers and no
 // counts are invented here.
 async function catalogTagsRoute(request: Request): Promise<Response> {
-  await requireSession(request);
   const params = new URL(request.url).searchParams;
   const provider = parseCatalogProvider(params.get("provider"));
   const q = (params.get("q") ?? "").trim();
@@ -1520,12 +1497,11 @@ async function catalogTagsRoute(request: Request): Promise<Response> {
 }
 
 async function catalogDetail(
-  request: Request,
+  ctx: AuthContext,
   providerRaw: string,
   kindRaw: string,
   idRaw: string,
 ): Promise<Response> {
-  const ctx = await requireSession(request);
   const reference = parseCatalogReference(providerRaw, kindRaw, idRaw);
   const detail = await getCatalogDetail(reference);
   if (!detail) {
@@ -1578,7 +1554,6 @@ async function catalogDetail(
 // private/no-store, nothing persisted, and no Velvarr or provider
 // credentials ever reach the image host (fetchProviderArtwork sends none).
 async function catalogImage(request: Request): Promise<Response> {
-  await requireSession(request);
   const target = new URL(request.url).searchParams.get("url");
   if (target === null || target === "") {
     throw new AppError(400, "invalid_query", "url is required.");
@@ -1635,9 +1610,10 @@ function mediaFromBody(body: Record<string, unknown>): MediaReference {
 // With the autoApprove grant the request is decided approved immediately so
 // shared acquisition work is enqueued; otherwise it stays pending for a
 // moderator. No Whisparr call happens anywhere on this path.
-async function createRequestRoute(request: Request): Promise<Response> {
-  guardMutation(request);
-  const ctx = await requireSession(request);
+async function createRequestRoute(
+  request: Request,
+  ctx: AuthContext,
+): Promise<Response> {
   const media = mediaFromBody(await readJson(request));
   const record = createRequest(ctx.account.id, media);
   if (ctx.account.autoApprove) {
@@ -1652,8 +1628,7 @@ async function createRequestRoute(request: Request): Promise<Response> {
   return json({ request: record }, 201);
 }
 
-async function listRequestsRoute(request: Request): Promise<Response> {
-  const ctx = await requireSession(request);
+async function listRequestsRoute(ctx: AuthContext): Promise<Response> {
   // Storage role-filters: a requester sees only their own history. Approved
   // rows carry the SHARED acquisition state for their identity, so the
   // requester can see whether the work actually went through — without
@@ -1687,10 +1662,9 @@ async function listRequestsRoute(request: Request): Promise<Response> {
 
 async function decideRequestRoute(
   request: Request,
+  ctx: AuthContext,
   id: string,
 ): Promise<Response> {
-  guardMutation(request);
-  const ctx = await requireSession(request);
   const decision = (await readJson(request)).decision;
   const requestId = requireId(id);
   if (decision === "approved" || decision === "declined") {
@@ -1737,14 +1711,14 @@ function performerFromBody(body: Record<string, unknown>): CatalogReference {
   return reference;
 }
 
-async function listFollowsRoute(request: Request): Promise<Response> {
-  const ctx = await requireSession(request);
+async function listFollowsRoute(ctx: AuthContext): Promise<Response> {
   return json({ follows: listFollows(ctx.account.id) });
 }
 
-async function createFollowRoute(request: Request): Promise<Response> {
-  guardMutation(request);
-  const ctx = await requireSession(request);
+async function createFollowRoute(
+  request: Request,
+  ctx: AuthContext,
+): Promise<Response> {
   const body = await readJson(request);
   // An image URL that fails the provider-artwork check degrades to null
   // rather than sinking the whole follow: the snapshot is cosmetic.
@@ -1765,12 +1739,10 @@ async function createFollowRoute(request: Request): Promise<Response> {
 }
 
 async function deleteFollowRoute(
-  request: Request,
+  ctx: AuthContext,
   providerRaw: string,
   idRaw: string,
 ): Promise<Response> {
-  guardMutation(request);
-  const ctx = await requireSession(request);
   const reference = parseCatalogReference(providerRaw, "performer", idRaw);
   unfollowPerformer(ctx.account.id, reference.provider, reference.id);
   return new Response(null, { status: 204 });
@@ -1783,9 +1755,10 @@ const BULK_REQUEST_CAP = 100;
 // filmography page of 100 rows. 24 is what the browse surfaces request.
 const BULK_SCAN_PAGE = 24;
 
-async function bulkRequestRoute(request: Request): Promise<Response> {
-  guardMutation(request);
-  const ctx = await requireSession(request);
+async function bulkRequestRoute(
+  request: Request,
+  ctx: AuthContext,
+): Promise<Response> {
   const body = await readJson(request);
   const performer = performerFromBody(body);
   const kind = body.kind;
@@ -1874,21 +1847,6 @@ async function bulkRequestRoute(request: Request): Promise<Response> {
 
 // --- removals: guarded removal intents ---
 
-// The removal ladder, mirrored from contracts for runtime validation. The
-// level is always the approver's explicit choice.
-const REMOVAL_LEVEL_VALUES: readonly string[] = [
-  "unmonitor",
-  "drop",
-  "exclude",
-  "delete_files",
-  "delete_jellyfin_item",
-];
-
-// Runtime check, never a cast.
-function isRemovalLevel(value: string): value is RemovalLevel {
-  return REMOVAL_LEVEL_VALUES.includes(value);
-}
-
 // Boundary mirror of the storage gate so the refusal is legible at the API
 // edge; storage re-checks the flag authoritatively on every mutation.
 function assertRemovalFlag(): void {
@@ -1927,8 +1885,7 @@ function assertRemovalApprover(account: Account): void {
 // Removal state is reported, never hidden: with the operator flag off the
 // collection still answers with enabled:false so the UI can explain the
 // state instead of pretending the feature does not exist.
-async function listRemovalsRoute(request: Request): Promise<Response> {
-  const ctx = await requireSession(request);
+async function listRemovalsRoute(ctx: AuthContext): Promise<Response> {
   return json({
     removals: listRemovalRequests(ctx.account),
     enabled: process.env.VELVARR_ENABLE_REMOVAL === "1",
@@ -1938,9 +1895,10 @@ async function listRemovalsRoute(request: Request): Promise<Response> {
 // Creation accepts exactly {media, reason}. A level key is refused outright
 // and no code path reads one: the level is the approver's choice by
 // construction, not an ignored field.
-async function createRemovalRoute(request: Request): Promise<Response> {
-  guardMutation(request);
-  const ctx = await requireSession(request);
+async function createRemovalRoute(
+  request: Request,
+  ctx: AuthContext,
+): Promise<Response> {
   assertRemovalFlag();
   assertRemovalGrant(ctx.account);
   const body = await readJson(request);
@@ -1965,10 +1923,9 @@ async function createRemovalRoute(request: Request): Promise<Response> {
 // unknown requests stay a bare 404 with no existence leak.
 async function decideRemovalRoute(
   request: Request,
+  ctx: AuthContext,
   id: string,
 ): Promise<Response> {
-  guardMutation(request);
-  const ctx = await requireSession(request);
   const body = await readJson(request);
   const requestId = requireId(id);
   if (body.decision === "approved") {
@@ -2040,8 +1997,10 @@ async function libraryNameOf(
 // Jellyfin side runs entirely under the caller's own token, so the match and
 // the deletion verdict reflect that user's real authority. No PUT, POST, or
 // DELETE exists anywhere on this path.
-async function removalImpact(request: Request): Promise<Response> {
-  const ctx = await requireSession(request);
+async function removalImpact(
+  request: Request,
+  ctx: AuthContext,
+): Promise<Response> {
   const url = new URL(request.url);
   const media = parseMediaReference(
     url.searchParams.get("provider") ?? "",
@@ -2113,12 +2072,11 @@ async function removalImpact(request: Request): Promise<Response> {
 // shared acquisition's persisted Whisparr facts when present. This is a
 // read route: no Whisparr call ever happens here.
 async function availability(
-  request: Request,
+  ctx: AuthContext,
   providerRaw: string,
   kindRaw: string,
   idRaw: string,
 ): Promise<Response> {
-  const ctx = await requireSession(request);
   const media = parseMediaReference(providerRaw, kindRaw, idRaw);
   const acquisition = getAcquisitionByReference(media);
   const verdict = await resolvePlaybackAccess(
@@ -2322,8 +2280,7 @@ function shelfOf(
       { ...base, error: shelfError(result.reason) };
 }
 
-async function discover(request: Request): Promise<Response> {
-  const ctx = await requireSession(request);
+async function discover(ctx: AuthContext): Promise<Response> {
   // UTC server date: the shared "today" cutoff for the TPDB recency shelf
   // and its browse-all link.
   const today = new Date().toISOString().slice(0, 10);
@@ -2431,7 +2388,6 @@ function categoryOf(
 }
 
 async function globalSearch(request: Request): Promise<Response> {
-  await requireSession(request);
   const url = new URL(request.url);
   const term = (url.searchParams.get("q") ?? "").trim();
   if (term.length < 2) {
@@ -2508,6 +2464,11 @@ async function globalSearch(request: Request): Promise<Response> {
   });
 }
 
+// Admission lives in the table: every branch declares and resolves its level
+// (requireSession/requireAdmin) inline, exactly once, before the handler runs.
+// dispatch origin-guards every mutation before this point, so no mutating
+// handler can forget guardMutation and no branch can skip admission.
+// Public: status, health, setup*, login, logout.
 async function routeRequest(
   request: Request,
   segments: string[],
@@ -2522,43 +2483,53 @@ async function routeRequest(
     if (root === "status" && segments.length === 2)
       return json({ initialized: isInitialized(), setupReady: setupReady() });
     if (root === "health" && segments.length === 2) return json({ ok: true });
-    if (root === "me" && segments.length === 2) return me(request);
+    if (root === "me" && segments.length === 2)
+      return me(await requireSession(request));
     if (root === "libraries" && segments.length === 2)
-      return libraries(request);
+      return libraries(await requireSession(request));
     if (root === "library" && segments.length === 2)
-      return libraryPage(request);
+      return libraryPage(request, await requireSession(request));
     if (root === "library" && segments.length === 3)
-      return libraryItem(request, segments[2]!);
+      return libraryItem(await requireSession(request), segments[2]!);
     if (root === "images" && segments.length === 3)
-      return libraryImage(request, segments[2]!);
-    if (root === "catalog" && a === "search" && segments.length === 3)
+      return libraryImage(await requireSession(request), segments[2]!);
+    if (root === "catalog" && a === "search" && segments.length === 3) {
+      await requireSession(request);
       return catalogSearch(request);
-    if (root === "catalog" && a === "image" && segments.length === 3)
+    }
+    if (root === "catalog" && a === "image" && segments.length === 3) {
+      await requireSession(request);
       return catalogImage(request);
-    if (root === "catalog" && a === "tags" && segments.length === 3)
+    }
+    if (root === "catalog" && a === "tags" && segments.length === 3) {
+      await requireSession(request);
       return catalogTagsRoute(request);
+    }
     if (root === "catalog" && segments.length === 5)
-      return catalogDetail(request, a!, b!, segments[4]!);
+      return catalogDetail(await requireSession(request), a!, b!, segments[4]!);
     if (root === "requests" && segments.length === 2)
-      return listRequestsRoute(request);
-    if (root === "discover" && segments.length === 2) return discover(request);
+      return listRequestsRoute(await requireSession(request));
+    if (root === "discover" && segments.length === 2)
+      return discover(await requireSession(request));
     if (root === "follows" && segments.length === 2)
-      return listFollowsRoute(request);
-    if (root === "search" && segments.length === 2)
+      return listFollowsRoute(await requireSession(request));
+    if (root === "search" && segments.length === 2) {
+      await requireSession(request);
       return globalSearch(request);
+    }
     if (root === "availability" && segments.length === 5)
-      return availability(request, a!, b!, segments[4]!);
+      return availability(await requireSession(request), a!, b!, segments[4]!);
     if (root === "removals" && segments.length === 2)
-      return listRemovalsRoute(request);
+      return listRemovalsRoute(await requireSession(request));
     if (root === "removals" && a === "impact" && segments.length === 3)
-      return removalImpact(request);
+      return removalImpact(request, await requireSession(request));
     if (
       root === "admin" &&
       a === "users" &&
       segments[4] === "avatar" &&
       segments.length === 5
     )
-      return adminUserAvatar(request, segments[3]!);
+      return adminUserAvatar(await requireAdmin(request), segments[3]!);
     if (root === "admin" && a === "users" && segments.length === 3)
       return adminUsers(await requireAdmin(request));
     if (root === "admin" && a === "integrations" && segments.length === 3) {
@@ -2581,18 +2552,16 @@ async function routeRequest(
       a === "users" &&
       b === "import" &&
       segments.length === 4
-    ) {
-      const ctx = await requireAdmin(request);
-      return adminImport(request, ctx);
-    }
+    )
+      return adminImport(request, await requireAdmin(request));
     if (root === "requests" && segments.length === 2)
-      return createRequestRoute(request);
+      return createRequestRoute(request, await requireSession(request));
     if (root === "requests" && a === "bulk" && segments.length === 3)
-      return bulkRequestRoute(request);
+      return bulkRequestRoute(request, await requireSession(request));
     if (root === "follows" && segments.length === 2)
-      return createFollowRoute(request);
+      return createFollowRoute(request, await requireSession(request));
     if (root === "removals" && segments.length === 2)
-      return createRemovalRoute(request);
+      return createRemovalRoute(request, await requireSession(request));
   } else if (method === "PATCH") {
     if (root === "admin" && a === "users" && segments.length === 4) {
       return adminUpdateUser(
@@ -2602,15 +2571,23 @@ async function routeRequest(
       );
     }
     if (root === "requests" && segments.length === 3)
-      return decideRequestRoute(request, segments[2]!);
+      return decideRequestRoute(
+        request,
+        await requireSession(request),
+        segments[2]!,
+      );
     if (root === "removals" && segments.length === 3)
-      return decideRemovalRoute(request, segments[2]!);
+      return decideRemovalRoute(
+        request,
+        await requireSession(request),
+        segments[2]!,
+      );
     if (root === "admin" && a === "integrations" && segments.length === 3) {
       return adminUpdateIntegrations(request, await requireAdmin(request));
     }
   } else if (method === "DELETE") {
     if (root === "follows" && segments.length === 4)
-      return deleteFollowRoute(request, a!, b!);
+      return deleteFollowRoute(await requireSession(request), a!, b!);
   }
   throw new AppError(404, "not_found", "Unknown route.");
 }
@@ -2624,6 +2601,10 @@ async function dispatch(request: Request, method: string): Promise<Response> {
       .split("/")
       .filter((segment) => segment.length > 0)
       .map((segment) => decodeURIComponent(segment));
+    // The one origin-CSRF gate: runs before admission on every mutation so
+    // the origin check keeps the first-failure precedence it had in the
+    // handlers, and a future mutating route cannot ship without it.
+    if (method !== "GET") guardMutation(request);
     return await routeRequest(request, segments, method);
   } catch (err) {
     return errorResponse(err);

@@ -134,3 +134,17 @@ export function sessionCookie(grant?: SessionGrant, secure?: boolean): string {
   const maxAge = Math.max(1, Math.floor((grant.expiresAt - Date.now()) / 1000));
   return `${COOKIE_NAME}=${grant.token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${suffix}`;
 }
+
+// Cookie parsing sits beside cookie writing so COOKIE_NAME stays the single
+// owner of the literal.
+export function readSessionToken(request: Request): string | null {
+  const header = request.headers.get("cookie");
+  if (!header) return null;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq > 0 && part.slice(0, eq).trim() === COOKIE_NAME) {
+      return part.slice(eq + 1).trim() || null;
+    }
+  }
+  return null;
+}

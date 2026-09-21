@@ -1238,12 +1238,12 @@ export async function resolvePlaybackAccess(
  * not a comment — makes it impossible to pass the integration administrator
  * key (a bare string from IntegrationConfig) where a user session is
  * required. Build it only from authenticate()/validateUser() output. */
-interface JellyfinUserSession {
+export interface JellyfinUserSession {
   readonly token: string;
 }
 
 /** External facts the removal audit needs, observed BEFORE the delete. */
-interface JellyfinRemovalFacts {
+export interface JellyfinRemovalFacts {
   itemId: string;
   name: string;
   /** The granted library folder the membership proof resolved through. */
@@ -1255,7 +1255,7 @@ interface JellyfinRemovalFacts {
   size?: number;
 }
 
-type JellyfinRemovalOutcome =
+export type JellyfinRemovalOutcome =
   | { status: "removed"; facts: JellyfinRemovalFacts; watchLinkInvalid: true }
   | {
       status: "already_gone";

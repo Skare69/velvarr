@@ -16,6 +16,7 @@ import {
   MovieCard,
   providerLabel,
   SceneCard,
+  useApiGet,
   useParamsSetter,
   useSession,
 } from "./shared";
@@ -97,39 +98,22 @@ function usePerformerListing(
   perPage: number,
   reload: number,
 ): { data: SearchPage | null; error: string | null; loading: boolean } {
-  const [data, setData] = useState<SearchPage | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    let live = true;
-    setError(null);
-    setLoading(true);
-    const qs = new URLSearchParams({
-      provider,
-      kind,
-      performer: performerId,
-      page: String(page),
-      perPage: String(perPage),
-    });
-    api<SearchPage>(`/api/catalog/search?${qs.toString()}`)
-      .then((d) => {
-        if (live) {
-          setData(d);
-          setLoading(false);
-        }
-      })
-      .catch((e) => {
-        // An outage is an error with retry, never an empty page.
-        if (live) {
-          setError(messageOf(e));
-          setLoading(false);
-        }
-      });
-    return () => {
-      live = false; // stale in-flight responses are ignored
-    };
-  }, [provider, kind, performerId, page, perPage, reload]);
-  return { data, error, loading };
+  const qs = new URLSearchParams({
+    provider,
+    kind,
+    performer: performerId,
+    page: String(page),
+    perPage: String(perPage),
+  });
+  // An outage is an error with retry, never an empty page.
+  return useApiGet<SearchPage>(`/api/catalog/search?${qs.toString()}`, [
+    provider,
+    kind,
+    performerId,
+    page,
+    perPage,
+    reload,
+  ]);
 }
 
 /* ---------- Cards: the established treatments ---------- */

@@ -18,11 +18,15 @@ import "./views.css";
 import type {
   MediaReference,
   ProviderStatus,
-  RequestDecision,
   RequestListItem,
   RequestRecord,
 } from "../lib/contracts";
 import { REQUESTS_CHANGED } from "../lib/approvals";
+import {
+  GROUP_LABEL,
+  GROUP_ORDER,
+  REQUEST_DECISION_ERRORS,
+} from "../lib/decisions";
 
 /* Facts displayed per row, kept visibly separate:
  *  1. Decision  — one user's intent (this list, from RequestRecord).
@@ -63,31 +67,12 @@ function RelTime({ at }: { at: number }) {
   );
 }
 
-const GROUP_ORDER: RequestDecision[] = [
-  "pending",
-  "approved",
-  "declined",
-  "cancelled",
-];
-
-const GROUP_LABEL: Record<RequestDecision, string> = {
-  pending: "Pending",
-  approved: "Approved",
-  declined: "Declined",
-  cancelled: "Cancelled",
-};
-
-/** Error codes from PATCH /api/requests/:id, mapped faithfully per row. */
+/** PATCH error wording lives in lib/decisions; this adds the ApiError
+ * fallback for everything the table does not name. */
 function decisionError(e: unknown): string {
   if (e instanceof ApiError) {
-    if (e.code === "forbidden")
-      return "You do not have permission to change this request.";
-    if (e.code === "request_not_found")
-      return "This request no longer exists — it may have already been removed. Refresh to update the list.";
-    if (e.code === "request_not_pending")
-      return "This request is no longer pending — it was already decided. Refresh to see the current state.";
-    if (e.code === "request_not_cancellable")
-      return "This request can no longer be cancelled. Refresh to see the current state.";
+    const mapped = REQUEST_DECISION_ERRORS[e.code];
+    if (mapped !== undefined) return mapped;
   }
   return messageOf(e);
 }

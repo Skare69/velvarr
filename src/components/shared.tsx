@@ -7,6 +7,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type DependencyList,
 } from "react";
 import { useRouter } from "next/navigation";
 import { isDeliverableMedia } from "../lib/contracts.ts";
@@ -69,6 +70,57 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     );
   }
   return data as T;
+}
+
+/* ---------- One GET of server state ---------- */
+
+/** One GET of server state: loading flag, `messageOf(err)` error string,
+ * stale-response guard, manual retry. `deps` re-runs the read; a null path
+ * means "nothing to read" and is the only thing that clears `data` — browse
+ * pages swap in place and retries keep the last view honest, so a re-run
+ * never blanks it. */
+export function useApiGet<T>(
+  path: string | null,
+  deps: DependencyList,
+): {
+  data: T | null;
+  error: string | null;
+  loading: boolean;
+  reload: () => void;
+} {
+  const [data, setData] = useState<T | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(path !== null);
+  const [tick, setTick] = useState(0);
+  const reload = useCallback(() => setTick((n) => n + 1), []);
+  useEffect(() => {
+    if (path === null) {
+      setData(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
+    let live = true;
+    setError(null);
+    setLoading(true);
+    api<T>(path)
+      .then((d) => {
+        if (live) {
+          setData(d);
+          setLoading(false);
+        }
+      })
+      .catch((e: unknown) => {
+        if (live) {
+          setError(messageOf(e));
+          setLoading(false);
+        }
+      });
+    return () => {
+      live = false; // stale in-flight responses are ignored
+    };
+  }, [...deps, path, tick]);
+  return { data, error, loading, reload };
 }
 
 /* ---------- Touch: first tap reveals, second tap opens ---------- */
@@ -156,9 +208,9 @@ export type CatalogSummary = {
 };
 
 /**
- * Cache is module-level (mirrors requests.tsx titleCache): these are public
- * provider facts shared by every viewer of the same media, bounded only by
- * distinct requested media. Drop if that grows.
+ * Cache is module-level: these are public provider facts shared by every
+ * viewer of the same media, bounded only by distinct requested media. Drop
+ * if that grows.
  */
 const catalogSummaryCache = new Map<string, CatalogSummary | null>();
 

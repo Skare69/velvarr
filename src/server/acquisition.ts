@@ -20,6 +20,7 @@ import {
   type WhisparrRemovalResult,
 } from "./whisparr.ts";
 import { notifyRequestEvent, type RequestNotification } from "./notify.ts";
+import { requiresUserToken } from "../lib/contracts.ts";
 import type {
   Account,
   AcquisitionRecord,
@@ -336,8 +337,40 @@ async function executeRemoval(
   }
 }
 
-/** One due removal execution. Mirrors processOne: local gates, CAS claim,
- * the work, and the claim release in a finally. */
+/** The claim protocol both engines share: CAS-claim, treat another worker's
+ * 409 as ordinary contention for this pass, and release the claim in a
+ * finally so a thrown error never strands it (a stale token no-ops). The
+ * gates before the claim and the outcome lattices after it stay with their
+ * own engines; only this band is common. */
+async function withClaim<T extends { id: string }>(
+  claim: () => { record: T; claimToken: string },
+  release: (id: string, claimToken: string) => void,
+  summary: WorkSummary,
+  work: (record: T, claimToken: string) => Promise<void>,
+): Promise<void> {
+  let held: { record: T; claimToken: string };
+  try {
+    held = claim();
+  } catch (e) {
+    if (e instanceof AppError && e.status === 409) {
+      // Normal concurrency: another worker holds the claim. Skip it for
+      // this pass; never retry it here.
+      summary.contention++;
+      return;
+    }
+    throw e;
+  }
+  const { record, claimToken } = held;
+  try {
+    await work(record, claimToken);
+  } finally {
+    // A thrown error must never strand the claim; a stale token no-ops.
+    release(record.id, claimToken);
+  }
+}
+
+/** One due removal execution. Local gates, then the shared claim protocol
+ * carries the work. */
 async function processRemoval(
   exec: RemovalExecution,
   config: IntegrationConfig | null,
@@ -353,47 +386,36 @@ async function processRemoval(
   // A user-token level is detected up front and never faked: no downgrade,
   // no skipped Jellyfin step, no admin-key fallback. Once its reason is
   // durably recorded (attemptAt set), later passes skip it silently.
-  if (exec.level === "delete_jellyfin_item" && exec.attemptAt !== null) {
+  if (requiresUserToken(exec.level) && exec.attemptAt !== null) {
     summary.blocked++;
     return;
   }
-  let claim: { record: RemovalExecution; claimToken: string };
-  try {
-    claim = storage.claimRemovalExecution(exec.id);
-  } catch (e) {
-    if (e instanceof AppError && e.status === 409) {
-      // Normal concurrency: another worker holds the claim. Skip it for
-      // this pass; never retry it here.
-      summary.contention++;
-      return;
-    }
-    throw e;
-  }
-  const { record, claimToken } = claim;
-  try {
-    if (record.level === "delete_jellyfin_item") {
-      if (record.attemptAt === null) {
-        const { attemptToken } = storage.beginRemovalAttempt(
-          record.id,
-          claimToken,
-          {},
-        );
-        storage.completeRemovalAttempt(
-          record.id,
-          claimToken,
-          attemptToken,
-          "uncertain",
-          USER_TOKEN_REQUIRED,
-        );
+  await withClaim(
+    () => storage.claimRemovalExecution(exec.id),
+    storage.releaseRemovalClaim,
+    summary,
+    async (record, claimToken) => {
+      if (requiresUserToken(record.level)) {
+        if (record.attemptAt === null) {
+          const { attemptToken } = storage.beginRemovalAttempt(
+            record.id,
+            claimToken,
+            {},
+          );
+          storage.completeRemovalAttempt(
+            record.id,
+            claimToken,
+            attemptToken,
+            "uncertain",
+            USER_TOKEN_REQUIRED,
+          );
+        }
+        summary.blocked++;
+        return;
       }
-      summary.blocked++;
-      return;
-    }
-    await executeRemoval(record, config, claimToken, summary);
-  } finally {
-    // A thrown error must never strand the claim; a stale token no-ops.
-    storage.releaseRemovalClaim(record.id, claimToken);
-  }
+      await executeRemoval(record, config, claimToken, summary);
+    },
+  );
 }
 
 /** One delivery attempt. The attempt row is persisted BEFORE any network
@@ -640,35 +662,24 @@ async function processOne(
     summary.blocked++;
     return;
   }
-  let claim: { record: AcquisitionRecord; claimToken: string };
-  try {
-    claim = storage.claimAcquisition(item.id);
-  } catch (e) {
-    if (e instanceof AppError && e.status === 409) {
-      // Normal concurrency: another worker holds the claim. Skip the item
-      // for this pass; never retry it here.
-      summary.contention++;
-      return;
-    }
-    throw e;
-  }
-  const { record, claimToken } = claim;
-  try {
-    switch (record.state) {
-      case "uncertain":
-        await reconcileUncertain(record, config, claimToken, summary);
-        break;
-      case "unsent":
-        await dispatch(record, config, claimToken, summary);
-        break;
-      default:
-        await observe(record, config, claimToken, summary);
-        break;
-    }
-  } finally {
-    // A thrown error must never strand the claim; a stale token no-ops.
-    storage.releaseAcquisitionClaim(record.id, claimToken);
-  }
+  await withClaim(
+    () => storage.claimAcquisition(item.id),
+    storage.releaseAcquisitionClaim,
+    summary,
+    async (record, claimToken) => {
+      switch (record.state) {
+        case "uncertain":
+          await reconcileUncertain(record, config, claimToken, summary);
+          break;
+        case "unsent":
+          await dispatch(record, config, claimToken, summary);
+          break;
+        default:
+          await observe(record, config, claimToken, summary);
+          break;
+      }
+    },
+  );
 }
 
 /** Process one bounded batch of due work. Non-overlapping: a call made while

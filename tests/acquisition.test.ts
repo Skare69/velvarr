@@ -23,6 +23,7 @@ import type {
   ExternalUser,
   IntegrationConfig,
   MediaReference,
+  RemovalExecution,
   RemovalLevel,
 } from "../src/lib/contracts.ts";
 // Imported after env setup because storage reads VELVARR_* at open time —
@@ -283,24 +284,13 @@ function workId(media: MediaReference): string {
 }
 
 function probe(id: string): AcquisitionRecord {
-  const { record, claimToken } = storage.claimAcquisition(id);
-  storage.releaseAcquisitionClaim(id, claimToken);
-  return record;
+  const rec = storage.getAcquisition(id);
+  assert.ok(rec, `no acquisition ${id}`);
+  return rec;
 }
 
 function postCount(): number {
   return calls.filter((c) => c.method === "POST").length;
-}
-
-/** Raw row read straight from SQLite, usable from inside the fixture's POST
- * handler to observe what the worker had already persisted. */
-function rawState(id: string): { state: string; attempt: number } {
-  probeDb ??= new DatabaseSync(join(dir, "velvarr.sqlite"));
-  return probeDb
-    .prepare(
-      "SELECT state, attempt_token IS NOT NULL AS attempt FROM acquisitions WHERE id = ?",
-    )
-    .get(id) as { state: string; attempt: number };
 }
 
 async function until(cond: () => boolean): Promise<void> {
@@ -351,13 +341,13 @@ test("attempt is persisted before the POST and a fresh add lands", async () => {
   const id = workId(MOVIE_A);
 
   onAdd = () => {
-    const row = rawState(id);
+    const row = probe(id);
     assert.equal(
       row.state,
       "submitting",
       "attempt must be durable at POST time",
     );
-    assert.equal(row.attempt, 1, "attempt token persisted before the POST");
+    assert.ok(row.attemptToken, "attempt token persisted before the POST");
   };
   const summary = await acquisition.runDueWork();
   assert.equal(summary.delivered, 1);
@@ -705,7 +695,7 @@ test("cancellation suppresses only undispatched work; sent and in-flight work su
   const idB = workId(MOVIE_B);
   const claim = storage.claimAcquisition(idB);
   storage.beginSubmission(idB, claim.claimToken);
-  assert.equal(rawState(idB).state, "submitting");
+  assert.equal(probe(idB).state, "submitting");
 
   // Undispatched work: approved but never claimed or sent.
   approve(owner.id, MOVIE_C);
@@ -802,13 +792,6 @@ test("changed facts persist; a proven removal is authoritative while an outage i
 
 // --- shutdown ---------------------------------------------------------
 
-function rawRow(id: string): { state: string; claim_token: string | null } {
-  probeDb ??= new DatabaseSync(join(dir, "velvarr.sqlite"));
-  return probeDb
-    .prepare("SELECT state, claim_token FROM acquisitions WHERE id = ?")
-    .get(id) as { state: string; claim_token: string | null };
-}
-
 test("shutdown past the grace window releases the claim, recovers the attempt, and stale writes land nowhere", async () => {
   const owner = boot();
   approve(owner.id, MOVIE_A);
@@ -817,7 +800,7 @@ test("shutdown past the grace window releases the claim, recovers the attempt, a
   const { promise, resolve } = Promise.withResolvers<void>();
   knobs.holdAdd = promise;
   const pass = acquisition.runDueWork();
-  await until(() => rawState(id).attempt === 1);
+  await until(() => probe(id).attemptToken !== null);
 
   // Concurrent shutdown calls coalesce into one run.
   const s1 = acquisition.shutdownAcquisition(150);
@@ -825,12 +808,12 @@ test("shutdown past the grace window releases the claim, recovers the attempt, a
   assert.equal(s1, s2, "concurrent shutdown calls share one run");
   assert.equal((await s1).forced, true, "grace expiry abandons the stuck pass");
   assert.equal(
-    rawRow(id).claim_token,
+    probe(id).claimToken,
     null,
     "claim released, never left for the next process to age out",
   );
   assert.equal(
-    rawRow(id).state,
+    probe(id).state,
     "uncertain",
     "the half-written submitting attempt is boot-reconcilable",
   );
@@ -839,8 +822,8 @@ test("shutdown past the grace window releases the claim, recovers the attempt, a
   const summary = await pass;
   assert.equal(summary.errors, 1, "the stale write surfaces as a caught error");
   assert.equal(postCount(), 1, "no re-POST after recovery");
-  assert.equal(rawRow(id).claim_token, null);
-  assert.equal(rawRow(id).state, "uncertain");
+  assert.equal(probe(id).claimToken, null);
+  assert.equal(probe(id).state, "uncertain");
   // A sequential second shutdown after the pass settled is safe and
   // reports nothing forced.
   assert.equal((await acquisition.shutdownAcquisition(50)).forced, false);
@@ -1042,22 +1025,12 @@ function removalApprove(media: MediaReference, level: RemovalLevel): string {
   return exec.id;
 }
 
-/** Raw removal row straight from SQLite, readable from inside the fixture's
- * DELETE handler to observe what the worker persisted before the call. */
-type RemovalRow = {
-  state: string;
-  attempt: number;
-  item: number | null;
-  added: string | null;
-};
-
-function rawRemoval(id: string): RemovalRow {
-  probeDb ??= new DatabaseSync(join(dir, "velvarr.sqlite"));
-  return probeDb
-    .prepare(
-      "SELECT state, attempt_token IS NOT NULL AS attempt, whisparr_item_id AS item, whisparr_added AS added FROM removal_executions WHERE id = ?",
-    )
-    .get(id) as RemovalRow;
+/** Removal execution read at DELETE-handler time to observe what the
+ * worker persisted before the destructive call. */
+function rawRemoval(id: string): RemovalExecution {
+  const rec = storage.getRemovalExecution(id);
+  assert.ok(rec, `no removal execution ${id}`);
+  return rec;
 }
 
 function removalAudits(
@@ -1123,16 +1096,24 @@ test("the attempt row carries the observed facts before the destructive call", a
   knobs.added = "2026-01-01T00:00:00.000Z";
   storedItems.set(EXT_A, 7);
   const execId = removalApprove(MOVIE_A, "delete_files");
-  const atCall: { row: RemovalRow | null } = { row: null };
+  const atCall: { row: RemovalExecution | null } = { row: null };
   onDelete = () => {
     atCall.row = rawRemoval(execId);
   };
   const summary = await acquisition.runDueWork();
   assert.ok(atCall.row, "the destructive DELETE ran");
   assert.equal(atCall.row.state, "executing", "attempt durable at call time");
-  assert.equal(atCall.row.attempt, 1, "attempt token persisted pre-call");
-  assert.equal(atCall.row.item, 7, "observed item id persisted pre-call");
-  assert.equal(atCall.row.added, knobs.added, "observed added persisted");
+  assert.ok(atCall.row.attemptToken, "attempt token persisted pre-call");
+  assert.equal(
+    atCall.row.whisparrItemId,
+    7,
+    "observed item id persisted pre-call",
+  );
+  assert.equal(
+    atCall.row.whisparrAdded,
+    knobs.added,
+    "observed added persisted",
+  );
   assert.equal(summary.removed, 1);
   assert.equal(summary.errors, 0);
 });

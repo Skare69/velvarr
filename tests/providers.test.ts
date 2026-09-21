@@ -3,14 +3,15 @@
 // canonical credit parents, fake-total suppression, real pagination
 // continuation, not-found vs outage, malformed/oversized payload rejection,
 // artwork host/content-type/size enforcement, not-configured behavior, studio
-// and tag discovery, provider-genuine studio/tag filters, and sort mapping.
+// and tag discovery, provider-genuine studio/tag filters, sort mapping, and
+// the metadata read cache (TTL, stale-on-error, mutation exclusion).
 
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import assert from "node:assert/strict";
 import { test, beforeEach } from "node:test";
 
-import { AppError, resetMetaCache } from "../src/server/http.ts";
+import { AppError } from "../src/server/http.ts";
 import {
   crossProviderLink,
   fetchProviderArtwork,
@@ -19,6 +20,8 @@ import {
   IMAGE_BYTE_CAP,
   isProviderImageUrl,
   resolveSort,
+  requestJson,
+  resetMetaCache,
   searchCatalog,
   searchCatalogTags,
 } from "../src/server/providers.ts";
@@ -567,6 +570,102 @@ test("search deduplicates by provider id, keeps duplicate titles, drops malforme
   } finally {
     await fixture.close();
     restore();
+  }
+});
+
+// --- metadata read cache ---
+
+test("requestJson caches metadata reads and serves stale on upstream failure", async () => {
+  let fail = false;
+  let hits = 0;
+  const TOKEN = "u".repeat(32);
+  const fixture = await startFixture((req, res) => {
+    const path = req.url.split("?")[0];
+    if (fail) return replyJson(res, 503, { down: true });
+    if (path === "/d") {
+      hits += 1;
+      return replyJson(res, 200, { n: hits });
+    }
+    replyJson(res, 200, { ok: true });
+  });
+  try {
+    const count = (p: string) =>
+      fixture.requests.filter((r) => r.url.split("?")[0] === p).length;
+    // TTL 0 forces a refresh on every call; stale-on-error must still win.
+    const refresh = {
+      service: "tpdb" as const,
+      cacheTtlMs: 0,
+    };
+    const first = await requestJson<{ n: number }>(
+      fixture.origin,
+      "/d",
+      TOKEN,
+      refresh,
+    );
+    assert.equal(first.n, 1);
+    fail = true;
+    const stale = await requestJson<{ n: number }>(
+      fixture.origin,
+      "/d",
+      TOKEN,
+      refresh,
+    );
+    assert.equal(stale.n, 1);
+    assert.equal(count("/d"), 2);
+    // Without a cached payload the same outage still surfaces honestly.
+    await assert.rejects(
+      requestJson(fixture.origin, "/fresh", TOKEN, refresh),
+      (err: unknown) =>
+        err instanceof AppError &&
+        err.status === 502 &&
+        err.code === "upstream_unavailable",
+    );
+    fail = false;
+    // Fresh-TTL hits: both reads are served from the phase-1 entry, zero
+    // new upstream calls.
+    const cached = { service: "tpdb" as const, cacheTtlMs: 60_000 };
+    await requestJson(fixture.origin, "/d", TOKEN, cached);
+    const again = await requestJson<{ n: number }>(
+      fixture.origin,
+      "/d",
+      TOKEN,
+      cached,
+    );
+    assert.equal(again.n, 1);
+    assert.equal(count("/d"), 2);
+    // Jellyfin reads are never cached.
+    await requestJson(fixture.origin, "/j", TOKEN);
+    await requestJson(fixture.origin, "/j", TOKEN);
+    assert.equal(count("/j"), 2);
+    // StashDB GraphQL reads cache; mutations never do.
+    await requestJson(fixture.origin, "/graphql", TOKEN, {
+      service: "stashdb",
+      method: "POST",
+      body: { query: "query { version }" },
+      cacheTtlMs: 60_000,
+    });
+    await requestJson(fixture.origin, "/graphql", TOKEN, {
+      service: "stashdb",
+      method: "POST",
+      body: { query: "query { version }" },
+      cacheTtlMs: 60_000,
+    });
+    assert.equal(count("/graphql"), 1);
+    await requestJson(fixture.origin, "/graphql", TOKEN, {
+      service: "stashdb",
+      method: "POST",
+      body: { query: "mutation { x }" },
+      cacheTtlMs: 60_000,
+    });
+    await requestJson(fixture.origin, "/graphql", TOKEN, {
+      service: "stashdb",
+      method: "POST",
+      body: { query: "mutation { x }" },
+      cacheTtlMs: 60_000,
+    });
+    assert.equal(count("/graphql"), 3);
+  } finally {
+    await fixture.close();
   }
 });
 

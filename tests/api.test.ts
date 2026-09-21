@@ -1,6 +1,6 @@
 // API regression tests: privilege, CSRF, session, library denial, outage honesty.
 // Runs handlers directly against local fixture servers. No real network, no real providers.
-import { test, before, after, beforeEach } from "node:test";
+import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import {
   createServer,
@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Buffer } from "node:buffer";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { resetMetaCache } from "../src/server/http.ts";
+import { resetMetaCache } from "../src/server/providers.ts";
 import { countPendingApprovals } from "../src/lib/approvals.ts";
 
 // Isolated environment BEFORE importing route/storage modules.
@@ -25,11 +25,6 @@ delete process.env.TPDB_API_TOKEN;
 delete process.env.STASHDB_API_KEY;
 
 const ORIGIN = process.env.VELVARR_ORIGIN;
-// The metadata cache persists across tests in this file (one shared fixture
-// upstream); every test must start with a cold cache.
-beforeEach(() => {
-  resetMetaCache();
-});
 
 // --- fixture identities (32-hex Jellyfin-style IDs) ---
 

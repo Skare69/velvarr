@@ -39,6 +39,7 @@ import {
   messageOf,
   providerLabel,
   SessionCtx,
+  useApiGet,
   useParamsSetter,
   useSession,
   useTapReveal,
@@ -779,34 +780,25 @@ function GlobalSearchForm() {
  * ponytail: no polling or SSE — another tab's decision lands on this one's
  * next navigation; add a live channel only if operators need cross-tab counts. */
 function usePendingApprovals(account: Account, view: View): number {
-  const [count, setCount] = useState(0);
   const eligible =
     account.role === "admin" ||
     account.role === "moderator" ||
     account.autoApprove;
+  const { data, error, reload } = useApiGet<{ requests: RequestRecord[] }>(
+    eligible ? "/api/requests" : null,
+    [eligible, account, view],
+  );
+  // The Requests view announces fresh authoritative rows, so approving a
+  // request drops the count immediately. A failed read counts zero — a
+  // wrong number is worse than no badge.
   useEffect(() => {
-    if (!eligible) {
-      setCount(0);
-      return;
-    }
-    let live = true;
-    const read = () => {
-      api<{ requests: RequestRecord[] }>("/api/requests")
-        .then((d) => {
-          if (live) setCount(countPendingApprovals(d.requests, account));
-        })
-        .catch(() => {
-          if (live) setCount(0);
-        });
-    };
-    read();
-    window.addEventListener(REQUESTS_CHANGED, read);
-    return () => {
-      live = false;
-      window.removeEventListener(REQUESTS_CHANGED, read);
-    };
-  }, [eligible, account, view]);
-  return count;
+    if (!eligible) return;
+    window.addEventListener(REQUESTS_CHANGED, reload);
+    return () => window.removeEventListener(REQUESTS_CHANGED, reload);
+  }, [eligible, reload]);
+  return error === null && data !== null
+    ? countPendingApprovals(data.requests, account)
+    : 0;
 }
 
 function Shell() {
@@ -1180,10 +1172,6 @@ function LibraryView() {
   const [searchInput, setSearchInput] = useState(search);
   const [libs, setLibs] = useState<Library[] | null>(null);
   const [libsError, setLibsError] = useState<string | null>(null);
-  const [pageData, setPageData] = useState<LibraryPage | null>(null);
-  const [gridError, setGridError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [reload, setReload] = useState(0);
   const closeItem = useCallback(() => setP({ item: null }), [setP]);
 
   const loadLibs = useCallback(() => {
@@ -1205,33 +1193,23 @@ function LibraryView() {
     return () => clearTimeout(t);
   }, [searchInput, search, setP]);
 
-  useEffect(() => {
-    let live = true;
-    setLoading(true);
-    setGridError(null);
-    const qs = new URLSearchParams({
-      start: String(start),
-      limit: String(limit),
-      search,
-    });
-    if (libraryId) qs.set("libraryId", libraryId);
-    api<LibraryPage>(`/api/library?${qs}`)
-      .then((d) => {
-        if (live) {
-          setPageData(d);
-          setLoading(false);
-        }
-      })
-      .catch((e) => {
-        if (live) {
-          setGridError(messageOf(e));
-          setLoading(false);
-        }
-      });
-    return () => {
-      live = false;
-    };
-  }, [start, limit, search, libraryId, reload]);
+  const gridQs = new URLSearchParams({
+    start: String(start),
+    limit: String(limit),
+    search,
+  });
+  if (libraryId) gridQs.set("libraryId", libraryId);
+  const {
+    data: pageData,
+    error: gridError,
+    loading,
+    reload,
+  } = useApiGet<LibraryPage>(`/api/library?${gridQs}`, [
+    start,
+    limit,
+    search,
+    libraryId,
+  ]);
 
   const items = pageData?.items ?? [];
   const end = pageData
@@ -1241,7 +1219,10 @@ function LibraryView() {
     ? pageData.start + pageData.items.length < pageData.total
     : false;
 
-  if (itemId) return <ItemDetail id={itemId} onClose={closeItem} />;
+  // Keyed per item: the hook keeps its last read, so an id change without a
+  // remount would show the previous item's details until the fetch lands.
+  if (itemId)
+    return <ItemDetail key={itemId} id={itemId} onClose={closeItem} />;
 
   return (
     <section aria-label="Library">
@@ -1303,7 +1284,7 @@ function LibraryView() {
         <ErrorPanel
           title="Library unavailable"
           message={gridError}
-          onRetry={() => setReload((n) => n + 1)}
+          onRetry={reload}
         />
       ) : loading ? (
         <div className="poster-grid" aria-label="Loading library">
@@ -1401,22 +1382,13 @@ function LibraryView() {
 
 /* ---------- Library detail page ---------- */
 function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
-  const [item, setItem] = useState<LibraryItem | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [reload, setReload] = useState(0);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    let live = true;
-    setError(null);
-    setItem(null);
-    api<{ item: LibraryItem }>(`/api/library/${encodeURIComponent(id)}`)
-      .then((d) => live && setItem(d.item))
-      .catch((e) => live && setError(messageOf(e)));
-    return () => {
-      live = false;
-    };
-  }, [id, reload]);
+  const { data, error, reload } = useApiGet<{ item: LibraryItem }>(
+    `/api/library/${encodeURIComponent(id)}`,
+    [id],
+  );
+  const item = data?.item ?? null;
 
   useEffect(() => {
     const scrollY = window.scrollY;
@@ -1459,11 +1431,7 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
         <span className="chip">In your library</span>
       </div>
       {error ? (
-        <ErrorPanel
-          title="Item unavailable"
-          message={error}
-          onRetry={() => setReload((n) => n + 1)}
-        />
+        <ErrorPanel title="Item unavailable" message={error} onRetry={reload} />
       ) : !item ? (
         <div
           className="skel h-96"

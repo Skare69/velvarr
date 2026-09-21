@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -24,6 +25,7 @@ import {
   MovieCard,
   providerLabel,
   SceneCard,
+  useApiGet,
   useParamsSetter,
   useSession,
 } from "./shared";
@@ -588,46 +590,36 @@ function usePerformerOptions(
   loading: boolean;
 } {
   const t = term.trim();
-  const [items, setItems] = useState<CatalogDetail[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  // The debounce commits the read path, not the fetch: keystrokes settle
+  // before the hook sees a new read at all.
+  const [committed, setCommitted] = useState<{
+    term: string;
+    path: string;
+  } | null>(null);
   useEffect(() => {
     if (t === "") {
-      setItems([]);
-      setError(null);
-      setLoading(false);
+      setCommitted(null);
       return;
     }
-    let live = true;
-    setLoading(true);
     const timer = setTimeout(() => {
       const qs = new URLSearchParams({ provider, kind: "performer", q: t });
       if (provider === "tpdb") {
         qs.set("page", "1");
         qs.set("perPage", "10");
       }
-      api<CatalogSearchPage>(`/api/catalog/search?${qs.toString()}`)
-        .then((d) => {
-          if (live) {
-            setItems(d.items);
-            setError(null);
-            setLoading(false);
-          }
-        })
-        .catch((e) => {
-          if (live) {
-            setItems([]);
-            setError(messageOf(e));
-            setLoading(false);
-          }
-        });
+      setCommitted({ term: t, path: `/api/catalog/search?${qs.toString()}` });
     }, 400);
-    return () => {
-      live = false; // stale in-flight responses are ignored
-      clearTimeout(timer);
-    };
+    return () => clearTimeout(timer);
   }, [provider, t]);
-  return { items, error, loading };
+  const { data, error, loading } = useApiGet<CatalogSearchPage>(
+    committed?.path ?? null,
+    [committed?.path],
+  );
+  return {
+    items: data?.items ?? [],
+    error,
+    loading: t !== "" && (committed?.term !== t || loading),
+  };
 }
 
 function PerformerPicker({
@@ -724,39 +716,28 @@ function TagPicker({
   onAdd: (tag: { id: string; name: string }) => void;
 }) {
   const [term, setTerm] = useState("");
-  const [tags, setTags] = useState<{ id: string; name: string }[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const t = term.trim();
+  // The debounce commits the term; the route only ever sees settled input.
+  const [committed, setCommitted] = useState<string | null>(null);
   useEffect(() => {
     if (t.length < 2) {
       // The route 400s under two characters; it is simply not called.
-      setTags(null);
-      setError(null);
+      setCommitted(null);
       return;
     }
-    let live = true;
-    const timer = setTimeout(() => {
-      api<{ tags: { id: string; name: string }[] }>(
-        `/api/catalog/tags?provider=${provider}&q=${encodeURIComponent(t)}`,
-      )
-        .then((d) => {
-          if (live) {
-            setTags(d.tags);
-            setError(null);
-          }
-        })
-        .catch((e) => {
-          if (live) {
-            setTags(null);
-            setError(messageOf(e));
-          }
-        });
-    }, 400);
-    return () => {
-      live = false;
-      clearTimeout(timer);
-    };
-  }, [provider, t]);
+    const timer = setTimeout(() => setCommitted(t), 400);
+    return () => clearTimeout(timer);
+  }, [t]);
+  const { data, error } = useApiGet<{
+    tags: { id: string; name: string }[];
+  }>(
+    committed === null
+      ? null
+      : `/api/catalog/tags?provider=${provider}&q=${encodeURIComponent(committed)}`,
+    [provider, committed],
+  );
+  // A failed search hides the previous list, as the old catch did.
+  const tags = error === null ? (data?.tags ?? null) : null;
   const capped = selected.length >= TAG_CAP;
   const matches = (tags ?? []).filter(
     (tg) => UUID_RE.test(tg.id) && !selected.includes(tg.id),
@@ -917,14 +898,8 @@ function useCatalogSearch(f: CatalogQuery): {
   error: string | null;
   loading: boolean;
 } {
-  const [data, setData] = useState<CatalogSearchPage | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(f.enabled);
-  useEffect(() => {
-    if (!f.enabled) return;
-    let live = true;
-    setError(null);
-    setLoading(true);
+  const path = useMemo(() => {
+    if (!f.enabled) return null;
     const qs = new URLSearchParams({ provider: f.provider, kind: f.kind });
     if (f.paged) {
       qs.set("page", String(f.page));
@@ -946,23 +921,7 @@ function useCatalogSearch(f: CatalogQuery): {
       qs.set("sort", f.sort);
       if (f.direction) qs.set("direction", f.direction);
     }
-    api<CatalogSearchPage>(`/api/catalog/search?${qs.toString()}`)
-      .then((d) => {
-        if (live) {
-          setData(d);
-          setLoading(false);
-        }
-      })
-      .catch((e) => {
-        if (live) {
-          // An outage is an error, never an empty page.
-          setError(messageOf(e));
-          setLoading(false);
-        }
-      });
-    return () => {
-      live = false; // stale in-flight responses are ignored
-    };
+    return `/api/catalog/search?${qs.toString()}`;
   }, [
     f.provider,
     f.kind,
@@ -982,9 +941,11 @@ function useCatalogSearch(f: CatalogQuery): {
     f.perPage,
     f.paged,
     f.enabled,
-    f.reload,
   ]);
-  return { data, error, loading };
+  // An outage is an error, never an empty page: the error string rides out
+  // of the hook and the view offers a retry instead of a "no rows" panel.
+  // f.reload is the caller's retry counter, not a path input.
+  return useApiGet<CatalogSearchPage>(path, [path, f.reload]);
 }
 
 /* ---------- Detail page ---------- */
@@ -1073,25 +1034,13 @@ function useAvailability(
     id: string;
   } | null,
 ): PlaybackAccess | null {
-  const [avail, setAvail] = useState<PlaybackAccess | null>(null);
-  useEffect(() => {
-    if (!target) return;
-    let live = true;
-    setAvail(null);
-    api<PlaybackAccess>(
-      `/api/availability/${target.provider}/${target.kind}/${encodeURIComponent(target.id)}`,
-    )
-      .then((d) => {
-        if (live) setAvail(d);
-      })
-      .catch(() => {
-        if (live) setAvail(null);
-      });
-    return () => {
-      live = false;
-    };
-  }, [target?.provider, target?.kind, target?.id]);
-  return avail;
+  const { data } = useApiGet<PlaybackAccess>(
+    target
+      ? `/api/availability/${target.provider}/${target.kind}/${encodeURIComponent(target.id)}`
+      : null,
+    [target?.provider, target?.kind, target?.id],
+  );
+  return data;
 }
 
 /** Error codes from POST /api/removals, mapped faithfully. */
@@ -1123,12 +1072,6 @@ function RemovalAction({
 }) {
   const { account } = useSession();
   const grant = account.canRemove;
-  const [data, setData] = useState<{
-    removals: RemovalRequest[];
-    enabled: boolean;
-  } | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [reload, setReload] = useState(0);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1137,21 +1080,14 @@ function RemovalAction({
 
   // One read gives the operator flag (enabled) and this user's existing
   // removal requests, so the surface never guesses its own availability.
-  useEffect(() => {
-    if (!grant) return;
-    let live = true;
-    setLoadError(null);
-    api<{ removals: RemovalRequest[]; enabled: boolean }>("/api/removals")
-      .then((d) => {
-        if (live) setData(d);
-      })
-      .catch((e: unknown) => {
-        if (live) setLoadError(messageOf(e));
-      });
-    return () => {
-      live = false;
-    };
-  }, [grant, target.provider, target.kind, target.id, reload]);
+  const {
+    data,
+    error: loadError,
+    reload,
+  } = useApiGet<{ removals: RemovalRequest[]; enabled: boolean }>(
+    grant ? "/api/removals" : null,
+    [grant, target.provider, target.kind, target.id],
+  );
 
   const existing =
     data?.removals.find(
@@ -1193,7 +1129,7 @@ function RemovalAction({
           e instanceof ApiError &&
           (e.code === "removal_request_exists" || e.code === "forbidden")
         )
-          setReload((n) => n + 1); // surface the server's real state
+          reload(); // surface the server's real state
       })
       .finally(() => setBusy(false));
   };
@@ -1221,7 +1157,7 @@ function RemovalAction({
           <ErrorPanel
             title="Removal state unavailable"
             message={loadError}
-            onRetry={() => setReload((n) => n + 1)}
+            onRetry={reload}
           />
         </div>
       ) : data === null ? (
@@ -2238,23 +2174,22 @@ export function MoviesView() {
   const retry = useCallback(() => setReload((n) => n + 1), []);
   // An active studio id with no captured name is resolved once through its
   // detail endpoint; failure keeps the honest id label.
-  const [studioName, setStudioName] = useState<string | null>(null);
+  const { data: studioDetail } = useApiGet<DetailPayload>(
+    studio && !filterNames.has(`tpdb:studio:${studio}`)
+      ? `/api/catalog/tpdb/studio/${encodeURIComponent(studio)}`
+      : null,
+    [studio],
+  );
+  // The payload names itself (its own reference), so a response raced by a
+  // studio switch is never written under the wrong key nor mislabels a chip.
+  const studioName =
+    studio && studioDetail?.detail.reference.id === studio
+      ? studioDetail.detail.title
+      : null;
   useEffect(() => {
-    setStudioName(null);
-    if (!studio || filterNames.has(`tpdb:studio:${studio}`)) return;
-    let live = true;
-    api<DetailPayload>(`/api/catalog/tpdb/studio/${encodeURIComponent(studio)}`)
-      .then((d) => {
-        filterNames.set(`tpdb:studio:${studio}`, d.detail.title);
-        if (live) setStudioName(d.detail.title);
-      })
-      .catch(() => {
-        // Naming is cosmetic — the chip falls back to the id itself.
-      });
-    return () => {
-      live = false;
-    };
-  }, [studio]);
+    if (studioName && studio)
+      filterNames.set(`tpdb:studio:${studio}`, studioName);
+  }, [studio, studioName]);
   // Every active filter, labelled; reused by the chip row and the drawer's
   // "From details" block.
   const chips: ReactNode[] = [];
@@ -2619,25 +2554,22 @@ export function ScenesView() {
   // An active studio id with no captured name is resolved once through its
   // detail endpoint (same pattern as the parent-studio hint below);
   // failure keeps the honest id label.
-  const [studioName, setStudioName] = useState<string | null>(null);
+  const { data: studioDetail } = useApiGet<DetailPayload>(
+    studio && !filterNames.has(`${provider}:studio:${studio}`)
+      ? `/api/catalog/${provider}/studio/${encodeURIComponent(studio)}`
+      : null,
+    [provider, studio],
+  );
+  // The payload names itself (its own reference), so a response raced by a
+  // studio switch is never written under the wrong key nor mislabels a chip.
+  const studioName =
+    studio && studioDetail?.detail.reference.id === studio
+      ? studioDetail.detail.title
+      : null;
   useEffect(() => {
-    setStudioName(null);
-    if (!studio || filterNames.has(`${provider}:studio:${studio}`)) return;
-    let live = true;
-    api<DetailPayload>(
-      `/api/catalog/${provider}/studio/${encodeURIComponent(studio)}`,
-    )
-      .then((d) => {
-        filterNames.set(`${provider}:studio:${studio}`, d.detail.title);
-        if (live) setStudioName(d.detail.title);
-      })
-      .catch(() => {
-        // Naming is cosmetic — the chip falls back to the id itself.
-      });
-    return () => {
-      live = false;
-    };
-  }, [provider, studio]);
+    if (studioName && studio)
+      filterNames.set(`${provider}:studio:${studio}`, studioName);
+  }, [provider, studio, studioName]);
   // A StashDB studio browse that returns zero items may mean the studio is
   // a parent label whose scenes live under its child studios. The studio's
   // own detail is fetched only in exactly that case, to tell "parent
@@ -2645,30 +2577,25 @@ export function ScenesView() {
   // honest without asserting a number.
   const emptyStashStudio =
     studio !== "" && data !== null && data.items.length === 0;
-  const [studioInfo, setStudioInfo] = useState<
-    { title: string; childStudioCount?: number } | "failed" | null
-  >(null);
-  useEffect(() => {
-    setStudioInfo(null);
-    if (!emptyStashStudio) return;
-    let live = true;
-    api<DetailPayload>(
-      `/api/catalog/stashdb/studio/${encodeURIComponent(studio)}`,
-    )
-      .then((d) => {
-        if (live)
-          setStudioInfo({
-            title: d.detail.title,
-            childStudioCount: d.detail.childStudioCount,
-          });
-      })
-      .catch(() => {
-        if (live) setStudioInfo("failed");
-      });
-    return () => {
-      live = false;
-    };
-  }, [emptyStashStudio, studio, data]);
+  const { data: studioInfoDetail, error: studioInfoError } =
+    useApiGet<DetailPayload>(
+      emptyStashStudio
+        ? `/api/catalog/stashdb/studio/${encodeURIComponent(studio)}`
+        : null,
+      [emptyStashStudio, studio, data],
+    );
+  // The payload names itself (its own reference), so a response raced by a
+  // studio or result change never reports the wrong label.
+  const studioInfo:
+    { title: string; childStudioCount?: number } | "failed" | null =
+    studioInfoError !== null
+      ? "failed"
+      : emptyStashStudio && studioInfoDetail?.detail.reference.id === studio
+        ? {
+            title: studioInfoDetail.detail.title,
+            childStudioCount: studioInfoDetail.detail.childStudioCount,
+          }
+        : null;
   const parentEmpty = emptyStashStudio
     ? studioInfo === null || studioInfo === "failed"
       ? { kind: "maybe" as const }

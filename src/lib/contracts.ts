@@ -1,5 +1,6 @@
-// Velvarr shared records — M1 shapes plus M2 catalog/request/acquisition records.
-// Plain records only; no implementation lives here.
+// Velvarr shared records: the vocabulary both the client and the server use.
+// Mostly plain records; the few functions here are choke points that must give
+// the same answer on both sides (deliverability, the removal ladder).
 
 export type Role = "admin" | "moderator" | "requester";
 
@@ -124,8 +125,50 @@ export type RequestListItem = RequestRecord & {
   acquisition?: RequestAcquisition | null;
 };
 
-export type RemovalLevel =
-  "unmonitor" | "drop" | "exclude" | "delete_files" | "delete_jellyfin_item";
+/** The escalation ladder, least → most destructive. One table: rank orders
+ * escalation, `destructive` marks the irreversible rungs, `requiresUserToken`
+ * marks the rung the integration worker can never execute because it needs
+ * the requester's own media-server session. Every other module reads these
+ * facts from here instead of re-testing level names. */
+export const REMOVAL_LADDER = [
+  { level: "unmonitor", destructive: false, requiresUserToken: false },
+  { level: "drop", destructive: false, requiresUserToken: false },
+  { level: "exclude", destructive: false, requiresUserToken: false },
+  { level: "delete_files", destructive: true, requiresUserToken: false },
+  { level: "delete_jellyfin_item", destructive: true, requiresUserToken: true },
+] as const;
+
+export type RemovalLevel = (typeof REMOVAL_LADDER)[number]["level"];
+
+export const REMOVAL_LEVELS: readonly RemovalLevel[] = REMOVAL_LADDER.map(
+  (rung) => rung.level,
+);
+
+/** Runtime check, never a cast. */
+export function isRemovalLevel(value: string): value is RemovalLevel {
+  return REMOVAL_LEVELS.includes(value as RemovalLevel);
+}
+
+/** Escalation order: a later approval may raise an unstarted shared execution
+ * to a level some approver explicitly chose, never lower it. */
+export function removalLevelRank(level: RemovalLevel): number {
+  return REMOVAL_LADDER.findIndex((rung) => rung.level === level);
+}
+
+/** Irreversible rungs: file deletion and Jellyfin item deletion. */
+export function isDestructiveLevel(level: RemovalLevel): boolean {
+  return REMOVAL_LADDER.some(
+    (rung) => rung.level === level && rung.destructive,
+  );
+}
+
+/** True when the rung can only run under the requester's own media-server
+ * session, so the integration worker must refuse it rather than downgrade. */
+export function requiresUserToken(level: RemovalLevel): boolean {
+  return REMOVAL_LADDER.some(
+    (rung) => rung.level === level && rung.requiresUserToken,
+  );
+}
 
 export type RemovalDecision = "pending" | "approved" | "declined" | "cancelled";
 
