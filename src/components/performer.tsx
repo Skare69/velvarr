@@ -8,6 +8,7 @@ import {
   duration,
   ErrorPanel,
   GridSkeleton,
+  detailParams,
   Icon,
   imgSrc,
   intOr,
@@ -47,16 +48,11 @@ type SearchPage = {
 
 /* ---------- Small helpers (same conventions as catalog.tsx) ---------- */
 
-/** Opening another record leaves this page, so the per-kind page keys are
- * dropped: page 3 of one performer's movies is meaningless on the next. */
+/** Opening another record leaves this page for that record's own surface;
+ * the per-kind page keys are dropped because page 3 of one performer's
+ * movies is meaningless on the next. */
 function openParams(r: CatalogReference) {
-  return {
-    provider: r.provider,
-    kind: r.kind,
-    id: r.id,
-    moviePage: null,
-    scenePage: null,
-  };
+  return { ...detailParams(r), moviePage: null, scenePage: null };
 }
 
 /* ---------- Fetch hooks: a live flag makes stale in-flight responses inert ---------- */

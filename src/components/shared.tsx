@@ -508,11 +508,37 @@ export function providerLabel(p: CatalogProvider): string {
   return p === "tpdb" ? "TPDB" : "StashDB";
 }
 
-/** Link target for the shared URL contract: an open catalog detail is
- * view + provider + kind + id; the catalog view matches the media kind. */
+/** Which surface renders a reference's detail: a movie or scene detail lives
+ * over its browse view, a performer detail over Performers. A studio detail
+ * opens where you already are, so no view is named. One table, because the
+ * copies of this rule drifted — one named a view that does not exist, and one
+ * surface named none at all, so those cards opened nothing. */
+export function detailParams(r: CatalogReference): {
+  view?: string;
+  provider: string;
+  kind: string;
+  id: string;
+} {
+  const view =
+    r.kind === "movie"
+      ? "movies"
+      : r.kind === "scene"
+        ? "scenes"
+        : r.kind === "performer"
+          ? "following"
+          : null;
+  return {
+    ...(view ? { view } : {}),
+    provider: r.provider,
+    kind: r.kind,
+    id: r.id,
+  };
+}
+
+/** Link target for the same contract, for anchors rather than param patches. */
 export function detailHref(media: MediaReference): string {
-  const view = media.kind === "movie" ? "movies" : "scenes";
-  return `/?view=${view}&provider=${media.provider}&kind=${media.kind}&id=${encodeURIComponent(media.id)}`;
+  const p = detailParams(media);
+  return `/?view=${p.view}&provider=${p.provider}&kind=${p.kind}&id=${encodeURIComponent(p.id)}`;
 }
 
 export function GridSkeleton({

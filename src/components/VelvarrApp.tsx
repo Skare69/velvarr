@@ -1076,10 +1076,18 @@ function FollowingView() {
   };
 
   // Performer detail is this view's own detail page: provider + id in the
-  // URL open it, and Back drops straight to the follow list.
+  // URL open it, and Back drops straight to the follow list. The kind is
+  // checked, because a movie or scene id here is not a performer — this view
+  // used to hand any id to the performer page, which then asked the provider
+  // for a performer that never existed.
   const id = params.get("id");
   const provider = params.get("provider");
-  if (id && (provider === "tpdb" || provider === "stashdb")) {
+  const kind = params.get("kind");
+  if (
+    id &&
+    (provider === "tpdb" || provider === "stashdb") &&
+    (kind === null || kind === "performer")
+  ) {
     return (
       <section aria-label="Performer">
         <PerformerView reference={{ provider, kind: "performer", id }} />

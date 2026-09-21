@@ -13,6 +13,7 @@ import "./catalog.css";
 import {
   api,
   ApiError,
+  detailParams,
   duration,
   ErrorPanel,
   FileFacts,
@@ -1951,19 +1952,10 @@ function CatalogDetail() {
           payload={payload}
           target={target}
           onNavigate={(r) =>
-            setP(
-              {
-                // A performer page lives on the Performers (follow) surface;
-                // without the view switch the reference changed but nothing
-                // rendered it.
-                ...(r.kind === "performer" ? { view: "following" } : {}),
-                provider: r.provider,
-                kind: r.kind,
-                id: r.id,
-              },
-              // Detail navigation is a surface change: Back walks the trail.
-              { push: true },
-            )
+            // Each kind's detail lives on its own surface; without the view
+            // switch the reference changed but nothing rendered it.
+            // Detail navigation is a surface change: Back walks the trail.
+            setP(detailParams(r), { push: true })
           }
           onBrowse={browseTo}
           onRefetch={() => setReload((n) => n + 1)}

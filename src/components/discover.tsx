@@ -19,6 +19,7 @@ import {
   CardStatusBadge,
   type CardStatusKind,
   CardTypeBadge,
+  detailParams,
   ErrorPanel,
   Icon,
   imgSrc,
@@ -514,24 +515,10 @@ export function DiscoverShelves() {
   }, [load]);
 
   // Catalog cards open the detail over the matching surface view; the
-  // destination view mounts the shared detail dialog for provider+kind+id.
+  // destination view mounts the shared detail for provider+kind+id.
   // Surface/detail transitions push a history entry so Back returns here.
   const openDetail = useCallback(
-    (r: CatalogReference) =>
-      setP(
-        {
-          view:
-            r.kind === "movie"
-              ? "movies"
-              : r.kind === "scene"
-                ? "scenes"
-                : "performers",
-          provider: r.provider,
-          kind: r.kind,
-          id: r.id,
-        },
-        { push: true },
-      ),
+    (r: CatalogReference) => setP(detailParams(r), { push: true }),
     [setP],
   );
 
