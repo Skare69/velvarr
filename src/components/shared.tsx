@@ -78,18 +78,24 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
  * stale-response guard, manual retry. `deps` re-runs the read; a null path
  * means "nothing to read" and is the only thing that clears `data` — browse
  * pages swap in place and retries keep the last view honest, so a re-run
- * never blanks it. */
+ * never blanks it.
+ *
+ * `error` is what views render; `err` is for the two views that must tell one
+ * failure from another (a 404 "not in the provider catalog" versus an outage),
+ * which a flattened string cannot express. */
 export function useApiGet<T>(
   path: string | null,
   deps: DependencyList,
 ): {
   data: T | null;
   error: string | null;
+  err: ApiError | null;
   loading: boolean;
   reload: () => void;
 } {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [err, setErr] = useState<ApiError | null>(null);
   const [loading, setLoading] = useState(path !== null);
   const [tick, setTick] = useState(0);
   const reload = useCallback(() => setTick((n) => n + 1), []);
@@ -97,11 +103,13 @@ export function useApiGet<T>(
     if (path === null) {
       setData(null);
       setError(null);
+      setErr(null);
       setLoading(false);
       return;
     }
     let live = true;
     setError(null);
+    setErr(null);
     setLoading(true);
     api<T>(path)
       .then((d) => {
@@ -113,6 +121,7 @@ export function useApiGet<T>(
       .catch((e: unknown) => {
         if (live) {
           setError(messageOf(e));
+          setErr(e instanceof ApiError ? e : null);
           setLoading(false);
         }
       });
@@ -120,7 +129,7 @@ export function useApiGet<T>(
       live = false; // stale in-flight responses are ignored
     };
   }, [...deps, path, tick]);
-  return { data, error, loading, reload };
+  return { data, error, err, loading, reload };
 }
 
 /* ---------- Touch: first tap reveals, second tap opens ---------- */

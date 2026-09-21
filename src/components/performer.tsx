@@ -49,45 +49,28 @@ type SearchPage = {
 
 /* ---------- Fetch hooks: a live flag makes stale in-flight responses inert ---------- */
 
+/** The view tells three failures apart — provider not configured, a 404 that
+ * means "gone at the source", and an outage that deserves a retry — so this
+ * read needs the ApiError, not just its message. */
 function usePerformerDetail(
   provider: CatalogProvider,
   id: string,
   enabled: boolean,
   reload: number,
 ): { payload: DetailPayload | null; err: ApiError | null; loading: boolean } {
-  const [payload, setPayload] = useState<DetailPayload | null>(null);
-  const [err, setErr] = useState<ApiError | null>(null);
-  const [loading, setLoading] = useState(enabled);
-  useEffect(() => {
-    if (!enabled) return;
-    let live = true;
-    setPayload(null);
-    setErr(null);
-    setLoading(true);
-    api<DetailPayload>(
-      `/api/catalog/${provider}/performer/${encodeURIComponent(id)}`,
-    )
-      .then((d) => {
-        if (live) {
-          setPayload(d);
-          setLoading(false);
-        }
-      })
-      .catch((e: unknown) => {
-        if (live) {
-          setErr(
-            e instanceof ApiError
-              ? e
-              : new ApiError(0, "network", messageOf(e)),
-          );
-          setLoading(false);
-        }
-      });
-    return () => {
-      live = false;
-    };
-  }, [provider, id, enabled, reload]);
-  return { payload, err, loading };
+  const { data, error, err, loading } = useApiGet<DetailPayload>(
+    enabled
+      ? `/api/catalog/${provider}/performer/${encodeURIComponent(id)}`
+      : null,
+    [provider, id, reload],
+  );
+  return {
+    payload: data,
+    // A non-ApiError failure still has to reach the retry panel, not fall
+    // through to a skeleton that never resolves.
+    err: err ?? (error === null ? null : new ApiError(0, "network", error)),
+    loading,
+  };
 }
 
 function usePerformerListing(

@@ -5,7 +5,6 @@
 // free watch links, and read-only Whisparr status mapping.
 
 import http from "node:http";
-import type { AddressInfo } from "node:net";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -28,23 +27,34 @@ import {
   validateUser,
 } from "../src/server/jellyfin.ts";
 import { getWhisparrStatus } from "../src/server/whisparr.ts";
-import type {
-  Account,
-  IntegrationConfig,
-  LibraryItem,
-} from "../src/lib/contracts.ts";
+import type { IntegrationConfig, LibraryItem } from "../src/lib/contracts.ts";
+import {
+  ADMIN_KEY,
+  ITEM_ID,
+  LIB_A,
+  LIB_B,
+  LIB_C,
+  ME_ID,
+  SERVER_ID,
+  TOKEN,
+  WH_KEY,
+  account,
+  appError,
+  dashed,
+  hexId,
+  jellyfinConfig,
+  pathOf,
+  queryOf,
+  sendBytes,
+  sendJson,
+  startFixture,
+  whisparrConfig,
+  withFixture,
+} from "./fixture.ts";
+import type { Fixture, FixtureHandler, RecordedRequest } from "./fixture.ts";
 
-// --- constants and fixture helpers ---
+// --- suite-specific fixtures ---
 
-const SERVER_ID = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d";
-const ME_ID = "b".repeat(32);
-const TOKEN = "u".repeat(32);
-const ADMIN_KEY = "a".repeat(32);
-const WH_KEY = "w".repeat(32);
-const LIB_A = "aa11".repeat(8);
-const LIB_B = "bb22".repeat(8);
-const LIB_C = "cc33".repeat(8);
-const ITEM_ID = "d".repeat(32);
 const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const IMAGE_LIMIT = 8 * 1024 * 1024;
 
@@ -58,159 +68,6 @@ const ME = {
     EnableMediaPlayback: true,
   },
 };
-
-interface RecordedRequest {
-  method: string;
-  url: string;
-  headers: http.IncomingHttpHeaders;
-  body: string;
-}
-
-type FixtureHandler = (
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  body: string,
-) => void;
-
-interface Fixture {
-  origin: string;
-  log: RecordedRequest[];
-  close: () => Promise<void>;
-}
-
-function dashed(id: string): string {
-  return `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20, 32)}`;
-}
-
-function hexId(n: number): string {
-  return n.toString(16).padStart(32, "0");
-}
-
-function sendJson(
-  res: http.ServerResponse,
-  status: number,
-  value: unknown,
-): void {
-  res.writeHead(status, { "content-type": "application/json" });
-  res.end(JSON.stringify(value));
-}
-
-function sendBytes(
-  res: http.ServerResponse,
-  status: number,
-  bytes: Buffer,
-  contentType: string,
-): void {
-  res.writeHead(status, { "content-type": contentType });
-  res.end(bytes);
-}
-
-function pathOf(url: string): string {
-  return (url.split("?")[0] ?? "").toLowerCase();
-}
-
-function queryOf(url: string): URLSearchParams {
-  return new URLSearchParams(url.split("?")[1] ?? "");
-}
-
-function appError(status: number, code: string): (err: unknown) => boolean {
-  return (err) =>
-    err instanceof AppError && err.status === status && err.code === code;
-}
-
-function jellyfinConfig(
-  origin: string,
-  libraryIds: string[],
-): IntegrationConfig {
-  return {
-    jellyfin: {
-      url: origin,
-      externalUrl: `${origin}/jf`,
-      apiKey: ADMIN_KEY,
-      serverId: SERVER_ID,
-      libraryIds,
-    },
-  };
-}
-
-function whisparrConfig(origin: string): IntegrationConfig {
-  return {
-    jellyfin: {
-      url: origin,
-      externalUrl: origin,
-      apiKey: ADMIN_KEY,
-      serverId: SERVER_ID,
-      libraryIds: [],
-    },
-    whisparr: { url: origin, apiKey: WH_KEY },
-  };
-}
-
-function account(libraryIds: string[]): Account {
-  return {
-    id: "acct-1",
-    name: "bob",
-    role: "requester",
-    enabled: true,
-    libraryIds,
-    isOwner: false,
-    autoApprove: false,
-    canRemove: false,
-    joinedAt: 0,
-  };
-}
-
-function startFixture(handler: FixtureHandler): Promise<Fixture> {
-  const { promise, resolve, reject } = Promise.withResolvers<Fixture>();
-  const log: RecordedRequest[] = [];
-  const server = http.createServer((req, res) => {
-    res.on("error", () => {});
-    const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => {
-      const body = Buffer.concat(chunks).toString("utf8");
-      log.push({
-        method: req.method ?? "GET",
-        url: req.url ?? "/",
-        headers: req.headers,
-        body,
-      });
-      try {
-        handler(req, res, body);
-      } catch (err) {
-        sendJson(res, 500, { fixtureError: String(err) });
-      }
-    });
-  });
-  server.on("error", reject);
-  server.on("clientError", (_err, socket) => socket.destroy());
-  server.listen(0, "127.0.0.1", () => {
-    const address = server.address() as AddressInfo;
-    resolve({
-      origin: `http://127.0.0.1:${address.port}`,
-      log,
-      close: () => {
-        server.closeAllConnections();
-        const done = Promise.withResolvers<void>();
-        server.close(() => done.resolve());
-        return done.promise;
-      },
-    });
-  });
-  return promise;
-}
-
-async function withFixture(
-  handler: FixtureHandler,
-  run: (fx: Fixture) => Promise<void>,
-): Promise<void> {
-  const fx = await startFixture(handler);
-  try {
-    await run(fx);
-  } finally {
-    await fx.close();
-  }
-}
 
 // Standard Jellyfin routes: /Users/Me identity plus per-library paged item
 // lists with optional search filtering.

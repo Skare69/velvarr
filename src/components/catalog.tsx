@@ -1818,14 +1818,24 @@ function CatalogDetail() {
   const pageRef = useRef<HTMLDivElement>(null);
   const prevFocus = useRef<HTMLElement | null>(null);
   const wasOpen = useRef(false);
-  const [payload, setPayload] = useState<DetailPayload | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [notFound, setNotFound] = useState(false);
   const [reload, setReload] = useState(0);
   const provider = target?.provider;
   const kind = target?.kind;
   const id = target?.id;
   const refKey = provider && kind && id ? `${provider}:${kind}:${id}` : null;
+  const detail = useApiGet<DetailPayload>(
+    provider && kind && id
+      ? `/api/catalog/${provider}/${kind}/${encodeURIComponent(id)}`
+      : null,
+    [provider, kind, id, reload],
+  );
+  // 404 catalog_not_found is authoritative absence, not an outage: it gets its
+  // own panel and no retry, so it must not reach the error string.
+  const notFound = detail.err?.status === 404;
+  const error = notFound ? null : detail.error;
+  // Blank while a read is in flight, so a new target never renders the
+  // previous item's body under the new key.
+  const payload = detail.loading ? null : detail.data;
 
   // Closing clears only the detail target. `provider` is also the browse
   // source, so clearing it silently switched a StashDB browse back to TPDB.
@@ -1903,29 +1913,6 @@ function CatalogDetail() {
       window.scrollTo(0, 0);
     }
   });
-
-  useEffect(() => {
-    if (!provider || !kind || !id) return;
-    let live = true;
-    setPayload(null);
-    setError(null);
-    setNotFound(false);
-    api<DetailPayload>(
-      `/api/catalog/${provider}/${kind}/${encodeURIComponent(id)}`,
-    )
-      .then((d) => {
-        if (live) setPayload(d);
-      })
-      .catch((e) => {
-        if (!live) return;
-        // 404 catalog_not_found is authoritative absence, not an outage.
-        if (e instanceof ApiError && e.status === 404) setNotFound(true);
-        else setError(messageOf(e));
-      });
-    return () => {
-      live = false;
-    };
-  }, [provider, kind, id, reload]);
 
   if (!target) return null;
   return (

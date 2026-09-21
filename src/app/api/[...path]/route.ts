@@ -2464,132 +2464,130 @@ async function globalSearch(request: Request): Promise<Response> {
   });
 }
 
-// Admission lives in the table: every branch declares and resolves its level
-// (requireSession/requireAdmin) inline, exactly once, before the handler runs.
-// dispatch origin-guards every mutation before this point, so no mutating
-// handler can forget guardMutation and no branch can skip admission.
-// Public: status, health, setup*, login, logout.
-async function routeRequest(
+/** A matched route: what to run, and the admission it needs. The auth level
+ * is part of the shape, so a new branch cannot ship without declaring one;
+ * the previous table enforced "remember requireSession here" by discipline. */
+type Route =
+  | { auth: "none"; run: () => Promise<Response> }
+  | { auth: "session" | "admin"; run: (ctx: AuthContext) => Promise<Response> };
+
+const openRoute = (run: () => Promise<Response>): Route => ({
+  auth: "none",
+  run,
+});
+const signedIn = (run: (ctx: AuthContext) => Promise<Response>): Route => ({
+  auth: "session",
+  run,
+});
+const staffOnly = (run: (ctx: AuthContext) => Promise<Response>): Route => ({
+  auth: "admin",
+  run,
+});
+
+// Pure match: one line per route, no admission and no upstream contact here.
+// The open routes are the whole pre-session surface — a status probe, a health
+// check, the setup handshake, and login/logout.
+function routeFor(
   request: Request,
   segments: string[],
   method: string,
-): Promise<Response> {
-  if (segments[0] !== "api")
-    throw new AppError(404, "not_found", "Unknown route.");
+): Route | null {
+  if (segments[0] !== "api") return null;
   const root = segments[1];
   const a = segments[2];
   const b = segments[3];
   if (method === "GET") {
     if (root === "status" && segments.length === 2)
-      return json({ initialized: isInitialized(), setupReady: setupReady() });
-    if (root === "health" && segments.length === 2) return json({ ok: true });
-    if (root === "me" && segments.length === 2)
-      return me(await requireSession(request));
+      return openRoute(async () =>
+        json({ initialized: isInitialized(), setupReady: setupReady() }),
+      );
+    if (root === "health" && segments.length === 2)
+      return openRoute(async () => json({ ok: true }));
+    if (root === "me" && segments.length === 2) return signedIn(me);
     if (root === "libraries" && segments.length === 2)
-      return libraries(await requireSession(request));
+      return signedIn(libraries);
     if (root === "library" && segments.length === 2)
-      return libraryPage(request, await requireSession(request));
+      return signedIn((ctx) => libraryPage(request, ctx));
     if (root === "library" && segments.length === 3)
-      return libraryItem(await requireSession(request), segments[2]!);
+      return signedIn((ctx) => libraryItem(ctx, segments[2]!));
     if (root === "images" && segments.length === 3)
-      return libraryImage(await requireSession(request), segments[2]!);
-    if (root === "catalog" && a === "search" && segments.length === 3) {
-      await requireSession(request);
-      return catalogSearch(request);
-    }
-    if (root === "catalog" && a === "image" && segments.length === 3) {
-      await requireSession(request);
-      return catalogImage(request);
-    }
-    if (root === "catalog" && a === "tags" && segments.length === 3) {
-      await requireSession(request);
-      return catalogTagsRoute(request);
-    }
+      return signedIn((ctx) => libraryImage(ctx, segments[2]!));
+    if (root === "catalog" && a === "search" && segments.length === 3)
+      return signedIn(() => catalogSearch(request));
+    if (root === "catalog" && a === "image" && segments.length === 3)
+      return signedIn(() => catalogImage(request));
+    if (root === "catalog" && a === "tags" && segments.length === 3)
+      return signedIn(() => catalogTagsRoute(request));
     if (root === "catalog" && segments.length === 5)
-      return catalogDetail(await requireSession(request), a!, b!, segments[4]!);
+      return signedIn((ctx) => catalogDetail(ctx, a!, b!, segments[4]!));
     if (root === "requests" && segments.length === 2)
-      return listRequestsRoute(await requireSession(request));
-    if (root === "discover" && segments.length === 2)
-      return discover(await requireSession(request));
+      return signedIn(listRequestsRoute);
+    if (root === "discover" && segments.length === 2) return signedIn(discover);
     if (root === "follows" && segments.length === 2)
-      return listFollowsRoute(await requireSession(request));
-    if (root === "search" && segments.length === 2) {
-      await requireSession(request);
-      return globalSearch(request);
-    }
+      return signedIn(listFollowsRoute);
+    if (root === "search" && segments.length === 2)
+      return signedIn(() => globalSearch(request));
     if (root === "availability" && segments.length === 5)
-      return availability(await requireSession(request), a!, b!, segments[4]!);
+      return signedIn((ctx) => availability(ctx, a!, b!, segments[4]!));
     if (root === "removals" && segments.length === 2)
-      return listRemovalsRoute(await requireSession(request));
+      return signedIn(listRemovalsRoute);
     if (root === "removals" && a === "impact" && segments.length === 3)
-      return removalImpact(request, await requireSession(request));
+      return signedIn((ctx) => removalImpact(request, ctx));
     if (
       root === "admin" &&
       a === "users" &&
       segments[4] === "avatar" &&
       segments.length === 5
     )
-      return adminUserAvatar(await requireAdmin(request), segments[3]!);
+      return staffOnly((ctx) => adminUserAvatar(ctx, segments[3]!));
     if (root === "admin" && a === "users" && segments.length === 3)
-      return adminUsers(await requireAdmin(request));
-    if (root === "admin" && a === "integrations" && segments.length === 3) {
-      return json(integrationsShape((await requireAdmin(request)).config));
-    }
+      return staffOnly(adminUsers);
+    if (root === "admin" && a === "integrations" && segments.length === 3)
+      return staffOnly(async (ctx) => json(integrationsShape(ctx.config)));
     if (root === "admin" && a === "whisparr" && segments.length === 3)
-      return adminWhisparr(await requireAdmin(request));
+      return staffOnly(adminWhisparr);
     if (root === "admin" && a === "jellyfin" && segments.length === 3)
-      return adminJellyfin(await requireAdmin(request));
+      return staffOnly(adminJellyfin);
     if (root === "admin" && a === "providers" && segments.length === 3)
-      return adminProviders(await requireAdmin(request));
+      return staffOnly(adminProviders);
   } else if (method === "POST") {
     if (root === "setup" && a === "inspect" && segments.length === 3)
-      return setupInspect(request);
-    if (root === "setup" && segments.length === 2) return setupCommit(request);
-    if (root === "login" && segments.length === 2) return login(request);
-    if (root === "logout" && segments.length === 2) return logout(request);
+      return openRoute(() => setupInspect(request));
+    if (root === "setup" && segments.length === 2)
+      return openRoute(() => setupCommit(request));
+    if (root === "login" && segments.length === 2)
+      return openRoute(() => login(request));
+    if (root === "logout" && segments.length === 2)
+      return openRoute(() => logout(request));
     if (
       root === "admin" &&
       a === "users" &&
       b === "import" &&
       segments.length === 4
     )
-      return adminImport(request, await requireAdmin(request));
+      return staffOnly((ctx) => adminImport(request, ctx));
     if (root === "requests" && segments.length === 2)
-      return createRequestRoute(request, await requireSession(request));
+      return signedIn((ctx) => createRequestRoute(request, ctx));
     if (root === "requests" && a === "bulk" && segments.length === 3)
-      return bulkRequestRoute(request, await requireSession(request));
+      return signedIn((ctx) => bulkRequestRoute(request, ctx));
     if (root === "follows" && segments.length === 2)
-      return createFollowRoute(request, await requireSession(request));
+      return signedIn((ctx) => createFollowRoute(request, ctx));
     if (root === "removals" && segments.length === 2)
-      return createRemovalRoute(request, await requireSession(request));
+      return signedIn((ctx) => createRemovalRoute(request, ctx));
   } else if (method === "PATCH") {
-    if (root === "admin" && a === "users" && segments.length === 4) {
-      return adminUpdateUser(
-        request,
-        await requireAdmin(request),
-        segments[3]!,
-      );
-    }
+    if (root === "admin" && a === "users" && segments.length === 4)
+      return staffOnly((ctx) => adminUpdateUser(request, ctx, segments[3]!));
     if (root === "requests" && segments.length === 3)
-      return decideRequestRoute(
-        request,
-        await requireSession(request),
-        segments[2]!,
-      );
+      return signedIn((ctx) => decideRequestRoute(request, ctx, segments[2]!));
     if (root === "removals" && segments.length === 3)
-      return decideRemovalRoute(
-        request,
-        await requireSession(request),
-        segments[2]!,
-      );
-    if (root === "admin" && a === "integrations" && segments.length === 3) {
-      return adminUpdateIntegrations(request, await requireAdmin(request));
-    }
+      return signedIn((ctx) => decideRemovalRoute(request, ctx, segments[2]!));
+    if (root === "admin" && a === "integrations" && segments.length === 3)
+      return staffOnly((ctx) => adminUpdateIntegrations(request, ctx));
   } else if (method === "DELETE") {
     if (root === "follows" && segments.length === 4)
-      return deleteFollowRoute(await requireSession(request), a!, b!);
+      return signedIn((ctx) => deleteFollowRoute(ctx, a!, b!));
   }
-  throw new AppError(404, "not_found", "Unknown route.");
+  return null;
 }
 
 // Segments come from the request URL, not `context.params`: Next strips the
@@ -2601,11 +2599,19 @@ async function dispatch(request: Request, method: string): Promise<Response> {
       .split("/")
       .filter((segment) => segment.length > 0)
       .map((segment) => decodeURIComponent(segment));
-    // The one origin-CSRF gate: runs before admission on every mutation so
-    // the origin check keeps the first-failure precedence it had in the
-    // handlers, and a future mutating route cannot ship without it.
+    // The one origin-CSRF gate: runs before matching and before admission on
+    // every mutation, keeping the first-failure precedence it had when each
+    // handler called it, and a future mutating route cannot ship without it.
     if (method !== "GET") guardMutation(request);
-    return await routeRequest(request, segments, method);
+    const route = routeFor(request, segments, method);
+    if (!route) throw new AppError(404, "not_found", "Unknown route.");
+    // Admission resolved once, here, for every route that declares it.
+    if (route.auth === "none") return await route.run();
+    return await route.run(
+      route.auth === "admin"
+        ? await requireAdmin(request)
+        : await requireSession(request),
+    );
   } catch (err) {
     return errorResponse(err);
   }

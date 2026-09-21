@@ -6,25 +6,30 @@
 // ungranted-library items are refused before any DELETE, a proven 404 is
 // success, a proven 401/403 is denial, and 5xx/timeout are uncertain.
 
-import http from "node:http";
-import type { AddressInfo } from "node:net";
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import { deleteLibraryItem } from "../src/server/jellyfin.ts";
 import { AppError } from "../src/server/http.ts";
-import type { Account, IntegrationConfig } from "../src/lib/contracts.ts";
+import {
+  ADMIN_KEY,
+  ITEM_ID,
+  LIB_A,
+  LIB_B,
+  LIB_C,
+  ME_ID,
+  TOKEN,
+  account,
+  dashed,
+  jellyfinConfig,
+  pathOf,
+  queryOf,
+  sendJson,
+  withFixture,
+} from "./fixture.ts";
+import type { Fixture, FixtureHandler, RecordedRequest } from "./fixture.ts";
 
-// --- fixture constants and helpers (mirrors integrations.test.ts) ---
-
-const SERVER_ID = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d";
-const ME_ID = "b".repeat(32);
-const USER_TOKEN = "u".repeat(32);
-const ADMIN_KEY = "a".repeat(32);
-const LIB_A = "aa11".repeat(8);
-const LIB_B = "bb22".repeat(8);
-const LIB_C = "cc33".repeat(8);
-const ITEM_ID = "d".repeat(32);
+// --- suite-specific upstream scenarios ---
 
 const ME_CAN_DELETE = {
   Id: ME_ID,
@@ -42,127 +47,6 @@ const ME_NO_DELETE = {
   ...ME_CAN_DELETE,
   Policy: { ...ME_CAN_DELETE.Policy, EnableContentDeletion: false },
 };
-
-interface RecordedRequest {
-  method: string;
-  url: string;
-  headers: http.IncomingHttpHeaders;
-  body: string;
-}
-
-type FixtureHandler = (
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  body: string,
-) => void;
-
-interface Fixture {
-  origin: string;
-  log: RecordedRequest[];
-  close: () => Promise<void>;
-}
-
-function dashed(id: string): string {
-  return `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20, 32)}`;
-}
-
-function sendJson(
-  res: http.ServerResponse,
-  status: number,
-  value: unknown,
-): void {
-  res.writeHead(status, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(value));
-}
-
-function pathOf(url: string): string {
-  return (url.split("?")[0] ?? "").toLowerCase();
-}
-
-function queryOf(url: string): URLSearchParams {
-  return new URLSearchParams(url.split("?")[1] ?? "");
-}
-
-function jellyfinConfig(
-  origin: string,
-  libraryIds: string[],
-): IntegrationConfig {
-  return {
-    jellyfin: {
-      url: origin,
-      externalUrl: `${origin}/jf`,
-      apiKey: ADMIN_KEY,
-      serverId: SERVER_ID,
-      libraryIds,
-    },
-  };
-}
-
-function account(libraryIds: string[]): Account {
-  return {
-    id: "acct-1",
-    name: "bob",
-    role: "requester",
-    enabled: true,
-    libraryIds,
-    isOwner: false,
-    autoApprove: false,
-    canRemove: false,
-    joinedAt: 0,
-  };
-}
-
-function startFixture(handler: FixtureHandler): Promise<Fixture> {
-  const { promise, resolve, reject } = Promise.withResolvers<Fixture>();
-  const log: RecordedRequest[] = [];
-  const server = http.createServer((req, res) => {
-    res.on("error", () => {});
-    const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => {
-      const body = Buffer.concat(chunks).toString("utf8");
-      log.push({
-        method: req.method ?? "GET",
-        url: req.url ?? "/",
-        headers: req.headers,
-        body,
-      });
-      try {
-        handler(req, res, body);
-      } catch (err) {
-        sendJson(res, 500, { fixtureError: String(err) });
-      }
-    });
-  });
-  server.on("error", reject);
-  server.on("clientError", (_err, socket) => socket.destroy());
-  server.listen(0, "127.0.0.1", () => {
-    const address = server.address() as AddressInfo;
-    resolve({
-      origin: `http://127.0.0.1:${address.port}`,
-      log,
-      close: () => {
-        server.closeAllConnections();
-        const done = Promise.withResolvers<void>();
-        server.close(() => done.resolve());
-        return done.promise;
-      },
-    });
-  });
-  return promise;
-}
-
-async function withFixture(
-  handler: FixtureHandler,
-  run: (fx: Fixture) => Promise<void>,
-): Promise<void> {
-  const fx = await startFixture(handler);
-  try {
-    await run(fx);
-  } finally {
-    await fx.close();
-  }
-}
 
 // Standard removal fixture: /Users/Me identity, ids-scoped item visibility
 // (the lab build ignores parentId alongside ids), the ancestor chain placing
@@ -250,7 +134,7 @@ test("deleteLibraryItem deletes under the user token and returns audit facts", a
   await withFixture(removalHandler({}), async (fx) => {
     const outcome = await deleteLibraryItem(
       jellyfinConfig(fx.origin, [LIB_B]),
-      { token: USER_TOKEN },
+      { token: TOKEN },
       account([LIB_B]),
       ITEM_ID,
     );
@@ -272,7 +156,7 @@ test("deleteLibraryItem deletes under the user token and returns audit facts", a
     assert.equal(deletes.length, 1);
     const auth = deletes[0]!.headers.authorization ?? "";
     assert.match(auth, /^MediaBrowser Client="Velvarr"/);
-    assert.ok(auth.includes(`Token="${USER_TOKEN}"`));
+    assert.ok(auth.includes(`Token="${TOKEN}"`));
     assert.equal(deletes[0]!.headers["x-api-key"], undefined);
     assertNoAdminKey(fx);
   });
@@ -285,7 +169,7 @@ test("deleteLibraryItem names the missing EnableContentDeletion and never delete
     await assert.rejects(
       deleteLibraryItem(
         jellyfinConfig(fx.origin, [LIB_A, LIB_B]),
-        { token: USER_TOKEN },
+        { token: TOKEN },
         account([LIB_A, LIB_B]),
         ITEM_ID,
       ),
@@ -311,7 +195,7 @@ test("deleteLibraryItem refuses items outside granted libraries before deleting"
       await assert.rejects(
         deleteLibraryItem(
           jellyfinConfig(fx.origin, [LIB_A, LIB_B]),
-          { token: USER_TOKEN },
+          { token: TOKEN },
           account([LIB_A, LIB_B]),
           ITEM_ID,
         ),
@@ -333,7 +217,7 @@ test("deleteLibraryItem denies empty grants with zero upstream calls", async () 
     await assert.rejects(
       deleteLibraryItem(
         jellyfinConfig(fx.origin, [LIB_A]),
-        { token: USER_TOKEN },
+        { token: TOKEN },
         account([]),
         ITEM_ID,
       ),
@@ -353,7 +237,7 @@ test("deleteLibraryItem treats a proven 404 as already-gone success", async () =
   await withFixture(removalHandler({ deleteStatus: 404 }), async (fx) => {
     const outcome = await deleteLibraryItem(
       jellyfinConfig(fx.origin, [LIB_A, LIB_B]),
-      { token: USER_TOKEN },
+      { token: TOKEN },
       account([LIB_A, LIB_B]),
       ITEM_ID,
     );
@@ -368,7 +252,7 @@ test("deleteLibraryItem reports a proven 401/403 as denial", async () => {
     await withFixture(removalHandler({ deleteStatus: status }), async (fx) => {
       const outcome = await deleteLibraryItem(
         jellyfinConfig(fx.origin, [LIB_A, LIB_B]),
-        { token: USER_TOKEN },
+        { token: TOKEN },
         account([LIB_A, LIB_B]),
         ITEM_ID,
       );
@@ -383,7 +267,7 @@ test("deleteLibraryItem reports a 5xx as uncertain", async () => {
   await withFixture(removalHandler({ deleteStatus: 500 }), async (fx) => {
     const outcome = await deleteLibraryItem(
       jellyfinConfig(fx.origin, [LIB_A, LIB_B]),
-      { token: USER_TOKEN },
+      { token: TOKEN },
       account([LIB_A, LIB_B]),
       ITEM_ID,
     );
@@ -396,7 +280,7 @@ test("deleteLibraryItem reports a timeout as uncertain", async () => {
   await withFixture(removalHandler({ deleteDelayMs: 5_000 }), async (fx) => {
     const outcome = await deleteLibraryItem(
       jellyfinConfig(fx.origin, [LIB_A, LIB_B]),
-      { token: USER_TOKEN },
+      { token: TOKEN },
       account([LIB_A, LIB_B]),
       ITEM_ID,
       50,
