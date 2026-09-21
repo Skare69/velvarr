@@ -43,15 +43,23 @@ interface ShelfError {
   message: string;
 }
 
-type Genre = { id: string; name: string; imageUrl?: string };
+interface FacetItem {
+  facet: "studio" | "tag";
+  provider: "tpdb" | "stashdb"; // the snapshot side this tile came from
+  id: string;
+  name: string;
+  imageUrl?: string;
+  logoUrl?: string; // studio brand mark only
+  linked?: { provider: "tpdb" | "stashdb"; id: string }; // resolved counterpart, omitted when none
+}
 
 interface Shelf {
   id: string;
   title: string;
   source: "tpdb" | "stashdb" | "jellyfin" | "velvarr";
   browse?: { view: string; params: Record<string, string> };
-  kind: "catalog" | "library" | "requests" | "studios" | "genres";
-  items?: CatalogDetail[] | LibraryItem[] | RequestRecord[] | Genre[];
+  kind: "catalog" | "library" | "requests" | "facets";
+  items?: CatalogDetail[] | LibraryItem[] | RequestRecord[] | FacetItem[];
   error?: ShelfError;
 }
 
@@ -198,32 +206,39 @@ function useRailNav(label: string, hasRail: boolean) {
   return { ref, nav, onScroll: sync };
 }
 
-/** Provider-native facets reuse the same filtered Movies/Scenes destinations. */
-function FacetTile({
-  shelf,
-  item,
-}: {
-  shelf: Shelf;
-  item: CatalogDetail | Genre;
-}) {
-  const studio = "reference" in item;
-  const id = studio ? item.reference.id : item.id;
-  const name = studio ? item.title : item.name;
+/** One mixed grid per facet: the tile's own provider side plus its resolved
+ * counterpart, when one exists. `name` is a display label only — results are
+ * keyed by the provider ids, so a forged label can never change them. */
+function FacetTile({ item }: { item: FacetItem }) {
+  const studio = item.facet === "studio";
   // A studio rail shows brand marks; its portrait poster belongs to the hero,
-  // and a studio with neither stays a plain name.
+  // and a facet with neither stays a plain name.
   const art = studio ? (item.logoUrl ?? item.imageUrl) : item.imageUrl;
+  const params: Record<string, string> = {
+    view: "titles",
+    facet: item.facet,
+    name: item.name,
+    [item.provider]: item.id,
+  };
+  if (item.linked) params[item.linked.provider] = item.linked.id;
   return (
     <div className="discovery-tile discovery-tile-facet">
       <Link
-        href={browseHref(shelf, { [studio ? "studio" : "tags"]: id })}
+        href={`/?${new URLSearchParams(params)}`}
         prefetch={false}
         className={`discovery-facet discovery-facet-${studio ? "studio" : "genre"}`}
-        onClick={() =>
+        onClick={() => {
+          // Seed both sides so chips and headings show names, not raw ids.
           filterNames.set(
-            `${shelf.source}:${studio ? "studio" : "tag"}:${id}`,
-            name,
-          )
-        }
+            `${item.provider}:${item.facet}:${item.id}`,
+            item.name,
+          );
+          if (item.linked)
+            filterNames.set(
+              `${item.linked.provider}:${item.facet}:${item.linked.id}`,
+              item.name,
+            );
+        }}
       >
         {art && (
           <ItemImage
@@ -232,7 +247,7 @@ function FacetTile({
             className={studio ? "discovery-studio-logo" : "discovery-facet-art"}
           />
         )}
-        <span className="discovery-facet-name">{name}</span>
+        <span className="discovery-facet-name">{item.name}</span>
       </Link>
     </div>
   );
@@ -413,6 +428,9 @@ function ShelfSection({
   const requestItems = shelf.items?.filter(
     (it): it is RequestRecord => "media" in it,
   );
+  const facetItems = shelf.items?.filter(
+    (it): it is FacetItem => "facet" in it,
+  );
 
   const railLabel = `${shelf.title} rail`;
   /* Only rail bodies get Previous/Next; panel bodies (errors/empty) none. */
@@ -440,7 +458,11 @@ function ShelfSection({
     } else {
       body = (
         <ErrorPanel
-          title={`${sourceLabel(shelf.source)} is unavailable`}
+          title={
+            shelf.kind === "facets"
+              ? `${shelf.title} unavailable` // velvarr-sourced: naming a provider would be a lie
+              : `${sourceLabel(shelf.source)} is unavailable`
+          }
           message={shelf.error.message}
           onRetry={onRetry}
         />
@@ -454,18 +476,9 @@ function ShelfSection({
     );
   } else {
     const tiles: ReactNode[] = [];
-    if (shelf.kind === "genres" || shelf.kind === "studios") {
-      for (const it of shelf.items) {
-        if ("reference" in it || ("name" in it && !("canPlay" in it))) {
-          tiles.push(
-            <FacetTile
-              key={"reference" in it ? it.reference.id : it.id}
-              shelf={shelf}
-              item={it}
-            />,
-          );
-        }
-      }
+    if (shelf.kind === "facets") {
+      for (const it of facetItems ?? [])
+        tiles.push(<FacetTile key={`${it.provider}:${it.id}`} item={it} />);
     } else if (requestItems && requestItems.length > 0) {
       for (const r of requestItems)
         tiles.push(<RequestTile key={r.id} item={r} onOpen={onOpen} />);
@@ -573,8 +586,7 @@ export function DiscoverShelves() {
     library: 0,
     requests: 1,
     catalog: 2,
-    studios: 2,
-    genres: 2,
+    facets: 2,
   };
 
   const shelves = page

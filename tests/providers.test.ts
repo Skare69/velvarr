@@ -3,7 +3,8 @@
 // canonical credit parents, fake-total suppression, real pagination
 // continuation, not-found vs outage, malformed/oversized payload rejection,
 // artwork host/content-type/size enforcement, not-configured behavior, studio
-// and tag discovery, provider-genuine studio/tag filters, sort mapping, and
+// and tag discovery, provider-genuine studio/tag filters, sort mapping,
+// cross-provider studio identity and tag counterpart pairing, and
 // the metadata read cache (TTL, stale-on-error, mutation exclusion).
 
 import http from "node:http";
@@ -19,11 +20,14 @@ import {
   getProviderStatus,
   IMAGE_BYTE_CAP,
   isProviderImageUrl,
+  normalizeFacetName,
   resolveSort,
   requestJson,
   resetMetaCache,
   searchCatalog,
   searchCatalogTags,
+  studioCounterpart,
+  tagCounterpart,
 } from "../src/server/providers.ts";
 import type { CatalogSearchQuery } from "../src/server/providers.ts";
 import type { CatalogDetail } from "../src/lib/contracts.ts";
@@ -1315,6 +1319,322 @@ test("cross-provider identity uses only explicit provider URLs; scenes stay unli
     crossProviderLink(sceneDetail).unlinkedReason ?? "",
     /performer-level/,
   );
+});
+
+// --- cross-provider studio identity (unified facet rails) ---
+
+// A StashDB studio detail carries its TPDB counterpart only as a
+// provider-published theporndb.net URL in links — never a name guess.
+function stashStudioDetail(urls: string[]): CatalogDetail {
+  return {
+    reference: { provider: "stashdb", kind: "studio", id: STASH_CROSS_ID },
+    title: "Tushy",
+    credits: [],
+    tags: [],
+    related: [],
+    links: urls.map((url) => ({ url })),
+    aliases: [],
+  };
+}
+
+test("studio links resolve both published TPDB URL forms; uuid form wins; absence names the side", () => {
+  // Published form one: theporndb.net/studios/<uuid>.
+  const byUuid = crossProviderLink(
+    stashStudioDetail([`https://theporndb.net/studios/${TPDB_STUDIO_ID}`]),
+  );
+  assert.deepEqual(byUuid.linked, {
+    provider: "tpdb",
+    kind: "studio",
+    id: TPDB_STUDIO_ID,
+  });
+  assert.equal(byUuid.unlinkedReason, undefined);
+
+  // Published form two: theporndb.net/sites/<slug>. The slug rides verbatim;
+  // the TPDB site read canonicalizes it to the uuid downstream.
+  const bySlug = crossProviderLink(
+    stashStudioDetail(["https://theporndb.net/sites/tushy"]),
+  );
+  assert.deepEqual(bySlug.linked, {
+    provider: "tpdb",
+    kind: "studio",
+    id: "tushy",
+  });
+
+  // Both published: the durable uuid form wins over the slug alias.
+  const both = crossProviderLink(
+    stashStudioDetail([
+      "https://theporndb.net/sites/tushy",
+      `https://theporndb.net/studios/${TPDB_STUDIO_ID}`,
+    ]),
+  );
+  assert.equal(both.linked?.id, TPDB_STUDIO_ID);
+  assert.equal(both.linked?.kind, "studio");
+
+  // Only a studio homepage: nothing provider-published to pair with, and
+  // the reason names the missing side.
+  const unlinked = crossProviderLink(
+    stashStudioDetail(["https://www.tushy.com/"]),
+  );
+  assert.equal(unlinked.linked, undefined);
+  assert.match(unlinked.unlinkedReason ?? "", /TPDB/);
+});
+
+test("studioCounterpart resolves one stashdb studio per exact url and degrades to undefined", async () => {
+  const restore = setEnv({
+    TPDB_API_TOKEN: TPDB_TOKEN,
+    STASHDB_API_KEY: STASH_TOKEN,
+  });
+  const TPDB_STUDIO_DOWN = "0e1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b";
+  const TPDB_STUDIO_MALFORMED = "1f2a3b4c-5d6e-4f70-9b8c-1d2e3f4a5b6c";
+  // Fresh reference id for the slug-fallback phase; fresh ids per phase so
+  // the metadata cache cannot serve an earlier phase's answer.
+  const TPDB_SITESLUG_ID = "2b3c4d5e-6f70-4a81-9c2d-3e4f5a6b7c8d";
+  const STASH_SLUG_STUDIO_ID = "3c4d5e6f-7081-4b92-ad3e-4f5a6b7c8d9e";
+  // TPDB side: the reference first reads /sites/<id>; that row's uuid and
+  // short_name are what build the two candidate URLs.
+  const siteRows: Record<string, Record<string, unknown>> = {
+    [TPDB_STUDIO_ID]: {
+      uuid: TPDB_STUDIO_ID,
+      name: "Tushy",
+      short_name: "tushy",
+    },
+    [TPDB_SITESLUG_ID]: {
+      uuid: TPDB_SITESLUG_ID,
+      name: "Tushy Raw",
+      short_name: "TushyRaw",
+    },
+    [TPDB_NETWORK_ID]: {
+      uuid: TPDB_NETWORK_ID,
+      name: "Blacked",
+      short_name: "blacked",
+    },
+    [MISSING_ID]: { uuid: MISSING_ID, name: "Missing", short_name: "missing" },
+    [TPDB_STUDIO_DOWN]: { uuid: TPDB_STUDIO_DOWN, name: "Down" },
+    [TPDB_STUDIO_MALFORMED]: {
+      uuid: TPDB_STUDIO_MALFORMED,
+      name: "Malformed",
+    },
+  };
+  const stashStudios: Record<string, Record<string, unknown>[]> = {
+    [`https://theporndb.net/studios/${TPDB_STUDIO_ID}`]: [
+      {
+        id: STASH_CROSS_ID,
+        name: "Tushy",
+        deleted: false,
+        // The winner publishes the queried candidate itself; stored case and
+        // trailing slash still match — the documented normalization.
+        urls: [
+          {
+            url: `HTTPS://ThePornDB.NET/Studios/${TPDB_STUDIO_ID.toUpperCase()}/`,
+          },
+        ],
+      },
+    ],
+    [`https://theporndb.net/studios/${TPDB_SITESLUG_ID}`]: [],
+    [`https://theporndb.net/sites/tushyraw`]: [
+      {
+        id: STASH_SLUG_STUDIO_ID,
+        name: "Tushy Raw",
+        deleted: false,
+        urls: [{ url: "https://theporndb.net/sites/tushyraw" }],
+      },
+    ],
+    // The live sites/blacked case: one stored URL claimed by TWO studios —
+    // ambiguity is refused, never guessed, and the slug candidate is still
+    // tried before giving up.
+    [`https://theporndb.net/studios/${TPDB_NETWORK_ID}`]: [
+      {
+        id: STASH_CROSS_ID,
+        name: "Blacked",
+        deleted: false,
+        urls: [{ url: `https://theporndb.net/studios/${TPDB_NETWORK_ID}` }],
+      },
+      {
+        id: STASH_DELETED_STUDIO_ID,
+        name: "Adult Time x Blacked",
+        deleted: false,
+        urls: [{ url: `https://theporndb.net/studios/${TPDB_NETWORK_ID}` }],
+      },
+    ],
+  };
+  const queried: string[] = [];
+  let fail = false;
+  let malformed = false;
+  const tpdbFixture = await startFixture((req, res) => {
+    const row = siteRows[req.url.replace(/^\/sites\//, "")];
+    if (row === undefined) return replyJson(res, 404, {});
+    replyJson(res, 200, { data: row });
+  });
+  const fixture = await startFixture((req, res) => {
+    const parsed = JSON.parse(req.body) as {
+      query: string;
+      variables?: { url?: string; input?: { url?: string } };
+    };
+    assert.ok(parsed.query.includes("queryStudios"));
+    assert.ok(parsed.query.includes("per_page: 5"));
+    const url = parsed.variables?.url ?? parsed.variables?.input?.url ?? "";
+    queried.push(url);
+    if (fail) return replyJson(res, 500, {});
+    if (malformed) {
+      return replyJson(res, 200, { data: { queryStudios: { rows: 1 } } });
+    }
+    replyJson(res, 200, {
+      data: { queryStudios: { studios: stashStudios[url] ?? [] } },
+    });
+  });
+  try {
+    process.env.TPDB_BASE_URL = tpdbFixture.origin;
+    process.env.STASHDB_BASE_URL = fixture.origin;
+    // Hit: the site row's uuid form matches exactly one studio — the one
+    // whose own urls carry the candidate (any stored case or slash form).
+    const hit = await studioCounterpart({
+      provider: "tpdb",
+      kind: "studio",
+      id: TPDB_STUDIO_ID,
+    });
+    assert.deepEqual(hit, {
+      provider: "stashdb",
+      kind: "studio",
+      id: STASH_CROSS_ID,
+    });
+    // Slug fallback: the uuid form misses, the short_name form built from
+    // the same site row resolves — both candidates queried, in that order.
+    const bySlug = await studioCounterpart({
+      provider: "tpdb",
+      kind: "studio",
+      id: TPDB_SITESLUG_ID,
+    });
+    assert.deepEqual(bySlug, {
+      provider: "stashdb",
+      kind: "studio",
+      id: STASH_SLUG_STUDIO_ID,
+    });
+    // Ambiguity on the uuid form still walks to the slug form before
+    // refusing: undefined, never a guess.
+    const ambiguous = await studioCounterpart({
+      provider: "tpdb",
+      kind: "studio",
+      id: TPDB_NETWORK_ID,
+    });
+    assert.equal(ambiguous, undefined);
+
+    // Zero matches stays authoritative absence.
+    assert.equal(
+      await studioCounterpart({
+        provider: "tpdb",
+        kind: "studio",
+        id: MISSING_ID,
+      }),
+      undefined,
+    );
+
+    // Upstream failure and malformed payload: undefined, never a throw.
+    // Fresh ids per phase so the metadata cache cannot serve a stale hit
+    // over the scripted failure.
+    fail = true;
+    assert.equal(
+      await studioCounterpart({
+        provider: "tpdb",
+        kind: "studio",
+        id: TPDB_STUDIO_DOWN,
+      }),
+      undefined,
+    );
+    fail = false;
+    malformed = true;
+    assert.equal(
+      await studioCounterpart({
+        provider: "tpdb",
+        kind: "studio",
+        id: TPDB_STUDIO_MALFORMED,
+      }),
+      undefined,
+    );
+
+    // Candidate order across every phase: uuid form first, slug form
+    // second, one query per candidate, stop at the first hit.
+    assert.deepEqual(queried, [
+      `https://theporndb.net/studios/${TPDB_STUDIO_ID}`,
+      `https://theporndb.net/studios/${TPDB_SITESLUG_ID}`,
+      `https://theporndb.net/sites/tushyraw`,
+      `https://theporndb.net/studios/${TPDB_NETWORK_ID}`,
+      `https://theporndb.net/sites/blacked`,
+      `https://theporndb.net/studios/${MISSING_ID}`,
+      `https://theporndb.net/sites/missing`,
+      `https://theporndb.net/studios/${TPDB_STUDIO_DOWN}`,
+      `https://theporndb.net/studios/${TPDB_STUDIO_MALFORMED}`,
+    ]);
+  } finally {
+    await tpdbFixture.close();
+    await fixture.close();
+    restore();
+  }
+});
+
+// --- cross-provider tag pairing (label equality, not identity) ---
+
+test("tagCounterpart pairs only exact normalized names and never throws on upstream failure", async () => {
+  // A tag is a label, not an entity: the one documented pairing exception is
+  // exact normalized-name equality — case, spacing, and separators fold.
+  assert.equal(normalizeFacetName("All Sex"), "allsex");
+  assert.equal(normalizeFacetName("all-sex"), "allsex");
+
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  let fail = false;
+  const stashFixture = await startFixture((req, res) => {
+    const parsed = JSON.parse(req.body) as {
+      query: string;
+      variables?: { t?: string };
+    };
+    assert.ok(parsed.query.includes("searchTag"));
+    if (fail) return replyJson(res, 500, {});
+    // The term search answers near-misses too; pairing filters to exact
+    // normalized equality, so "All Sex" matches "all-sex" while "Anal"
+    // matches neither "Anal Creampie" nor anything else here.
+    replyJson(res, 200, {
+      data: {
+        searchTag: [
+          { id: STASH_TAG_ID, name: "Anal Creampie" },
+          { id: STASH_CROSS_ID, name: "all-sex" },
+        ],
+      },
+    });
+  });
+  let paired: { provider: string; id: string } | undefined;
+  try {
+    process.env.STASHDB_BASE_URL = stashFixture.origin;
+    paired = await tagCounterpart("tpdb", "All Sex");
+    assert.deepEqual(paired, { provider: "stashdb", id: STASH_CROSS_ID });
+
+    // Near-misses only: normalization never bends "Anal" into a longer name.
+    assert.equal(await tagCounterpart("tpdb", "Anal"), undefined);
+
+    fail = true;
+    assert.equal(await tagCounterpart("tpdb", "Asian"), undefined);
+  } finally {
+    await stashFixture.close();
+    restore();
+  }
+
+  // Reverse direction: the same equality rule, the other provider's rows.
+  const restore2 = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
+  const tpdbFixture = await startFixture((req, res) => {
+    const params = new URLSearchParams(req.url.split("?")[1] ?? "");
+    assert.equal(params.get("per_page"), "50");
+    replyJson(res, 200, {
+      data: [{ id: 70, uuid: TPDB_TAG_A, name: "All Sex" }],
+    });
+  });
+  try {
+    process.env.TPDB_BASE_URL = tpdbFixture.origin;
+    assert.deepEqual(await tagCounterpart("stashdb", "all-sex"), {
+      provider: "tpdb",
+      id: TPDB_TAG_A,
+    });
+  } finally {
+    await tpdbFixture.close();
+    restore2();
+  }
 });
 
 // --- reference validation ---

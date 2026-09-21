@@ -1942,45 +1942,219 @@ export async function listCatalogTags(
   return dedupeBy(out, (t) => t.id);
 }
 
-// --- cross-provider performer identity ---
+// --- cross-provider identity: performers and studios, from published URLs only ---
 
 const TPDB_PERFORMER_LINK_RE =
   /^https:\/\/(?:www\.)?theporndb\.net\/performers\/([0-9a-f-]{36})\/?$/i;
 const STASH_PERFORMER_LINK_RE =
   /^https:\/\/(?:www\.)?stashdb\.org\/performers\/([0-9a-f-]{36})\/?$/i;
+const TPDB_STUDIO_UUID_LINK_RE =
+  /^https:\/\/(?:www\.)?theporndb\.net\/studios\/([0-9a-f-]{36})\/?$/i;
+const TPDB_STUDIO_SLUG_LINK_RE =
+  /^https:\/\/(?:www\.)?theporndb\.net\/sites\/([a-z0-9][a-z0-9-]{0,63})\/?$/i;
+const STASH_STUDIO_LINK_RE =
+  /^https:\/\/(?:www\.)?stashdb\.org\/studios\/([0-9a-f-]{36})\/?$/i;
 
-/** Explicit cross-provider identity for a performer detail, taken only from
- * provider-published URLs on the record itself. Never fuzzy-name matching;
- * identity is performer-level only and scenes are never linked across
- * providers. Returns exactly one of linked / unlinkedReason. */
+/** Explicit cross-provider identity for a catalog detail, taken only from
+ * provider-published URLs on the record itself. Identity is performer-level
+ * AND studio-level, both from published URLs only; never fuzzy-name matching,
+ * and scenes are never linked across providers. Returns exactly one of
+ * linked / unlinkedReason. */
 export function crossProviderLink(detail: CatalogDetail): {
   linked?: CatalogReference;
   unlinkedReason?: string;
 } {
-  if (detail.reference.kind !== "performer") {
+  const kind = detail.reference.kind;
+  const fromTpdb = detail.reference.provider === "tpdb";
+  if (kind === "performer") {
+    const re = fromTpdb ? STASH_PERFORMER_LINK_RE : TPDB_PERFORMER_LINK_RE;
+    for (const link of detail.links) {
+      const m = re.exec(link.url);
+      const linkedId = m?.[1];
+      if (linkedId !== undefined && isUuid(linkedId)) {
+        return {
+          linked: {
+            provider: fromTpdb ? "stashdb" : "tpdb",
+            kind: "performer",
+            id: linkedId.toLowerCase(),
+          },
+        };
+      }
+    }
     return {
-      unlinkedReason:
-        "cross-provider identity is performer-level only; scenes are never linked across providers",
+      unlinkedReason: `no explicit ${
+        fromTpdb ? "StashDB" : "TPDB"
+      } performer URL on the ${fromTpdb ? "TPDB" : "StashDB"} performer record`,
     };
   }
-  const fromTpdb = detail.reference.provider === "tpdb";
-  const re = fromTpdb ? STASH_PERFORMER_LINK_RE : TPDB_PERFORMER_LINK_RE;
-  for (const link of detail.links) {
-    const m = re.exec(link.url);
-    const linkedId = m?.[1];
-    if (linkedId !== undefined && isUuid(linkedId)) {
-      return {
-        linked: {
-          provider: fromTpdb ? "stashdb" : "tpdb",
-          kind: "performer",
-          id: linkedId.toLowerCase(),
-        },
-      };
+  if (kind === "studio") {
+    if (!fromTpdb) {
+      // StashDB publishes its TPDB counterpart in `urls` in two observed
+      // forms: a canonical /studios/<uuid> and a /sites/<slug>. The slug
+      // stays a slug here because getCatalogDetail canonicalizes it through
+      // TPDB /sites/<slug>. A uuid form outranks a slug form when a record
+      // publishes both.
+      let slug: string | undefined;
+      for (const link of detail.links) {
+        const uuid = TPDB_STUDIO_UUID_LINK_RE.exec(link.url)?.[1];
+        if (uuid !== undefined && isUuid(uuid)) {
+          return {
+            linked: {
+              provider: "tpdb",
+              kind: "studio",
+              id: uuid.toLowerCase(),
+            },
+          };
+        }
+        const m = TPDB_STUDIO_SLUG_LINK_RE.exec(link.url);
+        if (m?.[1] !== undefined && slug === undefined) slug = m[1];
+      }
+      if (slug !== undefined) {
+        return {
+          linked: {
+            provider: "tpdb",
+            kind: "studio",
+            id: slug.toLowerCase(),
+          },
+        };
+      }
+    } else {
+      // Symmetry only: TPDB site rows publish no external ids today, so this
+      // match has no live producer yet — kept so a future publication links
+      // itself without new machinery.
+      for (const link of detail.links) {
+        const m = STASH_STUDIO_LINK_RE.exec(link.url);
+        const linkedId = m?.[1];
+        if (linkedId !== undefined && isUuid(linkedId)) {
+          return {
+            linked: {
+              provider: "stashdb",
+              kind: "studio",
+              id: linkedId.toLowerCase(),
+            },
+          };
+        }
+      }
     }
+    return {
+      unlinkedReason: `no explicit ${
+        fromTpdb ? "StashDB" : "TPDB"
+      } studio URL on the ${fromTpdb ? "TPDB" : "StashDB"} studio record`,
+    };
   }
   return {
-    unlinkedReason: `no explicit ${
-      fromTpdb ? "StashDB" : "TPDB"
-    } performer URL on the ${fromTpdb ? "TPDB" : "StashDB"} performer record`,
+    unlinkedReason:
+      "cross-provider identity is performer-level only; scenes are never linked across providers",
   };
+}
+
+/** The other provider's studio row for one studio reference, resolved only
+ * through provider-published cross-provider URLs — never name similarity.
+ * StashDB → TPDB is a pure URL read off the cached studio detail. TPDB →
+ * StashDB has no published reverse pointer (TPDB site rows carry no external
+ * ids), so the raw site row's own uuid/short_name build candidate
+ * `theporndb.net` URLs and StashDB's exact-URL studio search arbitrates: a
+ * candidate wins only when exactly one studio's own `urls` contain it. The
+ * live `sites/blacked` case matches two studios, so ambiguity is refused,
+ * never guessed. Absence, ambiguity, outage, malformed payload — always
+ * undefined; this never throws. */
+export async function studioCounterpart(
+  reference: CatalogReference,
+): Promise<CatalogReference | undefined> {
+  if (reference?.kind !== "studio") return undefined;
+  try {
+    if (reference.provider === "stashdb") {
+      const detail = await getCatalogDetail(reference);
+      return detail === null ? undefined : crossProviderLink(detail).linked;
+    }
+    // uuid and slug are the only id shapes the TPDB /sites/ path accepts;
+    // anything else is a forged reference, not a lookup failure.
+    if (!/^[0-9a-z][0-9a-z-]{0,63}$/i.test(reference.id)) return undefined;
+    const body = await tpdbGet<{ data?: unknown }>(`/sites/${reference.id}`);
+    const row = body?.data;
+    if (row === null || typeof row !== "object") return undefined;
+    const r = row as Record<string, unknown>;
+    // tpdbStudioDetail keeps neither uuid-in-isolation nor short_name, and
+    // one cached transport read serves both candidate URLs.
+    const uuid = isUuid(r.uuid) ? r.uuid.toLowerCase() : undefined;
+    const shortName = cleanString(r.short_name, 64);
+    const candidates: string[] = [];
+    if (uuid !== undefined) {
+      candidates.push(`https://theporndb.net/studios/${uuid}`);
+    }
+    if (shortName !== undefined) {
+      candidates.push(`https://theporndb.net/sites/${shortName.toLowerCase()}`);
+    }
+    for (const url of candidates) {
+      const want = url.replace(/\/+$/, "").toLowerCase();
+      const res = (await stashQuery(
+        "query($url: String!) { queryStudios(input: { url: $url, page: 1, per_page: 5 }) { studios { id name urls { url } } } }",
+        { url },
+        "queryStudios",
+      )) as { studios?: unknown } | null;
+      const studios = Array.isArray(res?.studios) ? res.studios : [];
+      const hits = studios.filter((s) => {
+        if (s === null || typeof s !== "object") return false;
+        if (!isUuid(s.id) || !Array.isArray(s.urls)) return false;
+        return s.urls.some((u: unknown) => {
+          if (u === null || typeof u !== "object" || !("url" in u)) {
+            return false;
+          }
+          const link = u.url;
+          return (
+            typeof link === "string" &&
+            link.replace(/\/+$/, "").toLowerCase() === want
+          );
+        });
+      });
+      const id = hits.length === 1 ? hits[0]?.id : undefined;
+      if (isUuid(id)) {
+        return { provider: "stashdb", kind: "studio", id: id.toLowerCase() };
+      }
+      // Zero hits or ambiguous hits: try the next candidate URL, never guess.
+    }
+    return undefined;
+  } catch {
+    return undefined; // outage/not-configured/bad payload degrade to absent
+  }
+}
+
+/** A tag reference: provider plus native id, no `kind`. Tags are labels, not
+ * entities — CatalogKind is for entities, and widening it would claim a
+ * cross-provider identity a label does not have. */
+export type TagReference = { provider: CatalogProvider; id: string };
+
+/** The other provider's tag with an exactly-equal normalized name. Exact
+ * name equality (after normalizeFacetName) is honest for tags because a tag
+ * IS its name — a label with no deeper entity to be wrong about; it is the
+ * one documented deterministic pairing that needs no published URL. It is
+ * deliberately NOT used for studios or performers: those are entities whose
+ * identity comes only from provider-published URLs, and equal names there
+ * would be a guess. Absence or any upstream failure → undefined. */
+export async function tagCounterpart(
+  from: CatalogProvider,
+  name: string,
+): Promise<TagReference | undefined> {
+  const target = normalizeFacetName(name);
+  if (target === "") return undefined; // an empty label identifies nothing
+  const other: CatalogProvider = from === "tpdb" ? "stashdb" : "tpdb";
+  try {
+    const rows = await searchCatalogTags(other, name);
+    const row = rows.find((r) => normalizeFacetName(r.name) === target);
+    return row === undefined ? undefined : { provider: other, id: row.id };
+  } catch {
+    return undefined; // a failed counterpart lookup degrades to absent
+  }
+}
+
+/** Tag-label normalization: lowercase, NFKD (accent folds to base letter),
+ * strip every non-alphanumeric. Exact equality on this form pairs tags
+ * deterministically (a tag is a label; its identity is the name) and is
+ * never applied to studios or performers, which are entities paired only
+ * through provider-published URLs. */
+export function normalizeFacetName(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]/g, "");
 }

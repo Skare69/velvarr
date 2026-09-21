@@ -44,6 +44,7 @@ import {
   useTapReveal,
 } from "./shared.tsx";
 import { MoviesView, ScenesView } from "./catalog.tsx";
+import { TitlesView } from "./titles.tsx";
 import { PerformerView } from "./performer.tsx";
 import { DiscoverShelves } from "./discover.tsx";
 import { SearchView } from "./search.tsx";
@@ -683,6 +684,7 @@ function LoginView({ onSignedIn }: { onSignedIn: () => void }) {
 
 const VIEWS = [
   "discover",
+  "titles",
   "movies",
   "scenes",
   "following",
@@ -954,6 +956,7 @@ function Shell() {
       </header>
       <main className="app-main" id="main-content" tabIndex={-1}>
         {view === "discover" && <DiscoverShelves />}
+        {view === "titles" && <TitlesView />}
         {view === "movies" && <MoviesView />}
         {view === "scenes" && <ScenesView />}
         {view === "following" && <FollowingView />}

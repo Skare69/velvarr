@@ -56,6 +56,9 @@ const TPDB_MOVIE6 = "2a2b3c4d-0000-0000-0000-000000000006";
 // owner's request count moves 0 -> 2 with no duplicate-intent collisions.
 const TPDB_MOVIE7 = "2a2b3c4d-0000-0000-0000-000000000007";
 const TPDB_MOVIE8 = "2a2b3c4d-0000-0000-0000-000000000008";
+// Second row on the /movies snapshot: carries TPDB_STUDIO2 and the
+// counterpart-less genre for the unified facet shelves.
+const TPDB_MOVIE9 = "2a2b3c4d-0000-0000-0000-000000000009";
 const TPDB_PERFORMER3 = "2a2b3c4d-0000-0000-0000-00000000000d";
 const TPDB_PERFORMER = "2a2b3c4d-0000-0000-0000-00000000000f";
 const TPDB_PERFORMER2 = "2a2b3c4d-0000-0000-0000-00000000000e";
@@ -65,11 +68,20 @@ const TPDB_PERFORMER2 = "2a2b3c4d-0000-0000-0000-00000000000e";
 const TPDB_PERFORMER4 = "2a2b3c4d-0000-0000-0000-00000000000c";
 const STASH_PERFORMER2 = "4c4d5e6f-0000-0000-0000-0000000000d5";
 const TPDB_STUDIO = "2a2b3c4d-0000-0000-0000-0000000000a1";
+// Second studio on the /movies snapshot: no published counterpart anywhere,
+// so the unified Studios shelf can prove unlinked tiles still render.
+const TPDB_STUDIO2 = "2a2b3c4d-0000-0000-0000-0000000000a2";
 const STASH_STUDIO = "3b3c4d5e-0000-0000-0000-0000000000b2";
 const STASH_SCENE = "4c4d5e6f-0000-0000-0000-0000000000c3";
 const STASH_PERFORMER = "4c4d5e6f-0000-0000-0000-0000000000d4";
 const TAG_A = "cc000000-0000-0000-0000-000000000001";
 const TAG_B = "cc000000-0000-0000-0000-000000000002";
+// Second movie tag: its counterpart lookup answers only near-misses, so the
+// Genres shelf proves unlinked tags still render.
+const TAG_C = "cc000000-0000-0000-0000-000000000003";
+// StashDB's same-normalized-name twin of TAG_A ("fixture-tag-a"): pairing
+// folds case and separators exactly, and never fuzzes.
+const TAG_D = "cc000000-0000-0000-0000-000000000004";
 // StashDB serves images from stashdb.org/images/<uuid>; a provider-hosted
 // URL so the artwork gate accepts it end to end.
 const STASH_IMAGE =
@@ -463,7 +475,12 @@ let stashdbUrl: string;
 // --- M2 fixtures: TPDB metadata + artwork ---
 
 const tpdbToken = "tpdb-fixture-token";
-const tpdbFx = { fail: 0, calls: 0, imageAuth: "unset" };
+const tpdbFx = {
+  fail: 0,
+  failPaths: [] as string[],
+  calls: 0,
+  imageAuth: "unset",
+};
 
 function tpdbMovieRow(id: string) {
   return {
@@ -519,6 +536,9 @@ async function tpdbHandler(
     tpdbFx.fail -= 1;
     return json(res, 500, {});
   }
+  // Path-matched outage: fail specific upstream reads no matter how many
+  // calls a route happens to issue around them.
+  if (tpdbFx.failPaths.includes(p)) return json(res, 500, {});
   if (auth !== `Bearer ${tpdbToken}`) return json(res, 401, {});
   if (p === "/user") return json(res, 200, { data: { name: "Fixture TPDB" } });
   if (p === "/movies") {
@@ -526,7 +546,16 @@ async function tpdbHandler(
     // filter (q) yields a real total. Mirrors the live provider behavior.
     const realTotal = url.searchParams.get("q") !== null;
     return json(res, 200, {
-      data: [tpdbMovieRow(TPDB_MOVIE)],
+      // Second row feeds the unified facet shelves an unlinked studio tile
+      // (TPDB_STUDIO2) and a counterpart-less genre tile (TAG_C).
+      data: [
+        tpdbMovieRow(TPDB_MOVIE),
+        {
+          ...tpdbMovieRow(TPDB_MOVIE9),
+          site: { name: "Second Studio", uuid: TPDB_STUDIO2 },
+          tags: [{ id: 71, uuid: TAG_C, name: "Fixture Tag C" }],
+        },
+      ],
       meta: { total: realTotal ? 1 : 10000 },
       links: {},
     });
@@ -638,6 +667,22 @@ async function stashdbHandler(
   const body = await readBody(req);
   const query = typeof body.query === "string" ? body.query : "";
   stashdbFx.lastVars = JSON.stringify(body.variables ?? null);
+  if (query.includes("queryStudios")) {
+    // studioCounterpart matches the exact stored URL: the one published
+    // theporndb.net/studios/<uuid> pair resolves; every other URL is
+    // authoritative absence.
+    const vars = body.variables as
+      { url?: unknown; input?: { url?: unknown } } | undefined;
+    const url = vars?.url ?? vars?.input?.url;
+    return json(res, 200, {
+      data: {
+        queryStudios:
+          url === `https://theporndb.net/studios/${TPDB_STUDIO}`
+            ? [{ id: STASH_STUDIO, name: "Fixture Studio", deleted: false }]
+            : [],
+      },
+    });
+  }
   if (query.includes("searchStudio")) {
     return json(res, 200, {
       data: {
@@ -707,8 +752,18 @@ async function stashdbHandler(
     });
   }
   if (query.includes("searchTag")) {
+    // The counterpart lookup searches the full tag name; the suggestion
+    // path searches "Fixture". One same-normalized-name row (TAG_D, served
+    // only for the "Fixture Tag A" term) proves exact pairing; every other
+    // term answers only near-misses that must stay unlinked.
+    const vars = body.variables as { t?: unknown } | undefined;
+    const term = typeof vars?.t === "string" ? vars.t : "";
     return json(res, 200, {
-      data: { searchTag: [{ id: TAG_B, name: "Fixture Stash Tag" }] },
+      data: {
+        searchTag: term.toLowerCase().includes("tag a")
+          ? [{ id: TAG_D, name: "fixture-tag-a" }]
+          : [{ id: TAG_B, name: "Fixture Stash Tag" }],
+      },
     });
   }
   // Studio detail read (discover enrichment, catalog detail): one studio
@@ -723,7 +778,14 @@ async function stashdbHandler(
                 id: STASH_STUDIO,
                 name: "Fixture Studio",
                 deleted: false,
-                urls: [],
+                // The published cross-provider URL is what pairs this
+                // studio with its TPDB counterpart on the Studios rail.
+                urls: [
+                  {
+                    url: `https://theporndb.net/studios/${TPDB_STUDIO}`,
+                    type: "STUDIO",
+                  },
+                ],
                 images: [{ url: STASH_IMAGE }],
                 parent: null,
                 child_studios: [],
@@ -1336,7 +1398,10 @@ test("outages are errors, never empty successes; transient failures keep session
 test("identity regressions: foreign identity, upstream invalidation, remote denial", async () => {
   const enable = await call("PATCH", `/api/admin/users/${MEMBER2_ID}`, {
     cookie: owner,
-    body: { enabled: true, role: "requester", libraryIds: [] },
+    // The Shows grant is member2's standing library access: the discover
+    // outage test below proves a TPDB outage never starves the Jellyfin
+    // rail, which needs at least one granted library to render items.
+    body: { enabled: true, role: "requester", libraryIds: [SHOWS_LIB] },
   });
   assert.equal(enable.status, 200);
   let cookie = await loginAs("member2");
@@ -2579,17 +2644,26 @@ test("studio search per provider; studio references refused as media; unsupporte
 // json() arrives untyped and no schema validator exists in this suite.
 interface FixtureShelf {
   id: string;
+  kind?: string;
+  source?: string;
   browse?: { view: string; params: Record<string, string> };
   items?: {
     id?: string;
     name?: string;
     imageUrl?: string;
+    logoUrl?: string;
+    facet?: string;
+    provider?: string;
     accountId?: string;
     reference?: unknown;
     title?: string;
+    linked?: { provider: string; id: string };
   }[];
   error?: { code: string };
 }
+
+// Facet tiles: projected to the pinned wire fields for set comparison.
+type FacetTile = NonNullable<FixtureShelf["items"]>[number];
 
 interface FixtureCategory {
   id: string;
@@ -2620,8 +2694,8 @@ test("discover: four isolated shelves, grants, not-configured", async () => {
   const ok = await call("GET", "/api/discover", { cookie: member });
   assert.equal(ok.status, 200);
   const shelves = await shelvesOf(ok);
-  // Standard four first, then the derived facet shelves, then (none here)
-  // any follow shelves.
+  // Standard four first, then the two unified facet shelves, then (none
+  // here) any follow shelves.
   assert.deepEqual(
     shelves.map((shelf) => shelf.id),
     [
@@ -2629,15 +2703,13 @@ test("discover: four isolated shelves, grants, not-configured", async () => {
       "stashdb-trending-scenes",
       "jellyfin-recent",
       "velvarr-requests",
-      "tpdb-movie-genres",
-      "tpdb-movie-studios",
-      "stashdb-scene-genres",
-      "stashdb-scene-studios",
+      "studios",
+      "genres",
     ],
   );
   const byId = new Map(shelves.map((shelf) => [shelf.id, shelf]));
   // Premise for the follow-shelf tests below: this account follows nobody,
-  // so the standard four shelves plus their derived facets are the page.
+  // so the standard four shelves plus the two facet shelves are the page.
   const memberFollows = await call("GET", "/api/follows", { cookie: member });
   assert.equal(memberFollows.status, 200);
   // json() is untyped and the suite has no validator; named const, then read.
@@ -2673,60 +2745,95 @@ test("discover: four isolated shelves, grants, not-configured", async () => {
     id: TPDB_MOVIE,
   });
 
-  // Derived facet shelves: provider-native ids deduped out of the same
-  // snapshot, artwork only from an item that carries the facet. TAG_A and
-  // TAG_B never cross shelves — the scopes stay provider-separated.
-  const movieItem = movies?.items?.[0];
-  const movieGenres = byId.get("tpdb-movie-genres");
-  assert.deepEqual(movieGenres?.browse, {
-    view: "catalog",
-    params: { provider: "tpdb", kind: "movie" },
-  });
-  assert.deepEqual(movieGenres?.items, [
-    { id: TAG_A, name: "Fixture Tag A", imageUrl: movieItem?.imageUrl },
+  // Unified facet shelves: one tile per studio/category across BOTH
+  // providers, paired only through provider-published counterpart data.
+  // No single browse destination exists, so the shelf carries no browse
+  // key — each tile builds its own href.
+  const studiosShelf = byId.get("studios");
+  const genresShelf = byId.get("genres");
+  for (const shelf of [studiosShelf, genresShelf]) {
+    assert.equal(shelf?.kind, "facets", shelf?.id);
+    assert.equal(shelf?.source, "velvarr", shelf?.id);
+    assert.equal("browse" in (shelf ?? {}), false, shelf?.id);
+    assert.equal(shelf?.error, undefined, shelf?.id);
+    assert.ok((shelf?.items?.length ?? 0) > 0, `${shelf?.id} carries items`);
+  }
+  // Projects each tile to the pinned wire fields and compares as an
+  // id-sorted set, so provider-side enrichment (imageUrl/logoUrl) cannot
+  // rotate the assertion and missing tiles cannot hide.
+  const assertTileSet = (
+    shelf: FixtureShelf | undefined,
+    expected: {
+      facet: string;
+      provider: string;
+      id: string;
+      name: string;
+      linked: { provider: string; id: string } | undefined;
+    }[],
+  ): void => {
+    const actual = ((shelf?.items ?? []) as FacetTile[])
+      .map(({ facet, provider, id, name, linked }) => ({
+        facet,
+        provider,
+        id,
+        name,
+        linked,
+      }))
+      .sort((a, b) => (a.id ?? "").localeCompare(b.id ?? ""));
+    assert.deepEqual(actual, expected);
+  };
+  // Studios: a studio published on BOTH providers appears ONCE. The StashDB
+  // tile survives (its record publishes the TPDB uuid URL, so it carries
+  // `linked` → the TPDB id) and the TPDB-origin tile for that published id
+  // is dropped — dedupe keys on the published id, never the shared name.
+  // The linkless Second Studio is a genuinely distinct studio: it must still
+  // render, so a dedupe that ever dropped studios with no published link
+  // fails this set.
+  assertTileSet(studiosShelf, [
+    {
+      facet: "studio",
+      provider: "tpdb",
+      id: TPDB_STUDIO2,
+      name: "Second Studio",
+      linked: undefined,
+    },
+    {
+      facet: "studio",
+      provider: "stashdb",
+      id: STASH_STUDIO,
+      name: "Fixture Studio",
+      linked: { provider: "tpdb", id: TPDB_STUDIO },
+    },
   ]);
-  assert.match(movieItem?.imageUrl ?? "", /^https:\/\/cdn\.theporndb\.net\//);
-  const movieStudios = byId.get("tpdb-movie-studios");
-  assert.deepEqual(movieStudios?.browse, {
-    view: "catalog",
-    params: { provider: "tpdb", kind: "movie" },
-  });
-  const tpdbStudioItem = movieStudios?.items?.[0];
-  assert.deepEqual(tpdbStudioItem?.reference, {
-    provider: "tpdb",
-    kind: "studio",
-    id: TPDB_STUDIO,
-  });
-  assert.equal(tpdbStudioItem?.title, "Fixture Studio");
-  // Logo resolved through the provider detail read and sits on an artwork
-  // host the /api/catalog/image proxy accepts.
-  assert.match(
-    tpdbStudioItem?.imageUrl ?? "",
-    /^https:\/\/cdn\.theporndb\.net\//,
-  );
-
-  const sceneItem = byId.get("stashdb-trending-scenes")?.items?.[0];
-  assert.match(sceneItem?.imageUrl ?? "", /^https:\/\/stashdb\.org\//);
-  const sceneGenres = byId.get("stashdb-scene-genres");
-  assert.deepEqual(sceneGenres?.browse, {
-    view: "catalog",
-    params: { provider: "stashdb", kind: "scene" },
-  });
-  assert.deepEqual(sceneGenres?.items, [
-    { id: TAG_B, name: "Fixture Stash Tag", imageUrl: sceneItem?.imageUrl },
+  // Genres: only exact normalized-name equality pairs a tag — TAG_A meets
+  // its stash twin "fixture-tag-a", while TAG_C's lookup answers only
+  // near-misses and TAG_B's finds nothing on TPDB; all still render.
+  assertTileSet(genresShelf, [
+    {
+      facet: "tag",
+      provider: "tpdb",
+      id: TAG_A,
+      name: "Fixture Tag A",
+      linked: { provider: "stashdb", id: TAG_D },
+    },
+    {
+      facet: "tag",
+      provider: "stashdb",
+      id: TAG_B,
+      name: "Fixture Stash Tag",
+      linked: undefined,
+    },
+    {
+      facet: "tag",
+      provider: "tpdb",
+      id: TAG_C,
+      name: "Fixture Tag C",
+      linked: undefined,
+    },
   ]);
-  const sceneStudios = byId.get("stashdb-scene-studios");
-  assert.deepEqual(sceneStudios?.browse, {
-    view: "catalog",
-    params: { provider: "stashdb", kind: "scene" },
-  });
-  const stashStudioItem = sceneStudios?.items?.[0];
-  assert.deepEqual(stashStudioItem?.reference, {
-    provider: "stashdb",
-    kind: "studio",
-    id: STASH_STUDIO,
-  });
-  assert.equal(stashStudioItem?.imageUrl, STASH_IMAGE);
+  // ponytail: the wire contract pins tiles, not merge order or the cap
+  // value — set equality is the honest assert; pin sequence only if the
+  // contract ever does.
 
   // Jellyfin shelf: granted libraries only — member holds just Movies.
   assert.deepEqual((library?.items ?? []).map((item) => item.id).sort(), [
@@ -2740,8 +2847,8 @@ test("discover: four isolated shelves, grants, not-configured", async () => {
     assert.equal(record.accountId, MEMBER_ID);
   }
 
-  // A TPDB outage fills only the TPDB shelves' errors — including the facet
-  // shelves derived from the failed snapshot; others keep items.
+  // One snapshot failing: the merged shelves fill from the surviving
+  // provider with no shelf error — a degraded rail, never an error page.
   // First-contact: the earlier discover cached these shelves.
   resetMetaCache();
   tpdbFx.fail = 1;
@@ -2750,31 +2857,54 @@ test("discover: four isolated shelves, grants, not-configured", async () => {
   const outById = new Map(
     (await shelvesOf(outage)).map((shelf) => [shelf.id, shelf]),
   );
-  for (const id of [
-    "tpdb-recent-movies",
-    "tpdb-movie-genres",
-    "tpdb-movie-studios",
-  ]) {
-    const shelf = outById.get(id);
-    assert.ok(shelf?.error, id);
-    assert.match(shelf?.error?.code ?? "", /unavailable/, id);
-    assert.equal(shelf?.items, undefined, id);
-  }
+  const outMovies = outById.get("tpdb-recent-movies");
+  assert.ok(outMovies?.error);
+  assert.match(outMovies?.error?.code ?? "", /unavailable/);
+  assert.equal(outMovies?.items, undefined);
   for (const id of [
     "stashdb-trending-scenes",
-    "stashdb-scene-genres",
-    "stashdb-scene-studios",
     "jellyfin-recent",
     "velvarr-requests",
+    "studios",
+    "genres",
   ]) {
     const shelf = outById.get(id);
     assert.equal(shelf?.error, undefined, id);
     assert.ok((shelf?.items?.length ?? 0) > 0, id);
+    if (id === "studios" || id === "genres") {
+      // With the TPDB snapshot down, every surviving tile is stash-side.
+      for (const tile of (shelf?.items ?? []) as FacetTile[]) {
+        assert.equal(tile.provider, "stashdb", `${id}:${tile.id}`);
+      }
+    }
   }
 
-  // Not-configured is an explicit error on its own provider's shelves only —
-  // derived facets included, never an empty list that could read as a quiet
-  // success.
+  // Both snapshots failing: one error per facet shelf and no items key —
+  // never a half-filled rail that could read as a quiet success.
+  resetMetaCache();
+  tpdbFx.fail = 1;
+  stashdbFx.fail = 1;
+  try {
+    const bothDown = await call("GET", "/api/discover", { cookie: member });
+    assert.equal(bothDown.status, 200, "shelf failure must not fail the page");
+    const bothById = new Map(
+      (await shelvesOf(bothDown)).map((shelf) => [shelf.id, shelf]),
+    );
+    for (const id of ["studios", "genres"]) {
+      const shelf = bothById.get(id);
+      assert.ok(shelf?.error, id);
+      assert.match(shelf?.error?.code ?? "", /unavailable/, id);
+      assert.equal(shelf?.items, undefined, id);
+    }
+  } finally {
+    tpdbFx.fail = 0;
+    stashdbFx.fail = 0;
+  }
+
+  // Not-configured degrades like any snapshot failure on the merged shelves:
+  // the surviving provider fills the rail, and counterpart lookups through
+  // the dead side resolve to nothing — unlinked tiles, never invented links
+  // and never an empty list that could read as a quiet success.
   const key = process.env.STASHDB_API_KEY;
   delete process.env.STASHDB_API_KEY;
   const unconfigured = await call("GET", "/api/discover", { cookie: member });
@@ -2783,21 +2913,27 @@ test("discover: four isolated shelves, grants, not-configured", async () => {
   const unById = new Map(
     (await shelvesOf(unconfigured)).map((shelf) => [shelf.id, shelf]),
   );
-  for (const id of [
-    "stashdb-trending-scenes",
-    "stashdb-scene-genres",
-    "stashdb-scene-studios",
-  ]) {
-    assert.equal(unById.get(id)?.error?.code, "provider_not_configured", id);
-    assert.equal(unById.get(id)?.items, undefined, id);
-  }
+  const unStash = unById.get("stashdb-trending-scenes");
+  assert.equal(unStash?.error?.code, "provider_not_configured");
+  assert.equal(unStash?.items, undefined);
   for (const id of [
     "tpdb-recent-movies",
-    "tpdb-movie-genres",
-    "tpdb-movie-studios",
+    "jellyfin-recent",
+    "velvarr-requests",
+    "studios",
+    "genres",
   ]) {
-    assert.equal(unById.get(id)?.error, undefined, id);
-    assert.ok((unById.get(id)?.items?.length ?? 0) > 0, id);
+    const shelf = unById.get(id);
+    assert.equal(shelf?.error, undefined, id);
+    assert.ok((shelf?.items?.length ?? 0) > 0, id);
+    if (id === "studios" || id === "genres") {
+      // StashDB lookups cannot run without the key: pairing degrades to
+      // unlinked, and every rendered tile is TPDB-side.
+      for (const tile of (shelf?.items ?? []) as FacetTile[]) {
+        assert.equal(tile.provider, "tpdb", `${id}:${tile.id}`);
+        assert.equal("linked" in tile, false, `${id}:${tile.id}`);
+      }
+    }
   }
 });
 
@@ -3346,10 +3482,8 @@ test("discover appends one followed-performer shelf per provider and isolates a 
       "stashdb-trending-scenes",
       "jellyfin-recent",
       "velvarr-requests",
-      "tpdb-movie-genres",
-      "tpdb-movie-studios",
-      "stashdb-scene-genres",
-      "stashdb-scene-studios",
+      "studios",
+      "genres",
       "tpdb-followed-movies",
       "stashdb-followed-scenes",
     ],
@@ -3377,21 +3511,22 @@ test("discover appends one followed-performer shelf per provider and isolates a 
     assert.equal(item.reference.kind, "scene", stashFollow?.id);
   }
 
-  // A TPDB outage errors the TPDB shelves only; the rest of the page keeps
-  // its items — same isolation contract as the standard shelves.
+  // A TPDB outage errors the TPDB shelves only; the merged facet shelves
+  // fill from the surviving StashDB snapshot — same isolation contract as
+  // the standard shelves.
   resetMetaCache();
-  tpdbFx.fail = 2; // recent movies and the filmography page
+  // Path-matched outage: fail the TPDB movie list and the followed
+  // performer's filmography specifically. Discover legitimately issues extra
+  // TPDB reads (studio site rows, tag counterpart lookups), so a raw count
+  // no longer lands on the intended calls; these two paths pin the isolation
+  // contract while facet counterpart reads ride unaffected paths.
+  tpdbFx.failPaths = ["/movies", `/performers/${TPDB_PERFORMER}/movies`];
   try {
     const outage = await call("GET", "/api/discover", { cookie: member2 });
     assert.equal(outage.status, 200, "shelf failure must not fail the page");
     const outShelves = await shelvesOf(outage);
     const byId = new Map(outShelves.map((shelf) => [shelf.id, shelf]));
-    for (const id of [
-      "tpdb-recent-movies",
-      "tpdb-movie-genres",
-      "tpdb-movie-studios",
-      "tpdb-followed-movies",
-    ]) {
+    for (const id of ["tpdb-recent-movies", "tpdb-followed-movies"]) {
       const shelf = byId.get(id);
       assert.ok(shelf?.error, id);
       assert.match(shelf?.error?.code ?? "", /unavailable/, id);
@@ -3399,27 +3534,18 @@ test("discover appends one followed-performer shelf per provider and isolates a 
     }
     for (const id of [
       "stashdb-trending-scenes",
-      "stashdb-scene-genres",
-      "stashdb-scene-studios",
       "jellyfin-recent",
       "velvarr-requests",
+      "studios",
+      "genres",
       "stashdb-followed-scenes",
     ]) {
       const shelf = byId.get(id);
       assert.equal(shelf?.error, undefined, id);
-    }
-    for (const id of [
-      "stashdb-trending-scenes",
-      "stashdb-scene-genres",
-      "stashdb-scene-studios",
-      "velvarr-requests",
-      "stashdb-followed-scenes",
-    ]) {
-      const shelf = byId.get(id);
       assert.ok((shelf?.items?.length ?? 0) > 0, id);
     }
   } finally {
-    tpdbFx.fail = 0;
+    tpdbFx.failPaths = [];
   }
 
   // Leave the standard five shelves for everyone after this test.

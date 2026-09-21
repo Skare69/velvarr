@@ -85,8 +85,11 @@ import {
   getProviderStatus,
   isProviderImageUrl,
   listCatalogTags,
+  normalizeFacetName,
   searchCatalog,
   searchCatalogTags,
+  studioCounterpart,
+  tagCounterpart,
   type CatalogSearchQuery,
   type CatalogSortDirection,
   type CatalogSortKey,
@@ -2252,12 +2255,22 @@ interface ShelfError {
   message: string;
 }
 
-// Genre facet item: a provider-native tag id plus artwork from the snapshot
-// item that carried the tag (name-only when that item had none).
+// One tile of a unified Studios/Genres rail. `provider`+`id` are native to
+// the snapshot side the tile came from — the grid a tile opens queries each
+// side with its own id, so one rail mixes TPDB movies and StashDB scenes.
+// `linked` is the counterpart on the other provider, present only when it
+// genuinely resolved: a studio link the providers themselves published, or
+// exact normalized-name tag equality (a label matched to a label — the one
+// documented deterministic pairing, never a name guess).
 interface FacetItem {
+  facet: "studio" | "tag";
+  provider: CatalogProvider;
   id: string;
   name: string;
   imageUrl?: string;
+  /** Studio brand mark only — never the poster under another name. */
+  logoUrl?: string;
+  linked?: { provider: CatalogProvider; id: string };
 }
 
 interface Shelf {
@@ -2265,7 +2278,7 @@ interface Shelf {
   title: string;
   source: "tpdb" | "stashdb" | "jellyfin" | "velvarr";
   browse?: { view: string; params: Record<string, string> };
-  kind: "catalog" | "library" | "requests" | "genres" | "studios";
+  kind: "catalog" | "library" | "requests" | "facets";
   items?: CatalogDetail[] | LibraryItem[] | RequestRecord[] | FacetItem[];
   error?: ShelfError;
 }
@@ -2418,7 +2431,9 @@ function shelfOf(
 // ponytail: bounded recent/trending snapshot (SHELF_ITEMS unique ids, no
 // popularity invented); a full directory listing only if a browse surface
 // ever needs one.
-function genreFacets(items: CatalogDetail[]): FacetItem[] {
+function genreFacets(
+  items: CatalogDetail[],
+): Pick<FacetItem, "id" | "name" | "imageUrl">[] {
   const names = new Map<string, string>();
   const art = new Map<string, string[]>();
   for (const item of items) {
@@ -2483,62 +2498,167 @@ function studioFacets(
   );
 }
 
-// Derived facet shelves for one provider snapshot: the parent's failure
-// propagates into both (no snapshot, no honest facets); success derives both
-// from the same bounded items. Browse stays clean — the provider+kind pair,
-// no tag/studio filter baked into the shelf itself (tiles add their own).
+// The two unified facet rails share one pipeline: derive each surviving
+// snapshot's tiles with the per-provider rules, alternate the providers so
+// neither side fills the rail alone, cap, then pair across providers.
+// Pairing is honesty-bound: studios only through the counterpart link the
+// providers themselves publish, categories only through exact normalized-
+// name equality. A failed pairing or a capped-away tile simply omits
+// `linked`; no counterpart failure can reject the discover response.
 async function facetShelves(
-  parent: PromiseSettledResult<CatalogDetail[]>,
-  provider: "tpdb" | "stashdb",
-  kind: "movie" | "scene",
+  tpdb: PromiseSettledResult<CatalogDetail[]>,
+  stash: PromiseSettledResult<CatalogDetail[]>,
 ): Promise<Shelf[]> {
-  const prefix = `${provider}-${kind}`;
-  const browse = { view: "catalog", params: { provider, kind } };
-  const [genreId, studioId] = [`${prefix}-genres`, `${prefix}-studios`];
-  const [genreTitle, studioTitle] =
-    kind === "movie"
-      ? (["Movie genres", "Movie studios"] as const)
-      : (["Scene genres", "Scene studios"] as const);
-  if (parent.status === "rejected") {
-    const error = shelfError(parent.reason);
+  if (tpdb.status === "rejected" && stash.status === "rejected") {
+    // shelfError keeps the upstream code (not configured vs outage); the
+    // message names the shelf's own truth: no snapshot from either side.
+    const error = {
+      ...shelfError(tpdb.reason),
+      message: "Neither TPDB nor StashDB could be read.",
+    };
     return [
       {
-        id: genreId,
-        title: genreTitle,
-        source: provider,
-        kind: "genres",
-        browse,
+        id: "studios",
+        title: "Studios",
+        source: "velvarr",
+        kind: "facets",
         error,
       },
       {
-        id: studioId,
-        title: studioTitle,
-        source: provider,
-        kind: "studios",
-        browse,
+        id: "genres",
+        title: "Genres",
+        source: "velvarr",
+        kind: "facets",
         error,
       },
     ];
   }
-  const items = parent.value;
-  return [
-    {
-      id: genreId,
-      title: genreTitle,
-      source: provider,
-      kind: "genres",
-      browse,
-      items: genreFacets(items),
-    },
-    {
-      id: studioId,
-      title: studioTitle,
-      source: provider,
-      kind: "studios",
-      browse,
-      items: await studioFacets(provider, items),
-    },
-  ];
+  // One snapshot failing degrades to the survivor's facets with no shelf
+  // error here — the sibling catalog rails already report that provider's
+  // outage, so the facet rails hide nothing by carrying on.
+  const sources: { provider: CatalogProvider; items: CatalogDetail[] }[] = [];
+  if (tpdb.status === "fulfilled")
+    sources.push({ provider: "tpdb", items: tpdb.value });
+  if (stash.status === "fulfilled")
+    sources.push({ provider: "stashdb", items: stash.value });
+  return Promise.all([
+    facetShelf("studios", sources),
+    facetShelf("genres", sources),
+  ]);
+}
+
+async function facetShelf(
+  shelf: "studios" | "genres",
+  sources: { provider: CatalogProvider; items: CatalogDetail[] }[],
+): Promise<Shelf> {
+  const perSource = await Promise.all(
+    sources.map(async ({ provider, items }) => ({
+      provider,
+      tiles:
+        shelf === "studios"
+          ? (await studioFacets(provider, items)).map((detail): FacetItem => ({
+              facet: "studio",
+              provider,
+              id: detail.reference.id,
+              name: detail.title,
+              ...(detail.logoUrl !== undefined
+                ? { logoUrl: detail.logoUrl }
+                : {}),
+              ...(detail.imageUrl !== undefined
+                ? { imageUrl: detail.imageUrl }
+                : {}),
+            }))
+          : genreFacets(items).map((tile): FacetItem => ({
+              facet: "tag",
+              provider,
+              ...tile,
+            })),
+    })),
+  );
+  // Alternate the providers' tiles so the cap leaves room for both sides.
+  const candidates: FacetItem[] = [];
+  for (let i = 0; i < SHELF_ITEMS; i++) {
+    for (const { tiles } of perSource) {
+      const tile = tiles[i];
+      if (tile !== undefined) candidates.push(tile);
+    }
+  }
+  const emitted = candidates.slice(0, SHELF_ITEMS);
+  let items = emitted;
+  if (shelf === "studios") {
+    // StashDB->TPDB reads the link the studio record itself publishes (the
+    // detail studioFacets just cached), so it is free to run pre-dedupe; the
+    // TPDB->StashDB direction is a per-tile network query and waits until
+    // identity-dedupe and the cap have picked the survivors.
+    const stashTiles = emitted.filter((tile) => tile.provider === "stashdb");
+    await resolveLinked(stashTiles);
+    const publishedTpdb = new Set(
+      stashTiles.flatMap((tile) =>
+        tile.linked !== undefined ? [tile.linked.id.toLowerCase()] : [],
+      ),
+    );
+    // Drop a TPDB tile only when a StashDB tile published that exact studio
+    // as its counterpart — never by name: two same-named studios without a
+    // published link stay two tiles.
+    items = publishedTpdb.size
+      ? emitted.filter(
+          (tile) =>
+            tile.provider !== "tpdb" ||
+            !publishedTpdb.has(tile.id.toLowerCase()),
+        )
+      : emitted;
+  } else {
+    // Categories dedupe by exact normalized name: the first-seen tile stays
+    // and the dropped side's id becomes its linked.
+    const seen = new Map<string, FacetItem>();
+    items = [];
+    for (const tile of emitted) {
+      const key = normalizeFacetName(tile.name);
+      const prior = seen.get(key);
+      if (prior === undefined) {
+        seen.set(key, tile);
+        items.push(tile);
+      } else if (prior.linked === undefined) {
+        prior.linked = { provider: tile.provider, id: tile.id };
+      }
+    }
+  }
+  // Counterparts for everything the local dedupe could not pair — network
+  // reads issued only for tiles that survived the cap.
+  await resolveLinked(items);
+  return {
+    id: shelf,
+    title: shelf === "studios" ? "Studios" : "Genres",
+    source: "velvarr",
+    kind: "facets",
+    items,
+  };
+}
+
+// Resolves each tile's cross-provider counterpart, settled: a rejection or
+// an absent counterpart just leaves `linked` off the tile.
+async function resolveLinked(tiles: FacetItem[]): Promise<void> {
+  const missing = tiles.filter((tile) => tile.linked === undefined);
+  const settled = await Promise.allSettled(
+    missing.map((tile) =>
+      tile.facet === "studio"
+        ? studioCounterpart({
+            provider: tile.provider,
+            kind: "studio",
+            id: tile.id,
+          })
+        : tagCounterpart(tile.provider, tile.name),
+    ),
+  );
+  settled.forEach((result, i) => {
+    const tile = missing[i];
+    if (tile && result.status === "fulfilled" && result.value !== undefined) {
+      tile.linked = {
+        provider: result.value.provider,
+        id: result.value.id,
+      };
+    }
+  });
 }
 
 async function discover(ctx: AuthContext): Promise<Response> {
@@ -2632,8 +2752,7 @@ async function discover(ctx: AuthContext): Promise<Response> {
         },
         requests,
       ),
-      ...(await facetShelves(tpdbMovies, "tpdb", "movie")),
-      ...(await facetShelves(stashTrending, "stashdb", "scene")),
+      ...(await facetShelves(tpdbMovies, stashTrending)),
       ...(await followShelves(ctx)),
     ],
   });
