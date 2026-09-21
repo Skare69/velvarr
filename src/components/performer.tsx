@@ -47,6 +47,18 @@ type SearchPage = {
 
 /* ---------- Small helpers (same conventions as catalog.tsx) ---------- */
 
+/** Opening another record leaves this page, so the per-kind page keys are
+ * dropped: page 3 of one performer's movies is meaningless on the next. */
+function openParams(r: CatalogReference) {
+  return {
+    provider: r.provider,
+    kind: r.kind,
+    id: r.id,
+    moviePage: null,
+    scenePage: null,
+  };
+}
+
 /* ---------- Fetch hooks: a live flag makes stale in-flight responses inert ---------- */
 
 /** The view tells three failures apart — provider not configured, a 404 that
@@ -167,24 +179,26 @@ function Paging({
   );
 }
 
-/* ---------- One paged listing: the provider's only kind ---------- */
+/* ---------- One paged listing: one kind from the provider that has it ---------- */
 
+/** Each kind pages independently, so paging her movies never resets her
+ * scenes; both keys live in the URL, so a reload or Back restores both. */
 function Listing({
   provider,
   kind,
   performerId,
   performerName,
-  page,
-  perPage,
 }: {
   provider: CatalogProvider;
   kind: "movie" | "scene";
   performerId: string;
   performerName: string;
-  page: number;
-  perPage: number;
 }) {
+  const params = useSearchParams();
   const setP = useParamsSetter();
+  const pageParam = kind === "movie" ? "moviePage" : "scenePage";
+  const page = Math.max(1, intOr(params.get(pageParam), 1));
+  const perPage = Math.min(100, Math.max(1, intOr(params.get("perPage"), 24)));
   const [reload, setReload] = useState(0);
   const { data, error, loading } = usePerformerListing(
     provider,
@@ -196,13 +210,12 @@ function Listing({
   );
   // Same as the performer page: a detail is another surface, so it pushes.
   const open = useCallback(
-    (r: CatalogReference) =>
-      setP({ provider: r.provider, kind: r.kind, id: r.id }, { push: true }),
+    (r: CatalogReference) => setP(openParams(r), { push: true }),
     [setP],
   );
   const onPage = useCallback(
-    (p: number) => setP({ page: p > 1 ? String(p) : null }),
-    [setP],
+    (p: number) => setP({ [pageParam]: p > 1 ? String(p) : null }),
+    [setP, pageParam],
   );
   const retry = useCallback(() => setReload((n) => n + 1), []);
   const kindLabel = kind === "movie" ? "movies" : "scenes";
@@ -507,18 +520,10 @@ function FollowStar({
 /* ---------- The performer page ---------- */
 
 export function PerformerView({ reference }: { reference: CatalogReference }) {
-  const params = useSearchParams();
   const setP = useParamsSetter();
   const { providers } = useSession();
-  // URL-driven: page survives reload and Back.
-  const page = Math.max(1, intOr(params.get("page"), 1));
-  const perPage = Math.min(100, Math.max(1, intOr(params.get("perPage"), 24)));
   const notConfigured = providers?.[reference.provider] === "not_configured";
   const [reload, setReload] = useState(0);
-  // One metadata source per provider: TPDB performers only have movies,
-  // StashDB performers only have scenes.
-  const kind: "movie" | "scene" =
-    reference.provider === "tpdb" ? "movie" : "scene";
 
   const { payload, err, loading } = usePerformerDetail(
     reference.provider,
@@ -537,12 +542,31 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
       : undefined
     : undefined;
 
+  // One metadata source per kind: TPDB has her movies, StashDB has her scenes.
+  // She is one person, so both catalogs belong on her page — the counterpart
+  // comes from the link the providers published, never from her name. Movies
+  // first either way, so the order does not depend on which side you opened.
+  const sides: { provider: CatalogProvider; id: string }[] = [
+    { provider: reference.provider, id: reference.id },
+    ...(linked?.kind === "performer"
+      ? [{ provider: linked.provider, id: linked.id }]
+      : []),
+  ].sort((a, b) =>
+    a.provider === "tpdb" ? -1 : b.provider === "tpdb" ? 1 : 0,
+  );
+  // The side that is missing, so the page can say which catalog is absent
+  // instead of quietly showing half a career.
+  const missing = sides.some((s) => s.provider === "tpdb")
+    ? sides.some((s) => s.provider === "stashdb")
+      ? null
+      : "stashdb"
+    : "tpdb";
+
   // Opening a title leaves the performer page for a detail: push, so Back
   // returns here. Replacing overwrote the performer entry, and Back jumped
   // all the way to whatever preceded it.
   const open = useCallback(
-    (r: CatalogReference) =>
-      setP({ provider: r.provider, kind: r.kind, id: r.id }, { push: true }),
+    (r: CatalogReference) => setP(openParams(r), { push: true }),
     [setP],
   );
 
@@ -618,9 +642,14 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
               <div className="min-w-0 flex-1">
                 <h2 className="page-title">{d.title}</h2>
                 <div className="mt-2 flex flex-wrap gap-1">
-                  <span className="chip">
-                    {providerLabel(reference.provider)} · performer
-                  </span>
+                  {/* Which sources this page is reading, now that it reads
+                      both sides when the providers link them. */}
+                  <span className="chip">performer</span>
+                  {sides.map((s) => (
+                    <span key={s.provider} className="chip">
+                      {providerLabel(s.provider)}
+                    </span>
+                  ))}
                 </div>
                 <div className="mt-3">
                   <FollowStar
@@ -641,25 +670,6 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
                     {d.description}
                   </p>
                 )}
-
-                <div className="mt-4">
-                  <div className="label">Cross-provider link</div>
-                  {linked ? (
-                    <button
-                      type="button"
-                      className="chip chip-accent mt-1"
-                      onClick={() => open(linked)}
-                    >
-                      Open the linked {providerLabel(linked.provider)} record
-                    </button>
-                  ) : (
-                    <p className="mt-1 text-xs text-muted">
-                      {unlinkedReason
-                        ? unlinkedReason
-                        : "No cross-provider link is recorded, so the other provider’s catalog cannot be shown for this performer."}
-                    </p>
-                  )}
-                </div>
 
                 {(d.links.length > 0 || sourceUrl) && (
                   <div className="mt-4">
@@ -693,16 +703,29 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
             </div>
           </div>
 
-          <div className="mt-8">
-            <Listing
-              key={kind}
-              provider={reference.provider}
-              kind={kind}
-              performerId={reference.id}
-              performerName={d.title}
-              page={page}
-              perPage={perPage}
-            />
+          <div className="mt-8 space-y-8">
+            {sides.map((s) => (
+              <Listing
+                key={s.provider}
+                provider={s.provider}
+                kind={s.provider === "tpdb" ? "movie" : "scene"}
+                performerId={s.id}
+                performerName={d.title}
+              />
+            ))}
+            {missing && (
+              <div className="panel p-6" role="note">
+                <h3 className="font-semibold">
+                  {missing === "tpdb"
+                    ? `${d.title}’s movies are not shown`
+                    : `${d.title}’s scenes are not shown`}
+                </h3>
+                <p className="mt-2 text-sm text-muted">
+                  {unlinkedReason ??
+                    `${providerLabel(reference.provider)} publishes no ${providerLabel(missing)} link for this performer, and ${providerLabel(missing)} is the only source for ${missing === "tpdb" ? "movies" : "scenes"}. Velvarr pairs only the records the providers link themselves — it never matches performers by name.`}
+                </p>
+              </div>
+            )}
           </div>
         </>
       )}
