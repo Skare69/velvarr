@@ -7,6 +7,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import Link from "next/link";
+import { filterNames } from "./catalog";
 import "./discover.css";
 import type {
   CatalogDetail,
@@ -41,13 +43,15 @@ interface ShelfError {
   message: string;
 }
 
+type Genre = { id: string; name: string; imageUrl?: string };
+
 interface Shelf {
   id: string;
   title: string;
   source: "tpdb" | "stashdb" | "jellyfin" | "velvarr";
   browse?: { view: string; params: Record<string, string> };
-  kind: "catalog" | "library" | "requests";
-  items?: CatalogDetail[] | LibraryItem[] | RequestRecord[];
+  kind: "catalog" | "library" | "requests" | "studios" | "genres";
+  items?: CatalogDetail[] | LibraryItem[] | RequestRecord[] | Genre[];
   error?: ShelfError;
 }
 
@@ -95,33 +99,16 @@ function targetView(shelf: Shelf): string {
   return shelf.browse.view;
 }
 
-const BROWSE_KEYS = [
-  "q",
-  "year",
-  "performer",
-  "studio",
-  "tags",
-  "tagsAll",
-  "tagsExclude",
-  "sort",
-  "direction",
-  "page",
-  "perPage",
-  "tab",
-  "id",
-  "provider",
-  "kind",
-];
-
-/** Browse-all lands on the filtered surface carrying exactly the shelf's
- * filters: shelf params applied, every other browse-state key cleared. */
-function browseUpdates(shelf: Shelf): Record<string, string | null> {
-  const updates: Record<string, string | null> = {};
-  for (const k of BROWSE_KEYS) updates[k] = null;
-  if (shelf.browse)
-    for (const [k, v] of Object.entries(shelf.browse.params)) updates[k] = v;
-  updates.view = targetView(shelf);
-  return updates;
+/** A browse link starts fresh: filters from another surface never leak in. */
+function browseHref(
+  shelf: Shelf,
+  filters: Record<string, string> = {},
+): string {
+  return `/?${new URLSearchParams({
+    view: targetView(shelf),
+    ...shelf.browse?.params,
+    ...filters,
+  })}`;
 }
 
 const NOT_CONFIGURED_CODES = ["provider_not_configured", "not_configured"];
@@ -146,16 +133,21 @@ function RailSkeleton({ count }: { count: number }) {
 
 /** Page the rail this header owns. Disabled state mirrors the real scroll
  * edges; scroll + ResizeObserver keep it honest while images load. */
-function useRailNav(label: string) {
+function useRailNav(label: string, hasRail: boolean) {
   const ref = useRef<HTMLDivElement>(null);
   const [edges, setEdges] = useState({ start: true, end: true });
 
   const sync = useCallback(() => {
     const el = ref.current;
     if (!el) return;
+    // The rail carries its own inline padding so focus rings are not clipped,
+    // and revealing a tile parks it a few pixels in — so "at the start" is a
+    // slack of that padding, not an exact zero, or Previous reads enabled
+    // while there is nothing behind it.
+    const slack = parseFloat(getComputedStyle(el).paddingLeft) || 1;
     setEdges({
-      start: el.scrollLeft <= 1,
-      end: el.scrollLeft + el.clientWidth >= el.scrollWidth - 1,
+      start: el.scrollLeft <= slack,
+      end: el.scrollLeft + el.clientWidth >= el.scrollWidth - slack,
     });
   }, []);
 
@@ -166,7 +158,7 @@ function useRailNav(label: string) {
     const ro = new ResizeObserver(sync);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [sync]);
+  }, [sync, hasRail]);
 
   const nudge = (dir: -1 | 1) => {
     const el = ref.current;
@@ -184,7 +176,7 @@ function useRailNav(label: string) {
     <div className="discovery-rail-nav">
       <button
         type="button"
-        className="btn"
+        className="discovery-scroll-button"
         aria-label={`Scroll ${label} back`}
         disabled={edges.start}
         onClick={() => nudge(-1)}
@@ -193,7 +185,7 @@ function useRailNav(label: string) {
       </button>
       <button
         type="button"
-        className="btn"
+        className="discovery-scroll-button"
         aria-label={`Scroll ${label} forward`}
         disabled={edges.end}
         onClick={() => nudge(1)}
@@ -204,6 +196,46 @@ function useRailNav(label: string) {
   );
 
   return { ref, nav, onScroll: sync };
+}
+
+/** Provider-native facets reuse the same filtered Movies/Scenes destinations. */
+function FacetTile({
+  shelf,
+  item,
+}: {
+  shelf: Shelf;
+  item: CatalogDetail | Genre;
+}) {
+  const studio = "reference" in item;
+  const id = studio ? item.reference.id : item.id;
+  const name = studio ? item.title : item.name;
+  // A studio rail shows brand marks; its portrait poster belongs to the hero,
+  // and a studio with neither stays a plain name.
+  const art = studio ? (item.logoUrl ?? item.imageUrl) : item.imageUrl;
+  return (
+    <div className="discovery-tile discovery-tile-facet">
+      <Link
+        href={browseHref(shelf, { [studio ? "studio" : "tags"]: id })}
+        prefetch={false}
+        className={`discovery-facet discovery-facet-${studio ? "studio" : "genre"}`}
+        onClick={() =>
+          filterNames.set(
+            `${shelf.source}:${studio ? "studio" : "tag"}:${id}`,
+            name,
+          )
+        }
+      >
+        {art && (
+          <ItemImage
+            src={imgSrc(art)}
+            name=""
+            className={studio ? "discovery-studio-logo" : "discovery-facet-art"}
+          />
+        )}
+        <span className="discovery-facet-name">{name}</span>
+      </Link>
+    </div>
+  );
 }
 
 /* ---------- Shelf bodies ---------- */
@@ -364,13 +396,11 @@ function ShelfSection({
   shelf,
   busy,
   onRetry,
-  onBrowse,
   onOpen,
 }: {
   shelf: Shelf;
   busy: boolean;
   onRetry: () => void;
-  onBrowse: (updates: Record<string, string | null>) => void;
   onOpen: (r: CatalogReference) => void;
 }) {
   /* One rail body per shelf kind; panel bodies (errors/empty) get none. */
@@ -385,9 +415,9 @@ function ShelfSection({
   );
 
   const railLabel = `${shelf.title} rail`;
-  const rail = useRailNav(railLabel);
   /* Only rail bodies get Previous/Next; panel bodies (errors/empty) none. */
   const hasRail = !shelf.error && !!shelf.items && shelf.items.length > 0;
+  const rail = useRailNav(railLabel, hasRail);
 
   let body: ReactNode;
   if (shelf.error) {
@@ -424,7 +454,19 @@ function ShelfSection({
     );
   } else {
     const tiles: ReactNode[] = [];
-    if (requestItems && requestItems.length > 0) {
+    if (shelf.kind === "genres" || shelf.kind === "studios") {
+      for (const it of shelf.items) {
+        if ("reference" in it || ("name" in it && !("canPlay" in it))) {
+          tiles.push(
+            <FacetTile
+              key={"reference" in it ? it.reference.id : it.id}
+              shelf={shelf}
+              item={it}
+            />,
+          );
+        }
+      }
+    } else if (requestItems && requestItems.length > 0) {
       for (const r of requestItems)
         tiles.push(<RequestTile key={r.id} item={r} onOpen={onOpen} />);
     } else if (libraryItems && libraryItems.length > 0) {
@@ -453,21 +495,23 @@ function ShelfSection({
   return (
     <section className="discovery-shelf" aria-busy={busy || undefined}>
       <div className="discovery-shelf-head">
-        <div>
-          <h3 className="discovery-shelf-title">{shelf.title}</h3>
-        </div>
-        <div className="discovery-shelf-tools">
-          {shelf.browse && (
-            <button
-              type="button"
-              className="btn"
-              onClick={() => onBrowse(browseUpdates(shelf))}
+        <h3 className="discovery-shelf-title">
+          {shelf.browse ? (
+            <Link
+              className="discovery-shelf-link"
+              href={browseHref(shelf)}
+              prefetch={false}
             >
-              Browse all <Icon name="arrow-right" />
-            </button>
+              {shelf.title}
+              <span className="discovery-browse-icon">
+                <Icon name="arrow-right" />
+              </span>
+            </Link>
+          ) : (
+            shelf.title
           )}
-          {hasRail && rail.nav}
-        </div>
+        </h3>
+        {hasRail && rail.nav}
       </div>
       {body}
     </section>
@@ -529,6 +573,8 @@ export function DiscoverShelves() {
     library: 0,
     requests: 1,
     catalog: 2,
+    studios: 2,
+    genres: 2,
   };
 
   const shelves = page
@@ -569,7 +615,6 @@ export function DiscoverShelves() {
           shelf={s}
           busy={busy}
           onRetry={() => load(true)}
-          onBrowse={(updates) => setP(updates, { push: true })}
           onOpen={openDetail}
         />
       ))}

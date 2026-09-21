@@ -175,9 +175,9 @@ function restoreScroll(key: string) {
   window.scrollTo(0, y);
 }
 
-/** Names for studio/tag filter ids, captured from details at navigation
- * time — the URL carries only provider-native ids, chips still get labels. */
-const filterNames = new Map<string, string>();
+/** Names for studio/tag filter ids, captured from details or discovery at
+ * navigation time — URLs carry provider-native ids, chips still get labels. */
+export const filterNames = new Map<string, string>();
 
 function filterName(provider: string, kind: string, id: string): string {
   // An id with no captured name is labeled AS an id — never a fake name.

@@ -29,11 +29,11 @@
 //   name, url, description?, logo/poster/favicon on cdn.theporndb.net,
 //   nested network/parent site rows}; /sites/{id} accepts uuid or numeric
 //   id, but scene/movie `site_id` filters accept only the NUMERIC id (a
-//   uuid 422s). /tags rows are {id (numeric), uuid, name}. TPDB
-//   tags[]/tag_and (and performer) filter params were observed accepting
-//   requests but returning zero rows live on 2026-09-11 — passed through
-//   as-is; the provider owns their results. site_id-filtered listings
-//   reported real totals; title-only q still hits the fake 10000 cap.
+//   uuid 422s). /tags rows are {id (numeric), uuid, name}. Tag filters use
+//   deep-object NUMERIC keys (`tags[70]=1`), not `tags[]=uuid`; the latter
+//   silently returns zero movies (verified live 2026-09-21). Public identities
+//   stay UUIDs; the adapter resolves their numeric filter keys.
+//   Site-filtered listings report real totals; title-only q hits the 10000 cap.
 // - StashDB searchStudio(term, limit) and searchTag(term, limit) return
 //   flat [Studio]/[Tag] lists with no count (unpaged, provider-capped);
 //   queryScenes accepts studios/tags criteria with INCLUDES/EXCLUDES plus
@@ -73,11 +73,13 @@ import { getConfig } from "./storage.ts";
 const META_CACHE_TTL_MS = 10 * 60_000;
 const META_CACHE_MAX = 500;
 const metaCache = new Map<string, { at: number; bytes: Uint8Array }>();
+const tpdbTagNumbers = new Map<string, number>();
 
 /** Test seam: the suite reuses one fixture upstream per file; tests reset
  * between phases so cached reads never mask a scripted outage. */
 export function resetMetaCache(): void {
   metaCache.clear();
+  tpdbTagNumbers.clear();
 }
 
 function isCacheable(service: Service, method: string, body: unknown): boolean {
@@ -302,12 +304,16 @@ const PROVIDER_IMAGE_HOSTS: Record<string, true> = {
   "stashdb.org": true,
 };
 
-const RASTER_IMAGE_TYPES: Record<string, true> = {
+const PROXYABLE_IMAGE_TYPES: Record<string, true> = {
   "image/jpeg": true,
   "image/png": true,
   "image/webp": true,
   "image/gif": true,
   "image/avif": true,
+  // StashDB serves several studio logos as SVG (verified live 2026-09-21).
+  // Vector markup is active content, so the proxy route serves every artwork
+  // response script-less, sandboxed and as an attachment.
+  "image/svg+xml": true,
 };
 
 export const IMAGE_BYTE_CAP = 8 * 1024 * 1024;
@@ -315,7 +321,7 @@ export const IMAGE_BYTE_CAP = 8 * 1024 * 1024;
 type ImageUrlCheck =
   { ok: true; service: "tpdb" | "stashdb" } | { ok: false; reason: string };
 
-/** Pure gate: is this URL a provider-hosted raster artwork source? Loopback
+/** Pure gate: is this URL a provider-hosted artwork source? Loopback
  * plain http is accepted only as the local test fixture seam (mirrors the
  * lab-HTTP stance in http.ts); production hosts must be https. */
 export function isProviderImageUrl(url: string): ImageUrlCheck {
@@ -376,11 +382,11 @@ export async function fetchProviderArtwork(
     sizeLimit: options.sizeLimit ?? IMAGE_BYTE_CAP,
   });
   const mime = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
-  if (RASTER_IMAGE_TYPES[mime] !== true) {
+  if (PROXYABLE_IMAGE_TYPES[mime] !== true) {
     throw new AppError(
       502,
       "upstream_bad_response",
-      "Artwork content type is not a raster image.",
+      "Artwork content type is not an image.",
     );
   }
   return { bytes, contentType };
@@ -446,6 +452,19 @@ function tpdbTags(rows: unknown): { id: string; name: string }[] {
           ? String(t.id)
           : undefined;
     if (id === undefined || name === undefined) continue;
+    if (
+      isUuid(id) &&
+      typeof t.id === "number" &&
+      Number.isSafeInteger(t.id) &&
+      t.id > 0
+    ) {
+      if (tpdbTagNumbers.size >= 10_000)
+        tpdbTagNumbers.delete(tpdbTagNumbers.keys().next().value!);
+      tpdbTagNumbers.set(
+        `${process.env.TPDB_BASE_URL ?? ""}:${id.toLowerCase()}`,
+        t.id,
+      );
+    }
     out.push({ id, name });
   }
   return dedupeBy(out, (t) => t.id).slice(0, MAX.tags);
@@ -584,6 +603,7 @@ function tpdbStudioDetail(row: unknown): CatalogDetail | undefined {
   const name = cleanString(r.name, MAX.name);
   if (id === undefined || name === undefined) return undefined;
   const imageUrl = servableImage(r.poster) ?? servableImage(r.logo);
+  const logoUrl = servableImage(r.logo);
   const description = cleanString(r.description, MAX.description);
   const sourceUrl = httpsUrl(r.url);
   const parent = r.parent ?? r.network;
@@ -599,6 +619,7 @@ function tpdbStudioDetail(row: unknown): CatalogDetail | undefined {
     title: name,
     ...(description !== undefined ? { description } : {}),
     ...(imageUrl !== undefined ? { imageUrl } : {}),
+    ...(logoUrl !== undefined ? { logoUrl } : {}),
     ...(parentName !== undefined && parentId !== undefined
       ? {
           studio: {
@@ -768,7 +789,8 @@ function stashStudioDetail(
   return {
     reference: { provider: "stashdb", kind: "studio", id },
     title: name,
-    ...(imageUrl !== undefined ? { imageUrl } : {}),
+    // StashDB publishes one studio image and it is the brand mark itself.
+    ...(imageUrl !== undefined ? { imageUrl, logoUrl: imageUrl } : {}),
     ...(parentName !== undefined && isUuid(parentId)
       ? {
           studio: {
@@ -1234,6 +1256,47 @@ interface TpdbListBody {
   meta?: { total?: unknown };
 }
 
+/** TPDB publishes UUID identities but filters by numeric tag keys only. */
+async function tpdbTagFilters(
+  ids: string[] | undefined,
+): Promise<Record<string, number>> {
+  if (!ids) return {};
+  const keys = ids.map(
+    (id) => `${process.env.TPDB_BASE_URL ?? ""}:${id.toLowerCase()}`,
+  );
+  // ponytail: no single-tag lookup upstream. Cold bookmarks scan at most 50
+  // cached pages; use an ID lookup if TPDB adds one. Normal clicks learn ids
+  // from the catalog/tag rows already read, so they need no extra request.
+  for (let page = 1; keys.some((key) => !tpdbTagNumbers.has(key)); page++) {
+    if (page > 50)
+      throw new AppError(
+        502,
+        "upstream_bad_response",
+        "TPDB tag lookup exceeded its page limit.",
+      );
+    const body = await tpdbGet<TpdbListBody>(
+      `/tags${tpdbQuery({ page, per_page: 100 })}`,
+    );
+    if (!Array.isArray(body.data))
+      throw new AppError(
+        502,
+        "upstream_bad_response",
+        "TPDB returned an unusable tag listing.",
+      );
+    tpdbTags(body.data);
+    if (keys.every((key) => tpdbTagNumbers.has(key))) break;
+    if (!body.data.length || typeof body.links?.next !== "string")
+      throw new AppError(
+        400,
+        "invalid_search",
+        "A selected TPDB tag no longer exists.",
+      );
+  }
+  return Object.fromEntries(
+    keys.map((key) => [`tags[${tpdbTagNumbers.get(key)!}]`, 1]),
+  );
+}
+
 function parseTpdbPage(
   kind: "movie" | "scene" | "performer" | "studio",
   body: TpdbListBody,
@@ -1276,16 +1339,10 @@ function parseTpdbPage(
   };
 }
 
-function tpdbQuery(
-  base: Record<string, string | number | string[] | undefined>,
-): string {
+function tpdbQuery(base: Record<string, string | number | undefined>): string {
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(base)) {
     if (v === undefined || v === "") continue;
-    if (Array.isArray(v)) {
-      for (const item of v) params.append(`${k}[]`, item);
-      continue;
-    }
     params.set(k, String(v));
   }
   const qs = params.toString();
@@ -1558,7 +1615,7 @@ export async function searchCatalog(
       year: cleanYear(query.year),
       date: releaseDate?.cutoff,
       date_operation: releaseDate?.operation,
-      tags: includeTags ?? allTags,
+      ...(await tpdbTagFilters(includeTags ?? allTags)),
       site_id: studioFilter,
       tag_and: allTags !== undefined ? 1 : undefined,
       orderBy: sort?.upstream,

@@ -988,13 +988,10 @@ test("artwork fetch: enforces content type, byte cap, and never sends credential
         return true;
       },
     );
-    await assert.rejects(
-      fetchProviderArtwork(`${fixture.origin}/vector.svg`),
-      (err: unknown) => {
-        assertProviderError(err, 502, "upstream_bad_response");
-        return true;
-      },
-    );
+    // StashDB publishes some studio logos as SVG; the proxy route serves
+    // every artwork response sandboxed, script-less and as an attachment.
+    const vector = await fetchProviderArtwork(`${fixture.origin}/vector.svg`);
+    assert.equal(vector.contentType, "image/svg+xml");
     await assert.rejects(
       fetchProviderArtwork(`${fixture.origin}/big.jpg`, { sizeLimit: 16 }),
       (err: unknown) => {
@@ -1414,6 +1411,9 @@ test("tpdb studio search and detail map sites rows with provider-supplied parent
       item?.imageUrl,
       "https://cdn.theporndb.net/sites/aa/poster.png",
     );
+    // Posters are the hero artwork; the logo is the studio's own brand mark,
+    // and the provider publishes both separately.
+    assert.equal(item?.logoUrl, "https://cdn.theporndb.net/sites/aa/logo.png");
     assert.deepEqual(item?.studio, {
       name: "Vixen Media Group",
       reference: { provider: "tpdb", kind: "studio", id: TPDB_NETWORK_ID },
@@ -1421,6 +1421,7 @@ test("tpdb studio search and detail map sites rows with provider-supplied parent
     assert.equal(item?.sourceUrl, "https://vixen.com");
     const gamma = page.items[1];
     assert.equal(gamma?.imageUrl, undefined);
+    assert.equal(gamma?.logoUrl, undefined);
     assert.equal(gamma?.studio, undefined);
     assert.equal(JSON.stringify(page).includes("gammacdn"), false);
 
@@ -1677,54 +1678,96 @@ test("tag lookup returns provider-native ids without cross-provider mapping", as
 
 // --- studio and tag filters produce the right upstream query ---
 
-test("studio and tag filters produce the right upstream query for each provider", async () => {
+test("studio and tag filters select provider matches, including TPDB cold UUID bookmarks", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
+  const tags = [
+    { id: 70, uuid: TPDB_TAG_A, name: "Tag A" },
+    { id: 194, uuid: TPDB_TAG_B, name: "Tag B" },
+  ];
+  const movies = [
+    { ...tpdbMovieRow(), tags },
+    { ...tpdbMovieRow(), id: MOVIE_ID_2, tags: tags.slice(0, 1) },
+  ];
+  let tagsUnavailable = false;
   const fixture = await startFixture((req, res) => {
-    if (req.url.startsWith(`/sites/${TPDB_STUDIO_ID}`)) {
-      replyJson(res, 200, {
+    const url = new URL(req.url, "http://fixture.test");
+    if (url.pathname === `/sites/${TPDB_STUDIO_ID}`) {
+      return replyJson(res, 200, {
         data: { uuid: TPDB_STUDIO_ID, id: TPDB_STUDIO_NUMERIC, name: "Vixen" },
       });
-      return;
     }
-    if (req.url.startsWith("/movies?")) {
-      replyJson(res, 200, {
-        data: [],
-        links: { next: null },
-        meta: { total: 5 },
+    if (url.pathname === "/tags") {
+      if (tagsUnavailable) return replyJson(res, 503, {});
+      const first = url.searchParams.get("page") === "1";
+      return replyJson(res, 200, {
+        data: [tags[first ? 0 : 1]],
+        links: { next: first ? "https://fixture.test/tags?page=2" : null },
       });
-      return;
+    }
+    if (url.pathname === "/movies") {
+      const params = url.searchParams;
+      if (params.get("site_id") !== String(TPDB_STUDIO_NUMERIC))
+        return replyJson(res, 422, {});
+      // Mirrors TPDB's deep-object filter: array UUIDs silently match nothing.
+      const selected = tags.filter((tag) => params.has(`tags[${tag.id}]`));
+      const data =
+        selected.length === 0
+          ? []
+          : movies.filter((movie) => {
+              const matches = (tag: (typeof tags)[number]) =>
+                movie.tags.some((t) => t.id === tag.id);
+              return params.get("tag_and") === "1"
+                ? selected.every(matches)
+                : selected.some(matches);
+            });
+      return replyJson(res, 200, {
+        data,
+        links: { next: null },
+        meta: { total: data.length },
+      });
     }
     replyJson(res, 404, {});
   });
   try {
     process.env.TPDB_BASE_URL = fixture.origin;
-    await searchCatalog({
+    const any = await searchCatalog({
       provider: "tpdb",
       kind: "movie",
       studio: TPDB_STUDIO_ID,
       tags: [TPDB_TAG_A, TPDB_TAG_B],
     });
-    // request 0 resolved the uuid; request 1 is the filtered query
-    const anyOfParams = queryParams(fixture, 1);
-    assert.equal(anyOfParams.get("site_id"), String(TPDB_STUDIO_NUMERIC));
-    assert.deepEqual(anyOfParams.getAll("tags[]"), [TPDB_TAG_A, TPDB_TAG_B]);
-    assert.equal(anyOfParams.get("tag_and"), null);
-    assert.equal(anyOfParams.get("orderBy"), null);
-
-    await searchCatalog({
+    assert.deepEqual(
+      any.items.map((item) => item.reference.id),
+      [MOVIE_ID, MOVIE_ID_2],
+    );
+    tagsUnavailable = true; // Normal clicks already know the numeric identity.
+    const all = await searchCatalog({
       provider: "tpdb",
       kind: "movie",
       studio: String(TPDB_STUDIO_NUMERIC),
-      tagsAll: [TPDB_TAG_A],
+      tagsAll: [TPDB_TAG_A, TPDB_TAG_B],
       sort: "recency",
     });
-    // numeric studio id passes straight through: no /sites lookup in between
-    assert.equal(fixture.requests[2]?.url.startsWith("/movies?"), true);
-    const movieParams = queryParams(fixture, 2);
-    assert.equal(movieParams.get("site_id"), String(TPDB_STUDIO_NUMERIC));
-    assert.deepEqual(movieParams.getAll("tags[]"), [TPDB_TAG_A]);
-    assert.equal(movieParams.get("tag_and"), "1");
-    assert.equal(movieParams.get("orderBy"), "recently_released");
+    assert.deepEqual(
+      all.items.map((item) => item.reference.id),
+      [MOVIE_ID],
+    );
+    resetMetaCache();
+    await assert.rejects(
+      searchCatalog({ provider: "tpdb", kind: "movie", tags: [TPDB_TAG_A] }),
+      (err: unknown) => {
+        assertProviderError(err, 502, "upstream_unavailable", 503);
+        return true;
+      },
+    );
+    tagsUnavailable = false;
+    await assert.rejects(
+      searchCatalog({ provider: "tpdb", kind: "movie", tags: [MISSING_ID] }),
+      (err: unknown) => {
+        assertProviderError(err, 400, "invalid_search");
+        return true;
+      },
+    );
   } finally {
     await fixture.close();
     restore();

@@ -1612,6 +1612,12 @@ async function catalogImage(request: Request): Promise<Response> {
       "content-type": contentType,
       "cache-control": "private, no-store",
       "x-content-type-options": "nosniff",
+      // Provider logos include SVG, which is active content. Nothing here is
+      // trusted markup: no script, no embedding, and never a top-level
+      // document — so a hostile logo has nothing to execute against.
+      "content-security-policy":
+        "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+      "content-disposition": "attachment",
     },
   });
 }
@@ -2246,13 +2252,21 @@ interface ShelfError {
   message: string;
 }
 
+// Genre facet item: a provider-native tag id plus artwork from the snapshot
+// item that carried the tag (name-only when that item had none).
+interface FacetItem {
+  id: string;
+  name: string;
+  imageUrl?: string;
+}
+
 interface Shelf {
   id: string;
   title: string;
   source: "tpdb" | "stashdb" | "jellyfin" | "velvarr";
   browse?: { view: string; params: Record<string, string> };
-  kind: "catalog" | "library" | "requests";
-  items?: CatalogDetail[] | LibraryItem[] | RequestRecord[];
+  kind: "catalog" | "library" | "requests" | "genres" | "studios";
+  items?: CatalogDetail[] | LibraryItem[] | RequestRecord[] | FacetItem[];
   error?: ShelfError;
 }
 
@@ -2377,7 +2391,8 @@ async function followShelves(ctx: AuthContext): Promise<Shelf[]> {
   return shelves;
 }
 
-type ShelfItems = CatalogDetail[] | LibraryItem[] | RequestRecord[];
+type ShelfItems =
+  CatalogDetail[] | LibraryItem[] | RequestRecord[] | FacetItem[];
 
 function shelfOf(
   base: Omit<Shelf, "items" | "error">,
@@ -2388,6 +2403,142 @@ function shelfOf(
     : // An errored shelf carries no items at all: never an empty list that
       // could render as a quiet success.
       { ...base, error: shelfError(result.reason) };
+}
+
+// Genre facets from one provider's snapshot: unique provider-native tag ids
+// in first-seen order, artwork only from an item that carries the tag. Non-
+// UUID tag ids are omitted — every tile must survive the route's tag-filter
+// validation as a real click-through. Artwork upgrades from later items when
+// the first carrier had no image, and each facet takes a different carrier
+// (ordinal % carriers) so twelve facets don't all wear the same cover.
+// Studio facets resolve through the cached provider detail read so logos
+// render; a failed or absent read keeps the known name/reference as a
+// name-only tile — never an invented logo, and an enrich failure never sinks
+// the shelf.
+// ponytail: bounded recent/trending snapshot (SHELF_ITEMS unique ids, no
+// popularity invented); a full directory listing only if a browse surface
+// ever needs one.
+function genreFacets(items: CatalogDetail[]): FacetItem[] {
+  const names = new Map<string, string>();
+  const art = new Map<string, string[]>();
+  for (const item of items) {
+    for (const tag of item.tags) {
+      if (!PROVIDER_UUID.test(tag.id)) continue;
+      if (!names.has(tag.id)) {
+        names.set(tag.id, tag.name);
+        art.set(tag.id, []);
+      }
+      if (item.imageUrl !== undefined) art.get(tag.id)?.push(item.imageUrl);
+    }
+  }
+  return [...names].slice(0, SHELF_ITEMS).map(([id, name], i) => {
+    const carriers = art.get(id) ?? [];
+    const imageUrl =
+      carriers.length > 0 ? carriers[i % carriers.length] : undefined;
+    return { id, name, ...(imageUrl !== undefined ? { imageUrl } : {}) };
+  });
+}
+
+function studioFacets(
+  provider: CatalogProvider,
+  items: CatalogDetail[],
+): Promise<CatalogDetail[]> {
+  const known = new Map<
+    string,
+    { reference: CatalogReference; name: string }
+  >();
+  for (const item of items) {
+    const studio = item.studio;
+    const reference = studio?.reference;
+    if (
+      studio !== undefined &&
+      reference !== undefined &&
+      reference.provider === provider &&
+      !known.has(reference.id)
+    ) {
+      known.set(reference.id, { reference, name: studio.name });
+    }
+  }
+  const nameOnly = (
+    reference: CatalogReference,
+    name: string,
+  ): CatalogDetail => ({
+    reference,
+    title: name,
+    credits: [],
+    tags: [],
+    related: [],
+    links: [],
+    aliases: [],
+  });
+  return Promise.all(
+    [...known.values()].slice(0, SHELF_ITEMS).map(({ reference, name }) =>
+      getCatalogDetail(reference).then(
+        (detail) => detail ?? nameOnly(reference, name),
+        // Detail read failed: the name/reference survived the snapshot, the
+        // logo did not. Degraded tile, not a shelf error.
+        () => nameOnly(reference, name),
+      ),
+    ),
+  );
+}
+
+// Derived facet shelves for one provider snapshot: the parent's failure
+// propagates into both (no snapshot, no honest facets); success derives both
+// from the same bounded items. Browse stays clean — the provider+kind pair,
+// no tag/studio filter baked into the shelf itself (tiles add their own).
+async function facetShelves(
+  parent: PromiseSettledResult<CatalogDetail[]>,
+  provider: "tpdb" | "stashdb",
+  kind: "movie" | "scene",
+): Promise<Shelf[]> {
+  const prefix = `${provider}-${kind}`;
+  const browse = { view: "catalog", params: { provider, kind } };
+  const [genreId, studioId] = [`${prefix}-genres`, `${prefix}-studios`];
+  const [genreTitle, studioTitle] =
+    kind === "movie"
+      ? (["Movie genres", "Movie studios"] as const)
+      : (["Scene genres", "Scene studios"] as const);
+  if (parent.status === "rejected") {
+    const error = shelfError(parent.reason);
+    return [
+      {
+        id: genreId,
+        title: genreTitle,
+        source: provider,
+        kind: "genres",
+        browse,
+        error,
+      },
+      {
+        id: studioId,
+        title: studioTitle,
+        source: provider,
+        kind: "studios",
+        browse,
+        error,
+      },
+    ];
+  }
+  const items = parent.value;
+  return [
+    {
+      id: genreId,
+      title: genreTitle,
+      source: provider,
+      kind: "genres",
+      browse,
+      items: genreFacets(items),
+    },
+    {
+      id: studioId,
+      title: studioTitle,
+      source: provider,
+      kind: "studios",
+      browse,
+      items: await studioFacets(provider, items),
+    },
+  ];
 }
 
 async function discover(ctx: AuthContext): Promise<Response> {
@@ -2481,6 +2632,8 @@ async function discover(ctx: AuthContext): Promise<Response> {
         },
         requests,
       ),
+      ...(await facetShelves(tpdbMovies, "tpdb", "movie")),
+      ...(await facetShelves(stashTrending, "stashdb", "scene")),
       ...(await followShelves(ctx)),
     ],
   });

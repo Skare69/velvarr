@@ -70,6 +70,10 @@ const STASH_SCENE = "4c4d5e6f-0000-0000-0000-0000000000c3";
 const STASH_PERFORMER = "4c4d5e6f-0000-0000-0000-0000000000d4";
 const TAG_A = "cc000000-0000-0000-0000-000000000001";
 const TAG_B = "cc000000-0000-0000-0000-000000000002";
+// StashDB serves images from stashdb.org/images/<uuid>; a provider-hosted
+// URL so the artwork gate accepts it end to end.
+const STASH_IMAGE =
+  "https://stashdb.org/images/5e6f7a8b-0000-0000-0000-0000000000e1";
 
 interface FxUser {
   id: string;
@@ -468,10 +472,12 @@ function tpdbMovieRow(id: string) {
     date: "2024-02-03",
     description: "Fixture description",
     url: `https://theporndb.net/movies/${id}`,
-    site: { name: "Fixture Studio" },
+    // Numeric id rides along (provider-native shape): the UUID is the
+    // external-API identity, the numeric id the tag-filter encoding.
+    site: { name: "Fixture Studio", uuid: TPDB_STUDIO },
     posters: { full: "https://cdn.theporndb.net/fixture-poster.jpg" },
     performers: [],
-    tags: [],
+    tags: [{ id: 70, uuid: TAG_A, name: "Fixture Tag A" }],
     scenes: [],
   };
 }
@@ -495,6 +501,14 @@ async function tpdbHandler(
   tpdbFx.calls += 1;
   const auth = String(req.headers.authorization ?? "");
   // Artwork pass-through: no credential may ever arrive here.
+  if (p.endsWith(".svg")) {
+    tpdbFx.imageAuth = auth;
+    res.writeHead(200, { "content-type": "image/svg+xml" });
+    res.end(
+      '<svg xmlns="http://www.w3.org/2000/svg"><script>fetch("/api/me")</script></svg>',
+    );
+    return;
+  }
   if (p.endsWith(".png") || p.endsWith(".jpg")) {
     tpdbFx.imageAuth = auth;
     res.writeHead(200, { "content-type": "image/png" });
@@ -561,8 +575,13 @@ async function tpdbHandler(
     // branch is reachable in tests.
     const empty = url.searchParams.get("q") === "zznomatchy";
     return json(res, 200, {
-      data: empty ? [] : [{ uuid: TAG_A, name: "Fixture Tag A" }],
-      meta: { total: empty ? 0 : 1 },
+      data: empty
+        ? []
+        : [
+            { id: 70, uuid: TAG_A, name: "Fixture Tag A" },
+            { id: 194, uuid: TAG_B, name: "Fixture Tag B" },
+          ],
+      meta: { total: empty ? 0 : 2 },
       links: {},
     });
   }
@@ -640,8 +659,9 @@ async function stashdbHandler(
               date: "2024-05-06",
               duration: 600,
               urls: [],
-              studio: null,
-              tags: [],
+              images: [{ url: STASH_IMAGE }],
+              studio: { id: STASH_STUDIO, name: "Fixture Studio" },
+              tags: [{ id: TAG_B, name: "Fixture Stash Tag" }],
               performers: [],
             },
           ],
@@ -689,6 +709,27 @@ async function stashdbHandler(
   if (query.includes("searchTag")) {
     return json(res, 200, {
       data: { searchTag: [{ id: TAG_B, name: "Fixture Stash Tag" }] },
+    });
+  }
+  // Studio detail read (discover enrichment, catalog detail): one studio
+  // with a provider-hosted logo; every other id is authoritative absence.
+  if (query.includes("findStudio")) {
+    const wanted = (body.variables as { id?: unknown } | undefined)?.id;
+    return json(res, 200, {
+      data:
+        wanted === STASH_STUDIO
+          ? {
+              findStudio: {
+                id: STASH_STUDIO,
+                name: "Fixture Studio",
+                deleted: false,
+                urls: [],
+                images: [{ url: STASH_IMAGE }],
+                parent: null,
+                child_studios: [],
+              },
+            }
+          : null,
     });
   }
   json(res, 200, { data: null });
@@ -1807,6 +1848,22 @@ test("catalog artwork proxy: provider-only, no credentials, no-store", async () 
   assert.deepEqual(new Uint8Array(await ok.arrayBuffer()), PNG_1PX);
   // No Velvarr or provider credential reached the image host.
   assert.equal(tpdbFx.imageAuth, "");
+
+  // Studio logos are SVG upstream: active content served inert. It arrives
+  // script-less by policy, cannot be embedded, and is never a document.
+  const logo = await call(
+    "GET",
+    `/api/catalog/image?url=${encodeURIComponent(`${tpdbUrl}/studio-logo.svg`)}`,
+    { cookie: member },
+  );
+  assert.equal(logo.status, 200);
+  assert.equal(logo.headers.get("content-type"), "image/svg+xml");
+  assert.equal(
+    logo.headers.get("content-security-policy"),
+    "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+  );
+  assert.equal(logo.headers.get("content-disposition"), "attachment");
+  assert.equal(logo.headers.get("x-content-type-options"), "nosniff");
 });
 
 test("requests: lifecycle, autoApprove, privacy, roles, origin", async () => {
@@ -2523,7 +2580,14 @@ test("studio search per provider; studio references refused as media; unsupporte
 interface FixtureShelf {
   id: string;
   browse?: { view: string; params: Record<string, string> };
-  items?: { id?: string; accountId?: string; reference?: unknown }[];
+  items?: {
+    id?: string;
+    name?: string;
+    imageUrl?: string;
+    accountId?: string;
+    reference?: unknown;
+    title?: string;
+  }[];
   error?: { code: string };
 }
 
@@ -2556,6 +2620,8 @@ test("discover: four isolated shelves, grants, not-configured", async () => {
   const ok = await call("GET", "/api/discover", { cookie: member });
   assert.equal(ok.status, 200);
   const shelves = await shelvesOf(ok);
+  // Standard four first, then the derived facet shelves, then (none here)
+  // any follow shelves.
   assert.deepEqual(
     shelves.map((shelf) => shelf.id),
     [
@@ -2563,10 +2629,15 @@ test("discover: four isolated shelves, grants, not-configured", async () => {
       "stashdb-trending-scenes",
       "jellyfin-recent",
       "velvarr-requests",
+      "tpdb-movie-genres",
+      "tpdb-movie-studios",
+      "stashdb-scene-genres",
+      "stashdb-scene-studios",
     ],
   );
+  const byId = new Map(shelves.map((shelf) => [shelf.id, shelf]));
   // Premise for the follow-shelf tests below: this account follows nobody,
-  // so the standard four shelves are the whole page.
+  // so the standard four shelves plus their derived facets are the page.
   const memberFollows = await call("GET", "/api/follows", { cookie: member });
   assert.equal(memberFollows.status, 200);
   // json() is untyped and the suite has no validator; named const, then read.
@@ -2574,8 +2645,9 @@ test("discover: four isolated shelves, grants, not-configured", async () => {
     follows: unknown[];
   };
   assert.deepEqual(memberFollowsBody.follows, []);
-  // ponytail: trending slot stays positional — index still proves order.
-  const [movies, , library, requests] = shelves;
+  const movies = byId.get("tpdb-recent-movies");
+  const library = byId.get("jellyfin-recent");
+  const requests = byId.get("velvarr-requests");
 
   // Every shelf carries items; none fails silently.
   for (const shelf of shelves) {
@@ -2601,6 +2673,61 @@ test("discover: four isolated shelves, grants, not-configured", async () => {
     id: TPDB_MOVIE,
   });
 
+  // Derived facet shelves: provider-native ids deduped out of the same
+  // snapshot, artwork only from an item that carries the facet. TAG_A and
+  // TAG_B never cross shelves — the scopes stay provider-separated.
+  const movieItem = movies?.items?.[0];
+  const movieGenres = byId.get("tpdb-movie-genres");
+  assert.deepEqual(movieGenres?.browse, {
+    view: "catalog",
+    params: { provider: "tpdb", kind: "movie" },
+  });
+  assert.deepEqual(movieGenres?.items, [
+    { id: TAG_A, name: "Fixture Tag A", imageUrl: movieItem?.imageUrl },
+  ]);
+  assert.match(movieItem?.imageUrl ?? "", /^https:\/\/cdn\.theporndb\.net\//);
+  const movieStudios = byId.get("tpdb-movie-studios");
+  assert.deepEqual(movieStudios?.browse, {
+    view: "catalog",
+    params: { provider: "tpdb", kind: "movie" },
+  });
+  const tpdbStudioItem = movieStudios?.items?.[0];
+  assert.deepEqual(tpdbStudioItem?.reference, {
+    provider: "tpdb",
+    kind: "studio",
+    id: TPDB_STUDIO,
+  });
+  assert.equal(tpdbStudioItem?.title, "Fixture Studio");
+  // Logo resolved through the provider detail read and sits on an artwork
+  // host the /api/catalog/image proxy accepts.
+  assert.match(
+    tpdbStudioItem?.imageUrl ?? "",
+    /^https:\/\/cdn\.theporndb\.net\//,
+  );
+
+  const sceneItem = byId.get("stashdb-trending-scenes")?.items?.[0];
+  assert.match(sceneItem?.imageUrl ?? "", /^https:\/\/stashdb\.org\//);
+  const sceneGenres = byId.get("stashdb-scene-genres");
+  assert.deepEqual(sceneGenres?.browse, {
+    view: "catalog",
+    params: { provider: "stashdb", kind: "scene" },
+  });
+  assert.deepEqual(sceneGenres?.items, [
+    { id: TAG_B, name: "Fixture Stash Tag", imageUrl: sceneItem?.imageUrl },
+  ]);
+  const sceneStudios = byId.get("stashdb-scene-studios");
+  assert.deepEqual(sceneStudios?.browse, {
+    view: "catalog",
+    params: { provider: "stashdb", kind: "scene" },
+  });
+  const stashStudioItem = sceneStudios?.items?.[0];
+  assert.deepEqual(stashStudioItem?.reference, {
+    provider: "stashdb",
+    kind: "studio",
+    id: STASH_STUDIO,
+  });
+  assert.equal(stashStudioItem?.imageUrl, STASH_IMAGE);
+
   // Jellyfin shelf: granted libraries only — member holds just Movies.
   assert.deepEqual((library?.items ?? []).map((item) => item.id).sort(), [
     ITEM_MOVIE,
@@ -2613,34 +2740,65 @@ test("discover: four isolated shelves, grants, not-configured", async () => {
     assert.equal(record.accountId, MEMBER_ID);
   }
 
-  // A TPDB outage fills only the TPDB shelf's error; others keep items.
+  // A TPDB outage fills only the TPDB shelves' errors — including the facet
+  // shelves derived from the failed snapshot; others keep items.
   // First-contact: the earlier discover cached these shelves.
   resetMetaCache();
   tpdbFx.fail = 1;
   const outage = await call("GET", "/api/discover", { cookie: member });
   assert.equal(outage.status, 200, "shelf failure must not fail the page");
-  const [outMovies, outTrending, outLibrary, outRequests] =
-    await shelvesOf(outage);
-  for (const shelf of [outMovies]) {
-    assert.ok(shelf?.error, shelf?.id);
-    assert.match(shelf?.error?.code ?? "", /unavailable/, shelf?.id);
-    assert.equal(shelf?.items, undefined, shelf?.id);
+  const outById = new Map(
+    (await shelvesOf(outage)).map((shelf) => [shelf.id, shelf]),
+  );
+  for (const id of [
+    "tpdb-recent-movies",
+    "tpdb-movie-genres",
+    "tpdb-movie-studios",
+  ]) {
+    const shelf = outById.get(id);
+    assert.ok(shelf?.error, id);
+    assert.match(shelf?.error?.code ?? "", /unavailable/, id);
+    assert.equal(shelf?.items, undefined, id);
   }
-  for (const shelf of [outTrending, outLibrary, outRequests]) {
-    assert.ok((shelf?.items?.length ?? 0) > 0, shelf?.id);
+  for (const id of [
+    "stashdb-trending-scenes",
+    "stashdb-scene-genres",
+    "stashdb-scene-studios",
+    "jellyfin-recent",
+    "velvarr-requests",
+  ]) {
+    const shelf = outById.get(id);
+    assert.equal(shelf?.error, undefined, id);
+    assert.ok((shelf?.items?.length ?? 0) > 0, id);
   }
 
-  // Not-configured is an explicit error on its own shelf only — never an
-  // empty list that could read as a quiet success.
+  // Not-configured is an explicit error on its own provider's shelves only —
+  // derived facets included, never an empty list that could read as a quiet
+  // success.
   const key = process.env.STASHDB_API_KEY;
   delete process.env.STASHDB_API_KEY;
   const unconfigured = await call("GET", "/api/discover", { cookie: member });
   process.env.STASHDB_API_KEY = key;
   assert.equal(unconfigured.status, 200);
-  const [unconfMovies, unconfTrending] = await shelvesOf(unconfigured);
-  assert.equal(unconfTrending?.error?.code, "provider_not_configured");
-  assert.equal(unconfTrending?.items, undefined);
-  assert.ok((unconfMovies?.items?.length ?? 0) > 0);
+  const unById = new Map(
+    (await shelvesOf(unconfigured)).map((shelf) => [shelf.id, shelf]),
+  );
+  for (const id of [
+    "stashdb-trending-scenes",
+    "stashdb-scene-genres",
+    "stashdb-scene-studios",
+  ]) {
+    assert.equal(unById.get(id)?.error?.code, "provider_not_configured", id);
+    assert.equal(unById.get(id)?.items, undefined, id);
+  }
+  for (const id of [
+    "tpdb-recent-movies",
+    "tpdb-movie-genres",
+    "tpdb-movie-studios",
+  ]) {
+    assert.equal(unById.get(id)?.error, undefined, id);
+    assert.ok((unById.get(id)?.items?.length ?? 0) > 0, id);
+  }
 });
 
 // --- Wave A: follows, tag facet, bulk requests ---
@@ -2899,7 +3057,10 @@ test("catalog tags are authenticated, provider-scoped, and refuse short terms an
     tags: { id: string; name: string }[];
   };
   // Exactly this provider's rows — never merged across providers.
-  assert.deepEqual(tpdbBody.tags, [{ id: TAG_A, name: "Fixture Tag A" }]);
+  assert.deepEqual(tpdbBody.tags, [
+    { id: TAG_A, name: "Fixture Tag A" },
+    { id: TAG_B, name: "Fixture Tag B" },
+  ]);
 
   const stashTags = await call(
     "GET",
@@ -3185,12 +3346,17 @@ test("discover appends one followed-performer shelf per provider and isolates a 
       "stashdb-trending-scenes",
       "jellyfin-recent",
       "velvarr-requests",
+      "tpdb-movie-genres",
+      "tpdb-movie-studios",
+      "stashdb-scene-genres",
+      "stashdb-scene-studios",
       "tpdb-followed-movies",
       "stashdb-followed-scenes",
     ],
   );
-  const tpdbFollow = shelves[4];
-  const stashFollow = shelves[5];
+  const byId = new Map(shelves.map((shelf) => [shelf.id, shelf]));
+  const tpdbFollow = byId.get("tpdb-followed-movies");
+  const stashFollow = byId.get("stashdb-followed-scenes");
   for (const shelf of [tpdbFollow, stashFollow]) {
     assert.equal(shelf?.error, undefined, shelf?.id);
     assert.equal(shelf?.browse?.view, "following", shelf?.id);
@@ -3220,7 +3386,12 @@ test("discover appends one followed-performer shelf per provider and isolates a 
     assert.equal(outage.status, 200, "shelf failure must not fail the page");
     const outShelves = await shelvesOf(outage);
     const byId = new Map(outShelves.map((shelf) => [shelf.id, shelf]));
-    for (const id of ["tpdb-recent-movies", "tpdb-followed-movies"]) {
+    for (const id of [
+      "tpdb-recent-movies",
+      "tpdb-movie-genres",
+      "tpdb-movie-studios",
+      "tpdb-followed-movies",
+    ]) {
       const shelf = byId.get(id);
       assert.ok(shelf?.error, id);
       assert.match(shelf?.error?.code ?? "", /unavailable/, id);
@@ -3228,6 +3399,8 @@ test("discover appends one followed-performer shelf per provider and isolates a 
     }
     for (const id of [
       "stashdb-trending-scenes",
+      "stashdb-scene-genres",
+      "stashdb-scene-studios",
       "jellyfin-recent",
       "velvarr-requests",
       "stashdb-followed-scenes",
@@ -3237,6 +3410,8 @@ test("discover appends one followed-performer shelf per provider and isolates a 
     }
     for (const id of [
       "stashdb-trending-scenes",
+      "stashdb-scene-genres",
+      "stashdb-scene-studios",
       "velvarr-requests",
       "stashdb-followed-scenes",
     ]) {

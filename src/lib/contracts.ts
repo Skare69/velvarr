@@ -64,6 +64,11 @@ export type CatalogDetail = {
   releaseDate?: string;
   durationSeconds?: number;
   imageUrl?: string;
+  /** Studio records only: the studio's own wide brand mark, which the
+   * provider publishes separately from the portrait `imageUrl` poster. A
+   * logo rail shows this; a hero poster shows `imageUrl`. Absent when the
+   * provider supplies none — never the poster under another name. */
+  logoUrl?: string;
   studio?: { name: string; reference?: CatalogReference };
   credits: CatalogCredit[];
   /** Provider-native tags: the provider's own IDs and names. */

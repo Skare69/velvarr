@@ -23,7 +23,7 @@ Not yet done, stated so nobody assumes otherwise:
 
 ## What it does
 
-Discovery is provider-backed: TPDB and StashDB catalogs for movies, scenes, performers, and studios, each with the filters and sort orders that provider actually supports (see the measured limits below), plus global search across both providers. Results are never merged across providers, and cross-provider identity is performer-level only, via explicit provider URLs. Discover shelves surface recent releases, bounded to titles released on or before today (UTC) and excluding records without a release date.
+Discovery is provider-backed: TPDB and StashDB catalogs for movies, scenes, performers, and studios, each with the filters and sort orders that provider actually supports (see the measured limits below), plus global search across both providers. Results are never merged across providers, and cross-provider identity is performer-level only, via explicit provider URLs. Discover shelves surface recent releases, bounded to titles released on or before today (UTC) and excluding records without a release date, plus genre and studio rails derived from those same bounded snapshots — each tile filters the matching browse surface by the provider's own tag or studio id, with artwork taken only from a title that genuinely carries it.
 
 Movie and scene cards preload request and per-user library status after page load for the current bounded result set: 24 cards per catalog page by default, 12 per discovery carousel, and 6 per global-search media category. Two background checks run at a time; leaving the page cancels queued work and aborts active card reads. Hover or keyboard focus can check an unready card immediately, while preloaded cards offer their action without another status check.
 
@@ -52,6 +52,8 @@ These are observed upstream behaviors, not design choices; the UI states them wh
 - StashDB scene filters have no year criterion (date plus a modifier only, with no BETWEEN). TPDB has year and an exact-duration filter but no tag-exclusion parameter; StashDB supports include, include-all, and exclude.
 - A StashDB studio may be a parent whose scenes live under child studios (Brazzers: 48 children, 0 direct scenes versus 14,658 with children), so including a parent is an explicit choice.
 - TPDB `date_operation` accepts only the operator strings `<=`, `>=`, `<`, `>`, `=`; every word form is rejected upstream.
+- TPDB filters tags by numeric key (`tags[70]=1`), not by the tag UUID it publishes on records. A UUID array is accepted and silently returns nothing, so Velvarr keeps UUIDs at its own boundary and resolves the numeric key from the provider's tag listing.
+- Studios publish two artworks with different jobs: a portrait poster (detail hero) and a wide brand mark (studio rails). Several StashDB brand marks are SVG, so artwork responses are served script-less, sandboxed, and as an attachment.
 
 ## Run it locally
 
