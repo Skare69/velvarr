@@ -1,6 +1,6 @@
 {
   "name": "velvarr",
-  "version": "0.14.1",
+  "version": "0.15.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -19,6 +19,7 @@
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"*.{ts,tsx,json,mjs}\" \"tests/**/*.ts\" \"scripts/**/*.mjs\""
   },
   "dependencies": {
+    "@typesafe-ai/sdk": "^0.6.0",
     "next": "16.3.4",
     "react": "19.3.0",
     "react-dom": "19.3.0"

@@ -97,6 +97,7 @@ Back up `VELVARR_SECRET_KEY` (password manager, encrypted notes): losing it make
 | `VELVARR_ENABLE_REMOVAL`     | no               | `1` enables the removal ladder instance-wide. Off by default, and even when on, creating or approving removals additionally requires a per-account removal grant set by an administrator.      |
 | `VELVARR_DISCORD_WEBHOOK_URL`| no               | Discord webhook for notifications; unset disables the notifier entirely. Only https `discord.com`/`discordapp.com` webhook URLs are accepted (plain http only for loopback, which is how the test fixture works), and the URL is never logged or embedded in errors. |
 | `VELVARR_DISCORD_DETAIL`     | no               | `1` includes titles in notifications. Off by default: messages carry only the event kind and the media identity (provider/kind/external id), never titles or artwork.                          |
+| `TYPESAFE_API_KEY`           | no               | [TypeSafe](https://typesafe.ai) API key enabling AI-assisted library matching. Without it (default), a Jellyfin item matches a requested record only by provider id, exact path, or exact normalized title. With it, a near-miss title (variant spelling, punctuation, subtitle) is judged "same work?" by the TypeSafe model — a confident yes only produces the **ambiguous — administrator review** verdict, never `available`. An outage or a missing key degrades to the exact matcher. |
 
 ## Backup and recovery
 

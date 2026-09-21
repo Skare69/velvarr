@@ -2,7 +2,7 @@ services:
   velvarr:
     # Pull-only deployment. To build from source instead, replace image with
     # "velvarr:local" and uncomment build.
-    image: ghcr.io/skare69/velvarr:v0.14.1
+    image: ghcr.io/skare69/velvarr:v0.15.0
     # build: .
     restart: unless-stopped
     ports:
@@ -14,6 +14,10 @@ services:
         required: false
     # Plain HTTP on the LAN (Velvarr origin or Jellyfin/Whisparr base URLs)?
     # Add an environment entry:  - VELVARR_ALLOW_HTTP=1
+    # Optional. Without it everything works; with it, a Jellyfin item whose
+    # title only nearly matches a requested record is judged "same work?" by
+    # TypeSafe and lands in 'ambiguous — administrator review' instead of
+    # silently counting as missing:  - TYPESAFE_API_KEY=ts_live_...
     volumes:
       - velvarr-data:/data
 

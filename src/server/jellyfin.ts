@@ -10,6 +10,7 @@ import {
   requestBytes,
   validateBaseUrl,
 } from "./http.ts";
+import { sameWork } from "./judgment.ts";
 import type {
   Account,
   CatalogProvider,
@@ -1017,10 +1018,11 @@ function pathMatches(
 
 // Title/year agreement is similarity, never identity; it only ever
 // contributes an 'ambiguous' verdict for administrator review.
+const normTitle = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
+
 function titleYearSimilar(dto: BaseItemDto, hints: PlaybackHints): boolean {
   if (!hints.title || !dto.Name) return false;
-  const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
-  if (norm(dto.Name) !== norm(hints.title)) return false;
+  if (normTitle(dto.Name) !== normTitle(hints.title)) return false;
   if (
     hints.year !== undefined &&
     dto.ProductionYear !== undefined &&
@@ -1029,6 +1031,55 @@ function titleYearSimilar(dto: BaseItemDto, hints: PlaybackHints): boolean {
     return false;
   }
   return true;
+}
+
+/** Words long enough to carry meaning, for the cheap near-miss prefilter. */
+const significantWords = (s: string) =>
+  s
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length >= 3);
+
+// The widen step behind titleYearSimilar: exact title equality misses the
+// same work named slightly differently ("No Time to Die" vs "Bond: No Time
+// to Die", a transliteration, a dropped subtitle). Each near-miss goes to a
+// typed same-work judgment — but the verdict contract is untouched: a yes
+// still only produces 'ambiguous' for administrator review, never
+// 'available', and a missing key, an outage, or a low-probability answer
+// behaves exactly like the exact matcher alone.
+const JUDGMENT_CAP = 20;
+
+export async function candidatesMayMatch(
+  candidates: CandidateItem[],
+  hints: PlaybackHints,
+  ask: (
+    a: { title: string; year?: number },
+    b: { title: string; year?: number },
+  ) => Promise<boolean> = sameWork,
+): Promise<boolean> {
+  if (candidates.some((c) => titleYearSimilar(c.dto, hints))) return true;
+  if (!hints.title) return false;
+  const wanted = new Set(significantWords(hints.title));
+  if (wanted.size === 0) return false;
+  let judged = 0;
+  for (const c of candidates) {
+    if (judged >= JUDGMENT_CAP) break;
+    if (!c.dto.Name) continue;
+    const words = significantWords(c.dto.Name);
+    // Prefilter: one meaningful word in common. Nothing shared is not a
+    // naming variant, and the judgment never sees it.
+    if (!words.some((w) => wanted.has(w))) continue;
+    judged++;
+    if (
+      await ask(
+        { title: hints.title, year: hints.year },
+        { title: c.dto.Name, year: c.dto.ProductionYear },
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function sweepVisibleItems(
@@ -1174,7 +1225,10 @@ async function verdictForItem(
 //    exists on Jellyfin 12.0.0 — verified live);
 // 2. exact Whisparr-to-Jellyfin path correspondence through the configured
 //    pathMappings, full components only;
-// 3. title/year similarity alone is 'ambiguous', never a guess, and a
+// 3. title/year similarity alone is 'ambiguous', never a guess — exact
+//    normalized-title equality, widened (only when TYPESAFE_API_KEY is set)
+//    by a typed same-work judgment over near-miss titles, still only ever
+//    producing 'ambiguous' for administrator review — and a
 //    parent/child (ancestor) relationship proves grants, never availability.
 // Auth failures (401, dead user token) propagate; every other upstream
 // failure is 'unavailable', so an outage is never reported as 'missing'.
@@ -1216,7 +1270,7 @@ export async function resolvePlaybackAccess(
     if (exact.length === 1) {
       return await verdictForItem(config, userToken, user, account, exact[0]!);
     }
-    if (candidates.some((c) => titleYearSimilar(c.dto, hints))) {
+    if (await candidatesMayMatch(candidates, hints)) {
       return {
         outcome: "ambiguous",
         reason: "Title/year similarity only; administrator review required.",
