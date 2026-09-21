@@ -2619,9 +2619,11 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
   const [shape, setShape] = useState<{
     tpdb: ProviderConfigRow;
     stashdb: ProviderConfigRow;
+    typesafe: ProviderConfigRow;
   } | null>(null);
   const [tpdbToken, setTpdbToken] = useState("");
   const [stashdbKey, setStashdbKey] = useState("");
+  const [typesafeKey, setTypesafeKey] = useState("");
   const [pending, setPending] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -2638,7 +2640,11 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
 
   const loadShape = useCallback(() => {
     api<{
-      providers: { tpdb: ProviderConfigRow; stashdb: ProviderConfigRow };
+      providers: {
+        tpdb: ProviderConfigRow;
+        stashdb: ProviderConfigRow;
+        typesafe: ProviderConfigRow;
+      };
     }>("/api/admin/integrations")
       .then((d) => setShape(d.providers))
       .catch(() => setShape(null));
@@ -2658,6 +2664,7 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
       });
       setTpdbToken("");
       setStashdbKey("");
+      setTypesafeKey("");
       setSaved(true);
       load();
       loadShape();
@@ -2672,6 +2679,7 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
     const body: Record<string, string> = {};
     if (tpdbToken.trim() !== "") body.tpdbApiToken = tpdbToken.trim();
     if (stashdbKey.trim() !== "") body.stashdbApiKey = stashdbKey.trim();
+    if (typesafeKey.trim() !== "") body.typesafeApiKey = typesafeKey.trim();
     if (Object.keys(body).length > 0) apply(body);
   };
 
@@ -2681,12 +2689,21 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
       name: "TPDB",
       value: tpdbToken,
       field: "tpdbApiToken" as const,
+      setValue: setTpdbToken,
     },
     {
       id: "stashdb" as const,
       name: "StashDB",
       value: stashdbKey,
       field: "stashdbApiKey" as const,
+      setValue: setStashdbKey,
+    },
+    {
+      id: "typesafe" as const,
+      name: "TypeSafe",
+      value: typesafeKey,
+      field: "typesafeApiKey" as const,
+      setValue: setTypesafeKey,
     },
   ];
 
@@ -2700,22 +2717,30 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
       </p>
       <dl className="mt-3 space-y-2 text-sm">
         {rows.map(({ id, name }) => {
-          const state = providers?.[id];
+          const state = id === "typesafe" ? undefined : providers?.[id];
           const live = check?.find((r) => r.provider === id);
           const conf = shape?.[id];
           return (
             <div key={id} className="flex flex-wrap items-center gap-2">
               <dt className="font-medium">{name}</dt>
               <dd className="flex flex-wrap items-center gap-2">
-                <span className="chip">
-                  {state ? PROVIDER_STATE[state] : "Unknown"}
-                </span>
+                {id === "typesafe" ? (
+                  <span className="chip">
+                    {conf?.configured
+                      ? "AI-assisted matching on"
+                      : "Off — no key"}
+                  </span>
+                ) : (
+                  <span className="chip">
+                    {state ? PROVIDER_STATE[state] : "Unknown"}
+                  </span>
+                )}
                 {conf && conf.source === "stored" ? (
                   <span className="chip chip-accent">Stored</span>
                 ) : conf && conf.configured ? (
                   <span className="chip">From environment</span>
                 ) : null}
-                {forbidden ? null : live ? (
+                {id === "typesafe" || forbidden ? null : live ? (
                   live.configured ? (
                     <span className="chip chip-accent">
                       Verified · {live.account}
@@ -2737,12 +2762,13 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
         </p>
       ) : (
         <div className="mt-4 space-y-3">
-          {rows.map(({ id, name, value, field }) => {
+          {rows.map(({ id, name, value, field, setValue }) => {
             const conf = shape?.[id];
             return (
               <div key={field}>
                 <label className="label" htmlFor={`provider-${id}`}>
                   {name} {id === "tpdb" ? "API token" : "API key"}
+                  {id === "typesafe" ? " (optional)" : ""}
                 </label>
                 <div className="flex flex-wrap items-center gap-2">
                   <input
@@ -2751,10 +2777,7 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
                     type="password"
                     autoComplete="off"
                     value={value}
-                    onChange={(e) => {
-                      if (id === "tpdb") setTpdbToken(e.target.value);
-                      else setStashdbKey(e.target.value);
-                    }}
+                    onChange={(e) => setValue(e.target.value)}
                     placeholder={
                       conf && conf.source === "stored"
                         ? "Stored — leave blank to keep"
@@ -2774,6 +2797,15 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
                     </button>
                   ) : null}
                 </div>
+                {id === "typesafe" ? (
+                  <p className="mt-1 text-sm text-muted">
+                    Enables AI-assisted matching: a Jellyfin item whose title
+                    only nearly matches a request is judged &ldquo;same
+                    work?&rdquo; and flagged for administrator review instead of
+                    counting as missing. Without a key everything still works,
+                    just with exact matching only.
+                  </p>
+                ) : null}
               </div>
             );
           })}

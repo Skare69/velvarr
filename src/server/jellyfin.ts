@@ -905,6 +905,9 @@ type PlaybackHints = {
   /** Whisparr may store a TMDB id for movies. */
   tmdbId?: number;
   title?: string;
+  /** The requested record's performer — the field the near-miss judgment
+   * was calibrated on; exact matching never reads it. */
+  performer?: string;
   year?: number;
   /** Whisparr's stored movie/scene path, before any path mapping. */
   whisparrPath?: string;
@@ -1072,8 +1075,17 @@ export async function candidatesMayMatch(
     judged++;
     if (
       await ask(
-        { title: hints.title, year: hints.year },
-        { title: c.dto.Name, year: c.dto.ProductionYear },
+        {
+          title: hints.title,
+          ...(hints.performer ? { performer: hints.performer } : {}),
+          ...(hints.year !== undefined ? { year: hints.year } : {}),
+        },
+        {
+          title: c.dto.Name,
+          ...(c.dto.ProductionYear !== undefined
+            ? { year: c.dto.ProductionYear }
+            : {}),
+        },
       )
     ) {
       return true;

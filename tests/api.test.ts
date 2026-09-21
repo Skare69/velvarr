@@ -555,12 +555,17 @@ async function tpdbHandler(
   }
   if (p === `/sites/${TPDB_STUDIO}`)
     return json(res, 200, { data: tpdbSiteRow(TPDB_STUDIO) });
-  if (p === "/tags")
+  if (p === "/tags") {
+    // The suggestion path lists tags with no term and, for the magic
+    // no-match term, an empty result — so the route's judged-suggestion
+    // branch is reachable in tests.
+    const empty = url.searchParams.get("q") === "zznomatchy";
     return json(res, 200, {
-      data: [{ uuid: TAG_A, name: "Fixture Tag A" }],
-      meta: { total: 1 },
+      data: empty ? [] : [{ uuid: TAG_A, name: "Fixture Tag A" }],
+      meta: { total: empty ? 0 : 1 },
       links: {},
     });
+  }
   // Performer filmography (the paging-only route). The scenes route keeps a
   // provider `next` link alive so the bulk cap is reachable across pages;
   // the movies route has none, so a bulk pass stops after one page.
@@ -1667,10 +1672,41 @@ test("provider credentials: stored config wins over environment, clear falls bac
   });
   assert.equal(cleared.status, 200);
   const clearedShape = (await cleared.json()) as {
-    providers: { tpdb: { configured: boolean; source: string } };
+    providers: {
+      tpdb: { configured: boolean; source: string };
+      typesafe: { configured: boolean; source: string };
+    };
   };
   assert.deepEqual(clearedShape.providers.tpdb, {
     configured: true,
+    source: "environment",
+  });
+
+  // The TypeSafe key rides the same stored-credentials path, but there is
+  // no live-check endpoint: the shape is the only observable, and the
+  // judgment features turn on and off with it.
+  const tsStored = await call("PATCH", "/api/admin/integrations", {
+    cookie: admin,
+    body: { typesafeApiKey: "ts_test_stored" },
+  });
+  assert.equal(tsStored.status, 200);
+  const tsStoredShape = (await tsStored.json()) as {
+    providers: { typesafe: { configured: boolean; source: string } };
+  };
+  assert.deepEqual(tsStoredShape.providers.typesafe, {
+    configured: true,
+    source: "stored",
+  });
+  const tsCleared = await call("PATCH", "/api/admin/integrations", {
+    cookie: admin,
+    body: { typesafeApiKey: "" },
+  });
+  assert.equal(tsCleared.status, 200);
+  const tsClearedShape = (await tsCleared.json()) as {
+    providers: { typesafe: { configured: boolean; source: string } };
+  };
+  assert.deepEqual(tsClearedShape.providers.typesafe, {
+    configured: Boolean(process.env.TYPESAFE_API_KEY),
     source: "environment",
   });
 });
@@ -2875,6 +2911,68 @@ test("catalog tags are authenticated, provider-scoped, and refuse short terms an
     tags: { id: string; name: string }[];
   };
   assert.deepEqual(stashBody.tags, [{ id: TAG_B, name: "Fixture Stash Tag" }]);
+
+  // Empty result, no configured key: the response says nothing about
+  // suggestions — the feature is inert, and no judgment call is possible.
+  const noKey = await call(
+    "GET",
+    "/api/catalog/tags?provider=tpdb&q=zznomatchy",
+    { cookie: member },
+  );
+  assert.equal(noKey.status, 200);
+  const noKeyBody = (await noKey.json()) as Record<string, unknown>;
+  assert.deepEqual(noKeyBody.tags, []);
+  assert.equal("suggestions" in noKeyBody, false);
+
+  // With a stored TypeSafe key, the empty result gains judged suggestions:
+  // real fixture tag ids only, chosen among the provider's own list.
+  const keySaved = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: { typesafeApiKey: "ts_route_test" },
+  });
+  assert.equal(keySaved.status, 200);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url).includes("api.typesafe.ai")) {
+      return new Response(
+        JSON.stringify({
+          answers: {
+            pick: {
+              type: "choice",
+              choice: "Fixture Tag A",
+              confidence: 0.9,
+              probabilities: { "Fixture Tag A": 0.8, none: 0.2 },
+            },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return realFetch(url, init);
+  }) as typeof fetch;
+  try {
+    const suggested = await call(
+      "GET",
+      "/api/catalog/tags?provider=tpdb&q=zznomatchy",
+      { cookie: member },
+    );
+    assert.equal(suggested.status, 200);
+    const suggestedBody = (await suggested.json()) as {
+      tags: unknown[];
+      suggestions?: { id: string; name: string }[];
+    };
+    assert.deepEqual(suggestedBody.tags, []);
+    assert.deepEqual(suggestedBody.suggestions, [
+      { id: TAG_A, name: "Fixture Tag A" },
+    ]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  const keyCleared = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: { typesafeApiKey: "" },
+  });
+  assert.equal(keyCleared.status, 200);
 
   const tooShort = await errorShape(
     await call("GET", "/api/catalog/tags?provider=tpdb&q=F", {

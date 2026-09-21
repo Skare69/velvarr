@@ -731,6 +731,7 @@ function TagPicker({
   }, [t]);
   const { data, error } = useApiGet<{
     tags: { id: string; name: string }[];
+    suggestions?: { id: string; name: string }[];
   }>(
     committed === null
       ? null
@@ -739,8 +740,15 @@ function TagPicker({
   );
   // A failed search hides the previous list, as the old catch did.
   const tags = error === null ? (data?.tags ?? null) : null;
+  const suggestions =
+    error === null && (tags?.length ?? 0) === 0
+      ? (data?.suggestions ?? null)
+      : null;
   const capped = selected.length >= TAG_CAP;
   const matches = (tags ?? []).filter(
+    (tg) => UUID_RE.test(tg.id) && !selected.includes(tg.id),
+  );
+  const suggested = (suggestions ?? []).filter(
     (tg) => UUID_RE.test(tg.id) && !selected.includes(tg.id),
   );
   return (
@@ -775,7 +783,37 @@ function TagPicker({
           )}
           {tags !== null &&
             (matches.length === 0 ? (
-              <p className="cat-note">No more tags match “{t}”.</p>
+              <>
+                <p className="cat-note">No more tags match “{t}”.</p>
+                {suggested.length > 0 && (
+                  <>
+                    <p className="cat-note">Did you mean:</p>
+                    <ul className="cat-picker">
+                      {suggested.map((tg) => (
+                        <li key={tg.id}>
+                          <button
+                            type="button"
+                            className="cat-picker-row"
+                            onClick={() => {
+                              filterNames.set(
+                                `${provider}:tag:${tg.id}`,
+                                tg.name,
+                              );
+                              onAdd(tg);
+                              setTerm("");
+                            }}
+                          >
+                            <span>{tg.name}</span>
+                            <span className="cat-picker-add" aria-hidden="true">
+                              +
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </>
             ) : (
               <ul className="cat-picker">
                 {matches.map((tg) => (

@@ -1841,6 +1841,50 @@ export async function searchCatalogTags(
   return dedupeBy(out, (t) => t.id);
 }
 
+/** The provider's first tag page, no term — the candidate list the tag
+ * suggestion judgment selects from. TPDB lists tags without a term;
+ * StashDB's searchTag refuses an empty term on some key tiers, and that
+ * upstream refusal propagates: suggestions degrade to absent, never to
+ * fabricated ones. */
+export async function listCatalogTags(
+  provider: CatalogProvider,
+): Promise<{ id: string; name: string }[]> {
+  if (provider === "tpdb") {
+    const body = await tpdbGet<TpdbListBody>(
+      `/tags${tpdbQuery({ per_page: MAX.tags })}`,
+    );
+    if (!Array.isArray(body?.data)) {
+      throw new AppError(
+        502,
+        "upstream_bad_response",
+        "TPDB returned an unusable tag listing.",
+      );
+    }
+    return tpdbTags(body.data);
+  }
+  const res = await stashQuery(
+    'query { searchTag(term: "", limit: 50) { id name } }',
+    {},
+    "searchTag",
+  );
+  if (!Array.isArray(res)) {
+    throw new AppError(
+      502,
+      "upstream_bad_response",
+      "StashDB returned an unusable tag listing.",
+    );
+  }
+  const out: { id: string; name: string }[] = [];
+  for (const row of res.slice(0, MAX.tags)) {
+    if (row === null || typeof row !== "object") continue;
+    const name = "name" in row ? cleanString(row.name, 120) : undefined;
+    if ("id" in row && isUuid(row.id) && name !== undefined) {
+      out.push({ id: row.id, name });
+    }
+  }
+  return dedupeBy(out, (t) => t.id);
+}
+
 // --- cross-provider performer identity ---
 
 const TPDB_PERFORMER_LINK_RE =

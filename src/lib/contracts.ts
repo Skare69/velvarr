@@ -369,6 +369,9 @@ export type IntegrationConfig = {
   providers?: {
     tpdbApiToken?: string;
     stashdbApiKey?: string;
+    /** Enables the typed same-work judgment and tag suggestions. Absent
+     * falls back to TYPESAFE_API_KEY; no key anywhere disables both. */
+    typesafeApiKey?: string;
   };
 };
 

@@ -84,6 +84,7 @@ import {
   getCatalogDetail,
   getProviderStatus,
   isProviderImageUrl,
+  listCatalogTags,
   searchCatalog,
   searchCatalogTags,
   type CatalogSearchQuery,
@@ -91,6 +92,7 @@ import {
   type CatalogSortKey,
   type ReleaseDateOperation,
 } from "../../../server/providers.ts";
+import { suggestTags } from "../../../server/judgment.ts";
 import {
   findWhisparrItem,
   getWhisparrStatus,
@@ -617,6 +619,10 @@ function integrationsShape(config: IntegrationConfig) {
         config.providers?.stashdbApiKey,
         "STASHDB_API_KEY",
       ),
+      typesafe: providerShape(
+        config.providers?.typesafeApiKey,
+        "TYPESAFE_API_KEY",
+      ),
     },
   };
 }
@@ -725,7 +731,12 @@ function nextProviderCredentials(
 ): IntegrationConfig["providers"] {
   const tpdbApiToken = optionalText(body, "tpdbApiToken", 1024);
   const stashdbApiKey = optionalText(body, "stashdbApiKey", 512);
-  if (tpdbApiToken === undefined && stashdbApiKey === undefined) {
+  const typesafeApiKey = optionalText(body, "typesafeApiKey", 512);
+  if (
+    tpdbApiToken === undefined &&
+    stashdbApiKey === undefined &&
+    typesafeApiKey === undefined
+  ) {
     return existing;
   }
   const providers = {
@@ -741,10 +752,17 @@ function nextProviderCredentials(
         : stashdbApiKey === ""
           ? undefined
           : stashdbApiKey.trim(),
+    typesafeApiKey:
+      typesafeApiKey === undefined
+        ? existing?.typesafeApiKey
+        : typesafeApiKey === ""
+          ? undefined
+          : typesafeApiKey.trim(),
   };
   if (
     providers.tpdbApiToken === undefined &&
-    providers.stashdbApiKey === undefined
+    providers.stashdbApiKey === undefined &&
+    providers.typesafeApiKey === undefined
   ) {
     return undefined;
   }
@@ -904,7 +922,10 @@ async function adminUpdateIntegrations(
   const bodyKeys = Object.keys(body);
   if (
     bodyKeys.length > 0 &&
-    bodyKeys.every((k) => k === "tpdbApiToken" || k === "stashdbApiKey")
+    bodyKeys.every(
+      (k) =>
+        k === "tpdbApiToken" || k === "stashdbApiKey" || k === "typesafeApiKey",
+    )
   ) {
     const providers = nextProviderCredentials(ctx.config.providers, body);
     const patched: IntegrationConfig = {
@@ -1482,8 +1503,13 @@ async function catalogSearch(request: Request): Promise<Response> {
 
 // Tag facet lookup for the catalog filter UI: the provider's own ids and
 // ordering come back verbatim — nothing is merged across providers and no
-// counts are invented here.
-async function catalogTagsRoute(request: Request): Promise<Response> {
+// counts are invented here. An empty result with a configured TypeSafe key
+// gains judged suggestions: real tags chosen among the provider's own list,
+// never invented ones.
+async function catalogTagsRoute(
+  request: Request,
+  config: IntegrationConfig,
+): Promise<Response> {
   const params = new URL(request.url).searchParams;
   const provider = parseCatalogProvider(params.get("provider"));
   const q = (params.get("q") ?? "").trim();
@@ -1494,7 +1520,19 @@ async function catalogTagsRoute(request: Request): Promise<Response> {
       "Enter at least 2 characters to search.",
     );
   }
-  return json({ tags: await searchCatalogTags(provider, q) });
+  const tags = await searchCatalogTags(provider, q);
+  if (tags.length > 0) return json({ tags });
+  const key = config.providers?.typesafeApiKey;
+  if (key === undefined || key.trim() === "") return json({ tags });
+  const suggestions = await suggestTags(
+    q,
+    await listCatalogTags(provider),
+    key,
+  );
+  return json({
+    tags,
+    ...(suggestions.length > 0 ? { suggestions } : {}),
+  });
 }
 
 async function catalogDetail(
@@ -2083,11 +2121,13 @@ async function removalImpact(
             id: media.id,
             whisparrPath: stored.path,
             ...(stored.title ? { title: stored.title } : {}),
+            ...(await performerHint(media)),
           }
         : {
             provider: media.provider,
             kind: media.kind,
             id: media.id,
+            ...(await performerHint(media)),
           },
     ),
     // This caller's own Jellyfin policy. validateUser is the frozen per-user
@@ -2117,6 +2157,25 @@ async function removalImpact(
   });
 }
 
+// The requested record's performer name, read through the provider cache —
+// the field the near-miss same-work judgment was calibrated on (a library
+// title like "Sunset Blvd with Maddie Wren" is only provably the same scene
+// with it). Absent on any failure: a metadata outage must not sink the
+// availability verdict, which simply falls back to exact matching.
+async function performerHint(
+  media: MediaReference,
+): Promise<{ performer: string } | Record<string, never>> {
+  try {
+    const detail = await getCatalogDetail(media);
+    const credit = detail?.credits.find(
+      (c) => c.reference.kind === "performer",
+    );
+    return credit ? { performer: credit.name } : {};
+  } catch {
+    return {};
+  }
+}
+
 // Per-user playback verdict for one external identity. Runs under THIS
 // caller's Jellyfin token; hints are the validated reference plus the
 // shared acquisition's persisted Whisparr facts when present. This is a
@@ -2143,6 +2202,7 @@ async function availability(
       ...(acquisition?.whisparrTitle
         ? { title: acquisition.whisparrTitle }
         : {}),
+      ...(await performerHint(media)),
     },
   );
   // Scan lag (hazard 9): Whisparr has imported the item but Jellyfin's fresh
@@ -2567,7 +2627,7 @@ function routeFor(
     if (root === "catalog" && a === "image" && segments.length === 3)
       return signedIn(() => catalogImage(request));
     if (root === "catalog" && a === "tags" && segments.length === 3)
-      return signedIn(() => catalogTagsRoute(request));
+      return signedIn((ctx) => catalogTagsRoute(request, ctx.config));
     if (root === "catalog" && segments.length === 5)
       return signedIn((ctx) => catalogDetail(ctx, a!, b!, segments[4]!));
     if (root === "requests" && segments.length === 2)

@@ -1,22 +1,41 @@
-import { noul, TypeSafeClient } from "@typesafe-ai/sdk";
+import { choice, noul, TypeSafeClient } from "@typesafe-ai/sdk";
 
-/** One typed judgment over one question, in the Shape the TypeSafe docs call
- * "select instead of generate": the model answers a bounded yes/no, the code
- * keeps every policy decision. Used where exact string equality is the wrong
- * tool — two records can name one work with different punctuation, a
- * subtitle, or a transliteration — and where a wrong answer must never
- * upgrade a verdict: the only caller turns a yes into 'ambiguous for
- * administrator review', never into 'available'. */
+/** Typed judgments over one question each, in the shape the TypeSafe docs
+ * call "select instead of generate": the model answers a bounded question,
+ * the code keeps every policy decision. Used where exact string equality is
+ * the wrong tool, and where a wrong answer must never upgrade a verdict:
+ * the same-work caller turns a yes into 'ambiguous for administrator
+ * review', never into 'available'. */
+const SAME_WORK_P = 0.7;
 
-const SAME_WORK_P = 0.8;
+/** Calibration 2026-09-21 (jev-1.13.0, 19 labeled pairs): performer-aware
+ * state fixes both performer errors of the blind prompt (0.44 FN -> 0.90,
+ * 0.90 FP -> 0.12) while sequels and word-sharing distractors stay below
+ * 0.2; the studio-prefix variant needs the 0.7 gate (0.73). */
+const SAME_WORK_INSTRUCTIONS =
+  "Do these two catalog records name the same work — the same movie or scene, " +
+  "possibly under different punctuation, an alternate subtitle, or a transliterated spelling? " +
+  "The requested record carries the performer's name; a candidate title that contains that " +
+  "performer's name strengthens the case that both name the same scene. A candidate whose " +
+  "title contains a DIFFERENT performer's name is a different work. A studio, network, or " +
+  "site name prefixed before the title does not make it a different work. Answer no for " +
+  "remakes, sequels, different works, or unrelated titles.";
 
-// Built once per key value; a missing key disables every judgment outright,
-// which is the default deployment: the feature is opt-in via TYPESAFE_API_KEY.
+export type WorkIdentity = {
+  title: string;
+  /** The performer's name — the field exact matching was blind to. */
+  performer?: string;
+  year?: number;
+};
+
+// Built once per key value; no key anywhere disables every judgment
+// outright, which is the default deployment. The stored admin-UI key wins
+// over the environment, same precedence as the provider credentials.
 let cached: { key: string; client: TypeSafeClient } | null = null;
 
-function typeSafe(): TypeSafeClient | null {
-  const key = process.env.TYPESAFE_API_KEY?.trim();
-  if (!key) return null;
+function typeSafe(stored: string | undefined): TypeSafeClient | null {
+  const key = stored?.trim() || process.env.TYPESAFE_API_KEY?.trim() || "";
+  if (key === "") return null;
   if (cached?.key !== key) {
     cached = {
       key,
@@ -30,10 +49,11 @@ function typeSafe(): TypeSafeClient | null {
  * year policy stays in code: two records with contradicting years are never
  * the same work, and no call is spent asking. */
 export async function sameWork(
-  a: { title: string; year?: number },
-  b: { title: string; year?: number },
+  a: WorkIdentity,
+  b: WorkIdentity,
+  storedKey?: string,
 ): Promise<boolean> {
-  const ts = typeSafe();
+  const ts = typeSafe(storedKey);
   if (!ts) return false;
   if (a.year !== undefined && b.year !== undefined && a.year !== b.year) {
     return false;
@@ -42,13 +62,10 @@ export async function sameWork(
     const res = await ts.systemOne({
       state: { requested: a, candidate: b },
       questions: {
-        sameWork: noul(
-          "Do these two catalog records name the same work — the same movie or scene, possibly under different punctuation, an alternate subtitle, or a transliterated spelling? Answer no for remakes, different works, or unrelated titles.",
-          {
-            true: "Both records name the same work.",
-            false: "These are different works.",
-          },
-        ),
+        sameWork: noul(SAME_WORK_INSTRUCTIONS, {
+          true: "Both records name the same work.",
+          false: "These are different works.",
+        }),
       },
     });
     return res.answers.sameWork.noul >= SAME_WORK_P;
@@ -59,5 +76,47 @@ export async function sameWork(
   }
 }
 
-// ponytail: every yes costs one API call; if availability checks ever get
-// busy enough to matter, cache (requestedId, candidateId) -> noul in SQLite.
+/** Top tag suggestions for a plain-language term, chosen among the
+ * provider's real tag names — the model only ever selects from the list it
+ * was handed, so a suggestion is always a real, addable tag. The none-hatch
+ * and every probability below the top three are dropped here. */
+export async function suggestTags(
+  term: string,
+  tags: { id: string; name: string }[],
+  storedKey?: string,
+): Promise<{ id: string; name: string }[]> {
+  const ts = typeSafe(storedKey);
+  if (!ts || tags.length === 0) return [];
+  try {
+    const res = await ts.systemOne({
+      state: { term, tags: tags.map((t) => t.name) },
+      questions: {
+        pick: choice(
+          "The user typed a plain-language term into a catalog tag filter. " +
+            "Which single tag from the list best matches what they are looking for? " +
+            "If no tag reasonably matches, choose none.",
+          Object.fromEntries([
+            ...tags.map((t) => [t.name, null]),
+            ["none", "No tag in the list reasonably matches the term."],
+          ]),
+        ),
+      },
+    });
+    const ranked = Object.entries(
+      res.answers.pick.probabilities as Record<string, number>,
+    )
+      .filter(([name]) => name !== "none" && tags.some((t) => t.name === name))
+      .sort((x, y) => y[1] - x[1])
+      .slice(0, 3)
+      .map(([name]) => tags.find((t) => t.name === name)!);
+    return ranked;
+  } catch {
+    return [];
+  }
+}
+
+// ponytail: every call costs one API round trip; the same-work call sits on
+// the availability path but only fires for near-miss candidates that the
+// exact matcher already missed. If that ever gets busy, cache
+// (requestedId, candidateId) -> noul in SQLite and (term) -> suggestions
+// until the tag list changes.
