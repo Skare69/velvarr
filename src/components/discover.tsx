@@ -26,11 +26,11 @@ import {
   Icon,
   imgSrc,
   ItemImage,
-  api,
-  messageOf,
   MovieCard,
   PerformerCard,
   SceneCard,
+  PREFERENCES_CHANGED,
+  useApiGet,
   useParamsSetter,
   useCatalogSummary,
 } from "./shared";
@@ -56,34 +56,18 @@ interface FacetItem {
 interface Shelf {
   id: string;
   title: string;
+  description?: string; // the server's own honest words for the rail
   source: "tpdb" | "stashdb" | "jellyfin" | "velvarr";
   browse?: { view: string; params: Record<string, string> };
   kind: "catalog" | "library" | "requests" | "facets";
   items?: CatalogDetail[] | LibraryItem[] | RequestRecord[] | FacetItem[];
+  /** Per-source partial failures: items may coexist with these. */
+  errors?: { provider: "tpdb" | "stashdb"; code: string; message: string }[];
   error?: ShelfError;
 }
 
 interface DiscoverPage {
   shelves: Shelf[];
-}
-
-/* ---------- Page fetch: one GET, shared across mounts ---------- */
-
-// ponytail: module-level page cache — discover is a homepage snapshot, remounts
-// reuse it until a retry or full reload; drop it if per-shelf freshness matters.
-let cache: DiscoverPage | null = null;
-let inflight: Promise<DiscoverPage> | null = null;
-
-function fetchDiscover(): Promise<DiscoverPage> {
-  inflight ??= api<DiscoverPage>("/api/discover")
-    .then((page) => {
-      cache = page;
-      return page;
-    })
-    .finally(() => {
-      inflight = null;
-    });
-  return inflight;
 }
 
 /* ---------- Small helpers (same conventions as catalog.tsx) ---------- */
@@ -98,25 +82,14 @@ function sourceLabel(s: Shelf["source"]): string {
         : "Velvarr";
 }
 
-/** Server labels provider shelves view:"catalog"; the URL contract's surfaces
- * are movies|scenes keyed by the shelf's own kind param. */
-function targetView(shelf: Shelf): string {
-  if (!shelf.browse) return "discover";
-  if (shelf.browse.view === "catalog")
-    return shelf.browse.params.kind === "scene" ? "scenes" : "movies";
-  return shelf.browse.view;
-}
-
-/** A browse link starts fresh: filters from another surface never leak in. */
-function browseHref(
-  shelf: Shelf,
-  filters: Record<string, string> = {},
-): string {
-  return `/?${new URLSearchParams({
-    view: targetView(shelf),
-    ...shelf.browse?.params,
-    ...filters,
-  })}`;
+/** A browse link starts fresh and passes the server's canonical params
+ * (view=titles|following plus browse keys) through verbatim — the server owns
+ * the composition, the URL owns the state. Filters from another surface never
+ * leak in. */
+function browseHref(shelf: Shelf): string {
+  const browse = shelf.browse;
+  if (!browse) return "/";
+  return `/?${new URLSearchParams({ view: browse.view, ...browse.params })}`;
 }
 
 const NOT_CONFIGURED_CODES = ["provider_not_configured", "not_configured"];
@@ -208,7 +181,9 @@ function useRailNav(label: string, hasRail: boolean) {
 
 /** One mixed grid per facet: the tile's own provider side plus its resolved
  * counterpart, when one exists. `name` is a display label only — results are
- * keyed by the provider ids, so a forged label can never change them. */
+ * keyed by the provider ids, so a forged label can never change them. The
+ * link is the canonical browse shape: a studio constraint per provider key,
+ * or one typed tag selection carrying both provider UUIDs as JSON. */
 function FacetTile({ item }: { item: FacetItem }) {
   const studio = item.facet === "studio";
   // A studio rail shows brand marks; its portrait poster belongs to the hero,
@@ -216,11 +191,19 @@ function FacetTile({ item }: { item: FacetItem }) {
   const art = studio ? (item.logoUrl ?? item.imageUrl) : item.imageUrl;
   const params: Record<string, string> = {
     view: "titles",
-    facet: item.facet,
     name: item.name,
-    [item.provider]: item.id,
   };
-  if (item.linked) params[item.linked.provider] = item.linked.id;
+  if (studio) {
+    params[item.provider === "tpdb" ? "studioTpdb" : "studioStashdb"] = item.id;
+    if (item.linked)
+      params[item.linked.provider === "tpdb" ? "studioTpdb" : "studioStashdb"] =
+        item.linked.id;
+  } else {
+    const sel: Record<string, string> = { name: item.name };
+    sel[item.provider] = item.id;
+    if (item.linked) sel[item.linked.provider] = item.linked.id;
+    params.include = JSON.stringify([sel]);
+  }
   return (
     <div className="discovery-tile discovery-tile-facet">
       <Link
@@ -487,9 +470,16 @@ function ShelfSection({
         tiles.push(<LibraryTile key={`${shelf.id}-${i}`} item={it} />),
       );
     } else {
+      // Mixed movies and scenes share one rail, so the key carries the
+      // full provider identity — a TPDB movie and a StashDB scene never
+      // collide on a bare id.
       for (const it of catalogItems ?? [])
         tiles.push(
-          <CatalogTile key={it.reference.id} item={it} onOpen={onOpen} />,
+          <CatalogTile
+            key={`${it.reference.provider}:${it.reference.kind}:${it.reference.id}`}
+            item={it}
+            onOpen={onOpen}
+          />,
         );
     }
     body = (
@@ -526,6 +516,23 @@ function ShelfSection({
         </h3>
         {hasRail && rail.nav}
       </div>
+      {shelf.description && (
+        <p className="text-sm text-muted">{shelf.description}</p>
+      )}
+      {/* A source that failed while its sibling filled the rail still gets
+          named — partial success never reads as complete. */}
+      {!shelf.error && (shelf.errors?.length ?? 0) > 0 && (
+        <div className="panel p-4 text-sm text-muted" role="note">
+          {shelf.errors!.map((e) => (
+            <p key={e.provider}>
+              <span className="chip chip-accent">
+                {sourceLabel(e.provider)}
+              </span>{" "}
+              {e.message}
+            </p>
+          ))}
+        </div>
+      )}
       {body}
     </section>
   );
@@ -543,33 +550,23 @@ const PAGE_HEADING = (
 
 export function DiscoverShelves() {
   const setP = useParamsSetter();
-  const [page, setPage] = useState(cache);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(cache === null);
+  // One GET per mount/retry, owned by the hook — deliberately no module-level
+  // page cache: followed-titles is personal (who you follow, your hidden
+  // tags), so a cached snapshot could hand one account's rail to the next
+  // sign-in. useApiGet refetches on every mount; sign-out unmounts the app.
+  const {
+    data: page,
+    error,
+    loading,
+    reload,
+  } = useApiGet<DiscoverPage>("/api/discover", []);
 
-  const load = useCallback((force: boolean) => {
-    if (!force && cache) {
-      setPage(cache);
-      setBusy(false);
-      setError(null);
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    fetchDiscover()
-      .then((p) => {
-        setPage(p);
-        setBusy(false);
-      })
-      .catch((e: unknown) => {
-        setError(messageOf(e));
-        setBusy(false);
-      });
-  }, []);
-
+  // Hidden-tag decisions land as this event; the personal shelf refetches
+  // instead of showing yesterday's rail.
   useEffect(() => {
-    load(false);
-  }, [load]);
+    window.addEventListener(PREFERENCES_CHANGED, reload);
+    return () => window.removeEventListener(PREFERENCES_CHANGED, reload);
+  }, [reload]);
 
   // Catalog cards open the detail over the matching surface view; the
   // destination view mounts the shared detail for provider+kind+id.
@@ -579,21 +576,7 @@ export function DiscoverShelves() {
     [setP],
   );
 
-  // Presentation order only: what was added (library), then requests, then
-  // the provider shelves in the server's order. Titles stay the server's own
-  // honest words.
-  const ORDER: Record<Shelf["kind"], number> = {
-    library: 0,
-    requests: 1,
-    catalog: 2,
-    facets: 2,
-  };
-
-  const shelves = page
-    ? [...page.shelves].sort((a, b) => ORDER[a.kind] - ORDER[b.kind])
-    : [];
-
-  if (busy && !page) {
+  if (loading && !page) {
     return (
       <section aria-label="Discover" aria-busy="true">
         {PAGE_HEADING}
@@ -612,7 +595,7 @@ export function DiscoverShelves() {
         <ErrorPanel
           title="Discover is unavailable"
           message={error}
-          onRetry={() => load(true)}
+          onRetry={reload}
         />
       </section>
     );
@@ -621,12 +604,14 @@ export function DiscoverShelves() {
   return (
     <section aria-label="Discover">
       {PAGE_HEADING}
-      {shelves.map((s) => (
+      {/* The server's shelf order is the composition: new releases, trending,
+          the library surfaces, then the personal rail last. No client re-sort. */}
+      {page.shelves.map((s) => (
         <ShelfSection
           key={s.id}
           shelf={s}
-          busy={busy}
-          onRetry={() => load(true)}
+          busy={loading}
+          onRetry={reload}
           onOpen={openDetail}
         />
       ))}

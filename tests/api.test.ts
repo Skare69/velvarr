@@ -2646,6 +2646,7 @@ interface FixtureShelf {
   id: string;
   kind?: string;
   source?: string;
+  description?: string;
   browse?: { view: string; params: Record<string, string> };
   items?: {
     id?: string;
@@ -2659,11 +2660,34 @@ interface FixtureShelf {
     title?: string;
     linked?: { provider: string; id: string };
   }[];
+  /** Per-source partial-failure evidence; coexists with items. */
+  errors?: { provider: string; code: string; message: string }[];
   error?: { code: string };
 }
 
 // Facet tiles: projected to the pinned wire fields for set comparison.
 type FacetTile = NonNullable<FixtureShelf["items"]>[number];
+
+/** Reference-shaped read of a shelf item, narrowed with `in` checks — the
+ * shared helper every shelf-membership assertion goes through. */
+function refOf(
+  item: FacetTile,
+): { provider: string; kind: string; id: string } | null {
+  const ref = item.reference;
+  if (
+    typeof ref === "object" &&
+    ref !== null &&
+    "provider" in ref &&
+    "kind" in ref &&
+    "id" in ref &&
+    typeof ref.provider === "string" &&
+    typeof ref.kind === "string" &&
+    typeof ref.id === "string"
+  ) {
+    return { provider: ref.provider, kind: ref.kind, id: ref.id };
+  }
+  return null;
+}
 
 interface FixtureCategory {
   id: string;
@@ -2688,19 +2712,20 @@ async function searchOf(res: Response): Promise<{
   };
 }
 
-test("discover: four isolated shelves, grants, not-configured", async () => {
+test("discover: mixed new releases, honest trending, facets, grants, not-configured", async () => {
   assert.equal((await call("GET", "/api/discover")).status, 401);
 
   const ok = await call("GET", "/api/discover", { cookie: member });
   assert.equal(ok.status, 200);
   const shelves = await shelvesOf(ok);
-  // Standard four first, then the two unified facet shelves, then (none
-  // here) any follow shelves.
+  // Mixed new releases, trending, then library/requests, then the two
+  // unified facet shelves. This account follows nobody, so no
+  // followed-titles rail exists (proven below via /api/follows).
   assert.deepEqual(
     shelves.map((shelf) => shelf.id),
     [
-      "tpdb-recent-movies",
-      "stashdb-trending-scenes",
+      "new-releases",
+      "trending",
       "jellyfin-recent",
       "velvarr-requests",
       "studios",
@@ -2708,8 +2733,6 @@ test("discover: four isolated shelves, grants, not-configured", async () => {
     ],
   );
   const byId = new Map(shelves.map((shelf) => [shelf.id, shelf]));
-  // Premise for the follow-shelf tests below: this account follows nobody,
-  // so the standard four shelves plus the two facet shelves are the page.
   const memberFollows = await call("GET", "/api/follows", { cookie: member });
   assert.equal(memberFollows.status, 200);
   // json() is untyped and the suite has no validator; named const, then read.
@@ -2717,7 +2740,8 @@ test("discover: four isolated shelves, grants, not-configured", async () => {
     follows: unknown[];
   };
   assert.deepEqual(memberFollowsBody.follows, []);
-  const movies = byId.get("tpdb-recent-movies");
+  const newReleases = byId.get("new-releases");
+  const trending = byId.get("trending");
   const library = byId.get("jellyfin-recent");
   const requests = byId.get("velvarr-requests");
 
@@ -2727,22 +2751,45 @@ test("discover: four isolated shelves, grants, not-configured", async () => {
     assert.ok((shelf.items?.length ?? 0) > 0, `${shelf.id} carries items`);
   }
 
+  // New releases is genuinely mixed: TPDB movies and StashDB scenes in one
+  // velvarr-sourced rail. Membership, not merge order, is the contract.
+  assert.equal(newReleases?.source, "velvarr");
+  const releaseRefs = (newReleases?.items ?? []).map(refOf);
+  assert.ok(
+    releaseRefs.some(
+      (ref) => ref?.provider === "tpdb" && ref?.kind === "movie",
+    ),
+    "new releases carries a TPDB movie",
+  );
+  assert.ok(
+    releaseRefs.some(
+      (ref) => ref?.provider === "stashdb" && ref?.kind === "scene",
+    ),
+    "new releases carries a StashDB scene",
+  );
+
   // Browse destinations mirror the shelf's actual upstream query, including
   // the release-date bound, so clicking through shows the same set.
-  assert.deepEqual(movies?.browse?.view, "catalog");
-  const browseParams = movies?.browse?.params ?? {};
-  assert.equal(browseParams.provider, "tpdb");
-  assert.equal(browseParams.kind, "movie");
+  assert.deepEqual(newReleases?.browse?.view, "titles");
+  const browseParams = newReleases?.browse?.params ?? {};
+  assert.equal(browseParams.type, "all");
   assert.equal(browseParams.sort, "recency");
   assert.equal(browseParams.direction, "desc");
   assert.equal(browseParams.date_operation, "<=");
   assert.match(browseParams.date ?? "", /^\d{4}-\d{2}-\d{2}$/);
 
-  // Catalog shelves carry provider-labeled references.
-  assert.deepEqual(movies?.items?.[0]?.reference, {
-    provider: "tpdb",
-    kind: "movie",
-    id: TPDB_MOVIE,
+  // Trending is honestly a StashDB-only signal: labeled as such, described
+  // as such, and its browse link goes to the unified scene browse.
+  assert.equal(trending?.source, "stashdb");
+  assert.equal(trending?.description, "Scene trends from StashDB");
+  assert.deepEqual(trending?.browse, {
+    view: "titles",
+    params: { type: "scene", sort: "trending", direction: "desc" },
+  });
+  assert.deepEqual(trending?.items?.[0]?.reference, {
+    provider: "stashdb",
+    kind: "scene",
+    id: STASH_SCENE,
   });
 
   // Unified facet shelves: one tile per studio/category across BOTH
@@ -2847,9 +2894,10 @@ test("discover: four isolated shelves, grants, not-configured", async () => {
     assert.equal(record.accountId, MEMBER_ID);
   }
 
-  // One snapshot failing: the merged shelves fill from the surviving
-  // provider with no shelf error — a degraded rail, never an error page.
-  // First-contact: the earlier discover cached these shelves.
+  // One source failing: the mixed rail keeps the survivor's titles beside a
+  // visible per-source warning — a degraded page, never an error page and
+  // never a quiet success. First-contact: the earlier discover cached these
+  // shelves.
   resetMetaCache();
   tpdbFx.fail = 1;
   const outage = await call("GET", "/api/discover", { cookie: member });
@@ -2857,40 +2905,45 @@ test("discover: four isolated shelves, grants, not-configured", async () => {
   const outById = new Map(
     (await shelvesOf(outage)).map((shelf) => [shelf.id, shelf]),
   );
-  const outMovies = outById.get("tpdb-recent-movies");
-  assert.ok(outMovies?.error);
-  assert.match(outMovies?.error?.code ?? "", /unavailable/);
-  assert.equal(outMovies?.items, undefined);
-  for (const id of [
-    "stashdb-trending-scenes",
-    "jellyfin-recent",
-    "velvarr-requests",
-    "studios",
-    "genres",
-  ]) {
+  const outNew = outById.get("new-releases");
+  assert.equal(outNew?.error, undefined, "partial failure is not an error");
+  assert.ok((outNew?.items?.length ?? 0) > 0, "survivor side still renders");
+  for (const item of outNew?.items ?? []) {
+    assert.equal(refOf(item)?.provider, "stashdb", "survivor side only");
+  }
+  assert.equal(outNew?.errors?.length, 1);
+  assert.equal(outNew?.errors?.[0]?.provider, "tpdb");
+  assert.match(outNew?.errors?.[0]?.code ?? "", /unavailable/);
+  for (const id of ["trending", "jellyfin-recent", "velvarr-requests"]) {
     const shelf = outById.get(id);
     assert.equal(shelf?.error, undefined, id);
     assert.ok((shelf?.items?.length ?? 0) > 0, id);
-    if (id === "studios" || id === "genres") {
-      // With the TPDB snapshot down, every surviving tile is stash-side.
-      for (const tile of (shelf?.items ?? []) as FacetTile[]) {
-        assert.equal(tile.provider, "stashdb", `${id}:${tile.id}`);
-      }
+  }
+  for (const id of ["studios", "genres"]) {
+    const shelf = outById.get(id);
+    assert.equal(shelf?.error, undefined, id);
+    // With the TPDB side down, every surviving tile is stash-side.
+    for (const tile of (shelf?.items ?? []) as FacetTile[]) {
+      assert.equal(tile.provider, "stashdb", `${id}:${tile.id}`);
     }
   }
 
-  // Both snapshots failing: one error per facet shelf and no items key —
-  // never a half-filled rail that could read as a quiet success.
+  // Both sources failing: the mixed rail collapses to an error shelf, the
+  // single-source trending shelf reports its own outage, and the facet
+  // rails carry one error each with no items — never a half-filled rail
+  // that could read as a quiet success. Fail deep rather than counting
+  // calls: a page is truly source-less only when every read on both sides
+  // dies, however many each side legitimately issues.
   resetMetaCache();
-  tpdbFx.fail = 1;
-  stashdbFx.fail = 1;
+  tpdbFx.fail = 5;
+  stashdbFx.fail = 5;
   try {
     const bothDown = await call("GET", "/api/discover", { cookie: member });
     assert.equal(bothDown.status, 200, "shelf failure must not fail the page");
     const bothById = new Map(
       (await shelvesOf(bothDown)).map((shelf) => [shelf.id, shelf]),
     );
-    for (const id of ["studios", "genres"]) {
+    for (const id of ["new-releases", "trending", "studios", "genres"]) {
       const shelf = bothById.get(id);
       assert.ok(shelf?.error, id);
       assert.match(shelf?.error?.code ?? "", /unavailable/, id);
@@ -2901,10 +2954,11 @@ test("discover: four isolated shelves, grants, not-configured", async () => {
     stashdbFx.fail = 0;
   }
 
-  // Not-configured degrades like any snapshot failure on the merged shelves:
-  // the surviving provider fills the rail, and counterpart lookups through
-  // the dead side resolve to nothing — unlinked tiles, never invented links
-  // and never an empty list that could read as a quiet success.
+  // Not-configured degrades like any snapshot failure: the surviving
+  // provider fills the mixed rail (with a visible per-source note), and
+  // counterpart lookups through the dead side resolve to nothing — unlinked
+  // tiles, never invented links and never an empty list that could read as
+  // a quiet success.
   const key = process.env.STASHDB_API_KEY;
   delete process.env.STASHDB_API_KEY;
   const unconfigured = await call("GET", "/api/discover", { cookie: member });
@@ -2913,11 +2967,19 @@ test("discover: four isolated shelves, grants, not-configured", async () => {
   const unById = new Map(
     (await shelvesOf(unconfigured)).map((shelf) => [shelf.id, shelf]),
   );
-  const unStash = unById.get("stashdb-trending-scenes");
-  assert.equal(unStash?.error?.code, "provider_not_configured");
-  assert.equal(unStash?.items, undefined);
+  const unTrending = unById.get("trending");
+  assert.equal(unTrending?.error?.code, "provider_not_configured");
+  assert.equal(unTrending?.items, undefined);
+  const unNew = unById.get("new-releases");
+  assert.equal(unNew?.error, undefined);
+  assert.ok((unNew?.items?.length ?? 0) > 0);
+  for (const item of unNew?.items ?? []) {
+    assert.equal(refOf(item)?.provider, "tpdb");
+  }
+  assert.equal(unNew?.errors?.length, 1);
+  assert.equal(unNew?.errors?.[0]?.provider, "stashdb");
+  assert.equal(unNew?.errors?.[0]?.code, "provider_not_configured");
   for (const id of [
-    "tpdb-recent-movies",
     "jellyfin-recent",
     "velvarr-requests",
     "studios",
@@ -2957,10 +3019,6 @@ interface BulkCounters {
   failed: { id: string; code: string }[];
   scanned: number;
   capped: boolean;
-}
-
-interface CatalogShelfItem {
-  reference: { provider: string; kind: string; id: string };
 }
 
 test("follows need a session, an accepted origin, and a performer reference", async () => {
@@ -3470,7 +3528,7 @@ test("the autoApprove grant approves bulk requests and attaches the shared acqui
   assert.notEqual(singleAcquisition.id, bulkAcquisition.id);
 });
 
-test("discover appends one followed-performer shelf per provider and isolates a provider outage", async () => {
+test("discover appends ONE followed rail across providers and isolates a provider outage", async () => {
   // member2 follows one TPDB and one StashDB performer (from the tests above).
   const ok = await call("GET", "/api/discover", { cookie: member2 });
   assert.equal(ok.status, 200);
@@ -3478,42 +3536,39 @@ test("discover appends one followed-performer shelf per provider and isolates a 
   assert.deepEqual(
     shelves.map((shelf) => shelf.id),
     [
-      "tpdb-recent-movies",
-      "stashdb-trending-scenes",
+      "new-releases",
+      "trending",
       "jellyfin-recent",
       "velvarr-requests",
       "studios",
       "genres",
-      "tpdb-followed-movies",
-      "stashdb-followed-scenes",
+      "followed-titles",
     ],
   );
   const byId = new Map(shelves.map((shelf) => [shelf.id, shelf]));
-  const tpdbFollow = byId.get("tpdb-followed-movies");
-  const stashFollow = byId.get("stashdb-followed-scenes");
-  for (const shelf of [tpdbFollow, stashFollow]) {
-    assert.equal(shelf?.error, undefined, shelf?.id);
-    assert.equal(shelf?.browse?.view, "following", shelf?.id);
-    assert.ok((shelf?.items?.length ?? 0) > 0, `${shelf?.id} carries items`);
-  }
-  // Each follow shelf sources from its own provider only — json() is untyped;
-  // named const, then read.
-  const tpdbItems = (tpdbFollow?.items ?? []) as CatalogShelfItem[];
-  assert.equal(tpdbItems[0]?.reference.id, TPDB_MOVIE5);
-  for (const item of tpdbItems) {
-    assert.equal(item.reference.provider, "tpdb", tpdbFollow?.id);
-    assert.equal(item.reference.kind, "movie", tpdbFollow?.id);
-  }
-  const stashItems = (stashFollow?.items ?? []) as CatalogShelfItem[];
-  assert.equal(stashItems[0]?.reference.id, STASH_SCENE);
-  for (const item of stashItems) {
-    assert.equal(item.reference.provider, "stashdb", stashFollow?.id);
-    assert.equal(item.reference.kind, "scene", stashFollow?.id);
-  }
+  const followed = byId.get("followed-titles");
+  assert.equal(followed?.error, undefined);
+  assert.equal(followed?.source, "velvarr");
+  assert.equal(followed?.browse?.view, "following");
+  // ONE rail carries BOTH providers' titles; the obsolete per-provider
+  // shelves are gone. Membership, not merge order, is the contract.
+  const followedRefs = (followed?.items ?? []).map(refOf);
+  assert.ok(
+    followedRefs.some(
+      (ref) => ref?.provider === "tpdb" && ref?.id === TPDB_MOVIE5,
+    ),
+    "rail carries the TPDB filmography title",
+  );
+  assert.ok(
+    followedRefs.some(
+      (ref) => ref?.provider === "stashdb" && ref?.id === STASH_SCENE,
+    ),
+    "rail carries the StashDB filmography title",
+  );
 
-  // A TPDB outage errors the TPDB shelves only; the merged facet shelves
-  // fill from the surviving StashDB snapshot — same isolation contract as
-  // the standard shelves.
+  // A TPDB outage degrades the TPDB sides to visible per-source notes while
+  // the StashDB sides keep rendering — the survivor is never silently
+  // buried, and nothing fails the page.
   resetMetaCache();
   // Path-matched outage: fail the TPDB movie list and the followed
   // performer's filmography specifically. Discover legitimately issues extra
@@ -3526,19 +3581,25 @@ test("discover appends one followed-performer shelf per provider and isolates a 
     assert.equal(outage.status, 200, "shelf failure must not fail the page");
     const outShelves = await shelvesOf(outage);
     const byId = new Map(outShelves.map((shelf) => [shelf.id, shelf]));
-    for (const id of ["tpdb-recent-movies", "tpdb-followed-movies"]) {
+    // Both mixed rails keep their surviving StashDB titles beside a
+    // tpdb-tagged warning, with no shelf-level error.
+    for (const id of ["new-releases", "followed-titles"]) {
       const shelf = byId.get(id);
-      assert.ok(shelf?.error, id);
-      assert.match(shelf?.error?.code ?? "", /unavailable/, id);
-      assert.equal(shelf?.items, undefined, id);
+      assert.equal(shelf?.error, undefined, id);
+      assert.ok((shelf?.items?.length ?? 0) > 0, id);
+      for (const item of shelf?.items ?? []) {
+        assert.equal(refOf(item)?.provider, "stashdb", `${id} survivor`);
+      }
+      assert.equal(shelf?.errors?.length, 1, id);
+      assert.equal(shelf?.errors?.[0]?.provider, "tpdb", id);
+      assert.match(shelf?.errors?.[0]?.code ?? "", /unavailable/, id);
     }
     for (const id of [
-      "stashdb-trending-scenes",
+      "trending",
       "jellyfin-recent",
       "velvarr-requests",
       "studios",
       "genres",
-      "stashdb-followed-scenes",
     ]) {
       const shelf = byId.get(id);
       assert.equal(shelf?.error, undefined, id);
@@ -3548,7 +3609,7 @@ test("discover appends one followed-performer shelf per provider and isolates a 
     tpdbFx.failPaths = [];
   }
 
-  // Leave the standard five shelves for everyone after this test.
+  // Leave the standard six shelves for everyone after this test.
   for (const [provider, id] of [
     ["tpdb", TPDB_PERFORMER],
     ["stashdb", STASH_PERFORMER],
@@ -3861,6 +3922,17 @@ test("foreign origin is rejected on the remaining mutating routes before any mut
       origin: evil,
       cookie: owner,
       body: {},
+    }),
+    403,
+  );
+
+  // Personal preferences are a guarded mutation too, and the rejection must
+  // precede any validation: the caller's stored tags are unchanged.
+  await errorShape(
+    await call("PATCH", "/api/me/preferences", {
+      origin: evil,
+      cookie: member,
+      body: { hiddenTags: [] },
     }),
     403,
   );
@@ -4444,4 +4516,394 @@ test("user avatar proxy serves Jellyfin bytes to admins and refuses requesters",
   };
   assert.equal(typeof refusedBody.error.code, "string");
   assert.equal(typeof refusedBody.error.message, "string");
+});
+
+// --- Wave 6: preferences, browse, related, hidden-tag filtering ---
+
+interface TagSelectionBody {
+  name: string;
+  tpdb?: string;
+  stashdb?: string;
+}
+
+interface PreferencesBody {
+  hiddenTags: TagSelectionBody[];
+}
+
+interface BrowsePageBody {
+  items: FacetTile[];
+  page: number;
+  perPage: number;
+  hasMore: boolean;
+  total?: number;
+  totalCountKnown: boolean;
+  errors: { provider: string; code: string; message: string }[];
+  hiddenTagCount: number;
+}
+
+interface RelatedBody {
+  items: FacetTile[];
+  ranking: string;
+  canRank: boolean;
+  errors: { provider: string; code: string; message: string }[];
+}
+
+test("content preferences are session-only, self-owned, and atomic on malformed input", async () => {
+  // Admission first: anonymous callers get nothing.
+  assert.equal((await call("GET", "/api/me/preferences")).status, 401);
+  assert.equal(
+    (await call("PATCH", "/api/me/preferences", { body: { hiddenTags: [] } }))
+      .status,
+    401,
+  );
+
+  // Empty default for a fresh account.
+  const initial = await call("GET", "/api/me/preferences", { cookie: member });
+  assert.equal(initial.status, 200);
+  const initialBody = (await initial.json()) as PreferencesBody;
+  assert.deepEqual(initialBody.hiddenTags, []);
+
+  const hidden: TagSelectionBody[] = [{ name: "Fixture Tag A", tpdb: TAG_A }];
+  const saved = await call("PATCH", "/api/me/preferences", {
+    cookie: member,
+    body: { hiddenTags: hidden },
+  });
+  assert.equal(saved.status, 200);
+  const savedBody = (await saved.json()) as PreferencesBody;
+  assert.deepEqual(savedBody, { hiddenTags: hidden });
+
+  // Ownership: another account reads its own list, and cannot move mine by
+  // smuggling an account id into the body — the envelope rejects unknown
+  // keys outright, and my list survives untouched.
+  const other = await call("GET", "/api/me/preferences", {
+    cookie: member2,
+  });
+  const otherBody = (await other.json()) as PreferencesBody;
+  assert.deepEqual(otherBody.hiddenTags, []);
+  await errorShape(
+    await call("PATCH", "/api/me/preferences", {
+      cookie: member2,
+      body: { accountId: MEMBER_ID, hiddenTags: [] },
+    }),
+  );
+  const afterSmuggle = await call("GET", "/api/me/preferences", {
+    cookie: member,
+  });
+  const afterSmuggleBody = (await afterSmuggle.json()) as PreferencesBody;
+  assert.deepEqual(afterSmuggleBody, { hiddenTags: hidden });
+
+  // Malformed payloads are atomic rejections: wrong envelope, wrong types,
+  // empty names, missing provider references, bad uuids, oversize lists.
+  // The previous list survives every one of them.
+  const malformed: unknown[] = [
+    {},
+    { hiddenTags: "all" },
+    { hiddenTags: { name: "Fixture Tag A" } },
+    { hiddenTags: [{ name: "", tpdb: TAG_A }] },
+    { hiddenTags: [{ name: "x".repeat(121), tpdb: TAG_A }] },
+    { hiddenTags: [{ name: "Fixture Tag A" }] },
+    { hiddenTags: [{ name: "Fixture Tag A", tpdb: "not-a-uuid" }] },
+    { hiddenTags: [{ tpdb: TAG_A }] },
+    { hiddenTags: [{ name: "Fixture Tag A", tpdb: TAG_A, junk: 1 }] },
+    {
+      hiddenTags: Array.from({ length: 26 }, (_, i) => ({
+        name: `Tag ${i}`,
+        tpdb: TAG_A,
+      })),
+    },
+    { hiddenTags: [], extra: true },
+  ];
+  for (const body of malformed) {
+    await errorShape(
+      await call("PATCH", "/api/me/preferences", { cookie: member, body }),
+    );
+  }
+  const afterMalformed = await call("GET", "/api/me/preferences", {
+    cookie: member,
+  });
+  const afterMalformedBody = (await afterMalformed.json()) as PreferencesBody;
+  assert.deepEqual(afterMalformedBody, { hiddenTags: hidden });
+
+  // Both provider references on one tag is the normal cross-provider pick.
+  const both = await call("PATCH", "/api/me/preferences", {
+    cookie: member,
+    body: {
+      hiddenTags: [{ name: "Fixture Tag A", tpdb: TAG_A, stashdb: TAG_D }],
+    },
+  });
+  assert.equal(both.status, 200);
+
+  // Restore: tests after this point see the default, unfiltered state.
+  const restored = await call("PATCH", "/api/me/preferences", {
+    cookie: member,
+    body: { hiddenTags: [] },
+  });
+  assert.equal(restored.status, 200);
+});
+
+test("browse is the unified visible-catalog surface and counts the caller's hidden tags", async () => {
+  assert.equal((await call("GET", "/api/browse")).status, 401);
+  assert.equal((await call("GET", "/api/browse/tags?q=Fixture")).status, 401);
+
+  const saved = await call("PATCH", "/api/me/preferences", {
+    cookie: member,
+    body: { hiddenTags: [{ name: "Fixture Tag A", tpdb: TAG_A }] },
+  });
+  assert.equal(saved.status, 200);
+  try {
+    resetMetaCache();
+    // Movie browse: the title carrying the hidden tag is gone; its untagged
+    // sibling survives, and the caller's own list size rides the response.
+    const movies = await call("GET", "/api/browse?type=movie", {
+      cookie: member,
+    });
+    assert.equal(movies.status, 200);
+    const moviePage = (await movies.json()) as BrowsePageBody;
+    assert.equal(moviePage.hiddenTagCount, 1);
+    assert.deepEqual(moviePage.errors, []);
+    assert.ok(moviePage.items.length > 0, "untagged movies still render");
+    for (const item of moviePage.items) {
+      assert.notEqual(refOf(item)?.id, TPDB_MOVIE);
+    }
+
+    // Mixed browse: the stash side is untouched by a tpdb-scoped tag.
+    const all = await call("GET", "/api/browse?type=all", { cookie: member });
+    const allPage = (await all.json()) as BrowsePageBody;
+    assert.equal(allPage.hiddenTagCount, 1);
+    const refs = allPage.items.map(refOf);
+    assert.ok(
+      refs.some((ref) => ref?.provider === "stashdb" && ref?.kind === "scene"),
+    );
+    assert.ok(
+      refs.every(
+        (ref) => !(ref?.provider === "tpdb" && ref?.id === TPDB_MOVIE),
+      ),
+      "hidden movie never leaks into the mixed page",
+    );
+
+    // Explicit URL exclusion on top of the hidden list: excluding the
+    // surviving sibling's tag empties the movie page honestly (no items,
+    // no error, no fake totals).
+    const exclude = encodeURIComponent(
+      JSON.stringify([{ name: "Fixture Tag C", tpdb: TAG_C }]),
+    );
+    const excluded = await call(
+      "GET",
+      `/api/browse?type=movie&exclude=${exclude}`,
+      { cookie: member },
+    );
+    assert.equal(excluded.status, 200);
+    const excludedPage = (await excluded.json()) as BrowsePageBody;
+    assert.deepEqual(excludedPage.items, []);
+    assert.deepEqual(excludedPage.errors, []);
+
+    // Tag search for the browse filter: provider-published tags with honest
+    // per-source errors.
+    const tags = await call("GET", "/api/browse/tags?q=Fixture", {
+      cookie: member,
+    });
+    assert.equal(tags.status, 200);
+    const tagBody = (await tags.json()) as {
+      tags: TagSelectionBody[];
+      errors: { provider: string }[];
+    };
+    assert.deepEqual(tagBody.errors, []);
+    assert.ok(tagBody.tags.length > 0, "fixture tags are findable");
+    for (const tag of tagBody.tags) {
+      assert.equal(typeof tag.name, "string");
+      assert.ok(
+        tag.tpdb !== undefined || tag.stashdb !== undefined,
+        "every picker label carries a provider-native reference",
+      );
+    }
+  } finally {
+    const restored = await call("PATCH", "/api/me/preferences", {
+      cookie: member,
+      body: { hiddenTags: [] },
+    });
+    assert.equal(restored.status, 200);
+  }
+});
+
+test("related titles: admission, reference validation before upstream, rank vocabulary", async () => {
+  assert.equal(
+    (await call("GET", `/api/catalog/tpdb/movie/${TPDB_MOVIE}/related`)).status,
+    401,
+  );
+
+  // Bad uuid, performer kind, unknown rank: all refused with no upstream
+  // contact at all.
+  const before = tpdbFx.calls;
+  await errorShape(
+    await call("GET", "/api/catalog/tpdb/movie/not-a-uuid/related", {
+      cookie: member,
+    }),
+  );
+  await errorShape(
+    await call("GET", `/api/catalog/tpdb/performer/${TPDB_PERFORMER}/related`, {
+      cookie: member,
+    }),
+  );
+  await errorShape(
+    await call(
+      "GET",
+      `/api/catalog/tpdb/movie/${TPDB_MOVIE}/related?rank=bogus`,
+      { cookie: member },
+    ),
+  );
+  assert.equal(tpdbFx.calls, before, "validation precedes upstream contact");
+
+  // Happy path: tags ranking answers without a TypeSafe key, the source
+  // itself never appears in its own list, and per-source errors are honest
+  // (none here).
+  resetMetaCache();
+  const ok = await call(
+    "GET",
+    `/api/catalog/tpdb/movie/${TPDB_MOVIE}/related`,
+    { cookie: member },
+  );
+  assert.equal(ok.status, 200);
+  const related = (await ok.json()) as RelatedBody;
+  assert.equal(related.ranking, "tags");
+  assert.equal(related.canRank, false);
+  assert.deepEqual(related.errors, []);
+  assert.ok(Array.isArray(related.items));
+  for (const item of related.items) {
+    assert.notEqual(refOf(item)?.id, TPDB_MOVIE);
+  }
+
+  // jev is a valid explicit choice; with no configured key the response
+  // still answers and reports the ranking actually applied.
+  const jev = await call(
+    "GET",
+    `/api/catalog/tpdb/movie/${TPDB_MOVIE}/related?rank=jev`,
+    { cookie: member },
+  );
+  assert.equal(jev.status, 200);
+  const jevBody = (await jev.json()) as RelatedBody;
+  assert.equal(jevBody.canRank, false);
+  assert.equal(jevBody.ranking, "tags");
+});
+
+test("hidden tags filter discover, global search, and filmography — never entities or owned history", async () => {
+  const saved = await call("PATCH", "/api/me/preferences", {
+    cookie: member,
+    body: { hiddenTags: [{ name: "Fixture Tag A", tpdb: TAG_A }] },
+  });
+  assert.equal(saved.status, 200);
+  // Follow the performer whose whole fixture filmography carries the hidden
+  // tag: the followed rail has nothing left to show, so it must disappear
+  // rather than render blocked titles.
+  const follow = await call("POST", "/api/follows", {
+    cookie: member,
+    body: {
+      performer: {
+        provider: "tpdb",
+        kind: "performer",
+        id: TPDB_PERFORMER,
+      },
+      name: "Fixture Performer",
+    },
+  });
+  assert.equal(follow.status, 201);
+  try {
+    resetMetaCache();
+
+    // Discover: the mixed rail drops the hidden title, and the genre facet
+    // loses its tile — blocked artwork cannot reappear as facet art. The
+    // sibling tiles and the trending rail still render. The followed rail
+    // vanishes entirely: every title it could carry is hidden.
+    const page = await call("GET", "/api/discover", { cookie: member });
+    assert.equal(page.status, 200);
+    const shelves = await shelvesOf(page);
+    const byId = new Map(shelves.map((shelf) => [shelf.id, shelf]));
+    for (const item of byId.get("new-releases")?.items ?? []) {
+      assert.notEqual(refOf(item)?.id, TPDB_MOVIE);
+    }
+    const genreTiles = (byId.get("genres")?.items ?? []) as FacetTile[];
+    for (const tile of genreTiles) {
+      assert.notEqual(tile.id, TAG_A, "hidden tag cannot resurface as art");
+    }
+    assert.ok(genreTiles.some((tile) => tile.id === TAG_C));
+    assert.ok((byId.get("trending")?.items?.length ?? 0) > 0);
+    assert.equal(
+      shelves.some((shelf) => shelf.id === "followed-titles"),
+      false,
+      "a fully hidden filmography renders no followed rail",
+    );
+
+    // Preference is a filter, not authorization: the hidden title's detail
+    // stays accessible and owned request history keeps flowing.
+    const detail = await call("GET", `/api/catalog/tpdb/movie/${TPDB_MOVIE}`, {
+      cookie: member,
+    });
+    assert.equal(detail.status, 200);
+    assert.ok((byId.get("velvarr-requests")?.items?.length ?? 0) > 0);
+
+    // Global search: the movie category filters; entity categories stay raw.
+    const search = await call("GET", "/api/search?q=Fixture", {
+      cookie: member,
+    });
+    const body = await searchOf(search);
+    const moviesCat = body.categories.find(
+      (category) => category.id === "tpdb-movies",
+    );
+    for (const item of moviesCat?.items ?? []) {
+      assert.notEqual(item.reference.id, TPDB_MOVIE);
+    }
+    const performersCat = body.categories.find(
+      (category) => category.id === "tpdb-performers",
+    );
+    assert.ok(
+      (performersCat?.items.length ?? 0) > 0,
+      "performer search stays raw",
+    );
+    const studiosCat = body.categories.find(
+      (category) => category.id === "tpdb-studios",
+    );
+    assert.ok((studiosCat?.items.length ?? 0) > 0, "studio search stays raw");
+
+    // Performer filmography through the media catalog search: the hidden
+    // title disappears for THIS account…
+    const filmography = await call(
+      "GET",
+      `/api/catalog/search?provider=tpdb&kind=movie&performer=${TPDB_PERFORMER}`,
+      { cookie: member },
+    );
+    assert.equal(filmography.status, 200);
+    const film = (await filmography.json()) as { items: FacetTile[] };
+    for (const item of film.items) {
+      assert.notEqual(refOf(item)?.id, TPDB_MOVIE5);
+    }
+
+    // …and only for this account: the same filmography still carries the
+    // title for an account without the hidden tag. Fresh metadata cache so
+    // the sibling read cannot ride this account's filtered page.
+    resetMetaCache();
+    const otherFilmography = await call(
+      "GET",
+      `/api/catalog/search?provider=tpdb&kind=movie&performer=${TPDB_PERFORMER}`,
+      { cookie: member2 },
+    );
+    assert.equal(otherFilmography.status, 200);
+    const otherFilm = (await otherFilmography.json()) as {
+      items: FacetTile[];
+    };
+    assert.ok(
+      otherFilm.items.some((item) => refOf(item)?.id === TPDB_MOVIE5),
+      "the hidden-tag filter is personal, never global",
+    );
+  } finally {
+    const unfollowed = await call(
+      "DELETE",
+      `/api/follows/tpdb/${TPDB_PERFORMER}`,
+      { cookie: member },
+    );
+    assert.equal(unfollowed.status, 204);
+    const restored = await call("PATCH", "/api/me/preferences", {
+      cookie: member,
+      body: { hiddenTags: [] },
+    });
+    assert.equal(restored.status, 200);
+  }
 });

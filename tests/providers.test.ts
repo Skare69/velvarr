@@ -20,7 +20,6 @@ import {
   getProviderStatus,
   IMAGE_BYTE_CAP,
   isProviderImageUrl,
-  normalizeFacetName,
   resolveSort,
   requestJson,
   resetMetaCache,
@@ -31,6 +30,7 @@ import {
 } from "../src/server/providers.ts";
 import type { CatalogSearchQuery } from "../src/server/providers.ts";
 import type { CatalogDetail } from "../src/lib/contracts.ts";
+import { normalizeFacetName } from "../src/lib/contracts.ts";
 
 // One shared fixture upstream per file; every test starts with a cold cache
 // so cached reads never mask a scripted upstream change.
@@ -2621,19 +2621,11 @@ test("releaseDate is rejected explicitly where unsupported or malformed, before 
     {
       query: {
         provider: "stashdb",
-        kind: "scene",
-        releaseDate: bound,
-      } as CatalogSearchQuery,
-      match: /only supported on TPDB movie searches/,
-    },
-    {
-      query: {
-        provider: "stashdb",
         kind: "performer",
         query: "anna",
         releaseDate: bound,
       } as CatalogSearchQuery,
-      match: /only supported on TPDB movie searches/,
+      match: /only supported on TPDB movie and StashDB scene searches/,
     },
     {
       query: {
@@ -2642,7 +2634,7 @@ test("releaseDate is rejected explicitly where unsupported or malformed, before 
         query: "vixen",
         releaseDate: bound,
       } as CatalogSearchQuery,
-      match: /only supported on TPDB movie searches/,
+      match: /only supported on TPDB movie and StashDB scene searches/,
     },
     {
       query: {
@@ -2651,7 +2643,7 @@ test("releaseDate is rejected explicitly where unsupported or malformed, before 
         query: "anna",
         releaseDate: bound,
       } as CatalogSearchQuery,
-      match: /only supported on TPDB movie searches/,
+      match: /only supported on TPDB movie and StashDB scene searches/,
     },
     {
       query: {
@@ -2660,7 +2652,7 @@ test("releaseDate is rejected explicitly where unsupported or malformed, before 
         query: "vixen",
         releaseDate: bound,
       } as CatalogSearchQuery,
-      match: /only supported on TPDB movie searches/,
+      match: /only supported on TPDB movie and StashDB scene searches/,
     },
     {
       // filmography paging cannot carry the bound either
@@ -2698,6 +2690,33 @@ test("releaseDate is rejected explicitly where unsupported or malformed, before 
       } as Record<string, unknown> as CatalogSearchQuery,
       match: /ISO cutoff date/,
     },
+    {
+      // TPDB scenes never reach the date guard: the one-source-per-kind rule
+      // refuses the search itself, which is the stronger, earlier refusal.
+      query: {
+        provider: "tpdb",
+        kind: "scene",
+        releaseDate: bound,
+      } as CatalogSearchQuery,
+      match: /Scenes are listed from StashDB only/,
+    },
+    {
+      // The stashdb scene carrier shares the same runtime validator.
+      query: {
+        provider: "stashdb",
+        kind: "scene",
+        releaseDate: { cutoff: "2026-09-11", operation: "lte" },
+      } as Record<string, unknown> as CatalogSearchQuery,
+      match: /operation of </,
+    },
+    {
+      query: {
+        provider: "stashdb",
+        kind: "scene",
+        releaseDate: { cutoff: "2026-02-30", operation: ">=" },
+      } as Record<string, unknown> as CatalogSearchQuery,
+      match: /ISO cutoff date/,
+    },
   ];
   for (const { query, match } of cases) {
     await assert.rejects(searchCatalog(query), (err: unknown) => {
@@ -2705,5 +2724,231 @@ test("releaseDate is rejected explicitly where unsupported or malformed, before 
       assert.match(err instanceof AppError ? err.message : "", match);
       return true;
     });
+  }
+});
+
+// --- stashdb native AND tags, native date criterion, attested zero totals ---
+
+// SceneQueryInput readback: the JSON was produced by this file's own fixture,
+// so the shape is fixed here; one named-cast boundary, no inline lies.
+function stashSceneInput(
+  fixture: Fixture,
+  index: number,
+): Record<string, unknown> {
+  const input: unknown = stashBody(fixture, index).variables.f;
+  assert.ok(
+    input !== null && typeof input === "object",
+    "expected a SceneQueryInput",
+  );
+  return input as Record<string, unknown>;
+}
+
+test("stashdb tagsAll emits native INCLUDES_ALL; combining criteria is rejected explicitly", async () => {
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  const fixture = await startFixture((req, res) => {
+    replyJson(res, 200, { data: { queryScenes: { count: 0, scenes: [] } } });
+  });
+  try {
+    process.env.STASHDB_BASE_URL = fixture.origin;
+
+    // Native AND inclusion for user-facing browse.
+    await searchCatalog({
+      provider: "stashdb",
+      kind: "scene",
+      tagsAll: [STASH_TAG_ID, STASH_CROSS_ID],
+    });
+    assert.deepEqual(stashSceneInput(fixture, 0).tags, {
+      value: [STASH_TAG_ID, STASH_CROSS_ID],
+      modifier: "INCLUDES_ALL",
+    });
+
+    // Any-of INCLUDES stays available for internal candidate retrieval.
+    await searchCatalog({
+      provider: "stashdb",
+      kind: "scene",
+      tags: [STASH_TAG_ID],
+    });
+    assert.deepEqual(stashSceneInput(fixture, 1).tags, {
+      value: [STASH_TAG_ID],
+      modifier: "INCLUDES",
+    });
+
+    // One MultiIDCriterionInput per query: any two criteria are an explicit
+    // 400 before any upstream call, never a silently widened filter.
+    const conflicts: {
+      tags?: string[];
+      tagsAll?: string[];
+      tagsExclude?: string[];
+    }[] = [
+      { tags: [STASH_TAG_ID], tagsAll: [STASH_TAG_ID] },
+      { tagsAll: [STASH_TAG_ID], tagsExclude: [STASH_TAG_ID] },
+      {
+        tags: [STASH_TAG_ID],
+        tagsAll: [STASH_TAG_ID],
+        tagsExclude: [STASH_TAG_ID],
+      },
+    ];
+    for (const criteria of conflicts) {
+      await assert.rejects(
+        searchCatalog({ provider: "stashdb", kind: "scene", ...criteria }),
+        (err: unknown) => {
+          assertProviderError(err, 400, "invalid_search");
+          assert.match(
+            err instanceof AppError ? err.message : "",
+            /one tag criterion per query/,
+          );
+          return true;
+        },
+      );
+    }
+    assert.equal(fixture.requests.length, 2); // only the two successful searches
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
+test("stashdb releaseDate maps operators to native date modifiers, shifting inclusive day bounds", async () => {
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  const fixture = await startFixture((req, res) => {
+    replyJson(res, 200, { data: { queryScenes: { count: 3, scenes: [] } } });
+  });
+  try {
+    process.env.STASHDB_BASE_URL = fixture.origin;
+
+    // EQUALS/GREATER_THAN/LESS_THAN are the only modifiers upstream accepts;
+    // inclusive day bounds shift by one ISO day (month/year rollover proven).
+    const ops: {
+      operation: "<" | "<=" | "=" | ">" | ">=";
+      cutoff: string;
+      expected: { value: string; modifier: string };
+    }[] = [
+      {
+        operation: "=",
+        cutoff: "2026-09-11",
+        expected: { value: "2026-09-11", modifier: "EQUALS" },
+      },
+      {
+        operation: ">",
+        cutoff: "2026-09-11",
+        expected: { value: "2026-09-11", modifier: "GREATER_THAN" },
+      },
+      {
+        operation: ">=",
+        cutoff: "2027-01-01",
+        expected: { value: "2026-12-31", modifier: "GREATER_THAN" },
+      },
+      {
+        operation: "<",
+        cutoff: "2026-09-11",
+        expected: { value: "2026-09-11", modifier: "LESS_THAN" },
+      },
+      {
+        operation: "<=",
+        cutoff: "2026-02-28",
+        expected: { value: "2026-03-01", modifier: "LESS_THAN" },
+      },
+    ];
+    for (const [i, { operation, cutoff, expected }] of ops.entries()) {
+      await searchCatalog({
+        provider: "stashdb",
+        kind: "scene",
+        releaseDate: { cutoff, operation },
+      });
+      assert.deepEqual(stashSceneInput(fixture, i).date, expected);
+    }
+
+    // The bound composes natively with the other scene criteria.
+    await searchCatalog({
+      provider: "stashdb",
+      kind: "scene",
+      studio: STASH_STUDIO_ID,
+      tagsAll: [STASH_TAG_ID],
+      releaseDate: { cutoff: "2026-01-01", operation: ">" },
+    });
+    const combined = stashSceneInput(fixture, 5);
+    assert.deepEqual(combined.studios, {
+      value: [STASH_STUDIO_ID],
+      modifier: "INCLUDES",
+    });
+    assert.deepEqual(combined.tags, {
+      value: [STASH_TAG_ID],
+      modifier: "INCLUDES_ALL",
+    });
+    assert.deepEqual(combined.date, {
+      value: "2026-01-01",
+      modifier: "GREATER_THAN",
+    });
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
+test("attested zero totals are known-zero on both providers; contradictions stay unknown", async () => {
+  const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
+  const replies: Array<{ data: unknown[]; meta: { total: number } }> = [
+    { data: [], meta: { total: 0 } },
+    {
+      data: [{ ...tpdbMovieRow(), title: "Zero Total With Rows" }],
+      meta: { total: 0 },
+    },
+  ];
+  const fixture = await startFixture((req, res) => {
+    const next = replies.shift();
+    assert.ok(next !== undefined, "unexpected upstream call");
+    replyJson(res, 200, { ...next, links: { next: null } });
+  });
+  try {
+    process.env.TPDB_BASE_URL = fixture.origin;
+    const empty = await searchCatalog({ provider: "tpdb", kind: "movie" });
+    assert.equal(empty.items.length, 0);
+    assert.equal(empty.total, 0);
+    assert.equal(empty.totalCountKnown, true);
+    assert.equal(empty.hasMore, false);
+
+    // Same query: without a cache reset the first (empty) page would answer.
+    resetMetaCache();
+    // A zero total next to rows contradicts itself: never surfaced as known.
+    const contradicted = await searchCatalog({
+      provider: "tpdb",
+      kind: "movie",
+    });
+    assert.equal(contradicted.items.length, 1);
+    assert.equal(contradicted.total, undefined);
+    assert.equal(contradicted.totalCountKnown, false);
+  } finally {
+    await fixture.close();
+    restore();
+  }
+
+  const restore2 = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  const stashFixture = await startFixture((req, res) => {
+    replyJson(res, 200, { data: { queryScenes: { count: 0, scenes: [] } } });
+  });
+  const performerFixture = await startFixture((req, res) => {
+    replyJson(res, 200, {
+      data: { searchPerformers: { count: 0, performers: [] } },
+    });
+  });
+  try {
+    process.env.STASHDB_BASE_URL = stashFixture.origin;
+    const scenes = await searchCatalog({ provider: "stashdb", kind: "scene" });
+    assert.equal(scenes.total, 0);
+    assert.equal(scenes.totalCountKnown, true);
+    assert.equal(scenes.hasMore, false);
+
+    process.env.STASHDB_BASE_URL = performerFixture.origin;
+    const performers = await searchCatalog({
+      provider: "stashdb",
+      kind: "performer",
+      query: "anna",
+    });
+    assert.equal(performers.total, 0);
+    assert.equal(performers.totalCountKnown, true);
+  } finally {
+    await stashFixture.close();
+    await performerFixture.close();
+    restore2();
   }
 });

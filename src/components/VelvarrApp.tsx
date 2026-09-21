@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -36,6 +37,7 @@ import {
   imgSrc,
   intOr,
   ItemImage,
+  legacyBrowsePatch,
   messageOf,
   SessionCtx,
   useApiGet,
@@ -43,8 +45,8 @@ import {
   useSession,
   useTapReveal,
 } from "./shared.tsx";
-import { MoviesView, ScenesView } from "./catalog.tsx";
-import { TitlesView } from "./titles.tsx";
+import { TitlesView } from "./catalog.tsx";
+import { PreferencesView } from "./preferences.tsx";
 import { PerformerView } from "./performer.tsx";
 import { DiscoverShelves } from "./discover.tsx";
 import { SearchView } from "./search.tsx";
@@ -685,13 +687,12 @@ function LoginView({ onSignedIn }: { onSignedIn: () => void }) {
 const VIEWS = [
   "discover",
   "titles",
-  "movies",
-  "scenes",
   "following",
   "search",
   "requests",
   "removals",
   "library",
+  "preferences",
   "admin",
   "settings",
 ] as const;
@@ -807,20 +808,34 @@ function Shell() {
   const params = useSearchParams();
   const setP = useParamsSetter();
   const raw = params.get("view");
+  // Old movies/scenes bookmarks and facet links normalize once into the
+  // canonical titles URL — replaced, not pushed, so Back still exits the app
+  // instead of bouncing off a dead view. Detail provider/kind/id and every
+  // preserved filter ride along via the patch.
+  const legacy = useMemo(() => legacyBrowsePatch(params), [params]);
+  useEffect(() => {
+    if (legacy) setP(legacy);
+  }, [legacy, setP]);
   const view: View = VIEWS.includes(raw as View)
     ? (raw as View)
-    : !raw &&
-        (params.has("item") || params.has("libraryId") || params.has("search"))
-      ? "library"
-      : "discover";
+    : legacy
+      ? "titles"
+      : !raw &&
+          (params.has("item") ||
+            params.has("libraryId") ||
+            params.has("search"))
+        ? "library"
+        : "discover";
   const isAdmin = session.account.role === "admin";
   const navigation = useRef<HTMLDialogElement>(null);
+  const accountMenu = useRef<HTMLDetailsElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const pendingApprovals = usePendingApprovals(session.account, view);
   const nav = [
     { id: "discover", label: "Discover", icon: "discover", group: "browse" },
-    { id: "movies", label: "Movies", icon: "movie", group: "browse" },
-    { id: "scenes", label: "Scenes", icon: "scene", group: "browse" },
+    // One browse surface: movies and scenes are a filter inside it, not
+    // separate destinations.
+    { id: "titles", label: "Browse", icon: "movie", group: "browse" },
     // One performer surface: the ones you follow. Discovery of new
     // performers is the top search bar, which already searches them.
     {
@@ -932,7 +947,7 @@ function Shell() {
           <Icon name="menu" />
         </button>
         <GlobalSearchForm />
-        <details className="account-menu">
+        <details ref={accountMenu} className="account-menu">
           <summary aria-label="Account menu" title={session.account.name}>
             <span className="account-avatar">
               {session.account.name.slice(0, 1).toUpperCase()}
@@ -943,6 +958,19 @@ function Shell() {
             <div className="mt-1 text-sm text-muted capitalize">
               {session.account.role}
             </div>
+            {/* Personal preferences are every account's own surface — never
+                the admin Settings view. */}
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                if (accountMenu.current) accountMenu.current.open = false;
+                go("preferences");
+              }}
+            >
+              <Icon name="settings" />
+              Preferences
+            </button>
             <button
               type="button"
               className="btn"
@@ -957,12 +985,11 @@ function Shell() {
       <main className="app-main" id="main-content" tabIndex={-1}>
         {view === "discover" && <DiscoverShelves />}
         {view === "titles" && <TitlesView />}
-        {view === "movies" && <MoviesView />}
-        {view === "scenes" && <ScenesView />}
         {view === "following" && <FollowingView />}
         {view === "library" && <LibraryView />}
         {view === "requests" && <RequestsView />}
         {view === "search" && <SearchView />}
+        {view === "preferences" && <PreferencesView />}
         {view === "removals" && <RemovalsView />}
         {view === "admin" && (isAdmin ? <AdminView /> : <ForbiddenPanel />)}
         {view === "settings" &&

@@ -5,6 +5,7 @@ import type {
   CatalogKind,
   CatalogProvider,
   CatalogReference,
+  CatalogTagSelection,
   ExternalUser,
   IntegrationConfig,
   Library,
@@ -21,6 +22,7 @@ import type {
 import {
   isDeliverableMedia,
   isRemovalLevel,
+  normalizeFacetName,
   UNDELIVERABLE_REASON,
 } from "../../../lib/contracts.ts";
 import {
@@ -38,6 +40,7 @@ import {
   getAcquisitionByReference,
   getAccount,
   getConfig,
+  getContentPreferences,
   getSession,
   hasAuthoritativeAbsence,
   importAccounts,
@@ -50,6 +53,7 @@ import {
   listRemovalRequests,
   revokeSession,
   saveConfig,
+  saveContentPreferences,
   linkFollows,
   unfollowPerformer,
   updateAccount,
@@ -85,7 +89,6 @@ import {
   getProviderStatus,
   isProviderImageUrl,
   listCatalogTags,
-  normalizeFacetName,
   searchCatalog,
   searchCatalogTags,
   studioCounterpart,
@@ -100,6 +103,16 @@ import {
   findWhisparrItem,
   getWhisparrStatus,
 } from "../../../server/whisparr.ts";
+import {
+  browseTitles,
+  isHiddenTitle,
+  parseBrowseQuery,
+  searchBrowseTags,
+  searchVisibleCatalog,
+  type BrowsePage,
+  type SourceError,
+} from "../../../server/browse.ts";
+import { relatedTitles } from "../../../server/related.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -503,6 +516,19 @@ async function me(ctx: AuthContext): Promise<Response> {
     account: ctx.account,
     providers: { tpdb, stashdb } satisfies ProviderStatus,
   });
+}
+
+// --- personal content preferences ---
+
+// Session-only by construction: the route reads ctx.account.id, so a caller
+// can only ever touch its own hidden tags. PATCH never accepts an account id
+// — storage validates the whole body and rejects unknown top-level fields,
+// and a malformed payload changes nothing (atomic).
+async function updatePreferences(
+  request: Request,
+  ctx: AuthContext,
+): Promise<Response> {
+  return json(saveContentPreferences(ctx.account.id, await readJson(request)));
 }
 
 // Coarse per-user signal: does a provider integration exist at all. Real
@@ -1497,11 +1523,47 @@ function tpdbSearchQuery(
   };
 }
 
-async function catalogSearch(request: Request): Promise<Response> {
+async function catalogSearch(
+  request: Request,
+  ctx: AuthContext,
+): Promise<Response> {
+  const query = catalogSearchQuery(new URL(request.url));
+  // Media results honor the caller's hidden tags through the shared browse
+  // filter; performer and studio searches stay raw — a hidden tag removes
+  // titles from discovery, never the people and studios themselves.
   // Pass-through page: total/totalCountKnown report exactly what the
   // provider attests (a capped TPDB total surfaces as totalCountKnown:
   // false), and an outage propagates as an error, never an empty page.
-  return json(await searchCatalog(catalogSearchQuery(new URL(request.url))));
+  return json(
+    query.kind === "movie" || query.kind === "scene"
+      ? await searchVisibleCatalog(
+          query,
+          getContentPreferences(ctx.account.id).hiddenTags,
+        )
+      : await searchCatalog(query),
+  );
+}
+
+// The one user-visible catalog surface. The caller's hidden tags ride every
+// query, and hiddenTagCount lets the UI show the personal filter state
+// without a second request. Preference is a filter, not authorization.
+async function browseRoute(
+  request: Request,
+  ctx: AuthContext,
+): Promise<Response> {
+  const hiddenTags = getContentPreferences(ctx.account.id).hiddenTags;
+  const page = await browseTitles(
+    parseBrowseQuery(new URL(request.url).searchParams),
+    hiddenTags,
+  );
+  return json({ ...page, hiddenTagCount: hiddenTags.length });
+}
+
+// Tag facet lookup for the browse filter UI: provider-published tags with
+// per-source errors, never invented ones.
+async function browseTagsRoute(request: Request): Promise<Response> {
+  const q = (new URL(request.url).searchParams.get("q") ?? "").trim();
+  return json(await searchBrowseTags(q));
 }
 
 // Tag facet lookup for the catalog filter UI: the provider's own ids and
@@ -1536,6 +1598,34 @@ async function catalogTagsRoute(
     tags,
     ...(suggestions.length > 0 ? { suggestions } : {}),
   });
+}
+
+// Related titles for one media reference, loaded separately from the detail
+// so it never delays playback/request actions. Same reference validation as
+// detail (media only, provider UUID), plus an explicit rank choice; the
+// caller's hidden tags and the TypeSafe key ride along.
+async function relatedRoute(
+  ctx: AuthContext,
+  providerRaw: string,
+  kindRaw: string,
+  idRaw: string,
+  url: URL,
+): Promise<Response> {
+  const reference = parseMediaReference(providerRaw, kindRaw, idRaw);
+  const rankRaw = url.searchParams.get("rank");
+  if (rankRaw !== null && rankRaw !== "tags" && rankRaw !== "jev") {
+    throw new AppError(400, "invalid_query", "rank must be tags or jev.");
+  }
+  return json(
+    await relatedTitles(
+      reference,
+      getContentPreferences(ctx.account.id).hiddenTags,
+      {
+        rank: rankRaw === "jev" ? "jev" : "tags",
+        typesafeApiKey: ctx.config.providers?.typesafeApiKey,
+      },
+    ),
+  );
 }
 
 async function catalogDetail(
@@ -2277,9 +2367,13 @@ interface Shelf {
   id: string;
   title: string;
   source: "tpdb" | "stashdb" | "jellyfin" | "velvarr";
+  /** Honest one-line provenance, e.g. trending is a StashDB-only signal. */
+  description?: string;
   browse?: { view: string; params: Record<string, string> };
   kind: "catalog" | "library" | "requests" | "facets";
   items?: CatalogDetail[] | LibraryItem[] | RequestRecord[] | FacetItem[];
+  /** Per-source partial-failure evidence; items may coexist with it. */
+  errors?: SourceError[];
   error?: ShelfError;
 }
 
@@ -2296,6 +2390,12 @@ interface SearchCategory {
 function shelfError(err: unknown): ShelfError {
   if (err instanceof AppError) return { code: err.code, message: err.message };
   return { code: "internal", message: "Internal server error." };
+}
+
+// The partial-source wire shape: the failed provider named on the error,
+// its code preserved verbatim.
+function sourceError(provider: "tpdb" | "stashdb", err: unknown): SourceError {
+  return { provider, ...shelfError(err) };
 }
 
 const SHELF_ITEMS = 12;
@@ -2360,48 +2460,67 @@ async function followedTitles(
   return items.slice(0, SHELF_ITEMS);
 }
 
-// Up to two followed-performer shelves, one per provider, present only when
-// this account actually follows performers there — an account with no
-// follows gets exactly the standard shelves.
-async function followShelves(ctx: AuthContext): Promise<Shelf[]> {
-  const shelves: Shelf[] = [];
-  for (const provider of ["tpdb", "stashdb"] as const) {
-    if (
-      listFollowsByProvider(ctx.account.id, provider, FOLLOW_SHELF_PERFORMERS)
-        .length === 0
-    ) {
-      continue;
-    }
-    const pages = await followedTitles(ctx.account.id, provider).then(
-      (items): PromiseSettledResult<ShelfItems> => ({
-        status: "fulfilled",
-        value: items,
-      }),
-      (reason): PromiseSettledResult<ShelfItems> => ({
-        status: "rejected",
-        reason,
-      }),
+// The one "From performers you follow" rail across BOTH providers. Sides
+// settle independently: the surviving side's titles still render beside a
+// visible partial-source warning, and the shelf errors only when both sides
+// failed. Hidden tags apply here too — a fully hidden filmography leaves
+// nothing to show, so the rail disappears. An account that follows nobody
+// gets no rail at all.
+async function followedShelf(
+  accountId: string,
+  hiddenTags: CatalogTagSelection[],
+): Promise<Shelf | null> {
+  const sides = await Promise.allSettled([
+    followedTitles(accountId, "tpdb"),
+    followedTitles(accountId, "stashdb"),
+  ]);
+  const errors: SourceError[] = [];
+  const merged: CatalogDetail[] = [];
+  sides.forEach((side, i) => {
+    const provider = i === 0 ? ("tpdb" as const) : ("stashdb" as const);
+    if (side.status === "fulfilled") {
+      merged.push(
+        ...side.value.filter((item) => !isHiddenTitle(item, hiddenTags)),
+      );
+    } else errors.push(sourceError(provider, side.reason));
+  });
+  if (merged.length === 0 && errors.length === 0) return null;
+  const base = {
+    id: "followed-titles",
+    title: "From performers you follow",
+    source: "velvarr" as const,
+    kind: "catalog" as const,
+    browse: { view: "following", params: {} },
+  };
+  if (merged.length === 0) {
+    // Every side the account actually follows failed: the error-only shape,
+    // never a quiet empty list.
+    const firstFailure = sides.find(
+      (side): side is PromiseRejectedResult => side.status === "rejected",
     );
-    shelves.push(
-      shelfOf(
-        {
-          id:
-            provider === "tpdb"
-              ? "tpdb-followed-movies"
-              : "stashdb-followed-scenes",
-          title:
-            provider === "tpdb"
-              ? "Movies from performers you follow"
-              : "Newest scenes from performers you follow",
-          source: provider,
-          kind: "catalog",
-          browse: { view: "following", params: {} },
-        },
-        pages,
-      ),
-    );
+    return { ...base, error: shelfError(firstFailure?.reason) };
   }
-  return shelves;
+  return {
+    ...base,
+    items: dedupeTitles(merged).slice(0, SHELF_ITEMS),
+    ...(errors.length > 0 ? { errors } : {}),
+  };
+}
+
+// Provider-aware dedupe for the merged rail: a title two followed performers
+// share appears once. Identity is the provider-native reference itself —
+// scenes and movies are never equated across providers, and no name
+// matching is ever applied.
+function dedupeTitles(items: CatalogDetail[]): CatalogDetail[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key =
+      `${item.reference.provider}:${item.reference.kind}:` +
+      item.reference.id.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 type ShelfItems =
@@ -2416,6 +2535,37 @@ function shelfOf(
     : // An errored shelf carries no items at all: never an empty list that
       // could render as a quiet success.
       { ...base, error: shelfError(result.reason) };
+}
+
+// Mixed-source shelves built from a browse page: items render together with
+// per-source error evidence; a page that failed BOTH sources collapses to
+// the error-only shape — all-source failure stays visible, never an empty
+// success. One source failing with the other merely empty keeps the honest
+// errors warning.
+function browseShelf(
+  base: Omit<Shelf, "items" | "error" | "errors">,
+  result: PromiseSettledResult<BrowsePage>,
+): Shelf {
+  if (result.status === "rejected")
+    return { ...base, error: shelfError(result.reason) };
+  const page = result.value;
+  if (page.items.length === 0 && page.errors.length > 0) {
+    const down = new Set(page.errors.map((error) => error.provider));
+    if (down.has("tpdb") && down.has("stashdb")) {
+      return {
+        ...base,
+        error: {
+          code: page.errors[0]!.code,
+          message: "Neither TPDB nor StashDB could be read.",
+        },
+      };
+    }
+  }
+  return {
+    ...base,
+    items: page.items,
+    ...(page.errors.length > 0 ? { errors: page.errors } : {}),
+  };
 }
 
 // Genre facets from one provider's snapshot: unique provider-native tag ids
@@ -2498,25 +2648,39 @@ function studioFacets(
   );
 }
 
-// The two unified facet rails share one pipeline: derive each surviving
-// snapshot's tiles with the per-provider rules, alternate the providers so
-// neither side fills the rail alone, cap, then pair across providers.
-// Pairing is honesty-bound: studios only through the counterpart link the
-// providers themselves publish, categories only through exact normalized-
-// name equality. A failed pairing or a capped-away tile simply omits
-// `linked`; no counterpart failure can reject the discover response.
-async function facetShelves(
-  tpdb: PromiseSettledResult<CatalogDetail[]>,
-  stash: PromiseSettledResult<CatalogDetail[]>,
+// The two unified facet rails derive from the new-releases browse page —
+// which is already hidden-tag filtered, so blocked catalog imagery can never
+// reappear as facet art. A side that failed its half of the page simply
+// contributes nothing (the page's own errors report the outage); both sides
+// failing surfaces one error per facet shelf and no items — never a
+// half-filled rail that could read as a quiet success.
+function facetShelves(
+  newReleases: PromiseSettledResult<BrowsePage>,
 ): Promise<Shelf[]> {
-  if (tpdb.status === "rejected" && stash.status === "rejected") {
+  let error: ShelfError | undefined;
+  let items: CatalogDetail[] = [];
+  if (newReleases.status === "rejected") {
     // shelfError keeps the upstream code (not configured vs outage); the
     // message names the shelf's own truth: no snapshot from either side.
-    const error = {
-      ...shelfError(tpdb.reason),
+    error = {
+      ...shelfError(newReleases.reason),
       message: "Neither TPDB nor StashDB could be read.",
     };
-    return [
+  } else {
+    const page = newReleases.value;
+    items = page.items;
+    if (items.length === 0 && page.errors.length > 0) {
+      const down = new Set(page.errors.map((entry) => entry.provider));
+      if (down.has("tpdb") && down.has("stashdb")) {
+        error = {
+          code: page.errors[0]!.code,
+          message: "Neither TPDB nor StashDB could be read.",
+        };
+      }
+    }
+  }
+  if (error !== undefined) {
+    return Promise.resolve([
       {
         id: "studios",
         title: "Studios",
@@ -2531,16 +2695,14 @@ async function facetShelves(
         kind: "facets",
         error,
       },
-    ];
+    ]);
   }
-  // One snapshot failing degrades to the survivor's facets with no shelf
-  // error here — the sibling catalog rails already report that provider's
-  // outage, so the facet rails hide nothing by carrying on.
-  const sources: { provider: CatalogProvider; items: CatalogDetail[] }[] = [];
-  if (tpdb.status === "fulfilled")
-    sources.push({ provider: "tpdb", items: tpdb.value });
-  if (stash.status === "fulfilled")
-    sources.push({ provider: "stashdb", items: stash.value });
+  const sources = (["tpdb", "stashdb"] as const)
+    .map((provider) => ({
+      provider,
+      items: items.filter((item) => item.reference.provider === provider),
+    }))
+    .filter((source) => source.items.length > 0);
   return Promise.all([
     facetShelf("studios", sources),
     facetShelf("genres", sources),
@@ -2662,28 +2824,43 @@ async function resolveLinked(tiles: FacetItem[]): Promise<void> {
 }
 
 async function discover(ctx: AuthContext): Promise<Response> {
-  // UTC server date: the shared "today" cutoff for the TPDB recency shelf
-  // and its browse-all link.
+  // UTC server date: the shared "today" cutoff for the mixed New releases
+  // rail and its browse-all link.
   const today = new Date().toISOString().slice(0, 10);
-  const [tpdbMovies, stashTrending, recentlyAdded, requests] =
+  const hiddenTags = getContentPreferences(ctx.account.id).hiddenTags;
+  const [newReleases, trending, recentlyAdded, requests] =
     await Promise.allSettled([
-      searchCatalog({
-        provider: "tpdb",
-        kind: "movie",
-        releaseDate: { cutoff: today, operation: "<=" },
-        sort: "recency",
-        direction: "desc",
-        page: 1,
-        perPage: SHELF_ITEMS,
-      }).then((page) => page.items),
-      searchCatalog({
-        provider: "stashdb",
-        kind: "scene",
-        sort: "trending",
-        direction: "desc",
-        page: 1,
-        perPage: SHELF_ITEMS,
-      }).then((page) => page.items),
+      // Built through the browse parser so the rail and its own browse link
+      // are provably the same query. Native provider filters carry the date
+      // bound; hidden tags apply before anything downstream is derived.
+      browseTitles(
+        parseBrowseQuery(
+          new URLSearchParams({
+            type: "all",
+            sort: "recency",
+            direction: "desc",
+            date: today,
+            date_operation: "<=",
+            page: "1",
+            perPage: String(SHELF_ITEMS),
+          }),
+        ),
+        hiddenTags,
+      ),
+      // Trending is honestly a StashDB-only signal: TPDB publishes no
+      // trend data, so nothing pretends otherwise. Single source, so a
+      // failure is the shelf's own rejection.
+      searchVisibleCatalog(
+        {
+          provider: "stashdb",
+          kind: "scene",
+          sort: "trending",
+          direction: "desc",
+          page: 1,
+          perPage: SHELF_ITEMS,
+        },
+        hiddenTags,
+      ).then((page) => page.items),
       listRecentlyAddedItems(ctx.config, ctx.token, ctx.account, SHELF_ITEMS),
       // storage is sync; defer so its failures settle like the rest. Capped
       // like every other shelf: a bulk performer request can file a hundred
@@ -2692,19 +2869,22 @@ async function discover(ctx: AuthContext): Promise<Response> {
         listRequests(ctx.account).slice(0, SHELF_ITEMS),
       ),
     ]);
+  // Appended only when this account follows someone (or a side failed): an
+  // account with no follows gets exactly the standard shelves.
+  const followed = await followedShelf(ctx.account.id, hiddenTags);
   return json({
     shelves: [
-      shelfOf(
+      browseShelf(
         {
-          id: "tpdb-recent-movies",
-          title: "Recently released movies",
-          source: "tpdb",
+          id: "new-releases",
+          title: "New releases",
+          description: "Newest TPDB movies and StashDB scenes",
+          source: "velvarr",
           kind: "catalog",
           browse: {
-            view: "catalog",
+            view: "titles",
             params: {
-              provider: "tpdb",
-              kind: "movie",
+              type: "all",
               sort: "recency",
               direction: "desc",
               date: today,
@@ -2712,25 +2892,21 @@ async function discover(ctx: AuthContext): Promise<Response> {
             },
           },
         },
-        tpdbMovies,
+        newReleases,
       ),
       shelfOf(
         {
-          id: "stashdb-trending-scenes",
-          title: "Trending scenes",
+          id: "trending",
+          title: "Trending now",
+          description: "Scene trends from StashDB",
           source: "stashdb",
           kind: "catalog",
           browse: {
-            view: "catalog",
-            params: {
-              provider: "stashdb",
-              kind: "scene",
-              sort: "trending",
-              direction: "desc",
-            },
+            view: "titles",
+            params: { type: "scene", sort: "trending", direction: "desc" },
           },
         },
-        stashTrending,
+        trending,
       ),
       shelfOf(
         {
@@ -2752,8 +2928,8 @@ async function discover(ctx: AuthContext): Promise<Response> {
         },
         requests,
       ),
-      ...(await facetShelves(tpdbMovies, stashTrending)),
-      ...(await followShelves(ctx)),
+      ...(await facetShelves(newReleases)),
+      ...(followed === null ? [] : [followed]),
     ],
   });
 }
@@ -2769,7 +2945,10 @@ function categoryOf(
     : { id, provider, kind, items: [], error: shelfError(result.reason) };
 }
 
-async function globalSearch(request: Request): Promise<Response> {
+async function globalSearch(
+  request: Request,
+  ctx: AuthContext,
+): Promise<Response> {
   const url = new URL(request.url);
   const term = (url.searchParams.get("q") ?? "").trim();
   if (term.length < 2) {
@@ -2779,6 +2958,9 @@ async function globalSearch(request: Request): Promise<Response> {
       "Enter at least 2 characters to search.",
     );
   }
+  // Media categories honor the caller's hidden tags; performer and studio
+  // categories stay raw — hidden tags remove titles, never entities.
+  const hiddenTags = getContentPreferences(ctx.account.id).hiddenTags;
   const [
     tpdbMovies,
     stashdbScenes,
@@ -2787,20 +2969,26 @@ async function globalSearch(request: Request): Promise<Response> {
     tpdbStudios,
     stashdbStudios,
   ] = await Promise.allSettled([
-    searchCatalog({
-      provider: "tpdb",
-      kind: "movie",
-      query: term,
-      page: 1,
-      perPage: SEARCH_PER_PAGE,
-    }).then((page) => page.items),
-    searchCatalog({
-      provider: "stashdb",
-      kind: "scene",
-      query: term,
-      page: 1,
-      perPage: SEARCH_PER_PAGE,
-    }).then((page) => page.items),
+    searchVisibleCatalog(
+      {
+        provider: "tpdb",
+        kind: "movie",
+        query: term,
+        page: 1,
+        perPage: SEARCH_PER_PAGE,
+      },
+      hiddenTags,
+    ).then((page) => page.items),
+    searchVisibleCatalog(
+      {
+        provider: "stashdb",
+        kind: "scene",
+        query: term,
+        page: 1,
+        perPage: SEARCH_PER_PAGE,
+      },
+      hiddenTags,
+    ).then((page) => page.items),
     searchCatalog({
       provider: "tpdb",
       kind: "performer",
@@ -2886,6 +3074,14 @@ function routeFor(
     if (root === "health" && segments.length === 2)
       return openRoute(async () => json({ ok: true }));
     if (root === "me" && segments.length === 2) return signedIn(me);
+    if (root === "me" && a === "preferences" && segments.length === 3)
+      return signedIn(async (ctx) =>
+        json(getContentPreferences(ctx.account.id)),
+      );
+    if (root === "browse" && segments.length === 2)
+      return signedIn((ctx) => browseRoute(request, ctx));
+    if (root === "browse" && a === "tags" && segments.length === 3)
+      return signedIn(() => browseTagsRoute(request));
     if (root === "libraries" && segments.length === 2)
       return signedIn(libraries);
     if (root === "library" && segments.length === 2)
@@ -2895,7 +3091,16 @@ function routeFor(
     if (root === "images" && segments.length === 3)
       return signedIn((ctx) => libraryImage(ctx, segments[2]!));
     if (root === "catalog" && a === "search" && segments.length === 3)
-      return signedIn(() => catalogSearch(request));
+      return signedIn((ctx) => catalogSearch(request, ctx));
+    // Related resolves before the generic detail match below it.
+    if (
+      root === "catalog" &&
+      segments.length === 6 &&
+      segments[5] === "related"
+    )
+      return signedIn((ctx) =>
+        relatedRoute(ctx, a!, b!, segments[4]!, new URL(request.url)),
+      );
     if (root === "catalog" && a === "image" && segments.length === 3)
       return signedIn(() => catalogImage(request));
     if (root === "catalog" && a === "tags" && segments.length === 3)
@@ -2908,7 +3113,7 @@ function routeFor(
     if (root === "follows" && segments.length === 2)
       return signedIn(listFollowsRoute);
     if (root === "search" && segments.length === 2)
-      return signedIn(() => globalSearch(request));
+      return signedIn((ctx) => globalSearch(request, ctx));
     if (root === "availability" && segments.length === 5)
       return signedIn((ctx) => availability(ctx, a!, b!, segments[4]!));
     if (root === "removals" && segments.length === 2)
@@ -2957,6 +3162,8 @@ function routeFor(
     if (root === "removals" && segments.length === 2)
       return signedIn((ctx) => createRemovalRoute(request, ctx));
   } else if (method === "PATCH") {
+    if (root === "me" && a === "preferences" && segments.length === 3)
+      return signedIn((ctx) => updatePreferences(request, ctx));
     if (root === "admin" && a === "users" && segments.length === 4)
       return staffOnly((ctx) => adminUpdateUser(request, ctx, segments[3]!));
     if (root === "requests" && segments.length === 3)

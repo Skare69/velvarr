@@ -18,6 +18,7 @@ import type {
   Account,
   CatalogDetail,
   CatalogReference,
+  CatalogTagSelection,
   ExternalUser,
   IntegrationConfig,
   MediaKind,
@@ -749,6 +750,11 @@ test("v1 database migrates in place preserving config, accounts, sessions, and g
     owner.canRemove,
     false,
     "migrated accounts default to no removal grant",
+  );
+  assert.deepEqual(
+    storage.getContentPreferences(owner.id),
+    { hiddenTags: [] },
+    "migrated accounts default to empty hidden tags",
   );
   assert.deepEqual(
     storage.getConfig()?.jellyfin.libraryIds,
@@ -2645,4 +2651,131 @@ test("linkFollows folds two separately-followed rows into one identity and never
     false,
   );
   assert.equal(storage.listFollows(grant.account.id).length, 1);
+});
+
+// --- content preferences (personal hidden tags) ---
+
+const TAG_TPDB = "c3d4e5f6-a7b8-4c9d-8e1f-3a4b5c6d7e01";
+const TAG_STASH = "d4e5f6a7-b8c9-4d0e-9f2a-4b5c6d7e8f02";
+const invalidPrefs = (e: { code: string }) => e.code === "invalid_preferences";
+
+function prefSetup(): { owner: string; other: string } {
+  freshDir();
+  const grant = storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  const imported = storage.importAccounts([otherUser()]);
+  return { owner: grant.account.id, other: imported[0]!.id };
+}
+
+test("content preferences persist per account, survive reopen, and never leak between accounts", () => {
+  const { owner, other } = prefSetup();
+  assert.deepEqual(
+    storage.getContentPreferences(owner),
+    { hiddenTags: [] },
+    "fresh accounts start empty",
+  );
+  assert.deepEqual(storage.getContentPreferences(other), { hiddenTags: [] });
+
+  const saved = storage.saveContentPreferences(owner, {
+    hiddenTags: [
+      { name: "Rómance", tpdb: TAG_TPDB },
+      { name: "ro-mance", stashdb: TAG_STASH },
+    ],
+  });
+  // The same label from both providers consolidates into one selection.
+  assert.deepEqual(saved, {
+    hiddenTags: [{ name: "Rómance", tpdb: TAG_TPDB, stashdb: TAG_STASH }],
+  });
+  assert.deepEqual(storage.getContentPreferences(owner), saved);
+  assert.deepEqual(
+    storage.getContentPreferences(other),
+    { hiddenTags: [] },
+    "another account is unaffected",
+  );
+
+  storage.closeStorage();
+  assert.deepEqual(
+    storage.getContentPreferences(owner),
+    saved,
+    "preferences survive close/reopen",
+  );
+  assert.deepEqual(storage.getContentPreferences(other), { hiddenTags: [] });
+});
+
+test("malformed preferences are rejected atomically; unknown accounts are 404", () => {
+  const { owner, other } = prefSetup();
+  const good = {
+    hiddenTags: [{ name: "Romance", tpdb: TAG_TPDB, stashdb: TAG_STASH }],
+  };
+  storage.saveContentPreferences(owner, good);
+
+  const badInputs: [string, unknown][] = [
+    ["not an object", "nope"],
+    ["null", null],
+    ["array envelope", [{ name: "Romance", tpdb: TAG_TPDB }]],
+    ["unknown envelope key", { hiddenTags: [], extra: 1 }],
+    ["missing hiddenTags", {}],
+    ["hiddenTags not an array", { hiddenTags: "Romance" }],
+    ["selection not an object", { hiddenTags: ["Romance"] }],
+    ["empty name", { hiddenTags: [{ name: "", tpdb: TAG_TPDB }] }],
+    ["blank name", { hiddenTags: [{ name: "   ", tpdb: TAG_TPDB }] }],
+    [
+      "name over 120 characters",
+      { hiddenTags: [{ name: "x".repeat(121), tpdb: TAG_TPDB }] },
+    ],
+    [
+      "unknown selection key",
+      { hiddenTags: [{ name: "Romance", tpdb: TAG_TPDB, kind: "movie" }] },
+    ],
+    [
+      "malformed provider uuid",
+      { hiddenTags: [{ name: "Romance", tpdb: "not-a-uuid" }] },
+    ],
+    ["no provider id", { hiddenTags: [{ name: "Romance" }] }],
+    [
+      "26 unique tags",
+      {
+        hiddenTags: Array.from({ length: 26 }, (_, i) => ({
+          name: `Tag ${i}`,
+          tpdb: TAG_TPDB,
+        })),
+      },
+    ],
+  ];
+  for (const [label, input] of badInputs) {
+    assert.throws(
+      () => storage.saveContentPreferences(owner, input),
+      invalidPrefs,
+      label,
+    );
+  }
+  // Every rejection above changed nothing.
+  assert.deepEqual(storage.getContentPreferences(owner), {
+    hiddenTags: good.hiddenTags,
+  });
+
+  // 25 consolidated selections pass; the label rule keeps the dupes out.
+  const capped: CatalogTagSelection[] = Array.from({ length: 25 }, (_, i) => ({
+    name: `Tag ${i}`,
+    tpdb: TAG_TPDB,
+  }));
+  capped.push({ name: "TAG 0", stashdb: TAG_STASH });
+  assert.equal(
+    storage.saveContentPreferences(other, { hiddenTags: capped }).hiddenTags
+      .length,
+    25,
+  );
+  assert.deepEqual(storage.getContentPreferences(other).hiddenTags[0], {
+    name: "Tag 0",
+    tpdb: TAG_TPDB,
+    stashdb: TAG_STASH,
+  });
+
+  assert.throws(
+    () => storage.saveContentPreferences("no-such-account", good),
+    (e: AppError) => e.code === "account_not_found" && e.status === 404,
+  );
+  assert.throws(
+    () => storage.getContentPreferences("no-such-account"),
+    (e: AppError) => e.code === "account_not_found" && e.status === 404,
+  );
 });

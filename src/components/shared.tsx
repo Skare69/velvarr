@@ -174,6 +174,12 @@ export function useTapReveal(): void {
 
 /* ---------- URL helpers ---------- */
 
+/** Dispatched (by the preferences view) after hidden tags change, so
+ * personalized surfaces — the followed-titles shelf, personal rails — refetch
+ * instead of showing the previous decision. Pinned name; do not rename here
+ * without the dispatchers. */
+export const PREFERENCES_CHANGED = "velvarr:preferences-changed";
+
 /** URL is the source of truth. Filter tweaks replace the entry so typing does
  * not fill the history stack; a surface change (opting into `push`) leaves an
  * entry so browser Back returns to the previous surface instead of exiting. */
@@ -201,6 +207,72 @@ export function useParamsSetter() {
 export function intOr(v: string | null, dflt: number): number {
   const n = v == null ? NaN : Number(v);
   return Number.isInteger(n) ? n : dflt;
+}
+
+/** One-shot normalization of pre-titles URLs into the canonical browse
+ * contract, so old bookmarks and old facet links land on the unified view
+ * with their selections intact — never a blanket reset. Returns null when
+ * the URL is already canonical. Old tag URLs carried bare provider ids, so
+ * the selection keeps its real UUID and gets the established `#xxxxxxxx`
+ * id-fragment label (never a fabricated name; the server matches by UUID). */
+export function legacyBrowsePatch(
+  p: URLSearchParams,
+): Record<string, string | null> | null {
+  const legacyView = p.get("view");
+  const facet = p.get("facet");
+  if (legacyView !== "movies" && legacyView !== "scenes" && !facet) return null;
+
+  const patch: Record<string, string | null> = { view: "titles" };
+  const idsOf = (key: string): string[] =>
+    (p.get(key) ?? "").split(",").filter(Boolean);
+
+  if (facet) {
+    // Old discover facet tiles: view=titles&facet=studio|tag&name=N&tpdb=I[&stashdb=J].
+    if (facet === "tag") {
+      const sel: { name: string; tpdb?: string; stashdb?: string } = {
+        name: p.get("name") ?? "#",
+      };
+      if (p.get("tpdb")) sel.tpdb = p.get("tpdb")!;
+      if (p.get("stashdb")) sel.stashdb = p.get("stashdb")!;
+      // A tag selection without a provider id identifies nothing; the server
+      // refuses it, so an id-less old link normalizes to plain Browse.
+      if (sel.tpdb !== undefined || sel.stashdb !== undefined)
+        patch.include = JSON.stringify([sel]);
+    } else if (p.get("tpdb")) {
+      patch.studioTpdb = p.get("tpdb");
+      if (p.get("stashdb")) patch.studioStashdb = p.get("stashdb");
+    } else if (p.get("stashdb")) {
+      patch.studioStashdb = p.get("stashdb");
+    }
+    return { ...patch, facet: null, tpdb: null, stashdb: null };
+  }
+
+  // Old split views: movies were the TPDB surface, scenes the StashDB one.
+  const side = legacyView === "movies" ? "tpdb" : "stashdb";
+  const suffix = side === "tpdb" ? "Tpdb" : "Stashdb";
+  patch.type = legacyView === "movies" ? "movie" : "scene";
+  if (p.get("performer")) patch[`performer${suffix}`] = p.get("performer");
+  if (p.get("studio")) patch[`studio${suffix}`] = p.get("studio");
+  const tagged = (id: string) => ({ name: `#${id.slice(0, 8)}`, [side]: id });
+  const include = [...idsOf("tags"), ...idsOf("tagsAll")].map(tagged);
+  if (include.length > 0) patch.include = JSON.stringify(include);
+  const exclude = idsOf("tagsExclude").map(tagged);
+  if (exclude.length > 0) patch.exclude = JSON.stringify(exclude);
+  // q/year/date/date_operation/sort/direction/page/perPage/studioMode share
+  // their names with the new contract and ride along untouched.
+  if (!p.get("id")) {
+    // No detail overlay: provider/kind described the old browse source, a
+    // meaning the mapped keys above now carry.
+    patch.provider = null;
+    patch.kind = null;
+  }
+  return {
+    ...patch,
+    tags: null,
+    tagsAll: null,
+    tagsExclude: null,
+    tab: null,
+  };
 }
 
 /* ---------- Catalog summary hook ---------- */
@@ -509,10 +581,12 @@ export function providerLabel(p: CatalogProvider): string {
 }
 
 /** Which surface renders a reference's detail: a movie or scene detail lives
- * over its browse view, a performer detail over Performers. A studio detail
- * opens where you already are, so no view is named. One table, because the
- * copies of this rule drifted — one named a view that does not exist, and one
- * surface named none at all, so those cards opened nothing. */
+ * over the unified Titles view — `type` is deliberately not set, so whatever
+ * browse filter the viewer came from stays in the URL. A performer detail
+ * lives over Performers. A studio detail opens where you already are, so no
+ * view is named. One table, because the copies of this rule drifted — one
+ * named a view that does not exist, and one surface named none at all, so
+ * those cards opened nothing. */
 export function detailParams(r: CatalogReference): {
   view?: string;
   provider: string;
@@ -520,13 +594,11 @@ export function detailParams(r: CatalogReference): {
   id: string;
 } {
   const view =
-    r.kind === "movie"
-      ? "movies"
-      : r.kind === "scene"
-        ? "scenes"
-        : r.kind === "performer"
-          ? "following"
-          : null;
+    r.kind === "movie" || r.kind === "scene"
+      ? "titles"
+      : r.kind === "performer"
+        ? "following"
+        : null;
   return {
     ...(view ? { view } : {}),
     provider: r.provider,

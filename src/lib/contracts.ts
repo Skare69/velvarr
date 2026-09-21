@@ -10,6 +10,15 @@ export type MediaKind = "movie" | "scene";
 
 export type CatalogKind = MediaKind | "performer" | "studio";
 
+/** Tags are labels, not entities: exact folded-label equality can pair them.
+ * Never use this to infer performer or studio identity. */
+export function normalizeFacetName(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]/g, "");
+}
+
 /** Provider-scoped external identity. `id` is the provider's external UUID,
  * never the application-owned catalog record id. */
 export type CatalogReference = {
@@ -105,6 +114,18 @@ export type PerformerFollow = {
    * and unfollowing either drops both. */
   linked: CatalogReference | null;
 };
+
+/** One provider tag a user picked by its real published label. Ids are the
+ * provider's own UUIDs; at least one must be present. */
+export type CatalogTagSelection = {
+  name: string;
+  tpdb?: string;
+  stashdb?: string;
+};
+
+/** One account's personal content preferences. Hidden tags remove matching
+ * titles from that account's discovery views only; never an authorization. */
+export type ContentPreferences = { hiddenTags: CatalogTagSelection[] };
 
 export type RequestDecision = "pending" | "approved" | "declined" | "cancelled";
 

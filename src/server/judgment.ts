@@ -1,4 +1,4 @@
-import { choice, noul, TypeSafeClient } from "@typesafe-ai/sdk";
+import { choice, noul, score, TypeSafeClient } from "@typesafe-ai/sdk";
 
 /** Typed judgments over one question each, in the shape the TypeSafe docs
  * call "select instead of generate": the model answers a bounded question,
@@ -112,6 +112,99 @@ export async function suggestTags(
     return ranked;
   } catch {
     return [];
+  }
+}
+
+/** One side of a related-titles rerank: provider-published catalog metadata
+ * only — title, tag names, studio name, release year. Never provider ids,
+ * urls, account data, or preferences: the Jev request must stay a pure
+ * metadata comparison between catalog records. */
+export type RankableTitle = {
+  title: string;
+  tags?: string[];
+  studio?: string;
+  year?: number;
+};
+
+/** Rerank rubric: three ordered levels, indexed 0..2. Comparable across the
+ * shortlist because every candidate answers the same question. */
+const RANK_LEVELS = [
+  "Shares nothing with the source — no theme, subject, or series in common.",
+  "Loosely related — only minor context in common; not a natural recommendation next to the source.",
+  "Strongly related — same series, subject, or core theme; a natural recommendation next to the source.",
+] as const;
+
+/** Reranks an already-safe related-titles shortlist by how strongly each
+ * candidate's metadata relates to the seed. ONE request: one narrow Score
+ * question per candidate, each referencing only that candidate's slot in the
+ * state. Returns the same candidate objects reordered — a permutation, no
+ * item added, dropped, or invented — or null when there is no key, the
+ * shortlist is not a bounded rerank (0/1 items or more than 12), or any
+ * answer is missing, malformed, or out of range; the caller keeps its
+ * deterministic tag ordering in every null case. No confidence threshold:
+ * the model only reorders candidates code has already vetted. */
+export async function rankRelatedTitles<T extends RankableTitle>(
+  seed: RankableTitle,
+  candidates: T[],
+  storedKey?: string,
+): Promise<T[] | null> {
+  const ts = typeSafe(storedKey);
+  if (!ts || candidates.length <= 1 || candidates.length > 12) return null;
+  try {
+    const res = await ts.systemOne({
+      state: {
+        source: seed,
+        candidates: candidates.map((c) => ({
+          title: c.title,
+          ...(c.tags !== undefined ? { tags: c.tags } : {}),
+          ...(c.studio !== undefined ? { studio: c.studio } : {}),
+          ...(c.year !== undefined ? { year: c.year } : {}),
+        })),
+      },
+      questions: Object.fromEntries(
+        candidates.map((_, i) => [
+          `c${i}`,
+          score(
+            `How related is the catalog title \`candidates[${i}]\` to \`source\`? ` +
+              "Judge only from the metadata in the state (titles, tags, studios, years). " +
+              "This orders a related-titles rail: a metadata comparison, never a " +
+              "preference — popularity, explicitness, or anything about a viewer or " +
+              "account must not move the score.",
+            RANK_LEVELS,
+          ),
+        ]),
+      ),
+    });
+    const answers = res.answers as Record<string, unknown>;
+    const scored: { item: T; order: number; value: number }[] = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const answer = answers[`c${i}`];
+      const value =
+        typeof answer === "object" &&
+        answer !== null &&
+        "type" in answer &&
+        answer.type === "score" &&
+        "score" in answer
+          ? answer.score
+          : undefined;
+      // One incomplete or malformed answer voids the whole rerank: the
+      // deterministic tag ordering is never mixed with a partial one.
+      if (
+        typeof value !== "number" ||
+        !Number.isFinite(value) ||
+        value < 0 ||
+        value > RANK_LEVELS.length - 1
+      ) {
+        return null;
+      }
+      scored.push({ item: candidates[i]!, order: i, value });
+    }
+    return scored
+      .sort((a, b) => b.value - a.value || a.order - b.order)
+      .map((e) => e.item);
+  } catch {
+    // Outage or unusable response: the original ordering stands.
+    return null;
   }
 }
 

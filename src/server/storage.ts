@@ -19,6 +19,8 @@ import type {
   CatalogProvider,
   CatalogRecord,
   CatalogReference,
+  CatalogTagSelection,
+  ContentPreferences,
   ExternalLink,
   ExternalUser,
   IntegrationConfig,
@@ -38,11 +40,15 @@ import type {
   SessionGrant,
 } from "../lib/contracts.ts";
 import { AppError } from "./http.ts";
-import { REMOVAL_LEVELS, removalLevelRank } from "../lib/contracts.ts";
+import {
+  REMOVAL_LEVELS,
+  removalLevelRank,
+  normalizeFacetName,
+} from "../lib/contracts.ts";
 
 // Schema identity: application_id spells 'VLVR', user_version is the schema version.
 const APP_ID = 0x564c5652;
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 // ponytail: fixed 7-day session TTL; make it an env knob only if an operator asks.
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const BUSY_TIMEOUT_MS = 5000;
@@ -82,6 +88,7 @@ type AccountRow = {
   is_owner: number;
   auto_approve: number;
   can_remove: number;
+  hidden_tags: string;
   created_at: number;
 };
 type SessionJoinRow = AccountRow & {
@@ -255,6 +262,8 @@ type Statements = {
   deletePerformerFollow: StatementSync;
   deletePerformerFollowsLinkedTo: StatementSync;
   isFollowingPerformer: StatementSync;
+  getHiddenTags: StatementSync;
+  updateHiddenTags: StatementSync;
 };
 
 const MIGRATIONS: Record<number, string> = {
@@ -501,6 +510,13 @@ const MIGRATIONS: Record<number, string> = {
     -- every row followed before this migration, has none.
     ALTER TABLE performer_follows ADD COLUMN linked_provider TEXT;
     ALTER TABLE performer_follows ADD COLUMN linked_external_id TEXT;
+  `,
+  9: `
+    -- Personal hidden tags: one JSON column per account, empty by default.
+    -- ponytail: a column, not a per-row table; a tag-table join only pays
+    -- for itself if SQL-side filtering ever beats filtering in the service.
+    ALTER TABLE accounts ADD COLUMN hidden_tags TEXT NOT NULL DEFAULT '[]'
+      CHECK (json_valid(hidden_tags));
   `,
 };
 
@@ -848,6 +864,10 @@ function S(): Statements {
       ),
       isFollowingPerformer: d.prepare(
         "SELECT 1 FROM performer_follows WHERE account_id = ? AND provider = ? AND external_id = ?",
+      ),
+      getHiddenTags: d.prepare("SELECT hidden_tags FROM accounts WHERE id = ?"),
+      updateHiddenTags: d.prepare(
+        "UPDATE accounts SET hidden_tags = ? WHERE id = ?",
       ),
     };
   }
@@ -1829,6 +1849,134 @@ export function isFollowing(
   return (
     S().isFollowingPerformer.get(accountId, provider, externalId) !== undefined
   );
+}
+
+// --- content preferences (personal hidden tags) ---
+
+const MAX_HIDDEN_TAGS = 25;
+
+/** Trust-boundary check for one tag selection: a real published label of
+ * 1..120 characters, no unknown fields, and at least one provider UUID. */
+function validTagSelection(s: unknown): s is CatalogTagSelection {
+  if (!s || typeof s !== "object" || Array.isArray(s)) return false;
+  const t = s as Record<string, unknown>;
+  return (
+    nonemptyString(t.name, 120) &&
+    t.name.trim().length > 0 &&
+    Object.keys(t).every((k) => ["name", "tpdb", "stashdb"].includes(k)) &&
+    (t.tpdb === undefined ||
+      (typeof t.tpdb === "string" && UUID_RE.test(t.tpdb))) &&
+    (t.stashdb === undefined ||
+      (typeof t.stashdb === "string" && UUID_RE.test(t.stashdb))) &&
+    (t.tpdb !== undefined || t.stashdb !== undefined)
+  );
+}
+
+/** One selection per exact folded label, sharing the catalog's tag identity
+ * rule. First published spelling wins; both provider ids survive. */
+function consolidateTagSelections(
+  items: CatalogTagSelection[],
+): CatalogTagSelection[] {
+  const byLabel = new Map<string, CatalogTagSelection>();
+  for (const s of items) {
+    const key = normalizeFacetName(s.name) || s.name.trim().toLowerCase();
+    const prior = byLabel.get(key);
+    byLabel.set(
+      key,
+      prior
+        ? {
+            name: prior.name,
+            tpdb: prior.tpdb ?? s.tpdb,
+            stashdb: prior.stashdb ?? s.stashdb,
+          }
+        : s,
+    );
+  }
+  return [...byLabel.values()];
+}
+
+/** Shared trust boundary for picker-supplied tag lists: the browse API's
+ * include/exclude arrays and saved hidden tags are the same shape. Pure —
+ * no database access, safe before storage is initialized. Any wrong type,
+ * unknown field, or missing provider id is invalid_preferences; valid
+ * duplicates consolidate and the consolidated list is capped at 25. */
+export function parseTagSelections(input: unknown): CatalogTagSelection[] {
+  if (!Array.isArray(input)) {
+    throw new AppError(
+      400,
+      "invalid_preferences",
+      "tag selections must be an array",
+    );
+  }
+  const items: CatalogTagSelection[] = [];
+  for (const raw of input) {
+    if (!validTagSelection(raw)) {
+      throw new AppError(
+        400,
+        "invalid_preferences",
+        "each tag selection needs a label of 1..120 characters and at least one provider id",
+      );
+    }
+    // Plain copies: only name/tpdb/stashdb survive the boundary.
+    items.push({
+      name: raw.name.trim(),
+      tpdb: raw.tpdb?.toLowerCase(),
+      stashdb: raw.stashdb?.toLowerCase(),
+    });
+  }
+  const consolidated = consolidateTagSelections(items);
+  if (consolidated.length > MAX_HIDDEN_TAGS) {
+    throw new AppError(
+      400,
+      "invalid_preferences",
+      `at most ${MAX_HIDDEN_TAGS} tags may be selected`,
+    );
+  }
+  return consolidated;
+}
+
+/** One account's stored preferences. Personal data: callers pass the id of
+ * the session's own account; there is deliberately no list-everyone variant. */
+export function getContentPreferences(accountId: string): ContentPreferences {
+  const row = S().getHiddenTags.get(accountId) as
+    { hidden_tags: string } | undefined;
+  if (!row) {
+    throw new AppError(404, "account_not_found", "account not found");
+  }
+  // Rows only ever come from saveContentPreferences or the migration default.
+  return { hiddenTags: JSON.parse(row.hidden_tags) as CatalogTagSelection[] };
+}
+
+/** Validates, then persists, one account's full preference document. The only
+ * accepted envelope is exactly { hiddenTags } — never an account id — and
+ * validation completes before the single-row write, so malformed input
+ * changes nothing. Sessions, grants, and Jellyfin sync touch other columns
+ * and are unaffected. */
+export function saveContentPreferences(
+  accountId: string,
+  input: unknown,
+): ContentPreferences {
+  const account = S().getAccount.get(accountId) as AccountRow | undefined;
+  if (!account) {
+    throw new AppError(404, "account_not_found", "account not found");
+  }
+  const doc = input as { hiddenTags?: unknown } | null;
+  if (
+    !doc ||
+    typeof doc !== "object" ||
+    Array.isArray(doc) ||
+    !("hiddenTags" in doc) ||
+    Object.keys(doc).some((k) => k !== "hiddenTags")
+  ) {
+    throw new AppError(
+      400,
+      "invalid_preferences",
+      "preferences must be exactly { hiddenTags }",
+    );
+  }
+  const hiddenTags = parseTagSelections(doc.hiddenTags);
+  S().updateHiddenTags.run(JSON.stringify(hiddenTags), accountId);
+  return { hiddenTags };
 }
 
 /** Durable request view, filtered by the viewer's role: requesters see only

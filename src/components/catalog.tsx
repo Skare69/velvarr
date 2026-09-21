@@ -9,7 +9,9 @@ import {
   type ReactNode,
 } from "react";
 import { useSearchParams } from "next/navigation";
+import Link from "next/link";
 import "./catalog.css";
+import { TagPicker } from "./tag-picker.tsx";
 import {
   api,
   ApiError,
@@ -38,6 +40,7 @@ import type {
   CatalogKind,
   CatalogProvider,
   CatalogReference,
+  CatalogTagSelection,
   MediaKind,
   PlaybackAccess,
   RequestDecision,
@@ -132,13 +135,11 @@ const SORT_LABELS: Record<SortKey, string> = {
   updated: "Last updated (StashDB)",
 };
 
-function sortsFor(
-  provider: CatalogProvider,
-  kind: CatalogKind,
-): readonly SortKey[] {
-  if (provider === "tpdb" && kind === "movie")
-    return ["relevance", "recency", "duration"];
-  if (provider === "stashdb" && kind === "scene")
+function sortsFor(type: "all" | "movie" | "scene"): readonly SortKey[] {
+  // type=all merges both sources, so only sorts both genuinely support are
+  // offered; per-source sorts appear only on their own type.
+  if (type === "movie") return ["relevance", "recency", "duration"];
+  if (type === "scene")
     return [
       "title",
       "date",
@@ -148,7 +149,7 @@ function sortsFor(
       "created",
       "updated",
     ];
-  return [];
+  return ["date", "duration"];
 }
 
 /** The browse state behind an open detail: the URL minus the detail params
@@ -278,12 +279,11 @@ function FiltersButton({
   );
 }
 
-/** Sort control offering only what the provider+kind genuinely supports;
+/** Sort control offering only what the selected type genuinely supports;
  * direction appears only with an explicit sort (the route 400s otherwise). */
 function SortSelect({
   id,
-  provider,
-  kind,
+  type,
   sort,
   direction,
   disabled,
@@ -291,17 +291,16 @@ function SortSelect({
   onDirection,
 }: {
   id: string;
-  provider: CatalogProvider;
-  kind: CatalogKind;
+  type: "all" | "movie" | "scene";
   sort: string;
   direction: string;
-  /** TPDB filmography route rejects sort — disabled while a performer
+  /** TPDB filmography route rejects sort — disabled while a TPDB performer
    * filter is active. */
   disabled?: boolean;
   onSort: (v: string) => void;
   onDirection: (v: "asc" | "desc") => void;
 }) {
-  const sorts = sortsFor(provider, kind);
+  const sorts = sortsFor(type);
   if (sorts.length === 0) return null;
   return (
     <div>
@@ -547,37 +546,6 @@ function DateCutoff({
   );
 }
 
-/** TPDB only: moves the selected tag ids between `tags` (any) and `tagsAll`
- * (all). StashDB exposes neither tagsAll nor a second tag mode. */
-function TagModeSwitch({
-  mode,
-  onMode,
-}: {
-  mode: "any" | "all";
-  onMode: (m: "any" | "all") => void;
-}) {
-  return (
-    <div role="group" aria-label="Tag matching" className="flex gap-2">
-      <button
-        type="button"
-        className={`btn ${mode === "any" ? "btn-accent" : ""}`}
-        aria-pressed={mode === "any"}
-        onClick={() => onMode("any")}
-      >
-        Match any tag
-      </button>
-      <button
-        type="button"
-        className={`btn ${mode === "all" ? "btn-accent" : ""}`}
-        aria-pressed={mode === "all"}
-        onClick={() => onMode("all")}
-      >
-        Match all tags
-      </button>
-    </div>
-  );
-}
-
 /** Debounced performer lookup behind the performer filter: the filter takes
  * a provider-native id, so the user picks a result — a typed name is never
  * sent. TPDB performer search is paged; StashDB is unpaged and caps its
@@ -695,194 +663,58 @@ function PerformerPicker({
   );
 }
 
-/** The server caps one tag filter at 25 ids — the picker stops offering more
- * rather than letting the request 400. */
-const TAG_CAP = 25;
-
-function TagPicker({
-  id,
-  provider,
-  label,
-  selected,
-  disabled,
-  note,
-  onAdd,
-}: {
-  id: string;
-  provider: CatalogProvider;
-  label: string;
-  selected: string[];
-  disabled?: boolean;
-  note?: string;
-  onAdd: (tag: { id: string; name: string }) => void;
-}) {
-  const [term, setTerm] = useState("");
-  const t = term.trim();
-  // The debounce commits the term; the route only ever sees settled input.
-  const [committed, setCommitted] = useState<string | null>(null);
-  useEffect(() => {
-    if (t.length < 2) {
-      // The route 400s under two characters; it is simply not called.
-      setCommitted(null);
-      return;
-    }
-    const timer = setTimeout(() => setCommitted(t), 400);
-    return () => clearTimeout(timer);
-  }, [t]);
-  const { data, error } = useApiGet<{
-    tags: { id: string; name: string }[];
-    suggestions?: { id: string; name: string }[];
-  }>(
-    committed === null
-      ? null
-      : `/api/catalog/tags?provider=${provider}&q=${encodeURIComponent(committed)}`,
-    [provider, committed],
-  );
-  // A failed search hides the previous list, as the old catch did.
-  const tags = error === null ? (data?.tags ?? null) : null;
-  const suggestions =
-    error === null && (tags?.length ?? 0) === 0
-      ? (data?.suggestions ?? null)
-      : null;
-  const capped = selected.length >= TAG_CAP;
-  const matches = (tags ?? []).filter(
-    (tg) => UUID_RE.test(tg.id) && !selected.includes(tg.id),
-  );
-  const suggested = (suggestions ?? []).filter(
-    (tg) => UUID_RE.test(tg.id) && !selected.includes(tg.id),
-  );
-  return (
-    <div>
-      <label className="label" htmlFor={id}>
-        {label}
-      </label>
-      <input
-        id={id}
-        type="search"
-        className="input"
-        maxLength={200}
-        placeholder="Search tags…"
-        disabled={disabled || capped}
-        value={term}
-        onChange={(e) => setTerm(e.target.value)}
-      />
-      {capped ? (
-        <p className="cat-note">
-          Tag limit reached ({TAG_CAP}) — remove one before adding another.
-        </p>
-      ) : (
-        <>
-          {note && <p className="cat-note">{note}</p>}
-          {t.length > 0 && t.length < 2 && (
-            <p className="cat-note">Type at least two characters.</p>
-          )}
-          {error && (
-            <p className="cat-note" role="alert">
-              Tag search failed: {error}
-            </p>
-          )}
-          {tags !== null &&
-            (matches.length === 0 ? (
-              <>
-                <p className="cat-note">No more tags match “{t}”.</p>
-                {suggested.length > 0 && (
-                  <>
-                    <p className="cat-note">Did you mean:</p>
-                    <ul className="cat-picker">
-                      {suggested.map((tg) => (
-                        <li key={tg.id}>
-                          <button
-                            type="button"
-                            className="cat-picker-row"
-                            onClick={() => {
-                              filterNames.set(
-                                `${provider}:tag:${tg.id}`,
-                                tg.name,
-                              );
-                              onAdd(tg);
-                              setTerm("");
-                            }}
-                          >
-                            <span>{tg.name}</span>
-                            <span className="cat-picker-add" aria-hidden="true">
-                              +
-                            </span>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                )}
-              </>
-            ) : (
-              <ul className="cat-picker">
-                {matches.map((tg) => (
-                  <li key={tg.id}>
-                    <button
-                      type="button"
-                      className="cat-picker-row"
-                      onClick={() => {
-                        filterNames.set(`${provider}:tag:${tg.id}`, tg.name);
-                        onAdd(tg);
-                        setTerm("");
-                      }}
-                    >
-                      <span>{tg.name}</span>
-                      <span className="cat-picker-add" aria-hidden="true">
-                        +
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            ))}
-        </>
-      )}
-    </div>
-  );
-}
-
-/** Count text only when the provider attests a real total; a capped total
- * (totalCountKnown false) renders paging alone and never a fake size. */
+/** Count text only when the service attests a real total; a capped total
+ * (totalCountKnown false) renders paging alone and never a fake denominator.
+ * Arrows reuse the discovery chevron buttons: same disabled, focus and
+ * 44px-touch states as the rails. */
 function Paging({
   page,
   hasMore,
   total,
   totalCountKnown,
+  perPage,
   onPage,
 }: {
   page: number;
   hasMore: boolean;
   total?: number;
   totalCountKnown: boolean;
+  perPage: number;
   onPage: (p: number) => void;
 }) {
   const go = (p: number) => {
     onPage(p);
     window.scrollTo({ top: 0 });
   };
+  const pages =
+    totalCountKnown && total != null
+      ? Math.max(1, Math.ceil(total / perPage))
+      : null;
   return (
     <div className="mt-6 flex items-center justify-between gap-3">
       <div className="text-sm text-muted">
         {totalCountKnown && total != null ? `${total} results · ` : ""}Page{" "}
         {page}
+        {pages !== null ? ` of ${pages}` : ""}
       </div>
       <div className="flex gap-2">
         <button
           type="button"
-          className="btn"
+          className="discovery-scroll-button"
+          aria-label="Previous page"
           disabled={page <= 1}
           onClick={() => go(page - 1)}
         >
-          Previous
+          <Icon name="chevron-left" />
         </button>
         <button
           type="button"
-          className="btn"
+          className="discovery-scroll-button"
+          aria-label="Next page"
           disabled={!hasMore}
           onClick={() => go(page + 1)}
         >
-          Next
+          <Icon name="chevron-right" />
         </button>
       </div>
     </div>
@@ -904,92 +736,94 @@ function NotConfigured({ provider }: { provider: CatalogProvider }) {
   );
 }
 
-/* ---------- Search hook ---------- */
+/* ---------- Unified browse ---------- */
 
-type CatalogQuery = {
-  provider: CatalogProvider;
-  kind: CatalogKind;
+/** One browse page from GET /api/browse. Wire shape mirrors the service's
+ * BrowsePage plus the API's per-caller hiddenTagCount; kept local like the
+ * old CatalogSearchPage — contracts.ts stays domain records. */
+type BrowsePage = {
+  items: CatalogDetail[];
+  page: number;
+  perPage: number;
+  hasMore: boolean;
+  total?: number;
+  totalCountKnown: boolean;
+  errors: { provider: CatalogProvider; code: string; message: string }[];
+  hiddenTagCount?: number;
+};
+
+/** include/exclude ride the URL as JSON arrays of CatalogTagSelection.
+ * A malformed value degrades to none — the server is the authority on
+ * shape, the URL is just a carrier. */
+function parseTags(v: string | null): CatalogTagSelection[] {
+  if (!v) return [];
+  try {
+    const rows: unknown = JSON.parse(v);
+    if (!Array.isArray(rows)) return [];
+    return rows.filter((r): r is CatalogTagSelection => {
+      return (
+        typeof r === "object" &&
+        r !== null &&
+        "name" in r &&
+        typeof r.name === "string"
+      );
+    });
+  } catch {
+    return [];
+  }
+}
+
+/** Builds the GET /api/browse path from canonical URL keys — verbatim plan
+ * names, include/exclude as JSON, `date_operation` for dateOperation. An
+ * outage is an error, never an empty page. */
+function browsePath(f: {
+  type: "all" | "movie" | "scene";
   q: string;
+  include: CatalogTagSelection[];
+  exclude: CatalogTagSelection[];
+  studioTpdb: string;
+  studioStashdb: string;
+  performerTpdb: string;
+  performerStashdb: string;
+  studioMode: string;
   year: string;
-  performer: string;
-  studio: string;
-  /** StashDB scene + studio only; omitted means exact studio. */
-  studioMode?: string;
-  tags: string;
-  /** TPDB only: match-all tag list; mutually exclusive with `tags`. */
-  tagsAll: string;
-  /** StashDB scene only: excluded tag list; mutually exclusive with `tags`. */
-  tagsExclude: string;
-  /** TPDB movie only; date_operation must always ride along. */
   date: string;
   dateOperation: string;
   sort: string;
   direction: string;
   page: number;
   perPage: number;
-  paged: boolean;
-  enabled: boolean;
-  reload: number;
-};
-
-function useCatalogSearch(f: CatalogQuery): {
-  data: CatalogSearchPage | null;
-  error: string | null;
-  loading: boolean;
-} {
-  const path = useMemo(() => {
-    if (!f.enabled) return null;
-    const qs = new URLSearchParams({ provider: f.provider, kind: f.kind });
-    if (f.paged) {
-      qs.set("page", String(f.page));
-      qs.set("perPage", String(f.perPage));
-    }
-    if (f.q) qs.set("q", f.q);
-    if (f.year) qs.set("year", f.year);
-    if (f.performer) qs.set("performer", f.performer);
-    if (f.studio) qs.set("studio", f.studio);
-    if (f.studioMode) qs.set("studioMode", f.studioMode);
-    if (f.tags) qs.set("tags", f.tags);
-    if (f.tagsAll) qs.set("tagsAll", f.tagsAll);
-    if (f.tagsExclude) qs.set("tagsExclude", f.tagsExclude);
-    if (f.date) {
-      qs.set("date", f.date);
-      qs.set("date_operation", f.dateOperation);
-    }
-    if (f.sort) {
-      qs.set("sort", f.sort);
-      if (f.direction) qs.set("direction", f.direction);
-    }
-    return `/api/catalog/search?${qs.toString()}`;
-  }, [
-    f.provider,
-    f.kind,
-    f.q,
-    f.year,
-    f.performer,
-    f.studio,
-    f.studioMode,
-    f.tags,
-    f.tagsAll,
-    f.tagsExclude,
-    f.date,
-    f.dateOperation,
-    f.sort,
-    f.direction,
-    f.page,
-    f.perPage,
-    f.paged,
-    f.enabled,
-  ]);
-  // An outage is an error, never an empty page: the error string rides out
-  // of the hook and the view offers a retry instead of a "no rows" panel.
-  // f.reload is the caller's retry counter, not a path input.
-  return useApiGet<CatalogSearchPage>(path, [path, f.reload]);
+}): string {
+  const qs = new URLSearchParams();
+  if (f.type !== "all") qs.set("type", f.type);
+  if (f.q) qs.set("q", f.q);
+  if (f.include.length > 0) qs.set("include", JSON.stringify(f.include));
+  if (f.exclude.length > 0) qs.set("exclude", JSON.stringify(f.exclude));
+  if (f.studioTpdb) qs.set("studioTpdb", f.studioTpdb);
+  if (f.studioStashdb) qs.set("studioStashdb", f.studioStashdb);
+  if (f.performerTpdb) qs.set("performerTpdb", f.performerTpdb);
+  if (f.performerStashdb) qs.set("performerStashdb", f.performerStashdb);
+  if (f.studioMode) qs.set("studioMode", f.studioMode);
+  if (f.year) qs.set("year", f.year);
+  if (f.date) {
+    qs.set("date", f.date);
+    qs.set("date_operation", f.dateOperation);
+  }
+  if (f.sort) {
+    qs.set("sort", f.sort);
+    if (f.direction) qs.set("direction", f.direction);
+  }
+  qs.set("page", String(f.page));
+  qs.set("perPage", String(f.perPage));
+  return `/api/browse?${qs.toString()}`;
 }
 
 /* ---------- Detail page ---------- */
 
-function detailTarget(params: URLSearchParams): DetailTarget | null {
+/** Reads the open detail target (provider + kind + id) from URL params;
+ * exported so other catalog surfaces can detect an open detail without
+ * re-parsing the contract. */
+export function detailTarget(params: URLSearchParams): DetailTarget | null {
   const providerRaw = params.get("provider");
   const provider =
     providerRaw === "tpdb" || providerRaw === "stashdb" ? providerRaw : null;
@@ -1339,13 +1173,21 @@ function MediaActions({
   );
 }
 
-/** A provider-legal filter entry point handed from a detail page to the
- * matching browse surface. `id` is the provider-native id, or the YYYY
- * string for `year`; `studioMode` rides along only for StashDB studios. */
+/** A provider-legal filter entry point handed from a detail page into the
+ * unified browse constraints. `param` is a canonical /api/browse key;
+ * `id` is the provider-native id, or the YYYY string for `year`; `tag`
+ * rides only for `include`; `studioMode` only for StashDB studios. */
 type BrowseFilter = {
-  param: "studio" | "tags" | "performer" | "year";
+  param:
+    | "studioTpdb"
+    | "studioStashdb"
+    | "performerTpdb"
+    | "performerStashdb"
+    | "year"
+    | "include";
   provider: CatalogProvider;
   id: string;
+  tag?: CatalogTagSelection;
   studioMode?: "withChildren";
 };
 
@@ -1363,7 +1205,7 @@ function DetailBody({
   payload: DetailPayload;
   target: DetailTarget;
   onNavigate: (r: CatalogReference) => void;
-  onBrowse: (view: "movies" | "scenes", filter: BrowseFilter) => void;
+  onBrowse: (filter: BrowseFilter) => void;
   onRefetch: () => void;
 }) {
   const d = payload.detail;
@@ -1375,17 +1217,11 @@ function DetailBody({
     d.studio?.reference && d.studio.reference.kind === "studio"
       ? d.studio.reference
       : null;
-  // Tag-filtered search exists for movie/scene only; performer and studio
-  // details keep their tags as plain text rather than dead controls. A
-  // TPDB scene's tags stay plain too — its kind has no listing to filter.
-  const tagBrowse =
-    target.kind === "movie" ||
-    (target.kind === "scene" && target.provider === "stashdb");
+  // Tag chips become include constraints on media details — the unified
+  // browse takes provider-scoped tags on every kind. Performer and studio
+  // details keep their tags as plain text rather than dead controls.
+  const tagBrowse = mediaKind !== null;
   const isStudio = target.kind === "studio";
-  const mediaView = mediaKind === "movie" ? "movies" : "scenes";
-  // One listing source per kind: a TPDB scene has no browse surface, so
-  // its detail renders none of the "browse scenes" entry points.
-  const tpdbScene = target.kind === "scene" && target.provider === "tpdb";
   // Availability is a media-target concept: no fetch for performer/studio.
   const mediaTarget =
     mediaKind !== null
@@ -1449,9 +1285,9 @@ function DetailBody({
                   <button
                     type="button"
                     className="chip"
-                    title={`Show ${mediaView} from ${releaseYear}`}
+                    title={`Show TPDB movies from ${releaseYear}`}
                     onClick={() =>
-                      onBrowse(mediaView, {
+                      onBrowse({
                         param: "year",
                         provider: target.provider,
                         id: releaseYear,
@@ -1568,10 +1404,14 @@ function DetailBody({
                       type="button"
                       className="chip"
                       onClick={() =>
-                        onBrowse(mediaView, {
-                          param: "tags",
+                        onBrowse({
+                          param: "include",
                           provider: target.provider,
                           id: t.id,
+                          tag:
+                            target.provider === "tpdb"
+                              ? { name: t.name, tpdb: t.id }
+                              : { name: t.name, stashdb: t.id },
                         })
                       }
                     >
@@ -1608,22 +1448,26 @@ function DetailBody({
                       />
                       <span className="cat-person-name">{c.name}</span>
                     </button>
-                    {/* Second entry point: the current surface filtered by
-                        this performer, not their detail page. A TPDB scene
-                        has no listing, so the chip only exists there. */}
-                    {mediaKind && !tpdbScene && (
+                    {/* Second entry point: the unified browse filtered by
+                        this performer, not their detail page. The provider
+                        decides which source qualifies. */}
+                    {mediaKind && (
                       <button
                         type="button"
                         className="chip cat-person-filter"
                         onClick={() =>
-                          onBrowse(mediaView, {
-                            param: "performer",
+                          onBrowse({
+                            param:
+                              c.reference.provider === "tpdb"
+                                ? "performerTpdb"
+                                : "performerStashdb",
                             provider: c.reference.provider,
                             id: c.reference.id,
                           })
                         }
                       >
-                        Their {mediaView}
+                        Their{" "}
+                        {c.reference.provider === "tpdb" ? "movies" : "scenes"}
                       </button>
                     )}
                   </div>
@@ -1640,17 +1484,24 @@ function DetailBody({
         </div>
 
         <aside>
-          {studioRef && !isStudio && !tpdbScene && (
+          {studioRef && !isStudio && (
             <section className="cat-section" aria-label="Studio">
               <h2 className="cat-section-title">Studio</h2>
               <button
                 type="button"
                 className="chip mt-2"
-                title={`Filter ${mediaView} by this studio`}
-                aria-label={`Filter ${mediaView} by ${d.studio?.name}`}
+                title={`Filter ${
+                  studioRef.provider === "tpdb" ? "movies" : "scenes"
+                } by this studio`}
+                aria-label={`Filter ${
+                  studioRef.provider === "tpdb" ? "movies" : "scenes"
+                } by ${d.studio?.name}`}
                 onClick={() =>
-                  onBrowse(mediaView, {
-                    param: "studio",
+                  onBrowse({
+                    param:
+                      studioRef.provider === "tpdb"
+                        ? "studioTpdb"
+                        : "studioStashdb",
                     provider: studioRef.provider,
                     id: studioRef.id,
                   })
@@ -1673,8 +1524,8 @@ function DetailBody({
                     type="button"
                     className="chip"
                     onClick={() =>
-                      onBrowse("movies", {
-                        param: "studio",
+                      onBrowse({
+                        param: "studioTpdb",
                         provider: target.provider,
                         id: target.id,
                       })
@@ -1688,8 +1539,8 @@ function DetailBody({
                       type="button"
                       className="chip"
                       onClick={() =>
-                        onBrowse("scenes", {
-                          param: "studio",
+                        onBrowse({
+                          param: "studioStashdb",
                           provider: target.provider,
                           id: target.id,
                         })
@@ -1702,8 +1553,8 @@ function DetailBody({
                         type="button"
                         className="chip"
                         onClick={() =>
-                          onBrowse("scenes", {
-                            param: "studio",
+                          onBrowse({
+                            param: "studioStashdb",
                             provider: target.provider,
                             id: target.id,
                             studioMode: "withChildren",
@@ -1729,8 +1580,8 @@ function DetailBody({
                         type="button"
                         className="chip"
                         onClick={() =>
-                          onBrowse("movies", {
-                            param: "studio",
+                          onBrowse({
+                            param: "studioTpdb",
                             provider: studioRef.provider,
                             id: studioRef.id,
                           })
@@ -1744,8 +1595,8 @@ function DetailBody({
                         type="button"
                         className="chip"
                         onClick={() =>
-                          onBrowse("scenes", {
-                            param: "studio",
+                          onBrowse({
+                            param: "studioStashdb",
                             provider: studioRef.provider,
                             id: studioRef.id,
                           })
@@ -1841,16 +1692,115 @@ function DetailBody({
           )}
         </aside>
       </div>
+
+      {/* Fetched separately from the detail payload, so the related reads
+          never delay playback, request or removal actions above. */}
+      {mediaKind && (
+        <RelatedTitles
+          target={{ provider: target.provider, kind: mediaKind, id: target.id }}
+          onNavigate={onNavigate}
+        />
+      )}
     </>
+  );
+}
+
+/** Separately fetched similar titles for a movie/scene: real shared-tag
+ * candidates from the providers, ranked deterministically; the optional Jev
+ * pass only reranks those same candidates — it can never add titles. The
+ * provider-supplied related references in the aside stay a distinct block. */
+function RelatedTitles({
+  target,
+  onNavigate,
+}: {
+  target: { provider: CatalogProvider; kind: MediaKind; id: string };
+  onNavigate: (r: CatalogReference) => void;
+}) {
+  const [rank, setRank] = useState<"tags" | "jev">("tags");
+  const [reload, setReload] = useState(0);
+  const { data, error, loading } = useApiGet<{
+    items: CatalogDetail[];
+    ranking: "tags" | "jev";
+    canRank: boolean;
+    errors: { provider: CatalogProvider; code: string; message: string }[];
+  }>(
+    `/api/catalog/${target.provider}/${target.kind}/${encodeURIComponent(target.id)}/related?rank=${rank}`,
+    [target.provider, target.kind, target.id, rank, reload],
+  );
+  return (
+    <section className="cat-section" aria-label="Similar titles">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="cat-section-title">Similar titles</h2>
+        {data?.canRank === true && rank === "tags" && (
+          <button type="button" className="btn" onClick={() => setRank("jev")}>
+            Refine with Jev
+          </button>
+        )}
+      </div>
+      <p className="cat-note">
+        {data?.ranking === "jev"
+          ? "Jev reranked the same provider candidates by metadata similarity — it never adds titles."
+          : "Matched by shared provider tags; a title with no tags has no candidates."}
+      </p>
+      {error !== null ? (
+        <p className="cat-note" role="alert">
+          Similar titles failed: {error}{" "}
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setReload((n) => n + 1)}
+          >
+            Retry
+          </button>
+        </p>
+      ) : loading ? (
+        <p className="cat-note" aria-live="polite">
+          Loading similar titles…
+        </p>
+      ) : data === null ? null : data.errors.length > 0 ? (
+        <p className="cat-note" role="alert">
+          {data.errors
+            .map((e) => `${providerLabel(e.provider)}: ${e.message}`)
+            .join(" · ")}{" "}
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setReload((n) => n + 1)}
+          >
+            Retry
+          </button>
+        </p>
+      ) : data.items.length === 0 ? (
+        <p className="cat-note">No shared tags — nothing similar yet.</p>
+      ) : (
+        <div className="poster-grid mt-3">
+          {data.items.map((it) =>
+            it.reference.kind === "scene" ? (
+              <SceneCard
+                key={`${it.reference.provider}:${it.reference.id}`}
+                item={it}
+                onOpen={onNavigate}
+              />
+            ) : (
+              <MovieCard
+                key={`${it.reference.provider}:${it.reference.id}`}
+                item={it}
+                onOpen={onNavigate}
+              />
+            ),
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 
 /** The open catalog detail: provider + kind + id URL params, rendered as a
  * full page inside app main — top search and sidebar stay usable. Returns
- * null when closed; mounted by every catalog view so any surface can open
- * it. The browse grid behind it stays mounted but hidden, so returning is
- * instant and never refetches. */
-function CatalogDetail() {
+ * null when closed; mounted by the unified titles view so any surface can
+ * open it. The browse grid behind it stays mounted but hidden, so returning
+ * is instant and never refetches. Exported for the app shell's mounting. */
+export function CatalogDetailView() {
   const params = useSearchParams();
   const setP = useParamsSetter();
   const target = detailTarget(params);
@@ -1879,36 +1829,41 @@ function CatalogDetail() {
   // Closing clears only the detail target. `provider` is also the browse
   // source, so clearing it silently switched a StashDB browse back to TPDB.
   const close = useCallback(() => setP({ kind: null, id: null }), [setP]);
-  // Studio/tag/performer/year navigation leaves the page for a fresh
-  // browse on the matching surface: same provider, provider-native id or
-  // YYYY, the other provider's filter ids never carried across. Every
-  // other filter resets — a detail entry point starts a clean browse, and
-  // TPDB's performer filter (filmography route) rejects all of them.
-  // Surface change → push.
+  // Detail filter entry points create canonical unified browse constraints:
+  // type and the one constraint follow the filter's provider (year is
+  // TPDB-movie-only), every other constraint resets — a detail entry point
+  // starts a clean browse — and the old tags any/all modes are gone.
+  // Constraint change → push.
   const browseTo = useCallback(
-    (view: "movies" | "scenes", filter: BrowseFilter) => {
+    (filter: BrowseFilter) => {
       const patch: Record<string, string | null> = {
-        view,
-        provider: filter.provider,
+        type:
+          filter.param === "year" || filter.provider === "tpdb"
+            ? "movie"
+            : "scene",
         q: null,
+        include: null,
+        exclude: null,
         year: null,
         date: null,
         date_operation: null,
-        performer: null,
-        studio: null,
+        performerTpdb: null,
+        performerStashdb: null,
+        studioTpdb: null,
+        studioStashdb: null,
         studioMode: null,
-        tags: null,
-        tagsAll: null,
-        tagsExclude: null,
         sort: null,
         direction: null,
         page: null,
-        tab: null,
         kind: null,
         id: null,
       };
-      patch[filter.param] = filter.id;
-      if (filter.studioMode) patch.studioMode = filter.studioMode;
+      if (filter.param === "include") {
+        patch.include = JSON.stringify([filter.tag]);
+      } else {
+        patch[filter.param] = filter.id;
+        if (filter.studioMode) patch.studioMode = filter.studioMode;
+      }
       setP(patch, { push: true });
     },
     [setP],
@@ -1990,9 +1945,8 @@ function CatalogDetail() {
           payload={payload}
           target={target}
           onNavigate={(r) =>
-            // Each kind's detail lives on its own surface; without the view
-            // switch the reference changed but nothing rendered it.
-            // Detail navigation is a surface change: Back walks the trail.
+            // Detail navigation is in-page over the unified view, and a
+            // surface change: it pushes, so Back walks the trail.
             setP(detailParams(r), { push: true })
           }
           onBrowse={browseTo}
@@ -2003,95 +1957,205 @@ function CatalogDetail() {
   );
 }
 
-/* ---------- Views ---------- */
+/* ---------- Unified titles view ---------- */
 
-export function MoviesView() {
+const TYPE_LABELS = { all: "All", movie: "Movies", scene: "Scenes" } as const;
+
+/** The one browse destination: TPDB movies and StashDB scenes in a single
+ * grid behind GET /api/browse, told apart by the cards' own badges.
+ * All/Movies/Scenes is a filter (URL `type`), never separate navigation;
+ * a media detail opens over the grid, which stays mounted but hidden.
+ * URL keys are the plan's canonical browse keys — include/exclude ride as
+ * JSON arrays of CatalogTagSelection. */
+export function TitlesView() {
   const params = useSearchParams();
   const setP = useParamsSetter();
   const { providers } = useSession();
+
+  const typeRaw = params.get("type");
+  // Anything that is not movie/scene reads as the `all` default.
+  const type = typeRaw === "movie" || typeRaw === "scene" ? typeRaw : "all";
   const q = params.get("q") ?? "";
+  const include = parseTags(params.get("include"));
+  const exclude = parseTags(params.get("exclude"));
+  const studioTpdb = params.get("studioTpdb") ?? "";
+  const studioStashdb = params.get("studioStashdb") ?? "";
+  const performerTpdb = params.get("performerTpdb") ?? "";
+  const performerStashdb = params.get("performerStashdb") ?? "";
+  const studioMode =
+    params.get("studioMode") === "withChildren" ? "withChildren" : "";
   const year = params.get("year") ?? "";
-  const performer = params.get("performer") ?? "";
-  const studio = params.get("studio") ?? "";
-  const tags = params.get("tags") ?? "";
-  const tagsAll = params.get("tagsAll") ?? "";
-  // TPDB movie: a performer filter is the filmography route — it composes
-  // with nothing. Stale combinations left in the URL (Back, old links) are
-  // dropped here so they are never sent for a 400.
-  const performerActive = performer !== "";
-  const effQ = performerActive ? "" : q;
-  const effYear = performerActive ? "" : year;
-  const dateRaw = performerActive ? "" : (params.get("date") ?? "");
-  const opRaw = performerActive ? "" : (params.get("date_operation") ?? "");
-  // A complete pair only; an orphan half from an old URL never ships.
-  const effDate = dateRaw !== "" && opRaw !== "" ? dateRaw : "";
-  const effDateOp = effDate !== "" ? opRaw : "";
-  const effStudio = performerActive ? "" : studio;
-  // `tags` (any) wins when a stale URL holds both exclusive parameters.
-  const effTags = performerActive ? "" : tags;
-  const effTagsAll = performerActive || effTags !== "" ? "" : tagsAll;
-  const tagList = [...new Set(effTags.split(",").filter(Boolean))];
-  const tagAllList = [...new Set(effTagsAll.split(",").filter(Boolean))];
-  const tagAllMode = tagAllList.length > 0;
-  // A sort from another provider, or one no longer supported, in the URL is
-  // ignored rather than sent upstream for an explicit 400.
-  const sortParam = params.get("sort");
-  const sortKey = sortsFor("tpdb", "movie").some((s) => s === sortParam)
-    ? (sortParam as SortKey)
-    : null;
-  const effSortKey = performerActive ? null : sortKey;
-  const dirRaw = params.get("direction");
-  const direction = dirRaw === "asc" || dirRaw === "desc" ? dirRaw : "";
-  const effDirection = performerActive ? "" : direction;
+  // date + date_operation commit as one pair; half a pair is never sent.
+  const dateRaw = params.get("date") ?? "";
+  const opRaw = params.get("date_operation") ?? "";
+  const date = dateRaw !== "" && opRaw !== "" ? dateRaw : "";
+  const dateOperation = date !== "" ? opRaw : "";
+  // A sort the selected type does not support is clamped to the provider
+  // default — visible in the select, never sent upstream for a 400.
+  const sorts = sortsFor(type);
+  const sortRaw = params.get("sort") ?? "";
+  const sort = (sorts as readonly string[]).includes(sortRaw) ? sortRaw : "";
+  const dirRaw = params.get("direction") ?? "";
+  const direction =
+    sort !== "" && (dirRaw === "asc" || dirRaw === "desc") ? dirRaw : "desc";
   const page = Math.max(1, intOr(params.get("page"), 1));
-  const perPage = Math.min(100, Math.max(1, intOr(params.get("perPage"), 24)));
+  const [perPage, setPerPage] = useState(() =>
+    Math.min(100, Math.max(1, intOr(params.get("perPage"), 24))),
+  );
   const [reload, setReload] = useState(0);
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const notConfigured = providers?.tpdb === "not_configured";
-  const target = detailTarget(params);
-  const filterCount =
-    (effQ ? 1 : 0) +
-    (effYear ? 1 : 0) +
-    (effDate ? 1 : 0) +
-    (performer ? 1 : 0) +
-    (effStudio ? 1 : 0) +
-    tagList.length +
-    tagAllList.length;
-  const { data, error } = useCatalogSearch({
-    provider: "tpdb",
-    kind: "movie",
-    q: effQ,
-    year: effYear,
-    performer,
-    studio: effStudio,
-    tags: effTags,
-    tagsAll: effTagsAll,
-    tagsExclude: "",
-    date: effDate,
-    dateOperation: effDateOp,
-    sort: effSortKey ?? "",
-    direction: effDirection,
-    page,
-    perPage,
-    paged: true,
-    enabled: !notConfigured,
-    reload,
-  });
-  const open = useCallback(
-    (r: CatalogReference) =>
-      setP({ provider: r.provider, kind: r.kind, id: r.id }, { push: true }),
+
+  /* Grid columns come from the rendered CSS tracks, so a fetched page is
+   * always whole rows: nine columns means 27 items, not 24. The probe is
+   * always mounted, so the tracks are known before the first fetch — the
+   * page is sized right the first time, not corrected afterwards. */
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const [cols, setCols] = useState(0);
+  useEffect(() => {
+    const el = gridRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const tracks = getComputedStyle(el)
+        .gridTemplateColumns.split(" ")
+        .filter(Boolean).length;
+      if (tracks > 0) setCols(tracks);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const rounded = cols > 0 ? Math.min(100, cols * Math.ceil(24 / cols)) : 0;
+  useEffect(() => {
+    if (rounded > 0 && rounded !== perPage) {
+      setPerPage(rounded);
+      // A page sized for other tracks is not comparable: reset it.
+      setP({ perPage: String(rounded), page: null });
+    }
+  }, [rounded, perPage, setP]);
+
+  // Personal hidden tags changed in Preferences while this view is alive:
+  // refetch so hidden rows never linger as current results.
+  useEffect(() => {
+    const bump = () => setReload((n) => n + 1);
+    window.addEventListener("velvarr:preferences-changed", bump);
+    return () =>
+      window.removeEventListener("velvarr:preferences-changed", bump);
+  }, []);
+
+  const path = useMemo(
+    () =>
+      browsePath({
+        type,
+        q,
+        include,
+        exclude,
+        studioTpdb,
+        studioStashdb,
+        performerTpdb,
+        performerStashdb,
+        studioMode,
+        year,
+        date,
+        dateOperation,
+        sort,
+        direction,
+        page,
+        perPage,
+      }),
+    [
+      type,
+      q,
+      include,
+      exclude,
+      studioTpdb,
+      studioStashdb,
+      performerTpdb,
+      performerStashdb,
+      studioMode,
+      year,
+      date,
+      dateOperation,
+      sort,
+      direction,
+      page,
+      perPage,
+    ],
+  );
+  const browse = useApiGet<BrowsePage>(path, [path, reload]);
+  // While a read is in flight nothing stale renders as current — a filter
+  // change can never show the previous query's rows under it.
+  const data = browse.loading ? null : browse.data;
+  const hiddenCount = data?.hiddenTagCount ?? 0;
+
+  const openDetail = useCallback(
+    (r: CatalogReference) => setP(detailParams(r), { push: true }),
     [setP],
   );
   const onPage = useCallback(
     (p: number) => setP({ page: p > 1 ? String(p) : null }),
     [setP],
   );
+
+  const onType = useCallback(
+    (t: "all" | "movie" | "scene") => {
+      // Sorts are per-type: one the new type does not support is dropped.
+      const keepSort = (sortsFor(t) as readonly string[]).includes(sortRaw);
+      setP({
+        type: t === "all" ? null : t,
+        page: null,
+        sort: keepSort ? sortRaw : null,
+        direction: keepSort ? dirRaw : null,
+      });
+    },
+    [setP, sortRaw, dirRaw],
+  );
   const onQ = useCallback(
     (v: string) => setP({ q: v || null, page: null }),
     [setP],
   );
-  // Year and the release-date pair are mutually exclusive in this UI:
-  // setting one clears the other (the server rejects some combined forms).
+  const onInclude = useCallback(
+    (tags: CatalogTagSelection[]) =>
+      setP({
+        include: tags.length > 0 ? JSON.stringify(tags) : null,
+        page: null,
+      }),
+    [setP],
+  );
+  const onExclude = useCallback(
+    (tags: CatalogTagSelection[]) =>
+      setP({
+        exclude: tags.length > 0 ? JSON.stringify(tags) : null,
+        page: null,
+      }),
+    [setP],
+  );
+  // TPDB's performer filter is the filmography route: everything else goes,
+  // including sort (the route rejects all of it).
+  const onPerformerTpdb = useCallback(
+    (id: string) =>
+      setP({
+        performerTpdb: id,
+        q: null,
+        include: null,
+        exclude: null,
+        year: null,
+        date: null,
+        date_operation: null,
+        studioTpdb: null,
+        studioStashdb: null,
+        studioMode: null,
+        sort: null,
+        direction: null,
+        page: null,
+      }),
+    [setP],
+  );
+  // StashDB composes a performer with everything else — only the page resets.
+  const onPerformerStashdb = useCallback(
+    (id: string) => setP({ performerStashdb: id, page: null }),
+    [setP],
+  );
   const onYear = useCallback(
     (v: string) =>
       setP({ year: v || null, date: null, date_operation: null, page: null }),
@@ -2100,555 +2164,152 @@ export function MoviesView() {
   // Both halves commit together — one without the other is a 400.
   const onDate = useCallback(
     (d: string | null, op: string | null) =>
-      setP({ date: d, date_operation: d ? op : null, year: null, page: null }),
-    [setP],
-  );
-  // The filmography route: everything else must go, including sort.
-  const onPerformerPick = useCallback(
-    (id: string) =>
-      setP({
-        performer: id,
-        q: null,
-        year: null,
-        date: null,
-        date_operation: null,
-        studio: null,
-        tags: null,
-        tagsAll: null,
-        tagsExclude: null,
-        sort: null,
-        direction: null,
-        page: null,
-      }),
-    [setP],
-  );
-  const onPerformerClear = useCallback(
-    () => setP({ performer: null, page: null }),
+      setP({ date: d, date_operation: op, year: null, page: null }),
     [setP],
   );
   const onSort = useCallback(
-    (v: string) => setP({ sort: v || null, direction: null, page: null }),
-    [setP],
-  );
-  const onDirection = useCallback(
-    (v: "asc" | "desc") => setP({ direction: v, page: null }),
-    [setP],
-  );
-  // Applying a studio clears the performer filter — TPDB rejects the pair.
-  const onStudio = useCallback(
-    (v: string) => setP({ studio: v || null, performer: null, page: null }),
-    [setP],
-  );
-  const onTagMode = useCallback(
-    (m: "any" | "all") => {
-      const ids = (m === "all" ? tagList : tagAllList).join(",");
-      setP(
-        m === "all"
-          ? { tagsAll: ids || null, tags: null, page: null }
-          : { tags: ids || null, tagsAll: null, page: null },
-      );
-    },
-    [setP, tagAllList, tagList],
-  );
-  const addTag = useCallback(
-    (tg: { id: string; name: string }) => {
-      const list = tagAllMode ? tagAllList : tagList;
-      if (list.length >= TAG_CAP) return;
-      const next = [...new Set([...list, tg.id])].join(",");
-      setP(
-        tagAllMode
-          ? { tagsAll: next, tags: null, page: null }
-          : { tags: next, tagsAll: null, page: null },
-      );
-    },
-    [setP, tagAllList, tagAllMode, tagList],
-  );
-  const removeTag = useCallback(
-    (id: string) => {
-      const list = tagAllMode ? tagAllList : tagList;
-      const next = list.filter((t) => t !== id).join(",") || null;
-      setP(
-        tagAllMode ? { tagsAll: next, page: null } : { tags: next, page: null },
-      );
-    },
-    [setP, tagAllList, tagAllMode, tagList],
-  );
-  const clearFilters = useCallback(
-    () =>
-      setP({
-        q: null,
-        year: null,
-        date: null,
-        date_operation: null,
-        performer: null,
-        studio: null,
-        tags: null,
-        tagsAll: null,
-        page: null,
-      }),
-    [setP],
-  );
-  const retry = useCallback(() => setReload((n) => n + 1), []);
-  // An active studio id with no captured name is resolved once through its
-  // detail endpoint; failure keeps the honest id label.
-  const { data: studioDetail } = useApiGet<DetailPayload>(
-    studio && !filterNames.has(`tpdb:studio:${studio}`)
-      ? `/api/catalog/tpdb/studio/${encodeURIComponent(studio)}`
-      : null,
-    [studio],
-  );
-  // The payload names itself (its own reference), so a response raced by a
-  // studio switch is never written under the wrong key nor mislabels a chip.
-  const studioName =
-    studio && studioDetail?.detail.reference.id === studio
-      ? studioDetail.detail.title
-      : null;
-  useEffect(() => {
-    if (studioName && studio)
-      filterNames.set(`tpdb:studio:${studio}`, studioName);
-  }, [studio, studioName]);
-  // Every active filter, labelled; reused by the chip row and the drawer's
-  // "From details" block.
-  const chips: ReactNode[] = [];
-  if (effQ)
-    chips.push(
-      <FilterChip key="q" label={`“${effQ}”`} onRemove={() => onQ("")} />,
-    );
-  if (effYear)
-    chips.push(
-      <FilterChip
-        key="year"
-        label={`Year ${effYear}`}
-        onRemove={() => onYear("")}
-      />,
-    );
-  if (effDate)
-    chips.push(
-      <FilterChip
-        key="date"
-        label={`Released ${dateOpLabel(effDateOp)} ${effDate}`}
-        onRemove={() => onDate(null, null)}
-      />,
-    );
-  if (performer)
-    chips.push(
-      <FilterChip
-        key="performer"
-        label={`Performer: ${filterName("tpdb", "performer", performer)}`}
-        onRemove={onPerformerClear}
-      />,
-    );
-  if (effStudio)
-    chips.push(
-      <FilterChip
-        key="studio"
-        label={`Studio: ${studioName ?? filterName("tpdb", "studio", studio)}`}
-        onRemove={() => onStudio("")}
-      />,
-    );
-  for (const id of tagList)
-    chips.push(
-      <FilterChip
-        key={`tag-${id}`}
-        label={`Tag: ${filterName("tpdb", "tag", id)}`}
-        onRemove={() => removeTag(id)}
-      />,
-    );
-  for (const id of tagAllList)
-    chips.push(
-      <FilterChip
-        key={`tagall-${id}`}
-        label={`Tag (all): ${filterName("tpdb", "tag", id)}`}
-        onRemove={() => removeTag(id)}
-      />,
-    );
-  return (
-    <section aria-label="Movies">
-      <div hidden={target !== null}>
-        <div className="page-heading">
-          <div>
-            <h2 className="page-title">Movies</h2>
-            <p className="page-description">
-              Browsed from TPDB — StashDB has no movie records, so no source
-              choice is offered here.
-            </p>
-          </div>
-          <div className="page-toolbar">
-            <SortSelect
-              id="movie-sort"
-              provider="tpdb"
-              kind="movie"
-              sort={effSortKey ?? ""}
-              direction={effDirection}
-              disabled={performerActive}
-              onSort={onSort}
-              onDirection={onDirection}
-            />
-            <FiltersButton
-              count={filterCount}
-              onClick={() => setFiltersOpen(true)}
-            />
-          </div>
-        </div>
-        {(filterCount > 0 || effSortKey) && (
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted">Filters:</span>
-            {chips}
-            {effSortKey && (
-              <FilterChip
-                label={`Sort: ${SORT_LABELS[effSortKey]}${effDirection ? ` (${effDirection})` : ""}`}
-                onRemove={() => onSort("")}
-              />
-            )}
-          </div>
-        )}
-        <div className="mt-4">
-          {notConfigured ? (
-            <NotConfigured provider="tpdb" />
-          ) : error ? (
-            <ErrorPanel
-              title="TPDB unavailable"
-              message={error}
-              onRetry={retry}
-            />
-          ) : !data ? (
-            <GridSkeleton aspect="aspect-[2/3]" cols={POSTER_GRID} count={10} />
-          ) : data.items.length === 0 ? (
-            <div className="panel p-8 text-center text-sm text-muted">
-              {tagList.length > 0 || tagAllList.length > 0
-                ? "No movies match your filters. TPDB accepts a tag filter but has returned no rows for one on every attempt measured here — the filter is wired, the provider answers empty. StashDB scenes do filter by tag."
-                : filterCount > 0
-                  ? "No movies match your filters."
-                  : "No movies found."}
-            </div>
-          ) : (
-            <>
-              <div className={POSTER_GRID}>
-                {data.items.map((it) => (
-                  <MovieCard key={it.reference.id} item={it} onOpen={open} />
-                ))}
-              </div>
-              <Paging
-                page={page}
-                hasMore={data.hasMore}
-                total={data.total}
-                totalCountKnown={data.totalCountKnown}
-                onPage={onPage}
-              />
-            </>
-          )}
-        </div>
-      </div>
-      <CatalogDetail />
-      <FilterDrawer
-        open={filtersOpen}
-        onClose={() => setFiltersOpen(false)}
-        count={filterCount}
-        onClear={clearFilters}
-      >
-        <SearchBox
-          id="movie-q"
-          label="Title"
-          value={effQ}
-          onCommit={onQ}
-          disabled={performerActive}
-        />
-        <YearBox
-          id="movie-year"
-          value={effYear}
-          onCommit={onYear}
-          disabled={performerActive}
-        />
-        <DateCutoff
-          id="movie-date"
-          date={effDate}
-          operation={effDateOp}
-          disabled={performerActive}
-          onCommit={onDate}
-        />
-        <PerformerPicker
-          id="movie-performer"
-          provider="tpdb"
-          onPick={onPerformerPick}
-        />
-        {performerActive && (
-          <p className="cat-note">
-            TPDB serves a performer's whole filmography — it replaces the other
-            filters, which are unavailable until it is removed.
-          </p>
-        )}
-        <TagPicker
-          id="movie-tags"
-          provider="tpdb"
-          label="Tags"
-          selected={tagAllMode ? tagAllList : tagList}
-          disabled={performerActive}
-          onAdd={addTag}
-        />
-        {(tagList.length > 0 || tagAllList.length > 0) && (
-          <TagModeSwitch mode={tagAllMode ? "all" : "any"} onMode={onTagMode} />
-        )}
-        {filterCount > 0 && (
-          <div>
-            <div className="label">From details</div>
-            <div className="flex flex-wrap gap-2">{chips}</div>
-          </div>
-        )}
-      </FilterDrawer>
-    </section>
-  );
-}
-
-export function ScenesView() {
-  const params = useSearchParams();
-  const setP = useParamsSetter();
-  const { providers } = useSession();
-  // Scenes are StashDB-only. The URL's provider param is ignored — a
-  // stale ?provider=tpdb bookmark renders StashDB scenes, never a 400.
-  const provider: CatalogProvider = "stashdb";
-  const q = params.get("q") ?? "";
-  const performer = params.get("performer") ?? "";
-  const studio = params.get("studio") ?? "";
-  // studioMode is real only for a scene browse with a studio filter
-  // active; every other combination is ignored here so a stale URL
-  // value can never trigger the server's 400.
-  const studioMode =
-    studio !== "" && params.get("studioMode") === "withChildren"
-      ? "withChildren"
-      : "";
-  // tagsExclude is StashDB-scene-only; a stale tagsAll never leaves here.
-  const tags = params.get("tags") ?? "";
-  const tagsExclude = params.get("tagsExclude") ?? "";
-  // Within StashDB's single tag criterion, the include list wins when a
-  // stale URL holds both.
-  const effTagsExclude = tags === "" ? tagsExclude : "";
-  const tagList = [...new Set(tags.split(",").filter(Boolean))];
-  const excludeList = [...new Set(effTagsExclude.split(",").filter(Boolean))];
-  // A sort no longer supported is ignored rather than sent upstream for
-  // an explicit 400.
-  const sortParam = params.get("sort");
-  const sorts = sortsFor(provider, "scene");
-  const sortKey = sorts.some((s) => s === sortParam)
-    ? (sortParam as SortKey)
-    : null;
-  const dirRaw = params.get("direction");
-  const direction = dirRaw === "asc" || dirRaw === "desc" ? dirRaw : "";
-  const page = Math.max(1, intOr(params.get("page"), 1));
-  const perPage = Math.min(100, Math.max(1, intOr(params.get("perPage"), 24)));
-  const [reload, setReload] = useState(0);
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  const notConfigured = providers?.[provider] === "not_configured";
-  const target = detailTarget(params);
-  const filterCount =
-    (q ? 1 : 0) +
-    (performer ? 1 : 0) +
-    (studio ? 1 : 0) +
-    tagList.length +
-    excludeList.length;
-  const { data, error } = useCatalogSearch({
-    provider,
-    kind: "scene",
-    q,
-    year: "",
-    performer,
-    studio,
-    studioMode,
-    tags,
-    tagsAll: "",
-    tagsExclude: effTagsExclude,
-    date: "",
-    dateOperation: "",
-    sort: sortKey ?? "",
-    direction,
-    page,
-    perPage,
-    paged: true,
-    enabled: !notConfigured,
-    reload,
-  });
-  const open = useCallback(
-    (r: CatalogReference) =>
-      setP({ provider: r.provider, kind: r.kind, id: r.id }, { push: true }),
-    [setP],
-  );
-  const onPage = useCallback(
-    (p: number) => setP({ page: p > 1 ? String(p) : null }),
-    [setP],
-  );
-  const onQ = useCallback(
-    (v: string) => setP({ q: v || null, page: null }),
-    [setP],
-  );
-  // StashDB composes a performer with everything else.
-  const onPerformerPick = useCallback(
-    (id: string) => setP({ performer: id, page: null }),
-    [setP],
-  );
-  const onPerformerClear = useCallback(
-    () => setP({ performer: null, page: null }),
-    [setP],
-  );
-  const onSort = useCallback(
-    (v: string) => setP({ sort: v || null, direction: null, page: null }),
-    [setP],
-  );
-  const onDirection = useCallback(
-    (v: "asc" | "desc") => setP({ direction: v, page: null }),
-    [setP],
-  );
-  const onStudio = useCallback(
     (v: string) =>
       setP({
-        studio: v || null,
-        studioMode: null,
-        performer: performer || null,
+        sort: v || null,
+        direction: v ? direction || "desc" : null,
         page: null,
       }),
-    [performer, setP],
+    [setP, direction],
+  );
+  const onDirection = useCallback(
+    (d: "asc" | "desc") => setP({ direction: d, page: null }),
+    [setP],
+  );
+  const onStudioTpdb = useCallback(
+    (id: string | null) => setP({ studioTpdb: id, page: null }),
+    [setP],
+  );
+  const onStudioStashdb = useCallback(
+    (id: string | null) => setP({ studioStashdb: id, page: null }),
+    [setP],
   );
   const onStudioMode = useCallback(
-    (v: string) =>
-      setP({
-        studioMode: v === "withChildren" ? "withChildren" : null,
-        page: null,
-      }),
+    (m: string) =>
+      setP({ studioMode: m === "withChildren" ? m : null, page: null }),
     [setP],
   );
-  // StashDB allows one tag criterion per search: adding to either list
-  // clears the other. The picker's cap keeps each list at 25 ids.
-  const addTag = useCallback(
-    (tg: { id: string; name: string }) => {
-      if (tagList.length >= TAG_CAP) return;
-      setP({
-        tags: [...new Set([...tagList, tg.id])].join(","),
-        tagsExclude: null,
-        page: null,
-      });
-    },
-    [setP, tagList],
-  );
-  const addExcludeTag = useCallback(
-    (tg: { id: string; name: string }) => {
-      if (excludeList.length >= TAG_CAP) return;
-      setP({
-        tagsExclude: [...new Set([...excludeList, tg.id])].join(","),
-        tags: null,
-        page: null,
-      });
-    },
-    [excludeList, setP],
-  );
-  const removeTag = useCallback(
-    (id: string) =>
-      setP({
-        tags: tagList.filter((t) => t !== id).join(",") || null,
-        page: null,
-      }),
-    [setP, tagList],
-  );
-  const removeExcludeTag = useCallback(
-    (id: string) =>
-      setP({
-        tagsExclude: excludeList.filter((t) => t !== id).join(",") || null,
-        page: null,
-      }),
-    [excludeList, setP],
-  );
-  const clearFilters = useCallback(
-    () =>
-      setP({
-        q: null,
-        performer: null,
-        studio: null,
-        studioMode: null,
-        tags: null,
-        tagsExclude: null,
-        page: null,
-      }),
-    [setP],
-  );
-  const retry = useCallback(() => setReload((n) => n + 1), []);
-  // An active studio id with no captured name is resolved once through its
-  // detail endpoint (same pattern as the parent-studio hint below);
-  // failure keeps the honest id label.
-  const { data: studioDetail } = useApiGet<DetailPayload>(
-    studio && !filterNames.has(`${provider}:studio:${studio}`)
-      ? `/api/catalog/${provider}/studio/${encodeURIComponent(studio)}`
-      : null,
-    [provider, studio],
-  );
-  // The payload names itself (its own reference), so a response raced by a
-  // studio switch is never written under the wrong key nor mislabels a chip.
-  const studioName =
-    studio && studioDetail?.detail.reference.id === studio
-      ? studioDetail.detail.title
-      : null;
-  useEffect(() => {
-    if (studioName && studio)
-      filterNames.set(`${provider}:studio:${studio}`, studioName);
-  }, [provider, studio, studioName]);
-  // A StashDB studio browse that returns zero items may mean the studio is
-  // a parent label whose scenes live under its child studios. The studio's
-  // own detail is fetched only in exactly that case, to tell "parent
-  // label" from a genuinely empty result; a failed fetch keeps the wording
-  // honest without asserting a number.
-  const emptyStashStudio =
-    studio !== "" && data !== null && data.items.length === 0;
-  const { data: studioInfoDetail, error: studioInfoError } =
-    useApiGet<DetailPayload>(
-      emptyStashStudio
-        ? `/api/catalog/stashdb/studio/${encodeURIComponent(studio)}`
-        : null,
-      [emptyStashStudio, studio, data],
-    );
-  // The payload names itself (its own reference), so a response raced by a
-  // studio or result change never reports the wrong label.
-  const studioInfo:
-    { title: string; childStudioCount?: number } | "failed" | null =
-    studioInfoError !== null
-      ? "failed"
-      : emptyStashStudio && studioInfoDetail?.detail.reference.id === studio
-        ? {
-            title: studioInfoDetail.detail.title,
-            childStudioCount: studioInfoDetail.detail.childStudioCount,
-          }
+  const clearFilters = useCallback(() => {
+    setP({
+      q: null,
+      include: null,
+      exclude: null,
+      year: null,
+      date: null,
+      date_operation: null,
+      performerTpdb: null,
+      performerStashdb: null,
+      studioTpdb: null,
+      studioStashdb: null,
+      studioMode: null,
+      sort: null,
+      direction: null,
+      page: null,
+    });
+  }, [setP]);
+
+  // An active studio/tag id without a captured name stays an id — never a
+  // fake label (see filterName).
+  const filterCount =
+    (q ? 1 : 0) +
+    (year ? 1 : 0) +
+    (date ? 1 : 0) +
+    (performerTpdb ? 1 : 0) +
+    (performerStashdb ? 1 : 0) +
+    (studioTpdb ? 1 : 0) +
+    (studioStashdb ? 1 : 0) +
+    (studioMode ? 1 : 0) +
+    include.length +
+    exclude.length +
+    (sort ? 1 : 0);
+
+  // `name` is display-only (never queried) — a forged label can misname the
+  // heading but never change results.
+  const heading = params.get("name") || "Titles";
+  const typeSummary =
+    type === "movie"
+      ? "TPDB movies"
+      : type === "scene"
+        ? "StashDB scenes"
+        : "TPDB movies and StashDB scenes";
+
+  const notConfigured =
+    type === "movie" && providers?.tpdb === "not_configured"
+      ? "tpdb"
+      : type === "scene" && providers?.stashdb === "not_configured"
+        ? "stashdb"
         : null;
-  const parentEmpty = emptyStashStudio
-    ? studioInfo === null || studioInfo === "failed"
-      ? { kind: "maybe" as const }
-      : typeof studioInfo.childStudioCount === "number" &&
-          studioInfo.childStudioCount > 0
-        ? {
-            kind: "count" as const,
-            count: studioInfo.childStudioCount,
-            title: studioInfo.title,
-          }
-        : null
-    : null;
-  // Every active filter, labelled; reused by the chip row and the drawer's
-  // "From details" block.
+
+  const target = detailTarget(params);
+  const retry = () => setReload((n) => n + 1);
+
   const chips: ReactNode[] = [];
-  if (q)
+  if (q) {
     chips.push(
       <FilterChip key="q" label={`“${q}”`} onRemove={() => onQ("")} />,
     );
-  if (performer)
+  }
+  if (year) {
     chips.push(
       <FilterChip
-        key="performer"
-        label={`Performer: ${filterName(provider, "performer", performer)}`}
-        onRemove={onPerformerClear}
+        key="year"
+        label={`Year ${year}`}
+        onRemove={() => onYear("")}
       />,
     );
-  if (studio)
+  }
+  if (date) {
     chips.push(
       <FilterChip
-        key="studio"
-        label={`Studio: ${studioName ?? filterName(provider, "studio", studio)}`}
-        onRemove={() => onStudio("")}
+        key="date"
+        label={`Released ${dateOpLabel(dateOperation)} ${date}`}
+        onRemove={() => onDate(null, null)}
       />,
     );
-  if (studioMode === "withChildren")
+  }
+  if (performerTpdb) {
+    chips.push(
+      <FilterChip
+        key="performerTpdb"
+        label={`Performer: ${filterName("tpdb", "performer", performerTpdb)} (TPDB)`}
+        // Chip removal only drops the constraint — unlike picking a
+        // performer, which starts the filmography browse and clears the rest.
+        onRemove={() => setP({ performerTpdb: null, page: null })}
+      />,
+    );
+  }
+  if (performerStashdb) {
+    chips.push(
+      <FilterChip
+        key="performerStashdb"
+        label={`Performer: ${filterName("stashdb", "performer", performerStashdb)} (StashDB)`}
+        onRemove={() => setP({ performerStashdb: null, page: null })}
+      />,
+    );
+  }
+  if (studioTpdb) {
+    chips.push(
+      <FilterChip
+        key="studioTpdb"
+        label={`Studio: ${filterName("tpdb", "studio", studioTpdb)} (TPDB)`}
+        onRemove={() => onStudioTpdb(null)}
+      />,
+    );
+  }
+  if (studioStashdb) {
+    chips.push(
+      <FilterChip
+        key="studioStashdb"
+        label={`Studio: ${filterName("stashdb", "studio", studioStashdb)} (StashDB)`}
+        onRemove={() => onStudioStashdb(null)}
+      />,
+    );
+  }
+  if (studioMode === "withChildren") {
     chips.push(
       <FilterChip
         key="studioMode"
@@ -2656,168 +2317,263 @@ export function ScenesView() {
         onRemove={() => onStudioMode("")}
       />,
     );
-  for (const id of tagList)
+  }
+  include.forEach((tag, i) => {
     chips.push(
       <FilterChip
-        key={`tag-${id}`}
-        label={`Tag: ${filterName(provider, "tag", id)}`}
-        onRemove={() => removeTag(id)}
+        key={`include:${tag.name}:${tag.tpdb ?? ""}:${tag.stashdb ?? ""}:${i}`}
+        label={`Tag: ${tag.name} (include)`}
+        onRemove={() => onInclude(include.filter((t) => t !== tag))}
       />,
     );
-  for (const id of excludeList)
+  });
+  exclude.forEach((tag, i) => {
     chips.push(
       <FilterChip
-        key={`tagx-${id}`}
-        label={`Excluded tag: ${filterName(provider, "tag", id)}`}
-        onRemove={() => removeExcludeTag(id)}
+        key={`exclude:${tag.name}:${tag.tpdb ?? ""}:${tag.stashdb ?? ""}:${i}`}
+        label={`Tag: ${tag.name} (exclude)`}
+        onRemove={() => onExclude(exclude.filter((t) => t !== tag))}
       />,
     );
+  });
+  if (sort) {
+    chips.push(
+      <FilterChip
+        key="sort"
+        label={`Sort: ${SORT_LABELS[sort as SortKey]} (${direction})`}
+        onRemove={() => setP({ sort: null, direction: null, page: null })}
+      />,
+    );
+  }
+
   return (
-    <section aria-label="Scenes">
+    <section aria-label="Titles">
+      {/* Invisible zero-height probe: normal flow, so its width is exactly
+          the content width the real grid gets; auto-fill tracks depend only
+          on that width. */}
+      <div
+        className={POSTER_GRID}
+        ref={gridRef}
+        aria-hidden="true"
+        style={{
+          height: 0,
+          overflow: "hidden",
+          visibility: "hidden",
+          pointerEvents: "none",
+        }}
+      />
       <div hidden={target !== null}>
         <div className="page-heading">
-          <div>
-            <h2 className="page-title">Scenes</h2>
+          <div className="min-w-0">
+            <h2 className="page-title">{heading}</h2>
+            <p className="page-description">{typeSummary}</p>
           </div>
           <div className="page-toolbar">
-            <SortSelect
-              id="scene-sort"
-              provider={provider}
-              kind="scene"
-              sort={sortKey ?? ""}
-              direction={direction}
-              onSort={onSort}
-              onDirection={onDirection}
-            />
+            {hiddenCount > 0 && (
+              <Link
+                href="/?view=preferences"
+                className="btn"
+                aria-label={`${hiddenCount} personal hidden tags active — manage in Preferences`}
+              >
+                <Icon name="tag" /> {hiddenCount} hidden
+              </Link>
+            )}
+            <div role="group" aria-label="Title type" className="flex gap-2">
+              {(["all", "movie", "scene"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  className={`btn ${type === t ? "btn-accent" : ""}`}
+                  aria-pressed={type === t}
+                  onClick={() => onType(t)}
+                >
+                  {TYPE_LABELS[t]}
+                </button>
+              ))}
+            </div>
             <FiltersButton
               count={filterCount}
               onClick={() => setFiltersOpen(true)}
             />
           </div>
         </div>
-        {(filterCount > 0 || sortKey) && (
+
+        {chips.length > 0 && (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <span className="text-xs text-muted">Filters:</span>
             {chips}
-            {sortKey && (
-              <FilterChip
-                label={`Sort: ${SORT_LABELS[sortKey]}${direction ? ` (${direction})` : ""}`}
-                onRemove={() => onSort("")}
-              />
-            )}
           </div>
         )}
+
         <div className="mt-4">
-          {notConfigured ? (
-            <NotConfigured provider={provider} />
-          ) : error ? (
+          {notConfigured !== null ? (
+            <NotConfigured provider={notConfigured} />
+          ) : browse.error !== null ? (
+            // An outage is an error, never an empty page.
             <ErrorPanel
-              title={`${providerLabel(provider)} unavailable`}
-              message={error}
+              title="Browse unavailable"
+              message={browse.error}
               onRetry={retry}
             />
-          ) : !data ? (
-            <GridSkeleton aspect="aspect-[2/3]" cols={POSTER_GRID} count={6} />
-          ) : data.items.length === 0 ? (
-            parentEmpty ? (
-              <div className="panel p-8 text-center text-sm text-muted">
-                <p>
-                  {parentEmpty.kind === "count"
-                    ? `No ${providerLabel(provider)} scenes match your filters. ${parentEmpty.title} is a parent label — its scenes are catalogued under its ${parentEmpty.count} child studios.`
-                    : `No ${providerLabel(provider)} scenes match your filters. If ${filterName("stashdb", "studio", studio)} is a parent label, its scenes are catalogued under its child studios.`}
-                </p>
-                <button
-                  type="button"
-                  className="btn mt-3"
-                  onClick={() => onStudioMode("withChildren")}
-                >
-                  Include child studios
-                </button>
-              </div>
-            ) : (
-              <div className="panel p-8 text-center text-sm text-muted">
-                {filterCount > 0
-                  ? `No ${providerLabel(provider)} scenes match your filters.`
-                  : `No ${providerLabel(provider)} scenes found.`}
-              </div>
-            )
+          ) : data === null ? (
+            <GridSkeleton
+              aspect="aspect-[2/3]"
+              cols={POSTER_GRID}
+              count={Math.min(perPage, 24)}
+            />
           ) : (
             <>
-              <div className={POSTER_GRID}>
-                {data.items.map((it) => (
-                  <SceneCard key={it.reference.id} item={it} onOpen={open} />
-                ))}
-              </div>
-              <Paging
-                page={page}
-                hasMore={data.hasMore}
-                total={data.total}
-                totalCountKnown={data.totalCountKnown}
-                onPage={onPage}
-              />
+              {data.errors.map((e) => (
+                <ErrorPanel
+                  key={e.provider}
+                  title={`${providerLabel(e.provider)} unavailable`}
+                  message={e.message}
+                  onRetry={retry}
+                />
+              ))}
+              {data.items.length === 0 ? (
+                // Empty is only claimed when no source failed: the error
+                // panels above carry the failures.
+                data.errors.length === 0 && (
+                  <div className="panel p-8 text-center text-sm text-muted">
+                    {filterCount > 0
+                      ? "No titles match your filters. Remove a filter, or check excluded and personal hidden tags."
+                      : "Nothing here yet."}
+                  </div>
+                )
+              ) : (
+                <>
+                  <div className={POSTER_GRID}>
+                    {data.items.map((it) =>
+                      it.reference.kind === "scene" ? (
+                        <SceneCard
+                          key={`${it.reference.provider}:${it.reference.id}`}
+                          item={it}
+                          onOpen={openDetail}
+                        />
+                      ) : (
+                        <MovieCard
+                          key={`${it.reference.provider}:${it.reference.id}`}
+                          item={it}
+                          onOpen={openDetail}
+                        />
+                      ),
+                    )}
+                  </div>
+                  <Paging
+                    page={page}
+                    hasMore={data.hasMore}
+                    total={data.total}
+                    totalCountKnown={data.totalCountKnown}
+                    perPage={perPage}
+                    onPage={onPage}
+                  />
+                </>
+              )}
             </>
           )}
         </div>
       </div>
-      <CatalogDetail />
+
+      <CatalogDetailView />
+
       <FilterDrawer
         open={filtersOpen}
         onClose={() => setFiltersOpen(false)}
         count={filterCount}
         onClear={clearFilters}
       >
-        <SearchBox id="scene-q" label="Title" value={q} onCommit={onQ} />
-        <PerformerPicker
-          id="scene-performer"
-          provider={provider}
-          onPick={onPerformerPick}
+        <SortSelect
+          id="titles-sort"
+          type={type}
+          sort={sort}
+          direction={direction}
+          disabled={performerTpdb !== ""}
+          onSort={onSort}
+          onDirection={onDirection}
+        />
+        <SearchBox
+          id="titles-q"
+          label="Title search"
+          value={q}
+          onCommit={onQ}
+          disabled={performerTpdb !== ""}
         />
         <TagPicker
-          id="scene-tags"
-          provider="stashdb"
+          id="titles-include"
           label="Include tags"
-          selected={tagList}
-          onAdd={addTag}
-          note={
-            excludeList.length > 0
-              ? "Adding an included tag clears the excluded list — StashDB allows only one tag criterion per search."
-              : undefined
-          }
+          selected={include}
+          onChange={onInclude}
+          description="Titles must carry every selected tag (AND)."
         />
         <TagPicker
-          id="scene-tags-exclude"
-          provider="stashdb"
+          id="titles-exclude"
           label="Exclude tags"
-          selected={excludeList}
-          onAdd={addExcludeTag}
-          note={
-            tagList.length > 0
-              ? "Adding an excluded tag clears the included list — StashDB allows only one tag criterion per search."
-              : undefined
-          }
+          selected={exclude}
+          onChange={onExclude}
+          description="Titles carrying any of these tags are left out — exclusions win over includes."
         />
-        {studio && (
+        <div>
+          <PerformerPicker
+            id="titles-performer-tpdb"
+            provider="tpdb"
+            onPick={onPerformerTpdb}
+          />
+          <p className="cat-note">
+            TPDB serves a performer&apos;s whole filmography — it replaces the
+            other filters, which are unavailable until it is removed.
+          </p>
+        </div>
+        <PerformerPicker
+          id="titles-performer-stashdb"
+          provider="stashdb"
+          onPick={onPerformerStashdb}
+        />
+        <YearBox
+          id="titles-year"
+          value={year}
+          onCommit={onYear}
+          disabled={performerTpdb !== ""}
+        />
+        <DateCutoff
+          id="titles-date"
+          date={date}
+          operation={dateOperation}
+          disabled={performerTpdb !== ""}
+          onCommit={onDate}
+        />
+        {/* Year and the date cutoff are TPDB-movie criteria; while either is
+            set only TPDB qualifies, and the note says so — never silently
+            ignored. */}
+        {(year !== "" || date !== "") && (
+          <p className="cat-note">
+            Year and release date apply to TPDB movies — while set, StashDB
+            scenes are left out.
+          </p>
+        )}
+        {studioStashdb !== "" && (
           <div>
-            <label className="label" htmlFor="scene-studio-scope">
+            <label className="label" htmlFor="titles-studio-scope">
               Studio scope
             </label>
             <select
-              id="scene-studio-scope"
+              id="titles-studio-scope"
               className="input"
-              value={studioMode}
+              value={studioMode || "exact"}
               onChange={(e) => onStudioMode(e.target.value)}
             >
-              <option value="">This studio only</option>
+              <option value="exact">Exact studio only</option>
               <option value="withChildren">Include child studios</option>
             </select>
           </div>
         )}
-        {filterCount > 0 && (
-          <div>
-            <div className="label">From details</div>
-            <div className="flex flex-wrap gap-2">{chips}</div>
-          </div>
-        )}
+        <p className="cat-note">
+          {hiddenCount > 0
+            ? `${hiddenCount} personal hidden tag${hiddenCount === 1 ? "" : "s"} appl${hiddenCount === 1 ? "ies" : "y"} on every browse — `
+            : "Personal hidden tags apply on every browse — "}
+          <Link href="/?view=preferences">manage them in Preferences</Link>.
+          Clear filters never removes them.
+        </p>
       </FilterDrawer>
     </section>
   );

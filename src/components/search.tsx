@@ -9,6 +9,7 @@ import type {
   CatalogReference,
 } from "../lib/contracts.ts";
 import {
+  detailParams,
   ErrorPanel,
   GridSkeleton,
   MovieCard,
@@ -172,76 +173,65 @@ export function SearchView() {
     [q, ready],
   );
 
+  // Leaving the results clears every browse key — the canonical ones and the
+  // legacy facet keys an old bookmark may still carry — so nothing leaks into
+  // the destination surface.
+  const clear: Record<string, null> = Object.fromEntries(
+    [
+      "q",
+      "type",
+      "include",
+      "exclude",
+      "studioTpdb",
+      "studioStashdb",
+      "performerTpdb",
+      "performerStashdb",
+      "studioMode",
+      "year",
+      "date",
+      "date_operation",
+      "sort",
+      "direction",
+      "page",
+      "perPage",
+      "name",
+      "facet",
+      "provider",
+      "kind",
+      "id",
+      "tab",
+      "tags",
+      "tagsAll",
+      "tagsExclude",
+      "performer",
+      "studio",
+    ].map((k) => [k, null]),
+  );
   const open = useCallback(
     (r: CatalogReference) => {
-      const clear = {
-        q: null,
-        year: null,
-        performer: null,
-        studio: null,
-        tags: null,
-        tagsAll: null,
-        tagsExclude: null,
-        sort: null,
-        direction: null,
-        page: null,
-        perPage: null,
-        tab: null,
-        provider: null,
-        kind: null,
-        id: null,
-      };
       // The reset must come first: spreading it last silently overwrote every
       // destination value, so no result could navigate anywhere. Every branch
       // leaves the results behind for another surface, so every branch pushes:
       // replacing here destroyed the search entry, and Back then skipped past
       // the result the user had just opened.
       const push = { push: true };
-      if (r.kind === "movie")
+      if (r.kind === "studio") {
+        // A studio card is a browse constraint on the unified titles view —
+        // source-only facets stay source-only (a present key means only that
+        // source qualifies).
         setP(
           {
             ...clear,
-            view: "movies",
-            provider: r.provider,
-            kind: "movie",
-            id: r.id,
+            view: "titles",
+            [r.provider === "stashdb" ? "studioStashdb" : "studioTpdb"]: r.id,
           },
           push,
         );
-      else if (r.kind === "scene")
-        setP(
-          {
-            ...clear,
-            view: "scenes",
-            provider: r.provider,
-            kind: "scene",
-            id: r.id,
-          },
-          push,
-        );
-      else if (r.kind === "performer")
-        setP(
-          {
-            ...clear,
-            view: "following",
-            provider: r.provider,
-            kind: "performer",
-            id: r.id,
-          },
-          push,
-        );
-      else if (r.provider === "stashdb")
-        setP(
-          {
-            ...clear,
-            view: "scenes",
-            provider: "stashdb",
-            kind: "scene",
-            studio: r.id,
-          },
-          push,
-        );
-      else setP({ ...clear, view: "movies", studio: r.id }, push);
+      } else {
+        // Media and performer details: provider/kind/id over their own
+        // surface (titles / Performers).
+        setP({ ...clear, ...detailParams(r) }, push);
+      }
     },
     [setP],
   );

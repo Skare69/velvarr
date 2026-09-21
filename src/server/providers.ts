@@ -59,6 +59,7 @@ import type {
   CatalogReference,
   MediaKind,
 } from "../lib/contracts.ts";
+import { normalizeFacetName } from "../lib/contracts.ts";
 
 // --- credentials and bases: stored admin UI credentials win, the environment
 // is the fallback; read at call time so a save or clear takes effect without
@@ -999,8 +1000,8 @@ export type CatalogSearchQuery =
       /** Bounded release-date filter, TPDB-native `date` + `date_operation`.
        * Only the operator strings TPDB actually accepts are exposed (<=, <, =,
        * >, >= verified live 2026-09-11; word forms are upstream 422). Rejected
-       * explicitly for every other provider+kind — StashDB scenes have their
-       * own date criterion with modifiers, which is never emulated here. */
+       * explicitly for every other provider+kind; StashDB scenes carry their
+       * own native date criterion (see the stashdb scene variant). */
       releaseDate?: {
         cutoff: string;
         operation: ReleaseDateOperation;
@@ -1054,8 +1055,24 @@ export type CatalogSearchQuery =
        * living under child studios are included. Rejected for TPDB (no
        * equivalent criterion), other kinds, or a missing studio. */
       studioMode?: "exact" | "withChildren";
+      /** Any-of tag inclusion (INCLUDES): kept for internal related-title
+       * candidate retrieval, not user-facing AND browsing. */
       tags?: string[];
+      /** All-of tag inclusion (INCLUDES_ALL, verified live 2026-09-21): the
+       * native AND criterion user-facing browsing uses. Mutually exclusive
+       * with `tags` and `tagsExclude` — one criterion per query. */
+      tagsAll?: string[];
       tagsExclude?: string[];
+      /** Bounded release-date filter on the native `date`
+       * DateCriterionInput. Same shape and operator strings as TPDB;
+       * StashDB exposes only EQUALS/GREATER_THAN/LESS_THAN modifiers (no
+       * inclusive forms), so the inclusive day operations shift the ISO
+       * cutoff by one day — exact at the provider's date granularity.
+       * Unsupported modifiers are never emitted. */
+      releaseDate?: {
+        cutoff: string;
+        operation: ReleaseDateOperation;
+      };
       sort?: CatalogSortKey;
       direction?: CatalogSortDirection;
       page?: number;
@@ -1107,6 +1124,27 @@ function cleanReleaseDate(
   return { cutoff, operation };
 }
 
+/** StashDB DateCriterionInput exposes no inclusive modifiers (verified live
+ * 2026-09-21: EQUALS/GREATER_THAN/LESS_THAN only). The inclusive ISO-day
+ * operations shift the cutoff by one day — exact at the provider's date
+ * granularity — so no unsupported modifier ever reaches the wire. */
+const STASH_DATE_MODIFIERS: Record<
+  ReleaseDateOperation,
+  { modifier: "EQUALS" | "GREATER_THAN" | "LESS_THAN"; days: number }
+> = {
+  "=": { modifier: "EQUALS", days: 0 },
+  ">": { modifier: "GREATER_THAN", days: 0 },
+  ">=": { modifier: "GREATER_THAN", days: -1 },
+  "<": { modifier: "LESS_THAN", days: 0 },
+  "<=": { modifier: "LESS_THAN", days: 1 },
+};
+
+function shiftIsoDate(date: string, days: number): string {
+  const t = new Date(`${date}T00:00:00.000Z`);
+  t.setUTCDate(t.getUTCDate() + days);
+  return t.toISOString().slice(0, 10);
+}
+
 export interface CatalogSearchPage {
   provider: "tpdb" | "stashdb";
   kind: "movie" | "scene" | "performer" | "studio";
@@ -1117,9 +1155,9 @@ export interface CatalogSearchPage {
   sort?: AppliedSort;
   /** True only when the provider offers a real next page. */
   hasMore: boolean;
-  /** Present only when the provider's count is genuinely real. TPDB's
-   * unfiltered (and title-only-filtered) listings report a fake 10000 cap;
-   * those surface as totalCountKnown: false with no total. */
+  /** Present only when the provider's count is genuinely real — an attested
+   * zero included. TPDB's fake 10000 cap surfaces as totalCountKnown: false
+   * with no total. */
   total?: number;
   totalCountKnown: boolean;
   items: CatalogDetail[];
@@ -1322,11 +1360,16 @@ function parseTpdbPage(
   // and emits no next link there, so this terminates even under fake totals.
   const hasMore = items.length > 0 && typeof body.links?.next === "string";
   const rawTotal = body.meta?.total;
+  // TPDB reports min(real, 10000): anything below the cap is the provider's
+  // attestation, an attested zero included; exactly 10000 stays unproven.
   const totalReal =
     typeof rawTotal === "number" &&
     Number.isInteger(rawTotal) &&
-    rawTotal >= 1 &&
-    rawTotal < TPDB_FAKE_TOTAL;
+    rawTotal >= 0 &&
+    rawTotal < TPDB_FAKE_TOTAL &&
+    // A zero total beside rows the provider actually sent contradicts
+    // itself, whether or not those rows survive mapping.
+    (rawTotal > 0 || body.data.length === 0);
   return {
     provider: "tpdb",
     kind,
@@ -1390,16 +1433,19 @@ export async function searchCatalog(
       "Scenes are listed from StashDB only — TPDB scenes cannot be acquired.",
     );
   }
-  // releaseDate is real only on TPDB movie searches (upstream `date` +
-  // `date_operation`). Every other carrier is rejected before any upstream
-  // request — a bound is never silently dropped, and StashDB's date criterion
-  // with modifiers is never emulated through it.
+  // releaseDate is native on TPDB movie searches (`date` + `date_operation`)
+  // and StashDB scene searches (`date` DateCriterionInput). Every other
+  // carrier is rejected before any upstream request — a bound is never
+  // silently dropped, and modifiers the upstream lacks are never emitted.
   if (raw.releaseDate !== undefined) {
-    if (query.provider !== "tpdb" || query.kind !== "movie") {
+    const supported =
+      (query.provider === "tpdb" && query.kind === "movie") ||
+      (query.provider === "stashdb" && query.kind === "scene");
+    if (!supported) {
       throw new AppError(
         400,
         "invalid_search",
-        "releaseDate is only supported on TPDB movie searches.",
+        "releaseDate is only supported on TPDB movie and StashDB scene searches.",
       );
     }
   }
@@ -1439,7 +1485,7 @@ export async function searchCatalog(
     const totalReal =
       typeof rawCount === "number" &&
       Number.isInteger(rawCount) &&
-      rawCount >= 1;
+      rawCount >= 0;
     return {
       provider: "stashdb",
       kind: "performer",
@@ -1656,19 +1702,36 @@ export async function searchCatalog(
     }
   }
   const includeTags = cleanTagIds(query.tags, "StashDB");
+  const allTags = cleanTagIds(query.tagsAll, "StashDB");
   const excludeTags = cleanTagIds(query.tagsExclude, "StashDB");
-  if (includeTags !== undefined && excludeTags !== undefined) {
+  if (
+    [includeTags, allTags, excludeTags].filter((t) => t !== undefined).length >
+    1
+  ) {
     throw new AppError(
       400,
       "invalid_search",
-      "StashDB exposes one tag criterion per query; combine include and exclude lists client-side.",
+      "StashDB exposes one tag criterion per query; choose tags (any-of), tagsAll (all-of), or tagsExclude.",
     );
   }
-  if (includeTags !== undefined) {
+  if (allTags !== undefined) {
+    // Native AND inclusion — the user-facing browse criterion.
+    input.tags = { value: allTags, modifier: "INCLUDES_ALL" };
+  } else if (includeTags !== undefined) {
+    // Any-of OR inclusion: internal related-title candidate retrieval only,
+    // never presented to users as an AND match.
     input.tags = { value: includeTags, modifier: "INCLUDES" };
   }
   if (excludeTags !== undefined) {
     input.tags = { value: excludeTags, modifier: "EXCLUDES" };
+  }
+  const releaseDate = cleanReleaseDate(query.releaseDate);
+  if (releaseDate !== undefined) {
+    const mapped = STASH_DATE_MODIFIERS[releaseDate.operation];
+    input.date = {
+      value: shiftIsoDate(releaseDate.cutoff, mapped.days),
+      modifier: mapped.modifier,
+    };
   }
   let sort: AppliedSort | undefined;
   if (query.sort !== undefined) {
@@ -1702,8 +1765,10 @@ export async function searchCatalog(
     (d) => d.reference.id,
   );
   const rawCount: unknown = res.count;
+  // StashDB counts are always real, zero included: an attested 0 is a known
+  // empty result, never an unknown total.
   const totalReal =
-    typeof rawCount === "number" && Number.isInteger(rawCount) && rawCount >= 1;
+    typeof rawCount === "number" && Number.isInteger(rawCount) && rawCount >= 0;
   const result: CatalogSearchPage = {
     provider: "stashdb",
     kind: "scene",
@@ -2147,14 +2212,8 @@ export async function tagCounterpart(
   }
 }
 
-/** Tag-label normalization: lowercase, NFKD (accent folds to base letter),
- * strip every non-alphanumeric. Exact equality on this form pairs tags
- * deterministically (a tag is a label; its identity is the name) and is
- * never applied to studios or performers, which are entities paired only
- * through provider-published URLs. */
-export function normalizeFacetName(value: string): string {
-  return value
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[^a-z0-9]/g, "");
-}
+/** Tag-label normalization lives in lib/contracts.ts (shared with storage
+ * and UI); exact normalized-name equality pairs tags deterministically (a
+ * tag is a label; its identity is the name) and is never applied to studios
+ * or performers, which are entities paired only through provider-published
+ * URLs. */

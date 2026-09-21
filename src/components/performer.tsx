@@ -15,6 +15,7 @@ import {
   ItemImage,
   messageOf,
   MovieCard,
+  PerformerCard,
   providerLabel,
   SceneCard,
   useApiGet,
@@ -153,22 +154,27 @@ function Paging({
         {totalCountKnown && total != null ? `${total} results · ` : ""}Page{" "}
         {page}
       </div>
+      {/* Same chevron treatment as the overview rails: icon-only arrows with
+          honest disabled edges; the page contract (moviePage/scenePage keys,
+          Previous/Next semantics) is unchanged. */}
       <div className="flex gap-2">
         <button
           type="button"
           className="btn"
+          aria-label="Previous page"
           disabled={page <= 1}
           onClick={() => go(page - 1)}
         >
-          Previous
+          <Icon name="chevron-left" />
         </button>
         <button
           type="button"
           className="btn"
+          aria-label="Next page"
           disabled={!hasMore}
           onClick={() => go(page + 1)}
         >
-          Next
+          <Icon name="chevron-right" />
         </button>
       </div>
     </div>
@@ -513,6 +519,84 @@ function FollowStar({
   );
 }
 
+/* ---------- Often appears with ---------- */
+
+/** Co-appearance on published credits — the providers' own filmographies are
+ * the only evidence, so the heading says "often appears with", never
+ * "similar". The fetch runs after the page renders, so it never delays the
+ * follow button or the listings above. Empty evidence renders nothing at
+ * all — no similarity is ever invented. */
+function RelatedPerformers({
+  provider,
+  id,
+  onOpen,
+}: {
+  provider: CatalogProvider;
+  id: string;
+  onOpen: (r: CatalogReference) => void;
+}) {
+  const [reload, setReload] = useState(0);
+  const { data, error, loading } = useApiGet<{
+    items: CatalogDetail[];
+    errors: { provider: CatalogProvider; code: string; message: string }[];
+  }>(`/api/catalog/${provider}/performer/${encodeURIComponent(id)}/related`, [
+    provider,
+    id,
+    reload,
+  ]);
+  // Empty items with empty errors is "no co-appearance evidence": the whole
+  // section, heading included, disappears rather than claiming a similarity.
+  if (error === null && !loading && data !== null) {
+    if (data.errors.length === 0 && data.items.length === 0) return null;
+  }
+  return (
+    <div>
+      <h3 className="font-semibold">Often appears with</h3>
+      {error !== null ? (
+        <p className="mt-2 text-sm text-muted" role="alert">
+          Co-appearance lookup failed: {error}{" "}
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setReload((n) => n + 1)}
+          >
+            Retry
+          </button>
+        </p>
+      ) : loading ? (
+        <p className="mt-2 text-sm text-muted" aria-live="polite">
+          Looking up shared credits…
+        </p>
+      ) : data === null ? null : data.errors.length > 0 ? (
+        <p className="mt-2 text-sm text-muted" role="alert">
+          {data.errors
+            .map((e) => `${providerLabel(e.provider)}: ${e.message}`)
+            .join(" · ")}{" "}
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setReload((n) => n + 1)}
+          >
+            Retry
+          </button>
+        </p>
+      ) : data.items.length === 0 ? null : (
+        // Empty items with empty errors is "no co-appearance evidence" —
+        // the section disappears entirely rather than claiming a similarity.
+        <div className="poster-grid mt-3">
+          {data.items.map((it) => (
+            <PerformerCard
+              key={`${it.reference.provider}:${it.reference.id}`}
+              item={it}
+              onOpen={onOpen}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------- The performer page ---------- */
 
 export function PerformerView({ reference }: { reference: CatalogReference }) {
@@ -722,6 +806,11 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
                 </p>
               </div>
             )}
+            <RelatedPerformers
+              provider={reference.provider}
+              id={reference.id}
+              onOpen={open}
+            />
           </div>
         </>
       )}
