@@ -767,12 +767,19 @@ export async function browseTitles(
         }
       : undefined;
 
+  // One-sided clauses restrict only that side: a StashDB studio kills the
+  // movie query, a TPDB studio kills the scene query. A unified studio tile
+  // carries BOTH ids, and there the clauses are alternatives, not a
+  // conjunction — each provider query takes its own side, the overview is
+  // the union. AND-ing them could only ever return nothing.
   const movieWanted =
     query.type !== "scene" &&
     query.performerStashdb === undefined &&
-    query.studioStashdb === undefined;
+    (query.studioStashdb === undefined || query.studioTpdb !== undefined);
   const sceneWanted =
-    query.type !== "movie" && !filmography && query.studioTpdb === undefined;
+    query.type !== "movie" &&
+    !filmography &&
+    (query.studioTpdb === undefined || query.studioStashdb !== undefined);
   const [tpdbIncludes, stashIncludes] = await Promise.all([
     movieWanted
       ? includeIdsForSide(query.include, "tpdb")

@@ -10,6 +10,7 @@ import {
 import Link from "next/link";
 import { filterNames } from "./catalog";
 import "./discover.css";
+import "./views.css";
 import type {
   CatalogDetail,
   CatalogReference,

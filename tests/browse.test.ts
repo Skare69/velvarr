@@ -1258,6 +1258,54 @@ test("a TPDB studio slug resolves through /sites to its numeric site_id", async 
   assert.deepEqual(siteIds, ["70"]);
 });
 
+test("a studio filter on both sides means OR: each source keeps its own clause", async () => {
+  const stashStudios: unknown[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(1), "Studio Movie", "2024-01-01")],
+          next: null,
+          total: 1,
+        },
+      ],
+      scenes: {
+        count: 1,
+        rows: [stashRow(uuid(2), "Studio Scene", "2024-02-02")],
+      },
+      siteIds: { [uuid(3)]: 70 },
+      onScenesRequest: (input) =>
+        stashStudios.push(
+          (input.studios as { value: string[] } | undefined)?.value,
+        ),
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "all",
+          include: [],
+          exclude: [],
+          studioTpdb: uuid(3),
+          studioStashdb: uuid(4),
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // The union: the TPDB movie and the StashDB scene both survive — a
+      // conjunction of the two clauses could only ever return nothing.
+      assert.deepEqual(page.items.map((d) => d.title).sort(), [
+        "Studio Movie",
+        "Studio Scene",
+      ]);
+    },
+  );
+  // The StashDB query carried only the StashDB studio, never the TPDB id.
+  assert.deepEqual(stashStudios, [[uuid(4)]]);
+});
+
 test("filmography local includes stay exact: a parent label never returns child-only rows", async () => {
   const PARENT = { id: 11, uuid: uuid(101), name: "Anal" };
   const CHILD = { id: 12, uuid: uuid(102), name: "Rough Anal Sex" };

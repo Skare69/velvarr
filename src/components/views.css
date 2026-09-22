@@ -70,57 +70,56 @@
   }
 }
 
-/* State colors on top of the shared chip base; data-state is the single
+/* State badges are solid pills — the same shape as the media kind badge,
+   white uppercase text, background color by state; data-state is the single
    source of the variant so markup stays one class + one attribute. */
+.state-badge {
+  display: inline-block;
+  padding: 0.16rem 0.6rem;
+  border: none;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #fff;
+}
+
 .state-badge[data-state="pending"] {
-  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
-  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
-  color: var(--color-accent);
+  background: color-mix(in oklab, var(--color-accent) 72%, var(--color-canvas));
 }
 
 .state-badge[data-state="approved"] {
-  border-color: color-mix(in srgb, var(--color-ok) 55%, transparent);
-  background: color-mix(in srgb, var(--color-ok) 14%, transparent);
-  color: var(--color-ok);
+  background: color-mix(in oklab, var(--color-ok-fill) 82%, white);
 }
 
 .state-badge[data-state="declined"] {
-  border-color: color-mix(in srgb, var(--color-danger) 55%, transparent);
-  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
-  color: var(--color-danger);
+  background: color-mix(in oklab, var(--color-danger) 62%, var(--color-canvas));
 }
 
 .state-badge[data-state="cancelled"] {
-  border-color: var(--color-edge);
-  background: transparent;
+  background: var(--color-raised);
   color: var(--color-muted);
 }
 
 /* Active Whisparr work reads as work, not as a second "approved". */
 .state-badge[data-state="processing"] {
-  border-color: color-mix(in srgb, var(--color-info) 55%, transparent);
-  background: color-mix(in srgb, var(--color-info) 16%, transparent);
-  color: var(--color-info);
+  background: color-mix(in oklab, var(--color-info) 62%, var(--color-canvas));
 }
 
 .state-badge[data-state="paused"] {
-  border-color: var(--color-edge);
-  background: transparent;
+  background: var(--color-raised);
   color: var(--color-muted);
 }
 
 .state-badge[data-state="requested"] {
-  border-color: color-mix(in srgb, var(--color-info) 55%, transparent);
-  background: color-mix(in srgb, var(--color-info) 16%, transparent);
-  color: var(--color-info);
+  background: color-mix(in oklab, var(--color-info) 62%, var(--color-canvas));
 }
 
 /* In the library: playback is real, so this reads like approval's green —
    the double-check badge beside it carries the distinction. */
 .state-badge[data-state="available"] {
-  border-color: color-mix(in srgb, var(--color-ok) 55%, transparent);
-  background: color-mix(in srgb, var(--color-ok) 14%, transparent);
-  color: var(--color-ok);
+  background: color-mix(in oklab, var(--color-ok-fill) 82%, white);
 }
 
 /* ---------- Following ---------- */
