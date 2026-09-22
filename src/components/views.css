@@ -109,6 +109,20 @@
   color: var(--color-muted);
 }
 
+.state-badge[data-state="requested"] {
+  border-color: color-mix(in srgb, var(--color-info) 55%, transparent);
+  background: color-mix(in srgb, var(--color-info) 16%, transparent);
+  color: var(--color-info);
+}
+
+/* In the library: playback is real, so this reads like approval's green —
+   the double-check badge beside it carries the distinction. */
+.state-badge[data-state="available"] {
+  border-color: color-mix(in srgb, var(--color-ok) 55%, transparent);
+  background: color-mix(in srgb, var(--color-ok) 14%, transparent);
+  color: var(--color-ok);
+}
+
 /* ---------- Following ---------- */
 
 /* Same card anatomy as the catalog grids, but the card holds a second

@@ -1873,8 +1873,14 @@ const DISCOVER_IDS: readonly DiscoverShelfId[] = DISCOVER_SHELVES.map(
 const IS_DISCOVER_ID = new Set<string>(DISCOVER_IDS);
 
 /** Trust-boundary check for one tag selection: a real published label of
- * 1..120 characters, no unknown fields, and at least one provider UUID. */
-function validTagSelection(s: unknown): s is CatalogTagSelection {
+ * 1..120 characters and no unknown fields. Provider UUIDs are optional only
+ * where a label alone can match — hidden tags and excludes run the local
+ * family matcher; an include without any provider id is refused (a label
+ * cannot travel to a provider that filters on its own tag ids). */
+function validTagSelection(
+  s: unknown,
+  allowLabelOnly: boolean,
+): s is CatalogTagSelection {
   if (!s || typeof s !== "object" || Array.isArray(s)) return false;
   const t = s as Record<string, unknown>;
   return (
@@ -1885,7 +1891,7 @@ function validTagSelection(s: unknown): s is CatalogTagSelection {
       (typeof t.tpdb === "string" && UUID_RE.test(t.tpdb))) &&
     (t.stashdb === undefined ||
       (typeof t.stashdb === "string" && UUID_RE.test(t.stashdb))) &&
-    (t.tpdb !== undefined || t.stashdb !== undefined)
+    (allowLabelOnly || t.tpdb !== undefined || t.stashdb !== undefined)
   );
 }
 
@@ -1915,9 +1921,13 @@ function consolidateTagSelections(
 /** Shared trust boundary for picker-supplied tag lists: the browse API's
  * include/exclude arrays and saved hidden tags are the same shape. Pure —
  * no database access, safe before storage is initialized. Any wrong type,
- * unknown field, or missing provider id is invalid_preferences; valid
- * duplicates consolidate and the consolidated list is capped at 25. */
-export function parseTagSelections(input: unknown): CatalogTagSelection[] {
+ * unknown field, or — unless `allowLabelOnly` — a missing provider id is
+ * invalid_preferences; valid duplicates consolidate and the consolidated
+ * list is capped at 25. */
+export function parseTagSelections(
+  input: unknown,
+  allowLabelOnly = false,
+): CatalogTagSelection[] {
   if (!Array.isArray(input)) {
     throw new AppError(
       400,
@@ -1927,11 +1937,13 @@ export function parseTagSelections(input: unknown): CatalogTagSelection[] {
   }
   const items: CatalogTagSelection[] = [];
   for (const raw of input) {
-    if (!validTagSelection(raw)) {
+    if (!validTagSelection(raw, allowLabelOnly)) {
       throw new AppError(
         400,
         "invalid_preferences",
-        "each tag selection needs a label of 1..120 characters and at least one provider id",
+        allowLabelOnly
+          ? "each tag selection needs a label of 1..120 characters"
+          : "each tag selection needs a label of 1..120 characters and at least one provider id",
       );
     }
     // Plain copies: only name/tpdb/stashdb survive the boundary.
@@ -2053,7 +2065,7 @@ export function saveContentPreferences(
     );
   }
   const hiddenTags = hasTags
-    ? parseTagSelections(doc.hiddenTags)
+    ? parseTagSelections(doc.hiddenTags, true)
     : (JSON.parse(account.hidden_tags) as CatalogTagSelection[]);
   const discoverOrder = hasOrder
     ? parseDiscoverOrder(doc.discoverOrder)

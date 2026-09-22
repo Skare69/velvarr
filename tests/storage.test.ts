@@ -2739,7 +2739,7 @@ test("malformed preferences are rejected atomically; unknown accounts are 404", 
       "malformed provider uuid",
       { hiddenTags: [{ name: "Romance", tpdb: "not-a-uuid" }] },
     ],
-    ["no provider id", { hiddenTags: [{ name: "Romance" }] }],
+    ["no name", { hiddenTags: [{ stashdb: TAG_STASH }] }],
     [
       "26 unique tags",
       {
@@ -2762,6 +2762,16 @@ test("malformed preferences are rejected atomically; unknown accounts are 404", 
     hiddenTags: good.hiddenTags,
     discoverOrder: DEFAULT_ORDER,
   });
+
+  // A label-only hidden tag is legitimate: exclusions run the local family
+  // matcher, so no provider id is required.
+  const labelOnly = storage.saveContentPreferences(owner, {
+    hiddenTags: [{ name: "Romance" }],
+  }).hiddenTags;
+  assert.equal(labelOnly.length, 1);
+  assert.equal(labelOnly[0]!.name, "Romance");
+  assert.equal(labelOnly[0]!.tpdb, undefined);
+  assert.equal(labelOnly[0]!.stashdb, undefined);
 
   // 25 consolidated selections pass; the label rule keeps the dupes out.
   const capped: CatalogTagSelection[] = Array.from({ length: 25 }, (_, i) => ({

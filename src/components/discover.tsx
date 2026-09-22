@@ -14,8 +14,7 @@ import type {
   CatalogDetail,
   CatalogReference,
   LibraryItem,
-  RequestDecision,
-  RequestRecord,
+  RequestListItem,
 } from "../lib/contracts";
 import {
   CardStatusBadge,
@@ -30,9 +29,12 @@ import {
   PerformerCard,
   SceneCard,
   PREFERENCES_CHANGED,
+  STATUS_LABELS,
   useApiGet,
+  useAvailability,
   useParamsSetter,
   useCatalogSummary,
+  useSession,
 } from "./shared";
 
 /* Wire shapes mirroring the server's discover response (route.ts Shelf).
@@ -60,7 +62,7 @@ interface Shelf {
   source: "tpdb" | "stashdb" | "jellyfin" | "velvarr";
   browse?: { view: string; params: Record<string, string> };
   kind: "catalog" | "library" | "requests" | "facets";
-  items?: CatalogDetail[] | LibraryItem[] | RequestRecord[] | FacetItem[];
+  items?: CatalogDetail[] | LibraryItem[] | RequestListItem[] | FacetItem[];
   /** Per-source partial failures: items may coexist with these. */
   errors?: { provider: "tpdb" | "stashdb"; code: string; message: string }[];
   error?: ShelfError;
@@ -261,68 +263,74 @@ function CatalogTile({
   );
 }
 
-/** The decision is the request's state, not playback: an approval means the
- * request was accepted, never that the title is watchable. */
-const DECISION_LABELS: Record<RequestDecision, string> = {
-  pending: "Pending approval",
-  approved: "Approved",
-  declined: "Declined",
-  cancelled: "Cancelled",
-};
+/** The status chip is the request's REAL state, not just the decision: an
+ * approval means the request was accepted, never that the title is
+ * watchable — the shared.tsx ladder (library availability, acquisition
+ * progress, then decision) owns the wording. */
 
 function RequestTile({
   item,
   onOpen,
 }: {
-  item: RequestRecord;
+  item: RequestListItem;
   onOpen: (r: CatalogReference) => void;
 }) {
   const art = useCatalogSummary(item.media);
-  const label = DECISION_LABELS[item.decision];
+  const session = useSession();
+  // The badge and chip are the truth, not the decision: a request whose
+  // title already plays in the library reads "In library" here exactly as it
+  // does on the library rail; an approval alone is only ever a single check.
+  const availability = useAvailability(item.media);
+  const acq = item.acquisition;
   const statusKind: CardStatusKind =
-    item.decision === "approved"
-      ? "approved"
-      : item.decision === "pending"
-        ? "requested"
-        : "declined";
+    availability?.outcome === "available"
+      ? "available"
+      : acq?.monitored === false && acq.state !== "imported"
+        ? "paused"
+        : acq?.state === "downloading"
+          ? "processing"
+          : item.decision === "approved"
+            ? "approved"
+            : item.decision === "pending"
+              ? "requested"
+              : "declined";
+  const label = STATUS_LABELS[statusKind];
+  const requester = item.requestedBy ?? session.account.name;
 
   return (
-    <div className="discovery-tile discovery-tile-poster">
+    <div className="discovery-tile discovery-request">
       <button
         type="button"
-        className="discovery-art-card media-card"
+        className="discovery-request-card media-card"
         onClick={() => onOpen(item.media)}
-        aria-label={`Request ${art?.title ?? item.media.id} — ${label}; open catalog details`}
+        aria-label={`${art?.title ?? item.media.id} — ${label}; open catalog details`}
       >
-        <div className="discovery-art">
-          <ItemImage
-            name={art?.title ?? "·"}
-            src={art ? imgSrc(art.imageUrl) : undefined}
+        {art?.imageUrl !== undefined && (
+          <span
+            aria-hidden="true"
+            className="discovery-request-backdrop"
+            style={{ backgroundImage: `url(${imgSrc(art.imageUrl)})` }}
           />
-          <CardTypeBadge kind={item.media.kind} />
-          <CardStatusBadge status={statusKind} title={art?.title} />
-          <div className="media-quick-overlay">
-            <div className="media-quick-summary" aria-hidden="true">
-              <strong>
-                {art === undefined
-                  ? "Loading…"
-                  : (art?.title ??
-                    `${item.media.provider} · ${item.media.kind} · ${item.media.id}`)}
-              </strong>
-              <p>{DATE_FMT.format(item.createdAt)}</p>
-            </div>
-            <div className="media-quick-action">
-              <span
-                className={`btn${item.decision === "pending" ? " btn-accent" : ""}`}
-              >
-                <Icon
-                  name={statusKind === "approved" ? "check" : "hourglass"}
-                />
-                {label}
-              </span>
-            </div>
-          </div>
-        </div>
+        )}
+        <span className="discovery-request-info">
+          <span className="discovery-request-year">
+            {art?.releaseDate?.slice(0, 4)}
+          </span>
+          <strong className="discovery-request-title">
+            {art?.title ??
+              `${item.media.provider} · ${item.media.kind} · ${item.media.id}`}
+          </strong>
+          <span className="discovery-request-by">{requester}</span>
+          <span className="state-badge" data-state={statusKind}>
+            {label}
+          </span>
+        </span>
+        <ItemImage
+          name={art?.title ?? "·"}
+          src={art ? imgSrc(art.imageUrl) : undefined}
+          className="discovery-request-poster"
+        />
+        <CardStatusBadge status={statusKind} title={art?.title} />
       </button>
     </div>
   );
@@ -409,7 +417,7 @@ function ShelfSection({
     (it): it is LibraryItem => "canPlay" in it,
   );
   const requestItems = shelf.items?.filter(
-    (it): it is RequestRecord => "media" in it,
+    (it): it is RequestListItem => "media" in it,
   );
   const facetItems = shelf.items?.filter(
     (it): it is FacetItem => "facet" in it,

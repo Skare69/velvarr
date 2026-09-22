@@ -145,6 +145,8 @@ function scriptedUpstream(options: {
   scenes: { count: number; rows: unknown[] };
   tpdbMoviesStatus?: number;
   stashStatus?: number;
+  /** TPDB site-key (uuid or slug) -> numeric site id, for /sites/<key>. */
+  siteIds?: Record<string, number>;
   onMovieRequest?: (page: number, qs: URLSearchParams, url: string) => void;
   onScenesRequest?: (input: Record<string, unknown>) => void;
 }): FixtureHandler {
@@ -153,6 +155,15 @@ function scriptedUpstream(options: {
     const path = pathOf(req.url ?? "");
     if (path === "/tags") {
       sendJson(res, 200, { data: options.tagRows, links: { next: null } });
+      return;
+    }
+    if (path.startsWith("/sites/")) {
+      const id = options.siteIds?.[path.slice("/sites/".length)];
+      if (id === undefined) {
+        sendJson(res, 404, { message: `fixture has no ${path}` });
+        return;
+      }
+      sendJson(res, 200, { data: { id } });
       return;
     }
     // Filmography reads the same listing shape under /performers/<id>/movies.
@@ -244,12 +255,19 @@ test("parseBrowseQuery round-trips pinned keys and rejects malformed input", () 
   });
   assert.equal(parseBrowseQuery(new URLSearchParams()).type, "all");
   assert.equal(parseBrowseQuery(new URLSearchParams()).perPage, 24);
+  // TPDB site slugs are studio identity beside the uuid.
+  assert.equal(
+    parseBrowseQuery(new URLSearchParams("studioTpdb=evilangel")).studioTpdb,
+    "evilangel",
+  );
 
   const bad: [string, string][] = [
     ["type=everyone", "invalid_query"],
-    ["studioTpdb=not-a-uuid", "invalid_query"],
+    // A path character is neither a uuid nor a site slug.
+    ["studioTpdb=bad%2Fslug", "invalid_query"],
     ["include=not-json", "invalid_query"],
     ["include=%7B%22name%22%3A%22x%22%7D", "invalid_preferences"], // object, not array
+    ["include=" + encodeURIComponent('[{"name":"x"}]'), "invalid_preferences"], // include needs a provider id
     [
       "include=" + encodeURIComponent('[{"name":"","tpdb":"' + uuid(1) + '"}]'),
       "invalid_preferences",
@@ -1155,6 +1173,89 @@ test("family excludes need contiguous words; provider UUID still wins over label
       assert.equal(page.total, 1);
     },
   );
+});
+
+test("a free-text exclude carries no provider id and still hides by label family", async () => {
+  const PARENT = { id: 11, uuid: uuid(101), name: "Anal" };
+  const OTHER = { id: 12, uuid: uuid(102), name: "Analingus" };
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [PARENT, OTHER],
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(uuid(1), "Parent Tagged", "2024-02-01", [PARENT]),
+            tpdbRow(uuid(2), "Letter Overlap", "2024-01-01", [OTHER]),
+          ],
+          next: null,
+          total: 2,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "movie",
+          include: [],
+          exclude: [{ name: "Anal" }],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // The provider is never asked for a tag id it was never given; the
+      // local family matcher does the whole exclusion.
+      assert.deepEqual(
+        page.items.map((d) => d.title),
+        ["Letter Overlap"],
+      );
+      assert.equal(page.totalCountKnown, true);
+      assert.equal(page.total, 1);
+    },
+  );
+});
+
+test("a TPDB studio slug resolves through /sites to its numeric site_id", async () => {
+  const siteIds: string[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(1), "Studio Movie", "2024-01-01")],
+          next: null,
+          total: 1,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      siteIds: { evilangel: 70 },
+      onMovieRequest: (_page, qs) => {
+        siteIds.push(qs.get("site_id") ?? "MISSING");
+      },
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "movie",
+          include: [],
+          exclude: [],
+          studioTpdb: "evilangel",
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      assert.deepEqual(
+        page.items.map((d) => d.title),
+        ["Studio Movie"],
+      );
+    },
+  );
+  // TPDB filters by the numeric id only; the slug never travels upstream.
+  assert.deepEqual(siteIds, ["70"]);
 });
 
 test("filmography local includes stay exact: a parent label never returns child-only rows", async () => {

@@ -548,60 +548,67 @@ function DateCutoff({
 
 /** Debounced performer lookup behind the performer filter: the filter takes
  * a provider-native id, so the user picks a result — a typed name is never
- * sent. TPDB performer search is paged; StashDB is unpaged and caps its
- * result list, which the picker says out loud. */
-function usePerformerOptions(
-  provider: CatalogProvider,
-  term: string,
-): {
-  items: CatalogDetail[];
+ * sent. One field searches both sources; each result carries its side.
+ * TPDB performer search is paged; StashDB is unpaged and caps its result
+ * list, which the picker says out loud. */
+function usePerformerOptions(term: string): {
+  items: { performer: CatalogDetail; side: CatalogProvider }[];
   error: string | null;
   loading: boolean;
 } {
   const t = term.trim();
   // The debounce commits the read path, not the fetch: keystrokes settle
   // before the hook sees a new read at all.
-  const [committed, setCommitted] = useState<{
-    term: string;
-    path: string;
-  } | null>(null);
+  const [committed, setCommitted] = useState<string | null>(null);
   useEffect(() => {
     if (t === "") {
       setCommitted(null);
       return;
     }
-    const timer = setTimeout(() => {
-      const qs = new URLSearchParams({ provider, kind: "performer", q: t });
-      if (provider === "tpdb") {
-        qs.set("page", "1");
-        qs.set("perPage", "10");
-      }
-      setCommitted({ term: t, path: `/api/catalog/search?${qs.toString()}` });
-    }, 400);
+    const timer = setTimeout(() => setCommitted(t), 400);
     return () => clearTimeout(timer);
-  }, [provider, t]);
-  const { data, error, loading } = useApiGet<CatalogSearchPage>(
-    committed?.path ?? null,
-    [committed?.path],
+  }, [t]);
+  const search = (provider: CatalogProvider) =>
+    `/api/catalog/search?${new URLSearchParams({
+      provider,
+      kind: "performer",
+      q: committed ?? "",
+      ...(provider === "tpdb" ? { page: "1", perPage: "10" } : {}),
+    })}`;
+  const tpdb = useApiGet<CatalogSearchPage>(
+    committed !== null ? search("tpdb") : null,
+    [committed],
   );
+  const stash = useApiGet<CatalogSearchPage>(
+    committed !== null ? search("stashdb") : null,
+    [committed],
+  );
+  const error = [tpdb.error, stash.error].find((e) => e !== null) ?? null;
   return {
-    items: data?.items ?? [],
+    items: [
+      ...(tpdb.data?.items ?? []).map((performer) => ({
+        performer,
+        side: "tpdb" as const,
+      })),
+      ...(stash.data?.items ?? []).map((performer) => ({
+        performer,
+        side: "stashdb" as const,
+      })),
+    ],
     error,
-    loading: t !== "" && (committed?.term !== t || loading),
+    loading: t !== "" && (committed !== t || tpdb.loading || stash.loading),
   };
 }
 
 function PerformerPicker({
   id,
-  provider,
   onPick,
 }: {
   id: string;
-  provider: CatalogProvider;
-  onPick: (performerId: string, name: string) => void;
+  onPick: (side: CatalogProvider, performerId: string, name: string) => void;
 }) {
   const [term, setTerm] = useState("");
-  const { items, error, loading } = usePerformerOptions(provider, term);
+  const { items, error, loading } = usePerformerOptions(term);
   return (
     <div>
       <label className="label" htmlFor={id}>
@@ -616,12 +623,11 @@ function PerformerPicker({
         value={term}
         onChange={(e) => setTerm(e.target.value)}
       />
-      {provider === "stashdb" && (
-        <p className="cat-note">
-          StashDB caps performer search at about ten rows — the list may be
-          incomplete.
-        </p>
-      )}
+      <p className="cat-note">
+        One field, both sources: a TPDB performer opens their whole filmography
+        (movies) and replaces the other filters until removed; a StashDB
+        performer filters scenes. StashDB caps results at about ten rows.
+      </p>
       {error ? (
         <p className="cat-note" role="alert">
           Performer search failed: {error}
@@ -634,26 +640,29 @@ function PerformerPicker({
         <p className="cat-note">No performers match “{term.trim()}”.</p>
       ) : items.length > 0 ? (
         <ul className="cat-picker">
-          {items.map((it) => (
-            <li key={it.reference.id}>
+          {items.map(({ performer, side }) => (
+            <li key={`${side}:${performer.reference.id}`}>
               <button
                 type="button"
                 className="cat-picker-row"
                 onClick={() => {
                   filterNames.set(
-                    `${provider}:performer:${it.reference.id}`,
-                    it.title,
+                    `${side}:performer:${performer.reference.id}`,
+                    performer.title,
                   );
-                  onPick(it.reference.id, it.title);
+                  onPick(side, performer.reference.id, performer.title);
                   setTerm("");
                 }}
               >
                 <ItemImage
-                  name={it.title}
-                  src={imgSrc(it.imageUrl)}
+                  name={performer.title}
+                  src={imgSrc(performer.imageUrl)}
                   className="cat-picker-img"
                 />
-                <span>{it.title}</span>
+                <span>{performer.title}</span>
+                <span className="text-xs text-muted">
+                  {side === "tpdb" ? "TPDB" : "StashDB"}
+                </span>
               </button>
             </li>
           ))}
@@ -2511,23 +2520,16 @@ export function TitlesView() {
           label="Exclude tags"
           selected={exclude}
           onChange={onExclude}
+          allowFreeText
           description="Titles carrying any of these tags are left out — exclusions win over includes, and a tag also covers the ones that contain it as a word (Anal drops Anal Creampie, never Analingus)."
         />
-        <div>
-          <PerformerPicker
-            id="titles-performer-tpdb"
-            provider="tpdb"
-            onPick={onPerformerTpdb}
-          />
-          <p className="cat-note">
-            TPDB serves a performer&apos;s whole filmography — it replaces the
-            other filters, which are unavailable until it is removed.
-          </p>
-        </div>
         <PerformerPicker
-          id="titles-performer-stashdb"
-          provider="stashdb"
-          onPick={onPerformerStashdb}
+          id="titles-performer"
+          onPick={(side, performerId) =>
+            side === "tpdb"
+              ? onPerformerTpdb(performerId)
+              : onPerformerStashdb(performerId)
+          }
         />
         <YearBox
           id="titles-year"

@@ -1261,15 +1261,15 @@ function rejectUnusedFilters(
 
 /** TPDB filters scenes/movies by NUMERIC site_id (verified live 2026-09-11:
  * a uuid is rejected upstream), while site identity everywhere else is the
- * uuid. A uuid filter value is resolved once through /sites/{uuid}; a numeric
- * string passes straight through. */
+ * uuid beside its published /sites/<slug>. A uuid or slug resolves once
+ * through /sites/{id}; a numeric string passes straight through. */
 async function resolveTpdbStudioFilter(
   v: unknown,
 ): Promise<string | undefined> {
   const s = cleanString(v, 64);
   if (s === undefined) return undefined;
   if (/^\d+$/.test(s)) return s;
-  if (isUuid(s)) {
+  if (isUuid(s) || /^[a-z0-9][a-z0-9-]{0,63}$/i.test(s)) {
     const body = await tpdbGet<{ data?: { id?: unknown } }>(`/sites/${s}`);
     const row = (body?.data ?? null) as { id?: unknown } | null;
     if (typeof row?.id === "number" && Number.isInteger(row.id)) {
@@ -1284,7 +1284,7 @@ async function resolveTpdbStudioFilter(
   throw new AppError(
     400,
     "invalid_reference",
-    "TPDB studio filters require a TPDB site UUID or numeric site id.",
+    "TPDB studio filters require a TPDB site UUID, numeric site id, or site slug.",
   );
 }
 

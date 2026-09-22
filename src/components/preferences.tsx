@@ -189,6 +189,7 @@ export function PreferencesView() {
           onChange={(hiddenTags) =>
             setDraft((d) => (d === null ? d : { ...d, hiddenTags }))
           }
+          allowFreeText
           description="Titles carrying any hidden tag are left out of catalog Browse, Discover, search results and related titles. A hidden tag also covers the tags that contain it as a whole word — hiding Anal hides Anal Creampie, but never Analingus. Search-time includes and excludes are separate and always temporary."
           disabled={saving}
         />

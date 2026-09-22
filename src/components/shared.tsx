@@ -344,6 +344,34 @@ export function useCatalogSummary(
   return summary;
 }
 
+/** One library-presence read for a tile badge: `undefined` = loading,
+ * `null` = the read failed (the caller falls back to the request's own
+ * state). Uncached on purpose — a badge must report the state now, and a
+ * discover rail is a bounded set of tiles. */
+export function useAvailability(
+  media: MediaReference,
+): PlaybackAccess | null | undefined {
+  const path = `${media.provider}/${media.kind}/${encodeURIComponent(media.id)}`;
+  const [access, setAccess] = useState<PlaybackAccess | null | undefined>(
+    undefined,
+  );
+  useEffect(() => {
+    setAccess(undefined);
+    let live = true;
+    api<PlaybackAccess>(`/api/availability/${path}`)
+      .then((a) => {
+        if (live) setAccess(a);
+      })
+      .catch(() => {
+        if (live) setAccess(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [path]);
+  return access;
+}
+
 /* ---------- Shared small components ---------- */
 
 interface SessionInfo {
@@ -524,7 +552,7 @@ export function CardTypeBadge({ kind }: { kind: "movie" | "scene" | string }) {
 export type CardStatusKind =
   "requested" | "approved" | "available" | "declined" | "processing" | "paused";
 
-const STATUS_ICONS: Record<CardStatusKind, keyof typeof ICON_PATHS> = {
+export const STATUS_ICONS: Record<CardStatusKind, keyof typeof ICON_PATHS> = {
   requested: "hourglass",
   approved: "check",
   available: "check-double",
@@ -533,7 +561,7 @@ const STATUS_ICONS: Record<CardStatusKind, keyof typeof ICON_PATHS> = {
   paused: "pause",
 };
 
-const STATUS_LABELS: Record<CardStatusKind, string> = {
+export const STATUS_LABELS: Record<CardStatusKind, string> = {
   requested: "Requested",
   approved: "Approved",
   available: "In library",

@@ -1767,18 +1767,18 @@ async function createRequestRoute(
   return json({ request: record }, 201);
 }
 
-async function listRequestsRoute(ctx: AuthContext): Promise<Response> {
-  // Storage role-filters: a requester sees only their own history. Approved
-  // rows carry the SHARED acquisition state for their identity, so the
-  // requester can see whether the work actually went through — without
-  // exposing anyone else's request history.
+/** Approved rows carry the SHARED acquisition state for their identity, so a
+ * viewer can see whether the work actually went through. Staff viewers also
+ * get requester names: the shape both the requests list and the discover
+ * rail serve, without exposing anyone else's request history. */
+function listRequestItems(ctx: AuthContext): RequestListItem[] {
   const staff =
     ctx.account.role === "admin" || ctx.account.role === "moderator";
   // One map lookup per row instead of one account fetch per row.
   const names = staff
     ? new Map(listAccounts().map((a) => [a.id, a.name]))
     : null;
-  const requests: RequestListItem[] = listRequests(ctx.account).map((r) => {
+  return listRequests(ctx.account).map((r) => {
     const item: RequestListItem = names
       ? { ...r, requestedBy: names.get(r.accountId) }
       : r;
@@ -1796,7 +1796,10 @@ async function listRequestsRoute(ctx: AuthContext): Promise<Response> {
       },
     };
   });
-  return json({ requests });
+}
+
+async function listRequestsRoute(ctx: AuthContext): Promise<Response> {
+  return json({ requests: listRequestItems(ctx) });
 }
 
 async function decideRequestRoute(
@@ -2867,10 +2870,9 @@ async function discover(ctx: AuthContext): Promise<Response> {
       listRecentlyAddedItems(ctx.config, ctx.token, ctx.account, SHELF_ITEMS),
       // storage is sync; defer so its failures settle like the rest. Capped
       // like every other shelf: a bulk performer request can file a hundred
-      // intents at once, and a rail is not a list view.
-      Promise.resolve().then(() =>
-        listRequests(ctx.account).slice(0, SHELF_ITEMS),
-      ),
+      // intents at once, and a rail is not a list view. The rows carry the
+      // shared acquisition state so the rail's badge tells the truth.
+      Promise.resolve().then(() => listRequestItems(ctx).slice(0, SHELF_ITEMS)),
     ]);
   // Appended only when this account follows someone (or a side failed): an
   // account with no follows gets exactly the standard shelves.

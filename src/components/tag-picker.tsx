@@ -61,6 +61,7 @@ export function TagPicker({
   onChange,
   description,
   disabled,
+  allowFreeText = false,
 }: {
   id: string;
   label: string;
@@ -68,6 +69,10 @@ export function TagPicker({
   onChange: (tags: CatalogTagSelection[]) => void;
   description?: string;
   disabled?: boolean;
+  /** Offer the typed term itself as a label-only selection. Only for
+   * surfaces that filter locally (excludes, hidden tags): a free-text
+   * include cannot travel to a provider that filters on its own tag ids. */
+  allowFreeText?: boolean;
 }) {
   const [term, setTerm] = useState("");
   const [open, setOpen] = useState(false);
@@ -110,8 +115,18 @@ export function TagPicker({
       ? take(data?.suggestions)
       : [];
   const options = listed.length > 0 ? listed : suggested;
+  // The typed term itself, when it matches no offered tag: a real selection
+  // with no provider ids, workable only where matching runs locally.
+  const freeText: CatalogTagSelection | null =
+    allowFreeText &&
+    t.length >= 2 &&
+    !picked.has(normalizeFacetName(t)) &&
+    !options.some((o) => normalizeFacetName(o.name) === normalizeFacetName(t))
+      ? { name: t }
+      : null;
+  const choices = freeText === null ? options : [...options, freeText];
   const sourceErrors = current && error === null ? (data?.errors ?? []) : [];
-  const showList = open && options.length > 0;
+  const showList = open && choices.length > 0;
 
   function pick(tag: CatalogTagSelection) {
     if (disabled || capped || picked.has(normalizeFacetName(tag.name))) return;
@@ -124,16 +139,16 @@ export function TagPicker({
   function onKeyDown(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
-      if (options.length === 0) return;
+      if (choices.length === 0) return;
       setOpen(true);
-      const last = options.length - 1;
+      const last = choices.length - 1;
       setActive((a) =>
         e.key === "ArrowDown" ? Math.min(a + 1, last) : Math.max(a - 1, 0),
       );
     } else if (e.key === "Enter") {
       // A tag field must never submit the surrounding form.
       e.preventDefault();
-      if (showList && options[active] !== undefined) pick(options[active]);
+      if (showList && choices[active] !== undefined) pick(choices[active]);
     } else if (e.key === "Escape") {
       if (showList) {
         e.preventDefault();
@@ -174,7 +189,7 @@ export function TagPicker({
           setOpen(true);
         }}
         onFocus={() => {
-          if (options.length > 0) setOpen(true);
+          if (choices.length > 0) setOpen(true);
         }}
         onBlur={() => setOpen(false)}
         onKeyDown={onKeyDown}
@@ -202,7 +217,7 @@ export function TagPicker({
                 .join("; ")}
             </p>
           )}
-          {showList && listed.length === 0 && (
+          {showList && listed.length === 0 && suggested.length > 0 && (
             <p className="cat-note">Did you mean:</p>
           )}
           {showList && (
@@ -212,7 +227,7 @@ export function TagPicker({
               id={`${id}-listbox`}
               aria-label={`${label} suggestions`}
             >
-              {options.map((tag, i) => (
+              {choices.map((tag, i) => (
                 <li key={normalizeFacetName(tag.name)} role="presentation">
                   <button
                     type="button"
@@ -231,7 +246,11 @@ export function TagPicker({
                     onMouseMove={() => setActive(i)}
                   >
                     <span>{tag.name}</span>
-                    <span className="text-xs text-muted">{sources(tag)}</span>
+                    <span className="text-xs text-muted">
+                      {tag.tpdb === undefined && tag.stashdb === undefined
+                        ? "Free text"
+                        : sources(tag)}
+                    </span>
                     <span className="cat-picker-add" aria-hidden="true">
                       +
                     </span>
@@ -244,7 +263,7 @@ export function TagPicker({
             error === null &&
             current &&
             committed !== null &&
-            options.length === 0 && (
+            choices.length === 0 && (
               <p className="cat-note">No tags match “{t}”.</p>
             )}
         </>

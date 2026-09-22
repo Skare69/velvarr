@@ -4687,7 +4687,7 @@ test("content preferences are session-only, self-owned, and atomic on malformed 
     { hiddenTags: { name: "Fixture Tag A" } },
     { hiddenTags: [{ name: "", tpdb: TAG_A }] },
     { hiddenTags: [{ name: "x".repeat(121), tpdb: TAG_A }] },
-    { hiddenTags: [{ name: "Fixture Tag A" }] },
+    { hiddenTags: [{ stashdb: TAG_D }] },
     { hiddenTags: [{ name: "Fixture Tag A", tpdb: "not-a-uuid" }] },
     { hiddenTags: [{ tpdb: TAG_A }] },
     { hiddenTags: [{ name: "Fixture Tag A", tpdb: TAG_A, junk: 1 }] },
@@ -4721,6 +4721,14 @@ test("content preferences are session-only, self-owned, and atomic on malformed 
     },
   });
   assert.equal(both.status, 200);
+
+  // A label-only hidden tag is legitimate: exclusions run the local family
+  // matcher, so no provider id is required.
+  const labelOnly = await call("PATCH", "/api/me/preferences", {
+    cookie: member,
+    body: { hiddenTags: [{ name: "Fixture Tag A" }] },
+  });
+  assert.equal(labelOnly.status, 200);
 
   // Restore: tests after this point see the default, unfiltered state.
   const restored = await call("PATCH", "/api/me/preferences", {

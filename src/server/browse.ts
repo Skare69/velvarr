@@ -86,6 +86,8 @@ export type BrowsePage = {
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** TPDB site slug: the `/sites/<slug>` token (path-safe by construction). */
+const SITE_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/i;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DATE_OPS: readonly ReleaseDateOperation[] = ["<", "<=", "=", ">", ">="];
 const SORT_KEYS: readonly CatalogSortKey[] = [
@@ -124,15 +126,25 @@ function parseId(params: URLSearchParams, key: string): string | undefined {
   const raw = params.get(key);
   if (raw === null || raw.trim() === "") return undefined;
   const value = raw.trim();
-  if (!UUID_RE.test(value)) {
-    throw invalidQuery(`${key} must be a provider UUID.`);
+  // TPDB publishes studio identity as a uuid BESIDE a /sites/<slug> token,
+  // and cross-provider studio links legitimately carry the slug. Slugged
+  // values are validated to a path-safe provider token so they can never
+  // smuggle URL syntax into an upstream path.
+  const slugOk = key === "studioTpdb" && SITE_SLUG_RE.test(value);
+  if (!UUID_RE.test(value) && !slugOk) {
+    throw invalidQuery(
+      key === "studioTpdb"
+        ? "studioTpdb must be a provider UUID or site slug."
+        : `${key} must be a provider UUID.`,
+    );
   }
-  return value;
+  return value.toLowerCase();
 }
 
 function parseSelections(
   params: URLSearchParams,
   key: string,
+  allowLabelOnly = false,
 ): CatalogTagSelection[] {
   const raw = params.get(key);
   if (raw === null || raw.trim() === "") return [];
@@ -142,7 +154,7 @@ function parseSelections(
   } catch {
     throw invalidQuery(`${key} must be a JSON array of tag selections.`);
   }
-  return parseTagSelections(parsed);
+  return parseTagSelections(parsed, allowLabelOnly);
 }
 
 /** Optional keys stay absent rather than present-and-undefined: a caller
@@ -213,7 +225,9 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
     type: type ?? "all",
     ...(q !== undefined && q !== "" ? { q } : {}),
     include: parseSelections(params, "include"),
-    exclude: parseSelections(params, "exclude"),
+    // Excludes run the local family matcher, so a label with no provider id
+    // (a free-text tag) is a real exclusion; an include without one is not.
+    exclude: parseSelections(params, "exclude", true),
     ...omitUndefined({
       studioTpdb: parseId(params, "studioTpdb"),
       studioStashdb: parseId(params, "studioStashdb"),
