@@ -32,7 +32,7 @@ import type {
   ReleaseDateOperation,
 } from "./providers.ts";
 import { getConfig, parseTagSelections } from "./storage.ts";
-import { normalizeFacetName } from "../lib/contracts.ts";
+import { facetTokens, normalizeFacetName } from "../lib/contracts.ts";
 import type {
   CatalogDetail,
   CatalogProvider,
@@ -232,9 +232,21 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
   };
 }
 
-// --- tag matching: provider UUID first, then the exact normalized label ---
+// --- tag matching: provider UUID first, then label by mode ("exact" folded
+// equality, or "family" whole-word-sequence containment for local filtration) ---
 
-function tagMatches(detail: CatalogDetail, sel: CatalogTagSelection): boolean {
+/** `"exact"`: folded-label equality — the include paths, which mirror or
+ * must agree with native provider tag ids. `"family"`: the selection's
+ * token sequence appears as a contiguous run of the tag's tokens, so
+ * "Anal" matches "Anal Creampie"/"Rough Anal Sex" but never "Analingus",
+ * and "Double Penetration" never matches "Double Anal Penetration" — the
+ * hidden/exclude filtration paths. An empty (blank) selection label matches
+ * nothing in either mode. */
+function tagMatches(
+  detail: CatalogDetail,
+  sel: CatalogTagSelection,
+  mode: "exact" | "family",
+): boolean {
   const nativeId =
     detail.reference.provider === "tpdb" ? sel.tpdb : sel.stashdb;
   if (nativeId !== undefined && detail.tags.some((t) => t.id === nativeId)) {
@@ -242,20 +254,31 @@ function tagMatches(detail: CatalogDetail, sel: CatalogTagSelection): boolean {
   }
   const label = normalizeFacetName(sel.name);
   // An empty normalized label identifies nothing — never a wildcard.
-  return (
-    label !== "" &&
-    detail.tags.some((t) => normalizeFacetName(t.name) === label)
-  );
+  if (label === "") return false;
+  if (mode === "exact") {
+    return detail.tags.some((t) => normalizeFacetName(t.name) === label);
+  }
+  const selTokens = facetTokens(sel.name);
+  if (selTokens.length === 0) return false;
+  return detail.tags.some((t) => {
+    const tagTokens = facetTokens(t.name);
+    if (tagTokens.length < selTokens.length) return false;
+    return tagTokens.some((_, i) =>
+      selTokens.every((tok, j) => tagTokens[i + j] === tok),
+    );
+  });
 }
 
-/** True when any personal hidden tag matches by provider UUID or exact
- * normalized label. Substring and AI inference are never applied; preference
- * is filtration, never authorization. */
+/** True when any personal hidden tag matches by provider UUID, or by label
+ * under the family rule: the selection's normalized word sequence appears
+ * as a contiguous run of the tag's words ("Anal" hides "Anal Creampie",
+ * never "Analingus"). Raw substring and AI inference are never applied;
+ * preference is filtration, never authorization. */
 export function isHiddenTitle(
   detail: CatalogDetail,
   hiddenTags: CatalogTagSelection[],
 ): boolean {
-  return hiddenTags.some((sel) => tagMatches(detail, sel));
+  return hiddenTags.some((sel) => tagMatches(detail, sel, "family"));
 }
 
 // --- stream planning ---
@@ -269,9 +292,12 @@ function visiblePredicate(
   // Exclusions win over includes: a hidden or excluded match blocks the item
   // regardless of any include criterion.
   return (d) => {
-    if (hiddenTags.some((sel) => tagMatches(d, sel))) return false;
-    if (exclude.some((sel) => tagMatches(d, sel))) return false;
-    if (include.length > 0 && !include.every((sel) => tagMatches(d, sel))) {
+    if (hiddenTags.some((sel) => tagMatches(d, sel, "family"))) return false;
+    if (exclude.some((sel) => tagMatches(d, sel, "family"))) return false;
+    if (
+      include.length > 0 &&
+      !include.every((sel) => tagMatches(d, sel, "exact"))
+    ) {
       return false;
     }
     if (year !== undefined && d.releaseDate?.slice(0, 4) !== String(year)) {

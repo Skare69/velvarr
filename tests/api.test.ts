@@ -82,6 +82,19 @@ const TAG_C = "cc000000-0000-0000-0000-000000000003";
 // StashDB's same-normalized-name twin of TAG_A ("fixture-tag-a"): pairing
 // folds case and separators exactly, and never fuzzes.
 const TAG_D = "cc000000-0000-0000-0000-000000000004";
+// Family-matching fixtures: a hidden tag whose label is a whole word of a
+// longer label ("Anal" in "Anal Creampie") must hide the longer-tagged
+// title; a letter overlap with no word boundary ("Analingus") must never
+// match. Served only through the q=Family branch and the family filmography
+// route, so the shared /movies snapshot rows — and every assertion pinned
+// to them — stay untouched.
+const TAG_FAMILY_PARENT = "cc000000-0000-0000-0000-000000000005";
+const TAG_FAMILY_CHILD = "cc000000-0000-0000-0000-000000000006";
+const TAG_FAMILY_BOUNDARY = "cc000000-0000-0000-0000-000000000007";
+const TPDB_MOVIE_FAMILY_EXACT = "2a2b3c4d-0000-0000-0000-000000000010";
+const TPDB_MOVIE_FAMILY_CHILD = "2a2b3c4d-0000-0000-0000-000000000011";
+const TPDB_MOVIE_FAMILY_WIDE = "2a2b3c4d-0000-0000-0000-000000000012";
+const TPDB_PERFORMER_FAMILY = "2a2b3c4d-0000-0000-0000-000000000013";
 // StashDB serves images from stashdb.org/images/<uuid>; a provider-hosted
 // URL so the artwork gate accepts it end to end.
 const STASH_IMAGE =
@@ -498,6 +511,40 @@ function tpdbMovieRow(id: string) {
     scenes: [],
   };
 }
+/** The three family-proof rows: exact-label parent, whole-word child, and a
+ * letter-overlap tag with no word boundary. One source so the q=Family
+ * browse/search snapshot and the family filmography stay identical. */
+function tpdbFamilyMovieRows() {
+  const row = (
+    id: string,
+    title: string,
+    uuid: string,
+    name: string,
+    numeric: number,
+  ) => ({
+    ...tpdbMovieRow(id),
+    title,
+    tags: [{ id: numeric, uuid, name }],
+  });
+  return [
+    row(TPDB_MOVIE_FAMILY_EXACT, "Family Exact", TAG_FAMILY_PARENT, "Anal", 72),
+    row(
+      TPDB_MOVIE_FAMILY_CHILD,
+      "Family Child",
+      TAG_FAMILY_CHILD,
+      "Anal Creampie",
+      73,
+    ),
+    row(
+      TPDB_MOVIE_FAMILY_WIDE,
+      "Family Wide",
+      TAG_FAMILY_BOUNDARY,
+      "Analingus",
+      74,
+    ),
+  ];
+}
+
 function tpdbSiteRow(id: string) {
   return {
     uuid: id,
@@ -542,6 +589,16 @@ async function tpdbHandler(
   if (auth !== `Bearer ${tpdbToken}`) return json(res, 401, {});
   if (p === "/user") return json(res, 200, { data: { name: "Fixture TPDB" } });
   if (p === "/movies") {
+    // Family-proof snapshot, isolated behind an exact q marker so the
+    // shared unfiltered /movies rows keep feeding every existing
+    // assertion unchanged.
+    if (url.searchParams.get("q") === "Family") {
+      return json(res, 200, {
+        data: tpdbFamilyMovieRows(),
+        meta: { total: 3 },
+        links: {},
+      });
+    }
     // TPDB caps unfiltered totals at the fake 10000 marker; a countable
     // filter (q) yields a real total. Mirrors the live provider behavior.
     const realTotal = url.searchParams.get("q") !== null;
@@ -641,6 +698,15 @@ async function tpdbHandler(
       data: [tpdbMovieRow(TPDB_MOVIE6)],
       meta: { total: 1 },
       links: { next: "https://fixture.test/next" },
+    });
+  // Family-proof filmography: every row this performer could return is one
+  // of the three family rows, so hide/exclude/include behavior is fully
+  // observable on a single page.
+  if (p === `/performers/${TPDB_PERFORMER_FAMILY}/movies`)
+    return json(res, 200, {
+      data: tpdbFamilyMovieRows(),
+      meta: { total: 3 },
+      links: {},
     });
   if (p === `/movies/${TPDB_MOVIE}`)
     return json(res, 200, { data: tpdbMovieRow(TPDB_MOVIE) });
@@ -5135,4 +5201,250 @@ test("hidden tags filter discover, global search, and filmography — never enti
     });
     assert.equal(restored.status, 200);
   }
+});
+
+test("hidden tag families: a whole-word label hides longer-tagged titles on every personal surface", async () => {
+  // Phase 1 reuses the shared snapshot rows: the saved label "Fixture Tag"
+  // is a whole-word prefix of "Fixture Tag A" and "Fixture Tag C" but NOT
+  // of "Fixture Stash Tag" ([fixture, tag] is not a contiguous word
+  // sequence inside [fixture, stash, tag]) — so discover and global search
+  // prove family hiding against data every other test already relies on.
+  const saved = await call("PATCH", "/api/me/preferences", {
+    cookie: member,
+    body: { hiddenTags: [{ name: "Fixture Tag", tpdb: TAG_A }] },
+  });
+  assert.equal(saved.status, 200);
+  try {
+    resetMetaCache();
+
+    // Discover: every TPDB movie leaves the mixed rail — under exact-only
+    // matching the "Fixture Tag C" row would survive — and the StashDB
+    // side still renders.
+    const discover = await call("GET", "/api/discover", { cookie: member });
+    assert.equal(discover.status, 200);
+    const shelves = await shelvesOf(discover);
+    const releaseRefs = (
+      shelves.find((shelf) => shelf.id === "new-releases")?.items ?? []
+    ).map(refOf);
+    assert.ok(
+      releaseRefs.every(
+        (ref) => !(ref?.provider === "tpdb" && ref?.kind === "movie"),
+      ),
+      "a whole-word label hides the longer-tagged title on discover",
+    );
+    assert.ok(
+      releaseRefs.some(
+        (ref) => ref?.provider === "stashdb" && ref?.kind === "scene",
+      ),
+      "a tpdb-scoped hidden label never touches the stash side",
+    );
+
+    // Global search: the movie category loses the family rows, the scene
+    // category keeps its non-contiguous label.
+    const search = await call("GET", "/api/search?q=Fixture", {
+      cookie: member,
+    });
+    const searchBody = await searchOf(search);
+    const moviesCat = searchBody.categories.find(
+      (category) => category.id === "tpdb-movies",
+    );
+    assert.ok(
+      (moviesCat?.items ?? []).every(
+        (item) => item.reference.id !== TPDB_MOVIE9,
+      ),
+      "a whole-word label hides the longer-tagged title in global search",
+    );
+    const scenesCat = searchBody.categories.find(
+      (category) => category.id === "stashdb-scenes",
+    );
+    assert.ok(
+      (scenesCat?.items ?? []).some(
+        (item) => item.reference.id === STASH_SCENE,
+      ),
+      "a label that is not a contiguous word sequence never matches",
+    );
+
+    // …and only for this account: the family-hidden title renders again
+    // for an account without the hidden tag.
+    resetMetaCache();
+    const otherDiscover = await call("GET", "/api/discover", {
+      cookie: member2,
+    });
+    assert.equal(otherDiscover.status, 200);
+    const otherRefs = (
+      (await shelvesOf(otherDiscover)).find(
+        (shelf) => shelf.id === "new-releases",
+      )?.items ?? []
+    ).map(refOf);
+    assert.ok(
+      otherRefs.some((ref) => ref?.id === TPDB_MOVIE9),
+      "family hiding is personal, never global",
+    );
+  } finally {
+    const restored = await call("PATCH", "/api/me/preferences", {
+      cookie: member,
+      body: { hiddenTags: [] },
+    });
+    assert.equal(restored.status, 200);
+  }
+
+  // Phase 2 uses the dedicated family rows: exact parent "Anal", whole-word
+  // child "Anal Creampie", and "Analingus" — a letter overlap with no word
+  // boundary. Served only for q=Family and the family filmography route.
+  const savedAnal = await call("PATCH", "/api/me/preferences", {
+    cookie: member,
+    body: { hiddenTags: [{ name: "Anal", tpdb: TAG_FAMILY_PARENT }] },
+  });
+  assert.equal(savedAnal.status, 200);
+  try {
+    resetMetaCache();
+
+    // Browse: the child-tagged title leaves the page beside its parent, the
+    // boundary-tagged title stays, the count still reports exactly one
+    // saved hidden selection, and the stash side is untouched.
+    const browse = await call("GET", "/api/browse?q=Family", {
+      cookie: member,
+    });
+    assert.equal(browse.status, 200);
+    const browsePage = (await browse.json()) as BrowsePageBody;
+    assert.equal(browsePage.hiddenTagCount, 1);
+    assert.deepEqual(browsePage.errors, []);
+    const browseRefs = browsePage.items.map(refOf);
+    assert.ok(
+      browseRefs.every(
+        (ref) =>
+          ref?.id !== TPDB_MOVIE_FAMILY_EXACT &&
+          ref?.id !== TPDB_MOVIE_FAMILY_CHILD,
+      ),
+      "a whole-word label hides the longer-tagged title on browse",
+    );
+    assert.ok(
+      browseRefs.some(
+        (ref) => ref?.provider === "tpdb" && ref?.id === TPDB_MOVIE_FAMILY_WIDE,
+      ),
+      "a letter overlap with no word boundary never matches",
+    );
+    assert.ok(
+      browseRefs.some(
+        (ref) => ref?.provider === "stashdb" && ref?.kind === "scene",
+      ),
+      "the stash side is untouched by a tpdb-scoped family label",
+    );
+
+    // Global search on the same q marker: same split.
+    const familySearch = await call("GET", "/api/search?q=Family", {
+      cookie: member,
+    });
+    const familySearchBody = await searchOf(familySearch);
+    const familyMovies = familySearchBody.categories.find(
+      (category) => category.id === "tpdb-movies",
+    );
+    assert.ok(
+      (familyMovies?.items ?? []).every(
+        (item) =>
+          item.reference.id !== TPDB_MOVIE_FAMILY_EXACT &&
+          item.reference.id !== TPDB_MOVIE_FAMILY_CHILD,
+      ),
+      "a whole-word label hides the longer-tagged title in global search",
+    );
+    assert.ok(
+      (familyMovies?.items ?? []).some(
+        (item) => item.reference.id === TPDB_MOVIE_FAMILY_WIDE,
+      ),
+      "the boundary-tagged title stays visible in global search",
+    );
+
+    // Filmography through the media catalog search: same family rule.
+    const filmography = await call(
+      "GET",
+      `/api/catalog/search?provider=tpdb&kind=movie&performer=${TPDB_PERFORMER_FAMILY}`,
+      { cookie: member },
+    );
+    assert.equal(filmography.status, 200);
+    const film = (await filmography.json()) as { items: FacetTile[] };
+    const filmRefs = film.items.map(refOf);
+    assert.ok(
+      filmRefs.every(
+        (ref) =>
+          ref?.id !== TPDB_MOVIE_FAMILY_EXACT &&
+          ref?.id !== TPDB_MOVIE_FAMILY_CHILD,
+      ),
+      "a whole-word label hides the longer-tagged filmography row",
+    );
+    assert.ok(
+      filmRefs.some((ref) => ref?.id === TPDB_MOVIE_FAMILY_WIDE),
+      "the boundary-tagged filmography row stays visible",
+    );
+
+    // …and only for this account.
+    resetMetaCache();
+    const otherBrowse = await call("GET", "/api/browse?q=Family", {
+      cookie: member2,
+    });
+    assert.equal(otherBrowse.status, 200);
+    const otherPage = (await otherBrowse.json()) as BrowsePageBody;
+    assert.equal(otherPage.hiddenTagCount, 0);
+    const otherIds = otherPage.items.map((item) => refOf(item)?.id);
+    for (const id of [
+      TPDB_MOVIE_FAMILY_EXACT,
+      TPDB_MOVIE_FAMILY_CHILD,
+      TPDB_MOVIE_FAMILY_WIDE,
+    ]) {
+      assert.ok(otherIds.includes(id), `visible without the hidden tag: ${id}`);
+    }
+  } finally {
+    const restored = await call("PATCH", "/api/me/preferences", {
+      cookie: member,
+      body: { hiddenTags: [] },
+    });
+    assert.equal(restored.status, 200);
+  }
+
+  // Phase 3: explicit URL filters against the same rows, no hidden list.
+  resetMetaCache();
+
+  // exclude=[parent] drops the child-tagged rows through the same family
+  // rule, and is honest that the personal hidden list played no part.
+  const exclude = encodeURIComponent(
+    JSON.stringify([{ name: "Anal", tpdb: TAG_FAMILY_PARENT }]),
+  );
+  const excluded = await call(
+    "GET",
+    `/api/browse?q=Family&type=movie&exclude=${exclude}`,
+    { cookie: member },
+  );
+  assert.equal(excluded.status, 200);
+  const excludedPage = (await excluded.json()) as BrowsePageBody;
+  assert.equal(excludedPage.hiddenTagCount, 0);
+  const excludedRefs = excludedPage.items.map(refOf);
+  assert.ok(
+    excludedRefs.every(
+      (ref) =>
+        ref?.id !== TPDB_MOVIE_FAMILY_EXACT &&
+        ref?.id !== TPDB_MOVIE_FAMILY_CHILD,
+    ),
+    "an explicit exclude drops the whole-word family rows",
+  );
+  assert.ok(
+    excludedRefs.some((ref) => ref?.id === TPDB_MOVIE_FAMILY_WIDE),
+    "an explicit exclude still never matches a letter overlap",
+  );
+
+  // include=[parent] stays exact: the filmography path applies includes
+  // locally, so a widened predicate would invent child-only rows here.
+  const include = encodeURIComponent(
+    JSON.stringify([{ name: "Anal", tpdb: TAG_FAMILY_PARENT }]),
+  );
+  const included = await call(
+    "GET",
+    `/api/browse?performerTpdb=${TPDB_PERFORMER_FAMILY}&include=${include}`,
+    { cookie: member },
+  );
+  assert.equal(included.status, 200);
+  const includedPage = (await included.json()) as BrowsePageBody;
+  assert.deepEqual(
+    includedPage.items.map((item) => refOf(item)?.id),
+    [TPDB_MOVIE_FAMILY_EXACT],
+    "an include never invents rows tagged only with a family child",
+  );
 });

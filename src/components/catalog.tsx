@@ -2504,14 +2504,14 @@ export function TitlesView() {
           label="Include tags"
           selected={include}
           onChange={onInclude}
-          description="Titles must carry every selected tag (AND)."
+          description="Titles must carry every selected tag (AND), matched exactly — the provider filters on the tag itself."
         />
         <TagPicker
           id="titles-exclude"
           label="Exclude tags"
           selected={exclude}
           onChange={onExclude}
-          description="Titles carrying any of these tags are left out — exclusions win over includes."
+          description="Titles carrying any of these tags are left out — exclusions win over includes, and a tag also covers the ones that contain it as a word (Anal drops Anal Creampie, never Analingus)."
         />
         <div>
           <PerformerPicker

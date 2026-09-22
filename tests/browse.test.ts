@@ -1014,9 +1014,9 @@ test("searchBrowseTags with no matches and no key returns an honest empty list",
   );
 });
 
-// --- isHiddenTitle: label rule, never substring ---
+// --- isHiddenTitle: family rule (whole-word sequence), never raw substring ---
 
-test("isHiddenTitle matches UUID or exact normalized label, never substrings", () => {
+test("isHiddenTitle matches UUID, whole label, or word family; never raw substring or blank labels", () => {
   const detail = (tags: { id: string; name: string }[]) =>
     ({
       reference: { provider: "stashdb", kind: "scene", id: uuid(9) },
@@ -1034,14 +1034,215 @@ test("isHiddenTitle matches UUID or exact normalized label, never substrings", (
   assert.equal(
     isHiddenTitle(detail([{ id: uuid(8), name: "ROUGH!" }]), hidden),
     true,
-  ); // uuid match
+  ); // uuid match wins even though the label differs
   assert.equal(
     isHiddenTitle(detail([{ id: uuid(12), name: "rough" }]), hidden),
     true,
-  ); // normalized label match
+  ); // exact normalized label
   assert.equal(
     isHiddenTitle(detail([{ id: uuid(12), name: "rough evening" }]), hidden),
+    true,
+  ); // family: "rough" appears as a whole word of the tag
+  assert.equal(
+    isHiddenTitle(detail([{ id: uuid(12), name: "roughing" }]), hidden),
     false,
-  ); // substring never matches
+  ); // raw substring never matches — the whole word must
   assert.equal(isHiddenTitle(detail([]), hidden), false);
+
+  const family: CatalogTagSelection[] = [{ name: "Double Penetration" }];
+  assert.equal(
+    isHiddenTitle(
+      detail([{ id: uuid(12), name: "Double Anal Penetration" }]),
+      family,
+    ),
+    false,
+  ); // multi-word selection needs its words contiguous
+  assert.equal(
+    isHiddenTitle(
+      detail([{ id: uuid(12), name: "Rough Double Penetration" }]),
+      family,
+    ),
+    true,
+  );
+  assert.equal(
+    isHiddenTitle(detail([{ id: uuid(12), name: "Anal" }]), [{ name: "   " }]),
+    false,
+  ); // a blank selection label hides nothing
+});
+
+// --- family matching in browse: hidden/exclude catch word sequences, includes stay exact ---
+
+test("a hidden single-word tag removes child-labelled titles while a longer unrelated word survives", async () => {
+  const CHILD = { id: 12, uuid: uuid(102), name: "Anal Creampie" };
+  const LONGER = { id: 13, uuid: uuid(103), name: "Analingus" };
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [CHILD, LONGER],
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(uuid(1), "Child Label", "2024-03-01", [CHILD]),
+            tpdbRow(uuid(2), "Longer Word", "2024-02-01", [LONGER]),
+            tpdbRow(uuid(3), "Clean", "2024-01-01"),
+          ],
+          next: null,
+          total: 3,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "movie",
+          include: [],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [{ name: "Anal", tpdb: uuid(101) }], // uuid matches nothing: label decides
+      );
+      assert.deepEqual(
+        page.items.map((d) => d.title),
+        ["Longer Word", "Clean"],
+      );
+      assert.equal(page.totalCountKnown, true);
+      assert.equal(page.total, 2);
+    },
+  );
+});
+
+test("family excludes need contiguous words; provider UUID still wins over labels", async () => {
+  const DP = { id: 12, uuid: uuid(102), name: "Double Penetration" };
+  const DAP = { id: 13, uuid: uuid(103), name: "Double Anal Penetration" };
+  const MISLABEL = { id: 14, uuid: uuid(104), name: "Completely Different" };
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [DP, DAP, MISLABEL],
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(uuid(1), "Excluded Contiguous", "2024-03-01", [DP]),
+            tpdbRow(uuid(2), "Survives Non Contiguous", "2024-02-01", [DAP]),
+            tpdbRow(uuid(3), "Hidden By Uuid", "2024-01-01", [MISLABEL]),
+          ],
+          next: null,
+          total: 3,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "movie",
+          include: [],
+          exclude: [{ name: "Double Penetration", tpdb: uuid(102) }],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [{ name: "Personal Hidden", tpdb: uuid(104) }],
+      );
+      // "Double Anal Penetration" breaks the contiguous word run; the
+      // mislabelled tag still matches its provider UUID.
+      assert.deepEqual(
+        page.items.map((d) => d.title),
+        ["Survives Non Contiguous"],
+      );
+      assert.equal(page.totalCountKnown, true);
+      assert.equal(page.total, 1);
+    },
+  );
+});
+
+test("filmography local includes stay exact: a parent label never returns child-only rows", async () => {
+  const PARENT = { id: 11, uuid: uuid(101), name: "Anal" };
+  const CHILD = { id: 12, uuid: uuid(102), name: "Rough Anal Sex" };
+  const performer = uuid(55);
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [PARENT, CHILD],
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(uuid(1), "Parent Tagged", "2024-02-01", [PARENT]),
+            tpdbRow(uuid(2), "Child Only", "2024-01-01", [CHILD]),
+          ],
+          next: null,
+          total: 2,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "movie",
+          performerTpdb: performer,
+          include: [{ name: PARENT.name, tpdb: PARENT.uuid }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      assert.deepEqual(
+        page.items.map((d) => d.title),
+        ["Parent Tagged"],
+      );
+      assert.equal(page.totalCountKnown, true);
+      assert.equal(page.total, 1);
+    },
+  );
+});
+
+test("native includes stay exact: the parent travels as its provider id, child rows never qualify", async () => {
+  const PARENT = { id: 11, uuid: uuid(101), name: "Anal" };
+  const CHILD = { id: 12, uuid: uuid(102), name: "Rough Anal Sex" };
+  const movieUrls: string[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [PARENT, CHILD],
+      // An exact provider answers tag_and=<parent id> with only
+      // parent-tagged rows; the child-only movie exists upstream but never
+      // qualifies.
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(1), "Parent Tagged", "2024-01-01", [PARENT])],
+          next: null,
+          total: 1,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: (_page, _qs, url) => movieUrls.push(url),
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "movie",
+          include: [{ name: PARENT.name, tpdb: PARENT.uuid }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // Exactness is the native id criterion itself: tag_and over the
+      // parent's tag id, never a widened label predicate, and the child
+      // tag's id is never sent.
+      assert.match(movieUrls[0]!, /tag_and=1/);
+      assert.match(movieUrls[0]!, /tags%5B11%5D=1|tags\[11\]=1/);
+      assert.doesNotMatch(movieUrls[0]!, /tags%5B12%5D=1|tags\[12\]=1/);
+      assert.deepEqual(
+        page.items.map((d) => d.title),
+        ["Parent Tagged"],
+      );
+      assert.equal(page.totalCountKnown, true);
+      assert.equal(page.total, 1);
+    },
+  );
 });

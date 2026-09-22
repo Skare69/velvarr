@@ -19,6 +19,19 @@ export function normalizeFacetName(value: string): string {
     .replace(/[^a-z0-9]/g, "");
 }
 
+/** Word tokens for LOCAL FILTRATION only (personal hidden tags, search-time
+ * excludes): lowercase, NFKD, every non-alphanumeric run is a separator,
+ * empty tokens dropped. Never for identity/pairing/dedupe — those keep
+ * normalizeFacetName, where separators vanish so "a b" and "ab" stay one
+ * label. */
+export function facetTokens(value: string): string[] {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t !== "");
+}
+
 /** Provider-scoped external identity. `id` is the provider's external UUID,
  * never the application-owned catalog record id. */
 export type CatalogReference = {
