@@ -521,7 +521,8 @@ async function me(ctx: AuthContext): Promise<Response> {
 // --- personal content preferences ---
 
 // Session-only by construction: the route reads ctx.account.id, so a caller
-// can only ever touch its own hidden tags. PATCH never accepts an account id
+// can only ever touch its own hidden tags and discover shelf order. PATCH
+// never accepts an account id
 // — storage validates the whole body and rejects unknown top-level fields,
 // and a malformed payload changes nothing (atomic).
 async function updatePreferences(
@@ -2827,7 +2828,9 @@ async function discover(ctx: AuthContext): Promise<Response> {
   // UTC server date: the shared "today" cutoff for the mixed New releases
   // rail and its browse-all link.
   const today = new Date().toISOString().slice(0, 10);
-  const hiddenTags = getContentPreferences(ctx.account.id).hiddenTags;
+  // One preferences read feeds both the hidden-tag filter and the shelf
+  // order; the shelves themselves assemble in registry order first.
+  const { hiddenTags, discoverOrder } = getContentPreferences(ctx.account.id);
   const [newReleases, trending, recentlyAdded, requests] =
     await Promise.allSettled([
       // Built through the browse parser so the rail and its own browse link
@@ -2872,66 +2875,76 @@ async function discover(ctx: AuthContext): Promise<Response> {
   // Appended only when this account follows someone (or a side failed): an
   // account with no follows gets exactly the standard shelves.
   const followed = await followedShelf(ctx.account.id, hiddenTags);
-  return json({
-    shelves: [
-      browseShelf(
-        {
-          id: "new-releases",
-          title: "New releases",
-          description: "Newest TPDB movies and StashDB scenes",
-          source: "velvarr",
-          kind: "catalog",
-          browse: {
-            view: "titles",
-            params: {
-              type: "all",
-              sort: "recency",
-              direction: "desc",
-              date: today,
-              date_operation: "<=",
-            },
+  const shelves: Shelf[] = [
+    browseShelf(
+      {
+        id: "new-releases",
+        title: "New releases",
+        description: "Newest TPDB movies and StashDB scenes",
+        source: "velvarr",
+        kind: "catalog",
+        browse: {
+          view: "titles",
+          params: {
+            type: "all",
+            sort: "recency",
+            direction: "desc",
+            date: today,
+            date_operation: "<=",
           },
         },
-        newReleases,
-      ),
-      shelfOf(
-        {
-          id: "trending",
-          title: "Trending now",
-          description: "Scene trends from StashDB",
-          source: "stashdb",
-          kind: "catalog",
-          browse: {
-            view: "titles",
-            params: { type: "scene", sort: "trending", direction: "desc" },
-          },
+      },
+      newReleases,
+    ),
+    shelfOf(
+      {
+        id: "trending",
+        title: "Trending now",
+        description: "Scene trends from StashDB",
+        source: "stashdb",
+        kind: "catalog",
+        browse: {
+          view: "titles",
+          params: { type: "scene", sort: "trending", direction: "desc" },
         },
-        trending,
-      ),
-      shelfOf(
-        {
-          id: "jellyfin-recent",
-          title: "Recently added in your libraries",
-          source: "jellyfin",
-          kind: "library",
-          browse: { view: "library", params: {} },
-        },
-        recentlyAdded,
-      ),
-      shelfOf(
-        {
-          id: "velvarr-requests",
-          title: "Recent requests",
-          source: "velvarr",
-          kind: "requests",
-          browse: { view: "requests", params: {} },
-        },
-        requests,
-      ),
-      ...(await facetShelves(newReleases)),
-      ...(followed === null ? [] : [followed]),
-    ],
-  });
+      },
+      trending,
+    ),
+    shelfOf(
+      {
+        id: "jellyfin-recent",
+        title: "Recently added in your libraries",
+        source: "jellyfin",
+        kind: "library",
+        browse: { view: "library", params: {} },
+      },
+      recentlyAdded,
+    ),
+    shelfOf(
+      {
+        id: "velvarr-requests",
+        title: "Recent requests",
+        source: "velvarr",
+        kind: "requests",
+        browse: { view: "requests", params: {} },
+      },
+      requests,
+    ),
+    ...(await facetShelves(newReleases)),
+    ...(followed === null ? [] : [followed]),
+  ];
+  // Per-account order over the PRESENT shelves only: a shelf the account
+  // cannot fill (no follows) stays absent — never a fake rail, and the
+  // saved order itself is untouched. Array#sort is stable, so any id the
+  // saved order does not know (a shelf newer than this account's stored
+  // order) keeps its assembled position after the ranked ones.
+  const rank = new Map<string, number>(
+    discoverOrder.map((id, i) => [id, i] as const),
+  );
+  shelves.sort(
+    (a, b) => (rank.get(a.id) ?? rank.size) - (rank.get(b.id) ?? rank.size),
+  );
+  return json({ shelves });
 }
 
 function categoryOf(

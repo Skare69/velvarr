@@ -21,6 +21,7 @@ import type {
   CatalogReference,
   CatalogTagSelection,
   ContentPreferences,
+  DiscoverShelfId,
   ExternalLink,
   ExternalUser,
   IntegrationConfig,
@@ -41,6 +42,7 @@ import type {
 } from "../lib/contracts.ts";
 import { AppError } from "./http.ts";
 import {
+  DISCOVER_SHELVES,
   REMOVAL_LEVELS,
   removalLevelRank,
   normalizeFacetName,
@@ -48,7 +50,7 @@ import {
 
 // Schema identity: application_id spells 'VLVR', user_version is the schema version.
 const APP_ID = 0x564c5652;
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 // ponytail: fixed 7-day session TTL; make it an env knob only if an operator asks.
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const BUSY_TIMEOUT_MS = 5000;
@@ -89,6 +91,7 @@ type AccountRow = {
   auto_approve: number;
   can_remove: number;
   hidden_tags: string;
+  discover_order: string;
   created_at: number;
 };
 type SessionJoinRow = AccountRow & {
@@ -262,8 +265,8 @@ type Statements = {
   deletePerformerFollow: StatementSync;
   deletePerformerFollowsLinkedTo: StatementSync;
   isFollowingPerformer: StatementSync;
-  getHiddenTags: StatementSync;
-  updateHiddenTags: StatementSync;
+  getPreferences: StatementSync;
+  updatePreferences: StatementSync;
 };
 
 const MIGRATIONS: Record<number, string> = {
@@ -517,6 +520,14 @@ const MIGRATIONS: Record<number, string> = {
     -- for itself if SQL-side filtering ever beats filtering in the service.
     ALTER TABLE accounts ADD COLUMN hidden_tags TEXT NOT NULL DEFAULT '[]'
       CHECK (json_valid(hidden_tags));
+  `,
+  10: `
+    -- Personal discover carousel order: one JSON column per account, empty
+    -- by default. Empty means the default order; the app validates that
+    -- entries are distinct registered shelf ids, so the CHECK stays at the
+    -- json_valid level like hidden_tags.
+    ALTER TABLE accounts ADD COLUMN discover_order TEXT NOT NULL DEFAULT '[]'
+      CHECK (json_valid(discover_order));
   `,
 };
 
@@ -865,9 +876,11 @@ function S(): Statements {
       isFollowingPerformer: d.prepare(
         "SELECT 1 FROM performer_follows WHERE account_id = ? AND provider = ? AND external_id = ?",
       ),
-      getHiddenTags: d.prepare("SELECT hidden_tags FROM accounts WHERE id = ?"),
-      updateHiddenTags: d.prepare(
-        "UPDATE accounts SET hidden_tags = ? WHERE id = ?",
+      getPreferences: d.prepare(
+        "SELECT hidden_tags, discover_order FROM accounts WHERE id = ?",
+      ),
+      updatePreferences: d.prepare(
+        "UPDATE accounts SET hidden_tags = ?, discover_order = ? WHERE id = ?",
       ),
     };
   }
@@ -1851,9 +1864,13 @@ export function isFollowing(
   );
 }
 
-// --- content preferences (personal hidden tags) ---
+// --- content preferences (personal hidden tags and carousel order) ---
 
 const MAX_HIDDEN_TAGS = 25;
+const DISCOVER_IDS: readonly DiscoverShelfId[] = DISCOVER_SHELVES.map(
+  (s) => s.id,
+);
+const IS_DISCOVER_ID = new Set<string>(DISCOVER_IDS);
 
 /** Trust-boundary check for one tag selection: a real published label of
  * 1..120 characters, no unknown fields, and at least one provider UUID. */
@@ -1935,23 +1952,78 @@ export function parseTagSelections(input: unknown): CatalogTagSelection[] {
   return consolidated;
 }
 
+/** Shared trust boundary for a saved carousel order: an array of distinct
+ * registered shelf ids, at most one entry per shelf (so it can never exceed
+ * the registry length). [] restores the default order. Pure — no database
+ * access, safe before storage is initialized. */
+export function parseDiscoverOrder(input: unknown): DiscoverShelfId[] {
+  if (!Array.isArray(input)) {
+    throw new AppError(
+      400,
+      "invalid_preferences",
+      "discoverOrder must be an array of registered shelf ids",
+    );
+  }
+  const seen = new Set<string>();
+  for (const id of input) {
+    if (typeof id !== "string" || !IS_DISCOVER_ID.has(id)) {
+      throw new AppError(
+        400,
+        "invalid_preferences",
+        "discoverOrder must contain only registered shelf ids",
+      );
+    }
+    if (seen.has(id)) {
+      throw new AppError(
+        400,
+        "invalid_preferences",
+        "discoverOrder must not repeat a shelf",
+      );
+    }
+    seen.add(id);
+  }
+  return input as DiscoverShelfId[];
+}
+
+/** Full effective order for a stored (or raw caller-supplied) order: saved
+ * valid ids first, each once and unforeseen ids dropped, then every
+ * registered id the saved order omits, in default position. Resolves old
+ * and partial orders so later-added carousels are never lost. */
+function effectiveDiscoverOrder(saved: unknown): DiscoverShelfId[] {
+  const picked: DiscoverShelfId[] = [];
+  for (const id of Array.isArray(saved) ? saved : []) {
+    if (
+      typeof id === "string" &&
+      IS_DISCOVER_ID.has(id) &&
+      !picked.includes(id as DiscoverShelfId)
+    ) {
+      picked.push(id as DiscoverShelfId);
+    }
+  }
+  return [...picked, ...DISCOVER_IDS.filter((id) => !picked.includes(id))];
+}
+
 /** One account's stored preferences. Personal data: callers pass the id of
  * the session's own account; there is deliberately no list-everyone variant. */
 export function getContentPreferences(accountId: string): ContentPreferences {
-  const row = S().getHiddenTags.get(accountId) as
-    { hidden_tags: string } | undefined;
+  const row = S().getPreferences.get(accountId) as
+    { hidden_tags: string; discover_order: string } | undefined;
   if (!row) {
     throw new AppError(404, "account_not_found", "account not found");
   }
   // Rows only ever come from saveContentPreferences or the migration default.
-  return { hiddenTags: JSON.parse(row.hidden_tags) as CatalogTagSelection[] };
+  return {
+    hiddenTags: JSON.parse(row.hidden_tags) as CatalogTagSelection[],
+    discoverOrder: effectiveDiscoverOrder(JSON.parse(row.discover_order)),
+  };
 }
 
-/** Validates, then persists, one account's full preference document. The only
- * accepted envelope is exactly { hiddenTags } — never an account id — and
- * validation completes before the single-row write, so malformed input
- * changes nothing. Sessions, grants, and Jellyfin sync touch other columns
- * and are unaffected. */
+/** Validates, then persists, one account's preference patch. The only
+ * accepted envelope is a nonempty object of hiddenTags and/or discoverOrder
+ * — never an account id — and both fields validate before the single
+ * two-column write, so a malformed update changes neither. Omitted fields
+ * re-persist their stored value; sessions, grants, and Jellyfin sync touch
+ * other columns and are unaffected. */
 export function saveContentPreferences(
   accountId: string,
   input: unknown,
@@ -1960,23 +2032,38 @@ export function saveContentPreferences(
   if (!account) {
     throw new AppError(404, "account_not_found", "account not found");
   }
-  const doc = input as { hiddenTags?: unknown } | null;
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new AppError(
+      400,
+      "invalid_preferences",
+      "preferences must be an object with hiddenTags and/or discoverOrder",
+    );
+  }
+  const doc = input as Record<string, unknown>;
+  const hasTags = "hiddenTags" in doc;
+  const hasOrder = "discoverOrder" in doc;
   if (
-    !doc ||
-    typeof doc !== "object" ||
-    Array.isArray(doc) ||
-    !("hiddenTags" in doc) ||
-    Object.keys(doc).some((k) => k !== "hiddenTags")
+    (!hasTags && !hasOrder) ||
+    Object.keys(doc).some((k) => k !== "hiddenTags" && k !== "discoverOrder")
   ) {
     throw new AppError(
       400,
       "invalid_preferences",
-      "preferences must be exactly { hiddenTags }",
+      "preferences must be an object with hiddenTags and/or discoverOrder",
     );
   }
-  const hiddenTags = parseTagSelections(doc.hiddenTags);
-  S().updateHiddenTags.run(JSON.stringify(hiddenTags), accountId);
-  return { hiddenTags };
+  const hiddenTags = hasTags
+    ? parseTagSelections(doc.hiddenTags)
+    : (JSON.parse(account.hidden_tags) as CatalogTagSelection[]);
+  const discoverOrder = hasOrder
+    ? parseDiscoverOrder(doc.discoverOrder)
+    : (JSON.parse(account.discover_order) as DiscoverShelfId[]);
+  S().updatePreferences.run(
+    JSON.stringify(hiddenTags),
+    JSON.stringify(discoverOrder),
+    accountId,
+  );
+  return { hiddenTags, discoverOrder: effectiveDiscoverOrder(discoverOrder) };
 }
 
 /** Durable request view, filtered by the viewer's role: requesters see only

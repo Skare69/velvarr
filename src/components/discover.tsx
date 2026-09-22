@@ -545,6 +545,13 @@ const PAGE_HEADING = (
     <div>
       <h2 className="page-title">Discover</h2>
     </div>
+    <Link
+      href="/?view=preferences"
+      prefetch={false}
+      className="text-sm text-muted"
+    >
+      Reorder shelves
+    </Link>
   </header>
 );
 
@@ -561,8 +568,8 @@ export function DiscoverShelves() {
     reload,
   } = useApiGet<DiscoverPage>("/api/discover", []);
 
-  // Hidden-tag decisions land as this event; the personal shelf refetches
-  // instead of showing yesterday's rail.
+  // Preference changes (hidden tags, shelf order) land as this event; the
+  // page refetches instead of showing yesterday's decisions.
   useEffect(() => {
     window.addEventListener(PREFERENCES_CHANGED, reload);
     return () => window.removeEventListener(PREFERENCES_CHANGED, reload);
@@ -604,8 +611,11 @@ export function DiscoverShelves() {
   return (
     <section aria-label="Discover">
       {PAGE_HEADING}
-      {/* The server's shelf order is the composition: new releases, trending,
-          the library surfaces, then the personal rail last. No client re-sort. */}
+      {/* The server's shelf order IS the composition — it resolves each
+          account's saved order (personal content preferences) over the
+          default, and only shelves present in this response are rendered.
+          The API is authoritative: no client re-sort, no preferences fetch
+          here. Personal shelves refetch on PREFERENCES_CHANGED above. */}
       {page.shelves.map((s) => (
         <ShelfSection
           key={s.id}

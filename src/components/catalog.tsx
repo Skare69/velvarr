@@ -2419,7 +2419,7 @@ export function TitlesView() {
             <GridSkeleton
               aspect="aspect-[2/3]"
               cols={POSTER_GRID}
-              count={Math.min(perPage, 24)}
+              count={perPage}
             />
           ) : (
             <>

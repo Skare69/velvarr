@@ -25,6 +25,7 @@ import type {
   MediaReference,
   RemovalLevel,
 } from "../src/lib/contracts.ts";
+import { DISCOVER_SHELVES } from "../src/lib/contracts.ts";
 
 process.env.VELVARR_ORIGIN = "http://127.0.0.1:5577";
 process.env.VELVARR_SETUP_SECRET = "setup-secret-for-tests-0123456789abcdef";
@@ -753,8 +754,8 @@ test("v1 database migrates in place preserving config, accounts, sessions, and g
   );
   assert.deepEqual(
     storage.getContentPreferences(owner.id),
-    { hiddenTags: [] },
-    "migrated accounts default to empty hidden tags",
+    { hiddenTags: [], discoverOrder: DEFAULT_ORDER },
+    "migrated accounts default to empty hidden tags and the default order",
   );
   assert.deepEqual(
     storage.getConfig()?.jellyfin.libraryIds,
@@ -2657,6 +2658,7 @@ test("linkFollows folds two separately-followed rows into one identity and never
 
 const TAG_TPDB = "c3d4e5f6-a7b8-4c9d-8e1f-3a4b5c6d7e01";
 const TAG_STASH = "d4e5f6a7-b8c9-4d0e-9f2a-4b5c6d7e8f02";
+const DEFAULT_ORDER = DISCOVER_SHELVES.map((s) => s.id);
 const invalidPrefs = (e: { code: string }) => e.code === "invalid_preferences";
 
 function prefSetup(): { owner: string; other: string } {
@@ -2670,10 +2672,13 @@ test("content preferences persist per account, survive reopen, and never leak be
   const { owner, other } = prefSetup();
   assert.deepEqual(
     storage.getContentPreferences(owner),
-    { hiddenTags: [] },
+    { hiddenTags: [], discoverOrder: DEFAULT_ORDER },
     "fresh accounts start empty",
   );
-  assert.deepEqual(storage.getContentPreferences(other), { hiddenTags: [] });
+  assert.deepEqual(storage.getContentPreferences(other), {
+    hiddenTags: [],
+    discoverOrder: DEFAULT_ORDER,
+  });
 
   const saved = storage.saveContentPreferences(owner, {
     hiddenTags: [
@@ -2684,11 +2689,12 @@ test("content preferences persist per account, survive reopen, and never leak be
   // The same label from both providers consolidates into one selection.
   assert.deepEqual(saved, {
     hiddenTags: [{ name: "Rómance", tpdb: TAG_TPDB, stashdb: TAG_STASH }],
+    discoverOrder: DEFAULT_ORDER,
   });
   assert.deepEqual(storage.getContentPreferences(owner), saved);
   assert.deepEqual(
     storage.getContentPreferences(other),
-    { hiddenTags: [] },
+    { hiddenTags: [], discoverOrder: DEFAULT_ORDER },
     "another account is unaffected",
   );
 
@@ -2698,7 +2704,10 @@ test("content preferences persist per account, survive reopen, and never leak be
     saved,
     "preferences survive close/reopen",
   );
-  assert.deepEqual(storage.getContentPreferences(other), { hiddenTags: [] });
+  assert.deepEqual(storage.getContentPreferences(other), {
+    hiddenTags: [],
+    discoverOrder: DEFAULT_ORDER,
+  });
 });
 
 test("malformed preferences are rejected atomically; unknown accounts are 404", () => {
@@ -2713,7 +2722,7 @@ test("malformed preferences are rejected atomically; unknown accounts are 404", 
     ["null", null],
     ["array envelope", [{ name: "Romance", tpdb: TAG_TPDB }]],
     ["unknown envelope key", { hiddenTags: [], extra: 1 }],
-    ["missing hiddenTags", {}],
+    ["empty patch", {}],
     ["hiddenTags not an array", { hiddenTags: "Romance" }],
     ["selection not an object", { hiddenTags: ["Romance"] }],
     ["empty name", { hiddenTags: [{ name: "", tpdb: TAG_TPDB }] }],
@@ -2751,6 +2760,7 @@ test("malformed preferences are rejected atomically; unknown accounts are 404", 
   // Every rejection above changed nothing.
   assert.deepEqual(storage.getContentPreferences(owner), {
     hiddenTags: good.hiddenTags,
+    discoverOrder: DEFAULT_ORDER,
   });
 
   // 25 consolidated selections pass; the label rule keeps the dupes out.
@@ -2778,4 +2788,214 @@ test("malformed preferences are rejected atomically; unknown accounts are 404", 
     () => storage.getContentPreferences("no-such-account"),
     (e: AppError) => e.code === "account_not_found" && e.status === 404,
   );
+});
+
+test("discover order persists per account, isolates accounts, and partial saves preserve the other field", () => {
+  const { owner, other } = prefSetup();
+
+  // Order-only save: hidden tags untouched; a saved subset completes to the
+  // full effective order, each shelf exactly once, omitted shelves appended
+  // in default position.
+  storage.saveContentPreferences(owner, {
+    hiddenTags: [{ name: "Romance", tpdb: TAG_TPDB }],
+  });
+  const reordered = storage.saveContentPreferences(owner, {
+    discoverOrder: ["genres", "new-releases"],
+  });
+  assert.deepEqual(
+    reordered.hiddenTags,
+    [{ name: "Romance", tpdb: TAG_TPDB }],
+    "order-only save preserves hidden tags",
+  );
+  assert.deepEqual(reordered.discoverOrder, [
+    "genres",
+    "new-releases",
+    "trending",
+    "jellyfin-recent",
+    "velvarr-requests",
+    "studios",
+    "followed-titles",
+  ]);
+
+  // Hidden-tag-only save: the saved order is untouched.
+  const retagged = storage.saveContentPreferences(owner, { hiddenTags: [] });
+  assert.deepEqual(retagged.hiddenTags, []);
+  assert.deepEqual(
+    retagged.discoverOrder,
+    reordered.discoverOrder,
+    "tag-only save preserves the saved order",
+  );
+
+  // Durable across reopen, and never shared with another account.
+  storage.closeStorage();
+  const reopened = storage.getContentPreferences(owner);
+  assert.deepEqual(
+    reopened.discoverOrder,
+    reordered.discoverOrder,
+    "order survives close/reopen",
+  );
+  assert.deepEqual(reopened.hiddenTags, []);
+  assert.deepEqual(storage.getContentPreferences(other), {
+    hiddenTags: [],
+    discoverOrder: DEFAULT_ORDER,
+  });
+
+  // A full order round-trips exactly: every shelf, once, in the given order.
+  const reversed = [...DEFAULT_ORDER].reverse();
+  assert.deepEqual(
+    storage.saveContentPreferences(other, { discoverOrder: reversed })
+      .discoverOrder,
+    reversed,
+  );
+
+  // Reset: an empty array restores the default order and nothing else.
+  const tags = [{ name: "Sci-fi", stashdb: TAG_STASH }];
+  storage.saveContentPreferences(owner, { hiddenTags: tags });
+  const reset = storage.saveContentPreferences(owner, { discoverOrder: [] });
+  assert.deepEqual(
+    reset.discoverOrder,
+    DEFAULT_ORDER,
+    "[] restores the default order",
+  );
+  assert.deepEqual(
+    reset.hiddenTags,
+    tags,
+    "resetting the order never touches hidden tags",
+  );
+});
+
+test("discover order rejects duplicates, unknown ids, and non-strings without touching either field", () => {
+  const { owner } = prefSetup();
+  const savedTags = [{ name: "Romance", tpdb: TAG_TPDB }];
+  storage.saveContentPreferences(owner, {
+    hiddenTags: savedTags,
+    discoverOrder: ["studios"],
+  });
+  const storedOrder = [
+    "studios",
+    ...DEFAULT_ORDER.filter((id) => id !== "studios"),
+  ];
+
+  const badOrders: [string, unknown][] = [
+    ["not an array", "studios"],
+    ["unknown shelf", ["no-such-shelf"]],
+    ["valid id plus unknown", ["studios", "nope"]],
+    ["duplicate shelf", ["studios", "studios"]],
+    ["non-string entry", [42]],
+    ["inherited property name", ["constructor"]],
+  ];
+  for (const [label, order] of badOrders) {
+    assert.throws(
+      () => storage.saveContentPreferences(owner, { discoverOrder: order }),
+      invalidPrefs,
+      label,
+    );
+  }
+
+  // A combined update where only one field is invalid changes neither field.
+  assert.throws(
+    () =>
+      storage.saveContentPreferences(owner, {
+        hiddenTags: [{ name: "Broken", tpdb: "not-a-uuid" }],
+        discoverOrder: ["genres"],
+      }),
+    invalidPrefs,
+    "invalid tags poison the combined update",
+  );
+  assert.throws(
+    () =>
+      storage.saveContentPreferences(owner, {
+        hiddenTags: [{ name: "Sci-fi", stashdb: TAG_STASH }],
+        discoverOrder: ["genres", "genres"],
+      }),
+    invalidPrefs,
+    "invalid order poisons the combined update",
+  );
+  assert.throws(
+    () => storage.saveContentPreferences(owner, { discoverOrder: [], x: 1 }),
+    invalidPrefs,
+    "unknown envelope key",
+  );
+
+  // Every rejection above left both fields exactly as last saved.
+  assert.deepEqual(storage.getContentPreferences(owner), {
+    hiddenTags: savedTags,
+    discoverOrder: storedOrder,
+  });
+});
+
+test("schema 9 preferences survive the schema 10 upgrade: hidden tags kept, order starts at the default", () => {
+  const { owner, other } = prefSetup();
+  const dir = currentDir;
+
+  // Rewind a real database to the exact schema-9 shape: rebuild accounts
+  // without migration 10's column (SQLite cannot drop a CHECK-constrained
+  // column in place) and pin user_version to 9. Everything else — config,
+  // sessions, other tables — stays as the storage migrations built it, so
+  // the upgrade below runs over a genuine database with saved preferences.
+  const savedTags = [{ name: "Romance", tpdb: TAG_TPDB }];
+  storage.saveContentPreferences(owner, { hiddenTags: savedTags });
+  const raw = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  raw.exec(`
+    CREATE TABLE accounts_schema9 (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      role TEXT NOT NULL CHECK (role IN ('admin', 'moderator', 'requester')),
+      enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+      library_ids TEXT NOT NULL CHECK (json_valid(library_ids)),
+      is_owner INTEGER NOT NULL CHECK (is_owner IN (0, 1)),
+      created_at INTEGER NOT NULL,
+      auto_approve INTEGER NOT NULL DEFAULT 0 CHECK (auto_approve IN (0, 1)),
+      can_remove INTEGER NOT NULL DEFAULT 0 CHECK (can_remove IN (0, 1)),
+      hidden_tags TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(hidden_tags))
+    );
+    INSERT INTO accounts_schema9
+      SELECT id, name, role, enabled, library_ids, is_owner, created_at,
+             auto_approve, can_remove, hidden_tags
+      FROM accounts;
+    DROP TABLE accounts;
+    ALTER TABLE accounts_schema9 RENAME TO accounts;
+    CREATE UNIQUE INDEX accounts_single_owner ON accounts (is_owner)
+      WHERE is_owner = 1;
+    PRAGMA user_version = 9;
+  `);
+  raw.close();
+  storage.closeStorage();
+
+  // Reopening runs migration 10 in place.
+  const prefs = storage.getContentPreferences(owner);
+  assert.deepEqual(
+    prefs.hiddenTags,
+    savedTags,
+    "saved schema-9 hidden tags survive the upgrade",
+  );
+  assert.deepEqual(
+    prefs.discoverOrder,
+    DEFAULT_ORDER,
+    "no saved order migrates to the default order",
+  );
+  assert.deepEqual(
+    storage.getContentPreferences(other),
+    { hiddenTags: [], discoverOrder: DEFAULT_ORDER },
+    "accounts that never saved preferences keep every default",
+  );
+
+  // The migrated rows accept a normal patch afterwards.
+  const saved = storage.saveContentPreferences(owner, {
+    discoverOrder: ["trending"],
+  });
+  assert.deepEqual(
+    saved.hiddenTags,
+    savedTags,
+    "order-only save preserves migrated hidden tags",
+  );
+  assert.equal(saved.discoverOrder[0], "trending");
+  assert.equal(saved.discoverOrder.length, DEFAULT_ORDER.length);
+
+  const version = (
+    new DatabaseSync(join(dir, "velvarr.sqlite"))
+      .prepare("PRAGMA user_version")
+      .get() as { user_version: number }
+  ).user_version;
+  assert.ok(version >= 10, "schema 9 database must be migrated forward");
 });

@@ -4528,6 +4528,7 @@ interface TagSelectionBody {
 
 interface PreferencesBody {
   hiddenTags: TagSelectionBody[];
+  discoverOrder: string[];
 }
 
 interface BrowsePageBody {
@@ -4548,6 +4549,18 @@ interface RelatedBody {
   errors: { provider: string; code: string; message: string }[];
 }
 
+// The discover registry order every fresh account resolves to; mirrors
+// DISCOVER_SHELVES in contracts.ts.
+const DEFAULT_ORDER = [
+  "new-releases",
+  "trending",
+  "jellyfin-recent",
+  "velvarr-requests",
+  "studios",
+  "genres",
+  "followed-titles",
+];
+
 test("content preferences are session-only, self-owned, and atomic on malformed input", async () => {
   // Admission first: anonymous callers get nothing.
   assert.equal((await call("GET", "/api/me/preferences")).status, 401);
@@ -4562,6 +4575,7 @@ test("content preferences are session-only, self-owned, and atomic on malformed 
   assert.equal(initial.status, 200);
   const initialBody = (await initial.json()) as PreferencesBody;
   assert.deepEqual(initialBody.hiddenTags, []);
+  assert.deepEqual(initialBody.discoverOrder, DEFAULT_ORDER);
 
   const hidden: TagSelectionBody[] = [{ name: "Fixture Tag A", tpdb: TAG_A }];
   const saved = await call("PATCH", "/api/me/preferences", {
@@ -4570,7 +4584,10 @@ test("content preferences are session-only, self-owned, and atomic on malformed 
   });
   assert.equal(saved.status, 200);
   const savedBody = (await saved.json()) as PreferencesBody;
-  assert.deepEqual(savedBody, { hiddenTags: hidden });
+  assert.deepEqual(savedBody, {
+    hiddenTags: hidden,
+    discoverOrder: DEFAULT_ORDER,
+  });
 
   // Ownership: another account reads its own list, and cannot move mine by
   // smuggling an account id into the body — the envelope rejects unknown
@@ -4590,7 +4607,10 @@ test("content preferences are session-only, self-owned, and atomic on malformed 
     cookie: member,
   });
   const afterSmuggleBody = (await afterSmuggle.json()) as PreferencesBody;
-  assert.deepEqual(afterSmuggleBody, { hiddenTags: hidden });
+  assert.deepEqual(afterSmuggleBody, {
+    hiddenTags: hidden,
+    discoverOrder: DEFAULT_ORDER,
+  });
 
   // Malformed payloads are atomic rejections: wrong envelope, wrong types,
   // empty names, missing provider references, bad uuids, oversize lists.
@@ -4622,7 +4642,10 @@ test("content preferences are session-only, self-owned, and atomic on malformed 
     cookie: member,
   });
   const afterMalformedBody = (await afterMalformed.json()) as PreferencesBody;
-  assert.deepEqual(afterMalformedBody, { hiddenTags: hidden });
+  assert.deepEqual(afterMalformedBody, {
+    hiddenTags: hidden,
+    discoverOrder: DEFAULT_ORDER,
+  });
 
   // Both provider references on one tag is the normal cross-provider pick.
   const both = await call("PATCH", "/api/me/preferences", {
@@ -4639,6 +4662,212 @@ test("content preferences are session-only, self-owned, and atomic on malformed 
     body: { hiddenTags: [] },
   });
   assert.equal(restored.status, 200);
+});
+
+test("discover honors a personal shelf order; contents, errors, and other accounts stay untouched", async () => {
+  try {
+    // Member2's untouched view, snapshotted before member's mutations: the
+    // followed rail is conditional (present only with follows), so the
+    // isolation proof compares against what this account actually has —
+    // shelf ids and stored preference document alike.
+    const otherBefore = await call("GET", "/api/discover", {
+      cookie: member2,
+    });
+    assert.equal(otherBefore.status, 200);
+    const otherShelvesBefore = (await shelvesOf(otherBefore)).map(
+      (shelf) => shelf.id,
+    );
+    const otherPrefsBefore = await call("GET", "/api/me/preferences", {
+      cookie: member2,
+    });
+    assert.equal(otherPrefsBefore.status, 200);
+    const otherPrefsBeforeBody =
+      (await otherPrefsBefore.json()) as PreferencesBody;
+
+    // The existing endpoint takes an order-only save and answers with the
+    // full effective document.
+    const custom: string[] = [
+      "followed-titles",
+      "velvarr-requests",
+      "jellyfin-recent",
+      "genres",
+      "studios",
+      "trending",
+      "new-releases",
+    ];
+    const saved = await call("PATCH", "/api/me/preferences", {
+      cookie: member,
+      body: { discoverOrder: custom },
+    });
+    assert.equal(saved.status, 200);
+    const savedBody = (await saved.json()) as PreferencesBody;
+    assert.deepEqual(savedBody.discoverOrder, custom);
+
+    // Absent follow rail: the chosen order applies to the PRESENT shelves
+    // only — no fake followed-titles shelf appears, and hiddenTags stays.
+    const page = await call("GET", "/api/discover", { cookie: member });
+    assert.equal(page.status, 200);
+    const shelves = await shelvesOf(page);
+    assert.deepEqual(
+      shelves.map((shelf) => shelf.id),
+      custom.filter((id) => id !== "followed-titles"),
+    );
+
+    // Reordering never rewrites contents: the mixed rail stays velvarr-
+    // sourced and the requests rail keeps the caller's role-correct view.
+    // Member is a moderator at this point (promoted in the removals test),
+    // so staff visibility shows the whole request history — owner filings
+    // included — not just this account's own.
+    const byId = Object.fromEntries(shelves.map((s) => [s.id, s])) as Record<
+      string,
+      FixtureShelf
+    >;
+    assert.equal(byId["new-releases"]?.source, "velvarr");
+    const staffView = byId["velvarr-requests"]?.items ?? [];
+    assert.ok(
+      staffView.some((record) => record.accountId === OWNER_ID),
+      "moderator rail carries the shared request history",
+    );
+
+    // Another account keeps its own view: member's reorder leaks nothing —
+    // member2's shelf ids and stored preference document are identical to
+    // the pre-mutation snapshot, conditional rails included as-is.
+    const other = await call("GET", "/api/discover", { cookie: member2 });
+    assert.equal(other.status, 200);
+    assert.deepEqual(
+      (await shelvesOf(other)).map((shelf) => shelf.id),
+      otherShelvesBefore,
+    );
+    const otherPrefs = await call("GET", "/api/me/preferences", {
+      cookie: member2,
+    });
+    const otherPrefsBody = (await otherPrefs.json()) as PreferencesBody;
+    assert.deepEqual(otherPrefsBody, otherPrefsBeforeBody);
+
+    // The absent rail appears at its chosen position once a follow exists.
+    const follow = await call("POST", "/api/follows", {
+      cookie: member,
+      body: {
+        performer: {
+          provider: "tpdb",
+          kind: "performer",
+          id: TPDB_PERFORMER,
+        },
+        name: "Fixture Performer",
+      },
+    });
+    assert.equal(follow.status, 201);
+    try {
+      const withRail = await call("GET", "/api/discover", { cookie: member });
+      assert.deepEqual(
+        (await shelvesOf(withRail)).map((shelf) => shelf.id),
+        custom,
+      );
+    } finally {
+      const unfollowed = await call(
+        "DELETE",
+        `/api/follows/tpdb/${TPDB_PERFORMER}`,
+        { cookie: member },
+      );
+      assert.equal(unfollowed.status, 204);
+    }
+
+    // Hidden-tags-only save preserves the order; order-only save preserves
+    // the tags.
+    const tags: TagSelectionBody[] = [{ name: "Fixture Tag A", tpdb: TAG_A }];
+    const tagSave = await call("PATCH", "/api/me/preferences", {
+      cookie: member,
+      body: { hiddenTags: tags },
+    });
+    assert.equal(tagSave.status, 200);
+    const tagSaveBody = (await tagSave.json()) as PreferencesBody;
+    assert.deepEqual(tagSaveBody.hiddenTags, tags);
+    assert.deepEqual(tagSaveBody.discoverOrder, custom);
+    const reorder: string[] = [
+      "trending",
+      "new-releases",
+      "jellyfin-recent",
+      "velvarr-requests",
+      "studios",
+      "genres",
+      "followed-titles",
+    ];
+    const orderSave = await call("PATCH", "/api/me/preferences", {
+      cookie: member,
+      body: { discoverOrder: reorder },
+    });
+    assert.equal(orderSave.status, 200);
+    const orderSaveBody = (await orderSave.json()) as PreferencesBody;
+    assert.deepEqual(orderSaveBody.hiddenTags, tags);
+    assert.deepEqual(orderSaveBody.discoverOrder, reorder);
+
+    // The reorder save moves shelves without touching their contents: the
+    // requests rail answers with the exact pre-change records (the rail is
+    // not hidden-tag filtered, so the active tags cannot shift it either).
+    const moved = await call("GET", "/api/discover", { cookie: member });
+    assert.equal(moved.status, 200);
+    const movedShelves = await shelvesOf(moved);
+    assert.deepEqual(
+      movedShelves.map((shelf) => shelf.id),
+      reorder.filter((id) => id !== "followed-titles"),
+    );
+    assert.deepEqual(
+      movedShelves.find((shelf) => shelf.id === "velvarr-requests")?.items,
+      staffView,
+    );
+
+    // Invalid and foreign-account mutations are refused with the same
+    // invalid_preferences code — and nothing at all changes.
+    const rejected: unknown[] = [
+      { discoverOrder: ["trending", "trending", ...reorder.slice(2)] },
+      { discoverOrder: ["bogus-shelf"] },
+      { discoverOrder: "trending" },
+      { discoverOrder: [7] },
+      { accountId: MEMBER2_ID, discoverOrder: reorder },
+    ];
+    for (const body of rejected) {
+      const err = await errorShape(
+        await call("PATCH", "/api/me/preferences", { cookie: member, body }),
+      );
+      assert.equal(err.code, "invalid_preferences");
+    }
+    const intact = await call("GET", "/api/me/preferences", { cookie: member });
+    const intactBody = (await intact.json()) as PreferencesBody;
+    assert.deepEqual(intactBody, { hiddenTags: tags, discoverOrder: reorder });
+
+    // An errored shelf keeps its chosen placement: trending leads even with
+    // its only source unconfigured, and the failure rides the shelf itself.
+    const key = process.env.STASHDB_API_KEY;
+    delete process.env.STASHDB_API_KEY;
+    try {
+      resetMetaCache();
+      const outage = await call("GET", "/api/discover", { cookie: member });
+      assert.equal(outage.status, 200);
+      const outShelves = await shelvesOf(outage);
+      assert.equal(outShelves[0]?.id, "trending");
+      assert.equal(outShelves[0]?.error?.code, "provider_not_configured");
+      assert.equal(outShelves[0]?.items, undefined);
+      assert.deepEqual(
+        outShelves.slice(1).map((shelf) => shelf.id),
+        reorder.slice(1).filter((id) => id !== "followed-titles"),
+      );
+    } finally {
+      process.env.STASHDB_API_KEY = key;
+    }
+  } finally {
+    // Reset: empty order and empty tags restore the registry order, and
+    // tests after this point see the untouched state.
+    const reset = await call("PATCH", "/api/me/preferences", {
+      cookie: member,
+      body: { hiddenTags: [], discoverOrder: [] },
+    });
+    assert.equal(reset.status, 200);
+    const resetBody = (await reset.json()) as PreferencesBody;
+    assert.deepEqual(resetBody, {
+      hiddenTags: [],
+      discoverOrder: DEFAULT_ORDER,
+    });
+  }
 });
 
 test("browse is the unified visible-catalog surface and counts the caller's hidden tags", async () => {

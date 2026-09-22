@@ -123,9 +123,30 @@ export type CatalogTagSelection = {
   stashdb?: string;
 };
 
+/** The Discover carousels in their default display order. Shared vocabulary:
+ * the server orders present shelves by the saved per-account order, the UI
+ * renders titles from here, and storage validates saved ids against it. */
+export const DISCOVER_SHELVES = [
+  { id: "new-releases", title: "New releases" },
+  { id: "trending", title: "Trending now" },
+  { id: "jellyfin-recent", title: "Recently added in your libraries" },
+  { id: "velvarr-requests", title: "Recent requests" },
+  { id: "studios", title: "Studios" },
+  { id: "genres", title: "Genres" },
+  { id: "followed-titles", title: "From performers you follow" },
+] as const;
+
+export type DiscoverShelfId = (typeof DISCOVER_SHELVES)[number]["id"];
+
 /** One account's personal content preferences. Hidden tags remove matching
- * titles from that account's discovery views only; never an authorization. */
-export type ContentPreferences = { hiddenTags: CatalogTagSelection[] };
+ * titles from that account's discovery views only; never an authorization.
+ * discoverOrder is stored as the subset the user pinned ([] = default
+ * order); readers always get the full effective order, omitted shelves
+ * appended in default position. */
+export type ContentPreferences = {
+  hiddenTags: CatalogTagSelection[];
+  discoverOrder: DiscoverShelfId[];
+};
 
 export type RequestDecision = "pending" | "approved" | "declined" | "cancelled";
 
