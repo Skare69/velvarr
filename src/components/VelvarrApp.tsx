@@ -1850,14 +1850,26 @@ function AccountDialog({
             <input
               type="checkbox"
               className="check"
-              checked={owner ? initial.autoApprove : autoApprove}
-              disabled={owner || pending}
+              checked={
+                initial.role === "admin"
+                  ? true
+                  : owner
+                    ? initial.autoApprove
+                    : autoApprove
+              }
+              disabled={owner || initial.role === "admin" || pending}
               onChange={(e) => setAutoApprove(e.target.checked)}
             />
-            {owner ? "Always (owner)" : "Approves own requests"}
+            {initial.role === "admin"
+              ? "Always (admin)"
+              : owner
+                ? "Always (owner)"
+                : "Approves own requests"}
           </label>
           <p className="mt-1 text-xs text-muted">
-            Lets this user approve their own requests without a moderator.
+            {initial.role === "admin"
+              ? "Admin requests are approved the moment they are made."
+              : "Lets this user approve their own requests without a moderator."}
           </p>
         </div>
 

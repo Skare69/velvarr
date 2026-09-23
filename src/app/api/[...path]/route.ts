@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   Account,
   AdminAccount,
@@ -607,21 +608,46 @@ async function libraryItem(ctx: AuthContext, id: string): Promise<Response> {
   return json({ item });
 }
 
-async function libraryImage(ctx: AuthContext, id: string): Promise<Response> {
+/** Shared image response: strong ETag + If-None-Match revalidation so F5 is a
+ * 304 instead of a full refetch, and a private max-age so ordinary navigation
+ * serves from the browser cache. Artwork and library art are stable per URL;
+ * a changed image revalidates through the ETag. */
+function imageResponse(
+  image: { bytes: Uint8Array; contentType: string },
+  request: Request,
+  maxAgeSeconds: number,
+): Response {
+  const etag = `"${createHash("sha256").update(image.bytes).digest("base64url")}"`;
+  const cache = `private, max-age=${maxAgeSeconds}`;
+  if (request.headers.get("if-none-match") === etag) {
+    return new Response(null, {
+      status: 304,
+      headers: { etag, "cache-control": cache },
+    });
+  }
+  return new Response(image.bytes as unknown as BodyInit, {
+    status: 200,
+    headers: {
+      "content-type": image.contentType,
+      etag,
+      "cache-control": cache,
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
+
+async function libraryImage(
+  ctx: AuthContext,
+  request: Request,
+  id: string,
+): Promise<Response> {
   const image = await getLibraryImage(
     ctx.config,
     ctx.token,
     ctx.account,
     requireId(id),
   );
-  return new Response(image.bytes as unknown as BodyInit, {
-    status: 200,
-    headers: {
-      "content-type": image.contentType,
-      "cache-control": "private, no-store",
-      "x-content-type-options": "nosniff",
-    },
-  });
+  return imageResponse(image, request, 86400);
 }
 
 // --- admin routes ---
@@ -1684,8 +1710,9 @@ async function catalogDetail(
 }
 
 // Artwork proxy: provider-hosted URLs only, byte-capped pass-through,
-// private/no-store, nothing persisted, and no Velvarr or provider
-// credentials ever reach the image host (fetchProviderArtwork sends none).
+// cacheable per URL (ETag + private max-age, revalidated on F5), nothing
+// persisted, and no Velvarr or provider credentials ever reach the image
+// host (fetchProviderArtwork sends none).
 async function catalogImage(request: Request): Promise<Response> {
   const target = new URL(request.url).searchParams.get("url");
   if (target === null || target === "") {
@@ -1700,20 +1727,17 @@ async function catalogImage(request: Request): Promise<Response> {
     );
   }
   const { bytes, contentType } = await fetchProviderArtwork(target);
-  return new Response(bytes as unknown as BodyInit, {
-    status: 200,
-    headers: {
-      "content-type": contentType,
-      "cache-control": "private, no-store",
-      "x-content-type-options": "nosniff",
-      // Provider logos include SVG, which is active content. Nothing here is
-      // trusted markup: no script, no embedding, and never a top-level
-      // document — so a hostile logo has nothing to execute against.
-      "content-security-policy":
-        "default-src 'none'; style-src 'unsafe-inline'; sandbox",
-      "content-disposition": "attachment",
-    },
-  });
+  const response = imageResponse({ bytes, contentType }, request, 604800);
+  if (response.status === 304) return response;
+  // Provider logos include SVG, which is active content. Nothing here is
+  // trusted markup: no script, no embedding, and never a top-level
+  // document — so a hostile logo has nothing to execute against.
+  response.headers.set(
+    "content-security-policy",
+    "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+  );
+  response.headers.set("content-disposition", "attachment");
+  return response;
 }
 
 // Server-validated MediaReference from a request body. A browser-supplied
@@ -1746,16 +1770,18 @@ function mediaFromBody(body: Record<string, unknown>): MediaReference {
 }
 
 // Creates one user's request intent from a server-validated MediaReference.
-// With the autoApprove grant the request is decided approved immediately so
-// shared acquisition work is enqueued; otherwise it stays pending for a
-// moderator. No Whisparr call happens anywhere on this path.
+// With the autoApprove grant — or an admin role, which carries the same trust
+// implicitly (Seerr parity; the owner account cannot be granted the flag in
+// the UI because it is already staff) — the request is decided approved
+// immediately so shared acquisition work is enqueued; otherwise it stays
+// pending for a moderator. No Whisparr call happens anywhere on this path.
 async function createRequestRoute(
   request: Request,
   ctx: AuthContext,
 ): Promise<Response> {
   const media = mediaFromBody(await readJson(request));
   const record = createRequest(ctx.account.id, media);
-  if (ctx.account.autoApprove) {
+  if (ctx.account.autoApprove || ctx.account.role === "admin") {
     return json(
       {
         request: decideRequest(ctx.account, record.id, "approved"),
@@ -2019,7 +2045,7 @@ async function bulkRequestRoute(
     try {
       const record = createRequest(ctx.account.id, media);
       requested += 1;
-      if (ctx.account.autoApprove) {
+      if (ctx.account.autoApprove || ctx.account.role === "admin") {
         decideRequest(ctx.account, record.id, "approved");
         autoApproved += 1;
       }
@@ -3104,7 +3130,7 @@ function routeFor(
     if (root === "library" && segments.length === 3)
       return signedIn((ctx) => libraryItem(ctx, segments[2]!));
     if (root === "images" && segments.length === 3)
-      return signedIn((ctx) => libraryImage(ctx, segments[2]!));
+      return signedIn((ctx) => libraryImage(ctx, request, segments[2]!));
     if (root === "catalog" && a === "search" && segments.length === 3)
       return signedIn((ctx) => catalogSearch(request, ctx));
     // Related resolves before the generic detail match below it.

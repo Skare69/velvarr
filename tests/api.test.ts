@@ -907,13 +907,19 @@ let recordAcquisitionObservation: (
 async function call(
   method: "GET" | "POST" | "PATCH" | "DELETE",
   path: string,
-  init: { origin?: string | null; cookie?: string; body?: unknown } = {},
+  init: {
+    origin?: string | null;
+    cookie?: string;
+    body?: unknown;
+    headers?: Record<string, string>;
+  } = {},
 ): Promise<Response> {
   const headers: Record<string, string> = {};
   const origin = init.origin === undefined ? ORIGIN : init.origin;
   if (origin) headers.origin = origin;
   if (init.cookie) headers.cookie = init.cookie;
   if (init.body !== undefined) headers["content-type"] = "application/json";
+  Object.assign(headers, init.headers);
   const request = new Request(ORIGIN + path, {
     method,
     headers,
@@ -1399,7 +1405,10 @@ test("library access is bounded by grants; no path leakage; protected images", a
   });
   assert.equal(image.status, 200);
   assert.match(image.headers.get("content-type") ?? "", /^image\//);
-  assert.match(image.headers.get("cache-control") ?? "", /no-store/);
+  // Cacheable per URL with ETag revalidation — the pop-in fix. Private, so
+  // no shared cache ever holds authenticated artwork.
+  assert.match(image.headers.get("cache-control") ?? "", /max-age=\d+/);
+  assert.match(image.headers.get("etag") ?? "", /^"/);
   assert.equal(image.headers.get("x-content-type-options"), "nosniff");
   assert.ok((await image.arrayBuffer()).byteLength > 0);
 
@@ -1944,7 +1953,7 @@ test("catalog detail: validation before upstream, absence vs outage, own request
   );
 });
 
-test("catalog artwork proxy: provider-only, no credentials, no-store", async () => {
+test("catalog artwork proxy: provider-only, no credentials, cacheable with revalidation", async () => {
   const target = encodeURIComponent(`${tpdbUrl}/fixture-artwork.png`);
   const anon = await call("GET", `/api/catalog/image?url=${target}`);
   assert.equal(anon.status, 401);
@@ -1974,11 +1983,30 @@ test("catalog artwork proxy: provider-only, no credentials, no-store", async () 
   });
   assert.equal(ok.status, 200);
   assert.match(ok.headers.get("content-type") ?? "", /^image\//);
-  assert.equal(ok.headers.get("cache-control"), "private, no-store");
+  assert.equal(ok.headers.get("cache-control"), "private, max-age=604800");
   assert.equal(ok.headers.get("x-content-type-options"), "nosniff");
   assert.deepEqual(new Uint8Array(await ok.arrayBuffer()), PNG_1PX);
+  const etag = ok.headers.get("etag");
+  assert.match(etag ?? "", /^"/);
   // No Velvarr or provider credential reached the image host.
   assert.equal(tpdbFx.imageAuth, "");
+
+  // A revalidation round trips to a body-less 304 instead of a refetch.
+  const revalidate = await call("GET", `/api/catalog/image?url=${target}`, {
+    cookie: member,
+    headers: { "if-none-match": etag! },
+  });
+  assert.equal(revalidate.status, 304);
+  assert.equal(revalidate.headers.get("etag"), etag);
+  assert.equal((await revalidate.arrayBuffer()).byteLength, 0);
+
+  // A changed representation (different ETag) refetches in full.
+  const stale = await call("GET", `/api/catalog/image?url=${target}`, {
+    cookie: member,
+    headers: { "if-none-match": '"stale"' },
+  });
+  assert.equal(stale.status, 200);
+  assert.deepEqual(new Uint8Array(await stale.arrayBuffer()), PNG_1PX);
 
   // Studio logos are SVG upstream: active content served inert. It arrives
   // script-less by policy, cannot be embedded, and is never a document.
@@ -4519,17 +4547,21 @@ test("admin user rows carry live request counts and avatar tags only when upstre
   );
 
   // Two intents filed through the real request API move the owner's count
-  // from 0 to exactly 2.
+  // from 0 to exactly 2. The owner is an ADMIN: no autoApprove grant is
+  // possible for that account (the UI locks it), and the role alone must
+  // auto-approve its own requests — each POST is born approved.
   for (const id of [TPDB_MOVIE7, TPDB_MOVIE8]) {
-    assert.equal(
-      (
-        await call("POST", "/api/requests", {
-          cookie: owner,
-          body: { media: { provider: "tpdb", kind: "movie", id } },
-        })
-      ).status,
-      201,
-    );
+    const filed = await call("POST", "/api/requests", {
+      cookie: owner,
+      body: { media: { provider: "tpdb", kind: "movie", id } },
+    });
+    assert.equal(filed.status, 201);
+    const filedBody = (await filed.json()) as {
+      autoApproved?: boolean;
+      request: { decision: string };
+    };
+    assert.equal(filedBody.autoApproved, true);
+    assert.equal(filedBody.request.decision, "approved");
   }
   const rows = await rowsOf();
   assert.equal(rows.find((row) => row.id === OWNER_ID)?.requestCount, 2);

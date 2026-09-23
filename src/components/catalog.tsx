@@ -95,10 +95,10 @@ type DetailTarget = {
 const POSTER_GRID = "poster-grid";
 
 function kindStrict(v: string | null): CatalogKind | null {
-  // "studio" admits the studio detail page; movie/scene heroes link to it.
-  return v === "movie" || v === "scene" || v === "performer" || v === "studio"
-    ? v
-    : null;
+  // "studio" is deliberately absent: a studio has no detail body, so every
+  // studio reference lands on the filtered titles grid. Old ?kind=studio URLs
+  // degrade to the plain browse grid.
+  return v === "movie" || v === "scene" || v === "performer" ? v : null;
 }
 
 function asMediaKind(kind: CatalogKind): MediaKind | null {
@@ -1230,7 +1230,6 @@ function DetailBody({
   // browse takes provider-scoped tags on every kind. Performer and studio
   // details keep their tags as plain text rather than dead controls.
   const tagBrowse = mediaKind !== null;
-  const isStudio = target.kind === "studio";
   // Availability is a media-target concept: no fetch for performer/studio.
   const mediaTarget =
     mediaKind !== null
@@ -1334,14 +1333,24 @@ function DetailBody({
               <p className="cat-hero-sub">
                 {studioRef ? (
                   <>
-                    {/* The hero name opens the studio's own detail page;
-                        the aside's Studio chip filters the list instead. */}
+                    {/* The hero name lands on the studio's titles — a studio
+                        has no detail body worth a page; the aside chip does
+                        the same thing lower down. */}
                     <button
                       type="button"
                       className="cat-hero-studio"
-                      title="Open the studio page"
-                      aria-label={`Open the studio page: ${d.studio?.name}`}
-                      onClick={() => onNavigate(studioRef)}
+                      title={`Browse titles from ${d.studio?.name}`}
+                      aria-label={`Browse titles from ${d.studio?.name}`}
+                      onClick={() =>
+                        onBrowse({
+                          param:
+                            studioRef.provider === "tpdb"
+                              ? "studioTpdb"
+                              : "studioStashdb",
+                          provider: studioRef.provider,
+                          id: studioRef.id,
+                        })
+                      }
                     >
                       {d.studio?.name}
                     </button>
@@ -1493,7 +1502,7 @@ function DetailBody({
         </div>
 
         <aside>
-          {studioRef && !isStudio && (
+          {studioRef && (
             <section className="cat-section" aria-label="Studio">
               <h2 className="cat-section-title">Studio</h2>
               <button
@@ -1518,105 +1527,6 @@ function DetailBody({
               >
                 {d.studio?.name}
               </button>
-            </section>
-          )}
-
-          {/* A studio detail had no way to browse its own titles. Child
-              scope is offered only when the provider reported children —
-              the count is StashDB-only and never defaulted to 0. */}
-          {isStudio && (
-            <section className="cat-section" aria-label="Studio titles">
-              <h2 className="cat-section-title">Titles from this studio</h2>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {target.provider === "tpdb" ? (
-                  <button
-                    type="button"
-                    className="chip"
-                    onClick={() =>
-                      onBrowse({
-                        param: "studioTpdb",
-                        provider: target.provider,
-                        id: target.id,
-                      })
-                    }
-                  >
-                    Movies from this studio
-                  </button>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      className="chip"
-                      onClick={() =>
-                        onBrowse({
-                          param: "studioStashdb",
-                          provider: target.provider,
-                          id: target.id,
-                        })
-                      }
-                    >
-                      Scenes from this studio only
-                    </button>
-                    {(d.childStudioCount ?? 0) > 0 && (
-                      <button
-                        type="button"
-                        className="chip"
-                        onClick={() =>
-                          onBrowse({
-                            param: "studioStashdb",
-                            provider: target.provider,
-                            id: target.id,
-                            studioMode: "withChildren",
-                          })
-                        }
-                      >
-                        Scenes including child studios ({d.childStudioCount})
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
-              {/* On a studio detail the studio field is the parent network;
-                  browse its titles the same way when it carries a reference. */}
-              {studioRef && (
-                <div className="mt-3">
-                  <p className="text-xs text-muted">
-                    Parent studio: {d.studio?.name}
-                  </p>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {target.provider === "tpdb" && (
-                      <button
-                        type="button"
-                        className="chip"
-                        onClick={() =>
-                          onBrowse({
-                            param: "studioTpdb",
-                            provider: studioRef.provider,
-                            id: studioRef.id,
-                          })
-                        }
-                      >
-                        Movies from {d.studio?.name}
-                      </button>
-                    )}
-                    {target.provider === "stashdb" && (
-                      <button
-                        type="button"
-                        className="chip"
-                        onClick={() =>
-                          onBrowse({
-                            param: "studioStashdb",
-                            provider: studioRef.provider,
-                            id: studioRef.id,
-                          })
-                        }
-                      >
-                        Scenes from {d.studio?.name}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
             </section>
           )}
 
