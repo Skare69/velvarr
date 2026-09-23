@@ -684,9 +684,15 @@ async function tpdbHandler(
     // Fresh movie id: TPDB_MOVIE3 already carries approved intents from the
     // autoApprove and availability tests, which would both collide with the
     // bulk's new pending intent (active-intent unique index) and appear in
-    // the owner's request list below.
+    // the owner's request list below. The credited partner feeds the
+    // co-appearance rail; credits never reach requests.
     return json(res, 200, {
-      data: [tpdbMovieRow(TPDB_MOVIE5)],
+      data: [
+        {
+          ...tpdbMovieRow(TPDB_MOVIE5),
+          performers: [{ id: TPDB_PERFORMER4, name: "Dee Vine" }],
+        },
+      ],
       meta: { total: 1 },
       links: {},
     });
@@ -5066,16 +5072,10 @@ test("related titles: admission, reference validation before upstream, rank voca
     401,
   );
 
-  // Bad uuid, performer kind, unknown rank: all refused with no upstream
-  // contact at all.
+  // Bad uuid, unknown rank: all refused with no upstream contact at all.
   const before = tpdbFx.calls;
   await errorShape(
     await call("GET", "/api/catalog/tpdb/movie/not-a-uuid/related", {
-      cookie: member,
-    }),
-  );
-  await errorShape(
-    await call("GET", `/api/catalog/tpdb/performer/${TPDB_PERFORMER}/related`, {
       cookie: member,
     }),
   );
@@ -5118,6 +5118,54 @@ test("related titles: admission, reference validation before upstream, rank voca
   const jevBody = (await jev.json()) as RelatedBody;
   assert.equal(jevBody.canRank, false);
   assert.equal(jevBody.ranking, "tags");
+});
+
+test("performer related answers co-appearances, never the requestability refusal", async () => {
+  resetMetaCache();
+  const ok = await call(
+    "GET",
+    `/api/catalog/tpdb/performer/${TPDB_PERFORMER}/related`,
+    { cookie: member },
+  );
+  assert.equal(ok.status, 200);
+  const body = (await ok.json()) as {
+    items: { title: string; reference: { provider: string; id: string } }[];
+    errors: unknown[];
+  };
+  assert.deepEqual(body.errors, []);
+  assert.equal(body.items.length, 1);
+  const partner = body.items[0]!;
+  assert.equal(partner.title, "Dee Vine");
+  assert.equal(partner.reference.id, TPDB_PERFORMER4);
+  // The performer herself never appears in her own rail.
+  assert.notEqual(partner.reference.id, TPDB_PERFORMER);
+
+  // A hidden tag on the partner's credit row removes the co-appearance
+  // rather than rendering the hidden title's evidence.
+  const saved = await call("PATCH", "/api/me/preferences", {
+    cookie: member,
+    body: {
+      hiddenTags: [{ name: "Fixture Tag A", tpdb: TAG_A }],
+    },
+  });
+  assert.equal(saved.status, 200);
+  try {
+    resetMetaCache();
+    const filtered = await call(
+      "GET",
+      `/api/catalog/tpdb/performer/${TPDB_PERFORMER}/related`,
+      { cookie: member },
+    );
+    assert.equal(filtered.status, 200);
+    const filteredBody = (await filtered.json()) as typeof body;
+    assert.deepEqual(filteredBody.items, []);
+  } finally {
+    const restore = await call("PATCH", "/api/me/preferences", {
+      cookie: member,
+      body: { hiddenTags: [] },
+    });
+    assert.equal(restore.status, 200);
+  }
 });
 
 test("hidden tags filter discover, global search, and filmography — never entities or owned history", async () => {

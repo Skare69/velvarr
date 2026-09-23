@@ -113,7 +113,7 @@ import {
   type BrowsePage,
   type SourceError,
 } from "../../../server/browse.ts";
-import { relatedTitles } from "../../../server/related.ts";
+import { relatedPerformers, relatedTitles } from "../../../server/related.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -1638,15 +1638,27 @@ async function relatedRoute(
   idRaw: string,
   url: URL,
 ): Promise<Response> {
-  const reference = parseMediaReference(providerRaw, kindRaw, idRaw);
   const rankRaw = url.searchParams.get("rank");
   if (rankRaw !== null && rankRaw !== "tags" && rankRaw !== "jev") {
     throw new AppError(400, "invalid_query", "rank must be tags or jev.");
   }
+  const hiddenTags = getContentPreferences(ctx.account.id).hiddenTags;
+  // A performer's rail is co-appearance over her filmography; movie/scene
+  // rails are similar-titles. The performer branch must not pass through
+  // parseMediaReference, whose requestability refusal reads as a lookup
+  // failure on the page.
+  if (kindRaw === "performer") {
+    return json(
+      await relatedPerformers(
+        parseCatalogReference(providerRaw, kindRaw, idRaw),
+        hiddenTags,
+      ),
+    );
+  }
   return json(
     await relatedTitles(
-      reference,
-      getContentPreferences(ctx.account.id).hiddenTags,
+      parseMediaReference(providerRaw, kindRaw, idRaw),
+      hiddenTags,
       {
         rank: rankRaw === "jev" ? "jev" : "tags",
         typesafeApiKey: ctx.config.providers?.typesafeApiKey,
