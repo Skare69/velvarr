@@ -660,13 +660,22 @@ function refuse(message: string): never {
 
 // --- browseTitles ---
 
-/** Composes the visible catalog page: native provider filters first, local
- * mandatory predicates only where a provider cannot express them, stable
- * prefix merge across sources, honest totals and failures throughout. */
-export async function browseTitles(
-  query: BrowseQuery,
-  hiddenTags: CatalogTagSelection[],
-): Promise<BrowsePage> {
+/** The one side decision, pure: which provider streams a browse query may
+ * run, which combinations are refused outright, and what ordering each side
+ * can carry. No IO and no per-user state — every refusal here is provable
+ * from the query alone, which makes this the directly testable face of the
+ * logic that once shipped mis-wired. browseTitles consumes the plan and adds
+ * only IO: include-tag resolution and per-user hidden tags. */
+export type BrowsePlan = {
+  sides: CatalogProvider[];
+  filmography: boolean;
+  nativeSort: SortOrder | undefined;
+  mergeOrder:
+    | { key: "recency" | "duration"; direction: CatalogSortDirection }
+    | undefined;
+};
+
+export function planBrowseSides(query: BrowseQuery): BrowsePlan {
   // Source-scoped constraints must never silently narrow to one kind or run
   // the other side unfiltered.
   if (query.performerStashdb !== undefined && query.type === "movie") {
@@ -780,6 +789,25 @@ export async function browseTitles(
     query.type !== "movie" &&
     !filmography &&
     (query.studioTpdb === undefined || query.studioStashdb !== undefined);
+  const sides: CatalogProvider[] = [];
+  if (movieWanted) sides.push("tpdb");
+  if (sceneWanted) sides.push("stashdb");
+  return { sides, filmography, nativeSort, mergeOrder };
+}
+
+/** Composes the visible catalog page: native provider filters first, local
+ * mandatory predicates only where a provider cannot express them, stable
+ * prefix merge across sources, honest totals and failures throughout. */
+export async function browseTitles(
+  query: BrowseQuery,
+  hiddenTags: CatalogTagSelection[],
+): Promise<BrowsePage> {
+  const plan = planBrowseSides(query);
+  const filmography = plan.filmography;
+  const nativeSort = plan.nativeSort;
+  const mergeOrder = plan.mergeOrder;
+  const movieWanted = plan.sides.includes("tpdb");
+  const sceneWanted = plan.sides.includes("stashdb");
   const [tpdbIncludes, stashIncludes] = await Promise.all([
     movieWanted
       ? includeIdsForSide(query.include, "tpdb")

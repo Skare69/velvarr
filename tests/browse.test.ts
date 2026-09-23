@@ -25,6 +25,7 @@ import {
   browseTitles,
   isHiddenTitle,
   parseBrowseQuery,
+  planBrowseSides,
   searchBrowseTags,
   searchVisibleCatalog,
 } from "../src/server/browse.ts";
@@ -1394,4 +1395,135 @@ test("native includes stay exact: the parent travels as its provider id, child r
       assert.equal(page.total, 1);
     },
   );
+});
+
+// --- the side decision, directly: every refusal and every side outcome is
+// provable from the query alone, so these need no upstream fixture at all ---
+
+function planQuery(overrides: Partial<BrowseQuery> = {}): BrowseQuery {
+  return {
+    type: "all",
+    include: [],
+    exclude: [],
+    studioMode: "exact",
+    page: 1,
+    perPage: 60,
+    ...overrides,
+  };
+}
+
+test("planBrowseSides refuses source-scoped filters on the wrong kind", () => {
+  for (const [field, type, fragment] of [
+    ["performerStashdb", "movie", "browse All or Scenes"],
+    ["studioStashdb", "movie", "browse All or Scenes"],
+    ["performerTpdb", "scene", "browse All or Movies"],
+    ["studioTpdb", "scene", "browse All or Movies"],
+  ] as const) {
+    assert.throws(
+      () => planBrowseSides(planQuery({ type, [field]: uuid(1) })),
+      (e: AppError) =>
+        e instanceof AppError &&
+        e.status === 400 &&
+        e.code === "invalid_search" &&
+        e.message.includes(fragment),
+      `${field} on ${type} must refuse`,
+    );
+  }
+});
+
+test("planBrowseSides refuses withChildren without a StashDB studio and with a TPDB studio", () => {
+  assert.throws(
+    () => planBrowseSides(planQuery({ studioMode: "withChildren" })),
+    /requires a StashDB studio/,
+  );
+  assert.throws(
+    () =>
+      planBrowseSides(
+        planQuery({
+          studioMode: "withChildren",
+          studioStashdb: uuid(2),
+          studioTpdb: uuid(3),
+        }),
+      ),
+    /StashDB-only/,
+  );
+});
+
+test("planBrowseSides refuses every filmography combination that upstream rejects", () => {
+  const filmography = {
+    performerTpdb: uuid(4),
+    type: "all" as const,
+  };
+  for (const extra of [
+    { q: "term" },
+    { year: 2024 },
+    { date: "2024-02-03" },
+    { studioTpdb: uuid(5) },
+    { sort: "title" as const },
+  ]) {
+    assert.throws(
+      () => planBrowseSides(planQuery({ ...filmography, ...extra })),
+      /TPDB performer filmography/,
+      `${JSON.stringify(extra)} must refuse`,
+    );
+  }
+});
+
+test("planBrowseSides refuses non-mixed sorts on All", () => {
+  assert.throws(
+    () => planBrowseSides(planQuery({ type: "all", sort: "title" })),
+    /not available on both sources/,
+  );
+});
+
+test("planBrowseSides picks sides: one-sided clauses kill only their own side", () => {
+  assert.deepEqual(planBrowseSides(planQuery()).sides, ["tpdb", "stashdb"]);
+  assert.deepEqual(planBrowseSides(planQuery({ type: "movie" })).sides, [
+    "tpdb",
+  ]);
+  assert.deepEqual(planBrowseSides(planQuery({ type: "scene" })).sides, [
+    "stashdb",
+  ]);
+  // A StashDB filter (performer or studio) kills the movie side: the user
+  // asked for StashDB scenes. A TPDB studio likewise kills the scene side.
+  assert.deepEqual(
+    planBrowseSides(planQuery({ performerStashdb: uuid(6) })).sides,
+    ["stashdb"],
+  );
+  assert.deepEqual(
+    planBrowseSides(planQuery({ studioStashdb: uuid(7) })).sides,
+    ["stashdb"],
+  );
+  // A unified studio tile carries both ids: the clauses are alternatives,
+  // not a conjunction, so both sides run.
+  assert.deepEqual(
+    planBrowseSides(planQuery({ studioStashdb: uuid(7), studioTpdb: uuid(8) }))
+      .sides,
+    ["tpdb", "stashdb"],
+  );
+});
+
+test("planBrowseSides derives order: filmography claims none, defaults are release recency", () => {
+  const def = planBrowseSides(planQuery());
+  assert.deepEqual(def.nativeSort, { key: "recency", direction: "desc" });
+  assert.deepEqual(def.mergeOrder, { key: "recency", direction: "desc" });
+
+  const film = planBrowseSides(
+    planQuery({ performerTpdb: uuid(4), type: "movie" }),
+  );
+  assert.equal(film.filmography, true);
+  assert.equal(film.nativeSort, undefined);
+  assert.equal(film.mergeOrder, undefined);
+
+  const explicit = planBrowseSides(
+    planQuery({ type: "movie", sort: "duration", direction: "asc" }),
+  );
+  assert.deepEqual(explicit.nativeSort, { key: "duration", direction: "asc" });
+  assert.deepEqual(explicit.mergeOrder, { key: "duration", direction: "asc" });
+
+  // A single-side explicit sort that the provider owns passes natively and
+  // claims no merge order.
+  const native = planBrowseSides(planQuery({ type: "movie", sort: "title" }));
+  assert.deepEqual(native.nativeSort, { key: "title" });
+  assert.equal(native.mergeOrder, undefined);
 });
