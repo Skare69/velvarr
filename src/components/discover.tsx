@@ -9,6 +9,7 @@ import {
 } from "react";
 import Link from "next/link";
 import { seedFacetTile } from "../lib/names";
+import { statusOf } from "../lib/status";
 import "./discover.css";
 import "./views.css";
 import type {
@@ -270,23 +271,18 @@ function RequestTile({
 }) {
   const art = useCatalogSummary(item.media);
   const session = useSession();
+  const availability = useAvailability(item.media);
+  const acq = item.acquisition;
   // The badge and chip are the truth, not the decision: a request whose
   // title already plays in the library reads "In library" here exactly as it
   // does on the library rail; an approval alone is only ever a single check.
-  const availability = useAvailability(item.media);
-  const acq = item.acquisition;
+  // The one ladder (lib/status) serves this tile and every card.
   const statusKind: CardStatusKind =
-    availability?.outcome === "available"
-      ? "available"
-      : acq?.monitored === false && acq.state !== "imported"
-        ? "paused"
-        : acq?.state === "downloading"
-          ? "processing"
-          : item.decision === "approved"
-            ? "approved"
-            : item.decision === "pending"
-              ? "requested"
-              : "declined";
+    statusOf({
+      availability,
+      acquisition: acq,
+      myRequest: item.decision ? { decision: item.decision } : null,
+    }) ?? "declined";
   const label = STATUS_LABELS[statusKind];
   const requester = item.requestedBy ?? session.account.name;
 

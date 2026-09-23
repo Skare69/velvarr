@@ -549,8 +549,9 @@ export function CardTypeBadge({ kind }: { kind: "movie" | "scene" | string }) {
   );
 }
 
-export type CardStatusKind =
-  "requested" | "approved" | "available" | "declined" | "processing" | "paused";
+import type { CardStatusKind } from "../lib/status.ts";
+import { statusOf } from "../lib/status.ts";
+export type { CardStatusKind };
 
 export const STATUS_ICONS: Record<CardStatusKind, keyof typeof ICON_PATHS> = {
   requested: "hourglass",
@@ -793,19 +794,10 @@ function RequestableCard({
   const requested = Boolean(status?.myRequest || status?.acquisition);
   const approved =
     status?.myRequest?.decision === "approved" || Boolean(status?.acquisition);
-  // Badge precedence: playable beats downloading beats unmonitored — a card
-  // reflects the shared acquisition, not per-user request history.
-  const statusKind: CardStatusKind | null = available
-    ? "available"
-    : status?.acquisition?.state === "downloading"
-      ? "processing"
-      : status?.acquisition?.monitored === false
-        ? "paused"
-        : requested
-          ? approved
-            ? "approved"
-            : "requested"
-          : null;
+  // One ladder for every surface (lib/status): playable beats downloading
+  // beats unmonitored; imported-but-unscanned is a decision fact, never
+  // "Paused".
+  const statusKind: CardStatusKind | null = statusOf(status ?? {});
   // A request intent does not depend on Jellyfin, so an outage or a denied
   // verdict must not hide the button the detail page still offers: the note
   // carries the truth instead.
