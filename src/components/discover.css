@@ -513,3 +513,30 @@ button.discovery-art-card {
     padding: 0.4rem 0.5rem 0.5rem;
   }
 }
+
+/* Seerr-style zoom on the discover-only tiles — the same affordance the
+   shared .media-card carries (globals). Transitions here subsume the
+   border/box-shadow transitions declared above. */
+.discovery-request-card,
+.discovery-facet,
+.discovery-art-card {
+  transition:
+    transform 180ms ease,
+    border-color 160ms,
+    box-shadow 160ms;
+}
+.discovery-request-card:hover,
+.discovery-facet:hover,
+.discovery-art-card:hover {
+  transform: scale(1.04);
+  position: relative;
+  z-index: 1;
+}
+
+/* The Genres/Studios overview: the rail's facet tiles in a wrapped grid. */
+.discovery-facet-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.875rem;
+  padding: 0.375rem 0;
+}

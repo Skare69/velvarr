@@ -2960,7 +2960,11 @@ test("discover: mixed new releases, honest trending, facets, grants, not-configu
   for (const shelf of [studiosShelf, genresShelf]) {
     assert.equal(shelf?.kind, "facets", shelf?.id);
     assert.equal(shelf?.source, "velvarr", shelf?.id);
-    assert.equal("browse" in (shelf ?? {}), false, shelf?.id);
+    // The headline arrows lead to the facet directory overview.
+    assert.deepEqual(shelf?.browse, {
+      view: "facets",
+      params: { kind: shelf?.id },
+    });
     assert.equal(shelf?.error, undefined, shelf?.id);
     assert.ok((shelf?.items?.length ?? 0) > 0, `${shelf?.id} carries items`);
   }
@@ -3156,6 +3160,69 @@ test("discover: mixed new releases, honest trending, facets, grants, not-configu
       }
     }
   }
+});
+
+test("the facet directory validates kind, lists both providers' genres, and derives studios uncapped", async () => {
+  assert.equal(
+    (await call("GET", "/api/discovery/facets?kind=genres")).status,
+    401,
+  );
+  const bad = await call("GET", "/api/discovery/facets?kind=all", {
+    cookie: member,
+  });
+  assert.equal(bad.status, 400);
+  assert.equal((await errorShape(bad)).code, "invalid_query");
+
+  const genres = await call("GET", "/api/discovery/facets?kind=genres", {
+    cookie: member,
+  });
+  assert.equal(genres.status, 200);
+  const genresBody = (await genres.json()) as {
+    kind: string;
+    tiles: { facet: string; provider: string; id: string; name: string }[];
+    errors: unknown[];
+  };
+  assert.equal(genresBody.kind, "genres");
+  // Each provider's real directory listing, alphabetized within its own
+  // side, TPDB first — no snapshot cap, no cross-provider merge.
+  assert.deepEqual(
+    genresBody.tiles.map((t) => t.name),
+    ["Fixture Tag A", "Fixture Tag B", "Fixture Stash Tag"],
+  );
+  assert.equal(
+    genresBody.tiles.every((t) => t.facet === "tag"),
+    true,
+  );
+  assert.deepEqual(genresBody.errors, []);
+
+  const studios = await call("GET", "/api/discovery/facets?kind=studios", {
+    cookie: member,
+  });
+  assert.equal(studios.status, 200);
+  const studiosBody = (await studios.json()) as {
+    kind: string;
+    tiles: { facet: string; provider: string; id: string }[];
+    errors: unknown[];
+  };
+  assert.equal(studiosBody.kind, "studios");
+  // Derived from the new-releases page: every studio renders, but the TPDB
+  // twin whose counterpart a StashDB tile published is deduped away — the
+  // same published-link rule as the discover shelf, uncapped.
+  const ids = new Set(studiosBody.tiles.map((t) => `${t.provider}:${t.id}`));
+  assert.equal(ids.has(`stashdb:${STASH_STUDIO}`), true);
+  assert.equal(ids.has(`tpdb:${TPDB_STUDIO2}`), true);
+  assert.equal(ids.has(`tpdb:${TPDB_STUDIO}`), false);
+  assert.equal(
+    studiosBody.tiles.every((t) => t.facet === "studio"),
+    true,
+  );
+
+  // Genres and studios are independent reads: the genre page still answers
+  // after the studio page (no shared one-shot state).
+  const again = await call("GET", "/api/discovery/facets?kind=genres", {
+    cookie: member,
+  });
+  assert.equal(again.status, 200);
 });
 
 // --- Wave A: follows, tag facet, bulk requests ---

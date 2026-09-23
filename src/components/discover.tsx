@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { seedFacetTile } from "../lib/names";
 import { statusOf } from "../lib/status";
 import "./discover.css";
@@ -551,6 +552,84 @@ const PAGE_HEADING = (
     </Link>
   </header>
 );
+
+interface FacetDirectory {
+  kind: string;
+  tiles: FacetItem[];
+  errors: { provider: "tpdb" | "stashdb"; code: string; message: string }[];
+}
+
+/** The Genres/Studios overview behind the shelf headline arrows: the same
+ * facet tiles at directory size. A side that failed (StashDB refuses
+ * empty-term tag searches on some tiers) is named — never a fabricated
+ * list; the studios page states its real breadth (recent releases). */
+export function FacetsView() {
+  const params = useSearchParams();
+  const kind = params.get("kind") === "studios" ? "studios" : "genres";
+  const title = kind === "studios" ? "Studios" : "Genres";
+  const { data, error, err, loading, reload } = useApiGet<FacetDirectory>(
+    `/api/discovery/facets?kind=${kind}`,
+    [kind],
+  );
+  if (loading && !data) {
+    return (
+      <section aria-label={title} aria-busy="true">
+        <RailSkeleton count={6} />
+        <RailSkeleton count={6} />
+      </section>
+    );
+  }
+  if ((error || err) && !data) {
+    return (
+      <section aria-label={title}>
+        <ErrorPanel
+          title={`${title} are unavailable`}
+          message={error ?? err!.message}
+          onRetry={reload}
+        />
+      </section>
+    );
+  }
+  if (!data) return null;
+  return (
+    <section aria-label={title}>
+      <header className="page-heading">
+        <div>
+          <h2 className="page-title">{title}</h2>
+          <p className="text-sm text-muted">
+            {kind === "studios"
+              ? "Studios in recent releases — no provider publishes a full studio directory."
+              : "Every genre each provider lists."}
+          </p>
+        </div>
+      </header>
+      {data.errors.length > 0 && (
+        <div className="panel p-4 text-sm text-muted" role="note">
+          {data.errors.map((e) => (
+            <p key={e.provider}>
+              <span className="chip chip-accent">
+                {sourceLabel(e.provider)}
+              </span>{" "}
+              {e.message}
+            </p>
+          ))}
+        </div>
+      )}
+      {data.tiles.length === 0 ? (
+        <p className="cat-note">Nothing to list yet.</p>
+      ) : (
+        <div className="discovery-facet-grid">
+          {data.tiles.map((item) => (
+            <FacetTile
+              key={`${item.provider}:${item.facet}:${item.id}`}
+              item={item}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
 
 export function DiscoverShelves() {
   const setP = useParamsSetter();

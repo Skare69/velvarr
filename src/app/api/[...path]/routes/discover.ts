@@ -479,6 +479,7 @@ export function facetShelves(
         source: "velvarr",
         kind: "facets",
         error,
+        browse: { view: "facets", params: { kind: "studios" } },
       },
       {
         id: "genres",
@@ -486,6 +487,7 @@ export function facetShelves(
         source: "velvarr",
         kind: "facets",
         error,
+        browse: { view: "facets", params: { kind: "genres" } },
       },
     ]);
   }
@@ -499,6 +501,30 @@ export function facetShelves(
     facetShelf("studios", sources),
     facetShelf("genres", sources),
   ]);
+}
+
+/** Cross-provider studio dedupe: a TPDB tile dies only when a StashDB tile
+ * published that exact studio as its counterpart — never by name: two
+ * same-named studios without a published link stay two tiles. Survivors get
+ * their own counterparts resolved (settled). */
+async function dedupePublishedStudios(
+  tiles: FacetItem[],
+): Promise<FacetItem[]> {
+  const stashTiles = tiles.filter((tile) => tile.provider === "stashdb");
+  await resolveLinked(stashTiles);
+  const publishedTpdb = new Set(
+    stashTiles.flatMap((tile) =>
+      tile.linked !== undefined ? [tile.linked.id.toLowerCase()] : [],
+    ),
+  );
+  const survivors = publishedTpdb.size
+    ? tiles.filter(
+        (tile) =>
+          tile.provider !== "tpdb" || !publishedTpdb.has(tile.id.toLowerCase()),
+      )
+    : tiles;
+  await resolveLinked(survivors);
+  return survivors;
 }
 
 export async function facetShelf(
@@ -540,27 +566,7 @@ export async function facetShelf(
   const emitted = candidates.slice(0, SHELF_ITEMS);
   let items = emitted;
   if (shelf === "studios") {
-    // StashDB->TPDB reads the link the studio record itself publishes (the
-    // detail studioFacets just cached), so it is free to run pre-dedupe; the
-    // TPDB->StashDB direction is a per-tile network query and waits until
-    // identity-dedupe and the cap have picked the survivors.
-    const stashTiles = emitted.filter((tile) => tile.provider === "stashdb");
-    await resolveLinked(stashTiles);
-    const publishedTpdb = new Set(
-      stashTiles.flatMap((tile) =>
-        tile.linked !== undefined ? [tile.linked.id.toLowerCase()] : [],
-      ),
-    );
-    // Drop a TPDB tile only when a StashDB tile published that exact studio
-    // as its counterpart — never by name: two same-named studios without a
-    // published link stay two tiles.
-    items = publishedTpdb.size
-      ? emitted.filter(
-          (tile) =>
-            tile.provider !== "tpdb" ||
-            !publishedTpdb.has(tile.id.toLowerCase()),
-        )
-      : emitted;
+    items = await dedupePublishedStudios(emitted);
   } else {
     // Categories dedupe by exact normalized name: the first-seen tile stays
     // and the dropped side's id becomes its linked.
@@ -576,16 +582,16 @@ export async function facetShelf(
         prior.linked = { provider: tile.provider, id: tile.id };
       }
     }
+    // Counterparts for everything the local dedupe could not pair.
+    await resolveLinked(items);
   }
-  // Counterparts for everything the local dedupe could not pair — network
-  // reads issued only for tiles that survived the cap.
-  await resolveLinked(items);
   return {
     id: shelf,
     title: shelf === "studios" ? "Studios" : "Genres",
     source: "velvarr",
     kind: "facets",
     items,
+    browse: { view: "facets", params: { kind: shelf } },
   };
 }
 
@@ -613,6 +619,87 @@ export async function resolveLinked(tiles: FacetItem[]): Promise<void> {
       };
     }
   });
+}
+
+// The facet directory behind the discover shelf headline arrows. Genres:
+// each provider's real tag listing — TPDB publishes a directory; StashDB's
+// empty-term tag search refuses on some key tiers, and that upstream refusal
+// surfaces as that side's error, never a fabricated list. Studios: no
+// provider publishes a studio directory, so the overview derives from the
+// same new-releases page the discover shelf reads, uncapped — the page
+// reports its own breadth instead of claiming "all studios ever".
+export async function discoveryFacets(
+  request: Request,
+  ctx: AuthContext,
+): Promise<Response> {
+  const kind = new URL(request.url).searchParams.get("kind");
+  if (kind !== "genres" && kind !== "studios") {
+    throw new AppError(
+      400,
+      "invalid_query",
+      'kind must be "genres" or "studios".',
+    );
+  }
+  const { hiddenTags } = getContentPreferences(ctx.account.id);
+  if (kind === "genres") {
+    const providers: CatalogProvider[] = ["tpdb", "stashdb"];
+    const settled = await Promise.allSettled(
+      providers.map((p) => listCatalogTags(p)),
+    );
+    const tiles: FacetItem[] = [];
+    const errors: SourceError[] = [];
+    for (let i = 0; i < providers.length; i++) {
+      const provider = providers[i]!;
+      const result = settled[i]!;
+      if (result.status === "rejected") {
+        errors.push(sourceError(provider, result.reason));
+        continue;
+      }
+      for (const tag of [...result.value].sort((a, b) =>
+        a.name.localeCompare(b.name),
+      )) {
+        tiles.push({ facet: "tag", provider, id: tag.id, name: tag.name });
+      }
+    }
+    return json({ kind, tiles, errors });
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  const page = await browseTitles(
+    parseBrowseQuery(
+      new URLSearchParams({
+        type: "all",
+        sort: "recency",
+        direction: "desc",
+        date: today,
+        date_operation: "<=",
+        page: "1",
+        perPage: "48",
+      }),
+    ),
+    hiddenTags,
+  );
+  const sources = (["tpdb", "stashdb"] as const)
+    .map((provider) => ({
+      provider,
+      items: page.items.filter((item) => item.reference.provider === provider),
+    }))
+    .filter((source) => source.items.length > 0);
+  const perSource = await Promise.all(
+    sources.map(async ({ provider, items }) => ({
+      provider,
+      tiles: (await studioFacets(provider, items)).map((detail): FacetItem => ({
+        facet: "studio",
+        provider,
+        id: detail.reference.id,
+        name: detail.title,
+        ...(detail.logoUrl !== undefined ? { logoUrl: detail.logoUrl } : {}),
+        ...(detail.imageUrl !== undefined ? { imageUrl: detail.imageUrl } : {}),
+      })),
+    })),
+  );
+  const tiles = await dedupePublishedStudios(perSource.flatMap((s) => s.tiles));
+  tiles.sort((a, b) => a.name.localeCompare(b.name));
+  return json({ kind, tiles, errors: [] });
 }
 
 export async function discover(ctx: AuthContext): Promise<Response> {
@@ -746,5 +833,11 @@ export const routes: RouteDef[] = [
     segments: ["discover"],
     auth: "session",
     run: async (ctx) => discover(ctx),
+  },
+  {
+    method: "GET",
+    segments: ["discovery", "facets"],
+    auth: "session",
+    run: async (ctx, request) => discoveryFacets(request, ctx),
   },
 ];

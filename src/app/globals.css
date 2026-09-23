@@ -591,6 +591,15 @@ summary:focus-visible,
   color: var(--color-ink);
   text-align: left;
   border-radius: 10px;
+  transition: transform 180ms ease;
+}
+/* Seerr-style: the whole card grows slightly on hover — the affordance is
+   the zoom on every surface (rails, browse grids), not just an outline.
+   z-index lifts the scaled card over its neighbors. */
+.media-card:hover {
+  transform: scale(1.04);
+  position: relative;
+  z-index: 1;
 }
 .media-art {
   position: relative;

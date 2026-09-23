@@ -49,7 +49,7 @@ import {
 import { TitlesView } from "./catalog.tsx";
 import { PreferencesView } from "./preferences.tsx";
 import { PerformerView } from "./performer.tsx";
-import { DiscoverShelves } from "./discover.tsx";
+import { DiscoverShelves, FacetsView } from "./discover.tsx";
 import { SearchView } from "./search.tsx";
 import { RequestsView } from "./requests.tsx";
 import { RemovalsView } from "./removals.tsx";
@@ -687,6 +687,7 @@ function LoginView({ onSignedIn }: { onSignedIn: () => void }) {
 
 const VIEWS = [
   "discover",
+  "facets",
   "titles",
   "following",
   "search",
@@ -981,6 +982,7 @@ function Shell() {
       </header>
       <main className="app-main" id="main-content" tabIndex={-1}>
         {view === "discover" && <DiscoverShelves />}
+        {view === "facets" && <FacetsView />}
         {view === "titles" && <TitlesView />}
         {view === "following" && <FollowingView />}
         {view === "library" && <LibraryView />}
