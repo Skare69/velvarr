@@ -15,6 +15,65 @@ import { Buffer } from "node:buffer";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resetMetaCache } from "../src/server/providers.ts";
 import { countPendingApprovals } from "../src/lib/approvals.ts";
+import type { RouteDef } from "../src/app/api/[...path]/admission.ts";
+import { routes as authRoutes } from "../src/app/api/[...path]/routes/auth.ts";
+import { routes as requestRoutes } from "../src/app/api/[...path]/routes/requests.ts";
+import { routes as followRoutes } from "../src/app/api/[...path]/routes/follows.ts";
+import { routes as catalogRoutes } from "../src/app/api/[...path]/routes/catalog.ts";
+import { routes as browseRoutes } from "../src/app/api/[...path]/routes/browse.ts";
+import { routes as libraryRoutes } from "../src/app/api/[...path]/routes/library.ts";
+import { routes as removalRoutes } from "../src/app/api/[...path]/routes/removals.ts";
+import { routes as adminRoutes } from "../src/app/api/[...path]/routes/admin.ts";
+import { routes as discoverRoutes } from "../src/app/api/[...path]/routes/discover.ts";
+
+test("route tables never shadow: every request shape matches at most one def", () => {
+  const all: RouteDef[] = [
+    ...authRoutes,
+    ...requestRoutes,
+    ...followRoutes,
+    ...catalogRoutes,
+    ...browseRoutes,
+    ...libraryRoutes,
+    ...removalRoutes,
+    ...adminRoutes,
+    ...discoverRoutes,
+  ];
+  // Exact match semantics (method + segment count + literal/:param) make the
+  // fold order irrelevant ONLY if no two defs can match the same request. A
+  // param at position i makes any other def with that method+length a
+  // conflict — the param would swallow its literal depending on fold order.
+  const shadow = (a: RouteDef, b: RouteDef): boolean =>
+    a.method === b.method &&
+    a.segments.length === b.segments.length &&
+    a.segments.every(
+      (pat, i) =>
+        pat.startsWith(":") ||
+        b.segments[i]!.startsWith(":") ||
+        pat === b.segments[i],
+    );
+  for (let i = 0; i < all.length; i++) {
+    for (let j = i + 1; j < all.length; j++) {
+      assert.ok(
+        !shadow(all[i]!, all[j]!),
+        `${all[i]!.method} [${all[i]!.segments}] is shadowed by ${all[j]!.method} [${all[j]!.segments}]`,
+      );
+    }
+  }
+  // The whole pre-session surface: exactly these routes answer without
+  // admission, nothing else.
+  const open = all
+    .filter((r) => r.auth === "open")
+    .map((r) => `${r.method} /${r.segments.join("/")}`)
+    .sort();
+  assert.deepEqual(open, [
+    "GET /health",
+    "GET /status",
+    "POST /login",
+    "POST /logout",
+    "POST /setup",
+    "POST /setup/inspect",
+  ]);
+});
 
 // Isolated environment BEFORE importing route/storage modules.
 process.env.VELVARR_DATA_DIR = mkdtempSync(join(tmpdir(), "velvarr-api-test-"));
