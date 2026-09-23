@@ -48,6 +48,9 @@ import type {
   RemovalRequest,
 } from "../lib/contracts";
 import { REQUESTS_CHANGED } from "../lib/approvals";
+// Names for studio/tag filter ids live in lib/names, seeded at navigation
+// time (details, picks, tiles) — URLs carry ids, chips still get labels.
+import { filterName, seedDetail, seedPerformerPick } from "../lib/names";
 
 /* ---------- Local shapes for API responses ---------- */
 
@@ -174,15 +177,6 @@ function restoreScroll(key: string) {
   if (y === undefined) return;
   scrollPositions.delete(key);
   window.scrollTo(0, y);
-}
-
-/** Names for studio/tag filter ids, captured from details or discovery at
- * navigation time — URLs carry provider-native ids, chips still get labels. */
-export const filterNames = new Map<string, string>();
-
-function filterName(provider: string, kind: string, id: string): string {
-  // An id with no captured name is labeled AS an id — never a fake name.
-  return filterNames.get(`${provider}:${kind}:${id}`) ?? `#${id.slice(0, 8)}…`;
 }
 
 /* ---------- Filter drawer (native <dialog>) ---------- */
@@ -646,10 +640,7 @@ function PerformerPicker({
                 type="button"
                 className="cat-picker-row"
                 onClick={() => {
-                  filterNames.set(
-                    `${side}:performer:${performer.reference.id}`,
-                    performer.title,
-                  );
+                  seedPerformerPick(side, performer);
                   onPick(side, performer.reference.id, performer.title);
                   setTerm("");
                 }}
@@ -1252,19 +1243,7 @@ function DetailBody({
   // Remember studio/tag names so browse chips can label the ids the URL
   // carries — details are where names are known.
   useEffect(() => {
-    if (studioRef)
-      filterNames.set(
-        `${studioRef.provider}:studio:${studioRef.id}`,
-        d.studio?.name ?? studioRef.id,
-      );
-    if (tagBrowse)
-      for (const t of d.tags)
-        filterNames.set(`${target.provider}:tag:${t.id}`, t.name);
-    for (const c of d.credits)
-      filterNames.set(
-        `${c.reference.provider}:performer:${c.reference.id}`,
-        c.name,
-      );
+    seedDetail(d, studioRef, tagBrowse);
   }, [studioRef, tagBrowse, d, target.provider]);
   return (
     <>

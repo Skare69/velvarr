@@ -40,6 +40,7 @@ import {
   legacyBrowsePatch,
   messageOf,
   SessionCtx,
+  setParamsClearing,
   useApiGet,
   useParamsSetter,
   useSession,
@@ -734,11 +735,9 @@ function GlobalSearchForm() {
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    const updates: Record<string, string | null> = {};
-    for (const key of new URLSearchParams(window.location.search).keys())
-      updates[key] = null;
-    setP(
-      { ...updates, view: "search", q: input.trim() || null },
+    setParamsClearing(
+      setP,
+      { view: "search", q: input.trim() || null },
       { push: true },
     );
     window.scrollTo({ top: 0 });
@@ -852,11 +851,9 @@ function Shell() {
   ] as const;
   const visibleNav = nav.filter((item) => item.group !== "admin" || isAdmin);
   const go = (next: View) => {
-    const updates: Record<string, string | null> = {};
-    for (const key of new URLSearchParams(window.location.search).keys())
-      updates[key] = null;
-    setP(
-      { ...updates, view: next === "discover" ? null : next },
+    setParamsClearing(
+      setP,
+      { view: next === "discover" ? null : next },
       { push: true },
     );
     navigation.current?.close();

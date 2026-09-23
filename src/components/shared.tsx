@@ -635,10 +635,31 @@ export function detailParams(r: CatalogReference): {
   };
 }
 
-/** Link target for the same contract, for anchors rather than param patches. */
+/** Link target for the same contract, for anchors rather than param patches.
+ * Built through URLSearchParams so an absent view (studio refs) stays absent
+ * instead of rendering the string "undefined" into the href. */
 export function detailHref(media: MediaReference): string {
   const p = detailParams(media);
-  return `/?view=${p.view}&provider=${p.provider}&kind=${p.kind}&id=${encodeURIComponent(p.id)}`;
+  const qs = new URLSearchParams(
+    Object.entries(p).filter(([, v]) => v !== undefined) as [string, string][],
+  );
+  return `/?${qs}`;
+}
+
+/** A surface change that first clears every existing param, then applies
+ * `updates` — the search and view-switch contract, written once. */
+export function setParamsClearing(
+  setP: (
+    updates: Record<string, string | null | undefined>,
+    options?: { push?: boolean },
+  ) => void,
+  updates: Record<string, string | null | undefined>,
+  options?: { push?: boolean },
+): void {
+  const cleared: Record<string, string | null> = {};
+  for (const key of new URLSearchParams(window.location.search).keys())
+    cleared[key] = null;
+  setP({ ...cleared, ...updates }, options);
 }
 
 export function GridSkeleton({

@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import Link from "next/link";
-import { filterNames } from "./catalog";
+import { seedFacetTile } from "../lib/names";
 import "./discover.css";
 import "./views.css";
 import type {
@@ -215,15 +215,7 @@ function FacetTile({ item }: { item: FacetItem }) {
         className={`discovery-facet discovery-facet-${studio ? "studio" : "genre"}`}
         onClick={() => {
           // Seed both sides so chips and headings show names, not raw ids.
-          filterNames.set(
-            `${item.provider}:${item.facet}:${item.id}`,
-            item.name,
-          );
-          if (item.linked)
-            filterNames.set(
-              `${item.linked.provider}:${item.facet}:${item.linked.id}`,
-              item.name,
-            );
+          seedFacetTile(item);
         }}
       >
         {art && (
