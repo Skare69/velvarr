@@ -1,6 +1,6 @@
 {
   "name": "velvarr",
-  "version": "0.22.1",
+  "version": "0.23.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -35,5 +35,6 @@
     "tailwindcss": "4.3.3",
     "typescript": "7.0.2"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "released": "2026-09"
 }
