@@ -198,12 +198,11 @@ export function listRequestItems(ctx: AuthContext): RequestListItem[] {
   const staff =
     ctx.account.role === "admin" || ctx.account.role === "moderator";
   // One map lookup per row instead of one account fetch per row.
-  const names = staff
-    ? new Map(listAccounts().map((a) => [a.id, a.name]))
-    : null;
+  const accounts = staff ? new Map(listAccounts().map((a) => [a.id, a])) : null;
   return listRequests(ctx.account).map((r) => {
-    const item: RequestListItem = names
-      ? { ...r, requestedBy: names.get(r.accountId) }
+    const acc = accounts?.get(r.accountId);
+    const item: RequestListItem = acc
+      ? { ...r, requestedBy: acc.name, requestedById: acc.id }
       : r;
     if (item.decision !== "approved") return item;
     const a = getAcquisitionByReference(item.media);

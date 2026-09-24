@@ -8,7 +8,7 @@
  * account id.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   DISCOVER_SHELVES,
   type ContentPreferences,
@@ -16,6 +16,7 @@ import {
 } from "../lib/contracts.ts";
 import {
   ErrorPanel,
+  Icon,
   PREFERENCES_CHANGED,
   api,
   messageOf,
@@ -283,5 +284,48 @@ export function PreferencesView() {
         />
       )}
     </div>
+  );
+}
+
+/** The preferences surface as a modal dialog: the reorder-shelves icon and the
+ * account menu both open it in place — no page navigation, Esc and backdrop
+ * taps close it. Content mounts only while open, so each open reads fresh. */
+export function PreferencesDialog({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open && !d.open) d.showModal();
+    else if (!open && d.open) d.close();
+  }, [open]);
+  return (
+    <dialog
+      ref={ref}
+      className="preferences-dialog"
+      aria-label="Your preferences"
+      onClose={onClose}
+      onClick={(event) => {
+        if (event.target === ref.current) onClose();
+      }}
+    >
+      <div className="dialog-heading">
+        <h2 className="text-lg font-semibold">Your preferences</h2>
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="Close preferences"
+          onClick={onClose}
+        >
+          <Icon name="close" />
+        </button>
+      </div>
+      {open && <PreferencesView />}
+    </dialog>
   );
 }

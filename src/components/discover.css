@@ -201,11 +201,35 @@
   -webkit-line-clamp: 2;
 }
 .discovery-request-by {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   overflow: hidden;
   font-size: 0.8125rem;
   color: var(--color-muted);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* The requester's face at inline size; the initial carries the tile when
+   Jellyfin has no avatar (the route 404s). */
+.requester-avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--color-raised);
+  color: var(--color-accent-text);
+  font-size: 0.5625rem;
+  font-weight: 700;
+}
+.requester-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .discovery-request-info .state-badge {
   align-self: flex-start;

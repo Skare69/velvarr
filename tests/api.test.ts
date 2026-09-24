@@ -4760,6 +4760,46 @@ test("user avatar proxy serves admins any row and every account its own", async 
   assert.equal((await call("GET", "/api/me/avatar")).status, 401);
 });
 
+// The staff door the discover rail uses for requester names' faces: staff
+// (admin and moderator) read any account; a requester-role account reads only
+// its own — no avatar enumeration — and no session is a 401.
+test("staff avatar route serves staff any account and a requester only itself", async () => {
+  const staff = await call("GET", `/api/users/${MEMBER2_ID}/avatar`, {
+    cookie: owner,
+  });
+  assert.equal(staff.status, 200);
+  assert.match(staff.headers.get("content-type") ?? "", /^image\//);
+  assert.ok(Buffer.from(await staff.arrayBuffer()).equals(PNG_1PX));
+
+  const moderator = await call("GET", `/api/users/${MEMBER2_ID}/avatar`, {
+    cookie: member,
+  });
+  assert.equal(moderator.status, 200);
+
+  const self = await call("GET", `/api/users/${MEMBER2_ID}/avatar`, {
+    cookie: member2,
+  });
+  assert.equal(self.status, 200);
+
+  // No upstream avatar is an honest 404 even through the staff door.
+  assert.equal(
+    (await call("GET", `/api/users/${OWNER_ID}/avatar`, { cookie: owner }))
+      .status,
+    404,
+  );
+
+  // A requester-role account learns nothing about other accounts.
+  assert.equal(
+    (await call("GET", `/api/users/${OWNER_ID}/avatar`, { cookie: member2 }))
+      .status,
+    404,
+  );
+  assert.equal(
+    (await call("GET", `/api/users/${MEMBER2_ID}/avatar`)).status,
+    401,
+  );
+});
+
 // --- Wave 6: preferences, browse, related, hidden-tag filtering ---
 
 interface TagSelectionBody {

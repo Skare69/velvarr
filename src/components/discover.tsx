@@ -263,6 +263,36 @@ function CatalogTile({
  * watchable — the shared.tsx ladder (library availability, acquisition
  * progress, then decision) owns the wording. */
 
+/** Requester identity chip: Jellyfin avatar in front of the name, the initial
+ *  when the image 404s (no upstream avatar) — never a broken image. Staff
+ *  view other accounts through the staff avatar route; a requester-role
+ *  viewer only ever sees their own name here, via their own avatar route. */
+function RequesterAvatar({
+  id,
+  name,
+  own,
+}: {
+  id: string;
+  name: string;
+  own: boolean;
+}) {
+  const [failed, setFailed] = useState(false);
+  return (
+    <span className="requester-avatar" aria-hidden="true">
+      {failed ? (
+        name.slice(0, 1).toUpperCase()
+      ) : (
+        <img
+          src={own ? `/api/me/avatar?account=${id}` : `/api/users/${id}/avatar`}
+          alt=""
+          loading="lazy"
+          onError={() => setFailed(true)}
+        />
+      )}
+    </span>
+  );
+}
+
 function RequestTile({
   item,
   onOpen,
@@ -310,7 +340,14 @@ function RequestTile({
             {art?.title ??
               `${item.media.provider} · ${item.media.kind} · ${item.media.id}`}
           </strong>
-          <span className="discovery-request-by">{requester}</span>
+          <span className="discovery-request-by">
+            <RequesterAvatar
+              id={item.requestedById ?? session.account.id}
+              name={requester}
+              own={!item.requestedBy}
+            />
+            {requester}
+          </span>
           <span className="state-badge" data-state={statusKind}>
             {label}
           </span>
@@ -538,22 +575,24 @@ function ShelfSection({
 
 /* ---------- The discover homepage ---------- */
 
-const PAGE_HEADING = (
-  <header className="page-heading">
-    <div>
-      <h2 className="page-title">Discover</h2>
-    </div>
-    <Link
-      href="/?view=preferences"
-      prefetch={false}
-      className="icon-button"
-      aria-label="Reorder shelves"
-      title="Reorder shelves"
-    >
-      <Icon name="reorder" />
-    </Link>
-  </header>
-);
+function PageHeading({ onReorder }: { onReorder: () => void }) {
+  return (
+    <header className="page-heading">
+      <div>
+        <h2 className="page-title">Discover</h2>
+      </div>
+      <button
+        type="button"
+        className="icon-button"
+        aria-label="Reorder shelves"
+        title="Reorder shelves"
+        onClick={onReorder}
+      >
+        <Icon name="reorder" />
+      </button>
+    </header>
+  );
+}
 
 interface FacetDirectory {
   kind: string;
@@ -633,7 +672,12 @@ export function FacetsView() {
   );
 }
 
-export function DiscoverShelves() {
+export function DiscoverShelves({
+  onReorder,
+}: {
+  /** Opens the shell's preferences dialog — the heading icon's whole job. */
+  onReorder: () => void;
+}) {
   const setP = useParamsSetter();
   // One GET per mount/retry, owned by the hook — deliberately no module-level
   // page cache: followed-titles is personal (who you follow, your hidden
@@ -664,7 +708,7 @@ export function DiscoverShelves() {
   if (loading && !page) {
     return (
       <section aria-label="Discover" aria-busy="true">
-        {PAGE_HEADING}
+        <PageHeading onReorder={onReorder} />
         <RailSkeleton count={5} />
         <RailSkeleton count={5} />
         <RailSkeleton count={6} />
@@ -676,7 +720,7 @@ export function DiscoverShelves() {
   if (error && !page) {
     return (
       <section aria-label="Discover">
-        {PAGE_HEADING}
+        <PageHeading onReorder={onReorder} />
         <ErrorPanel
           title="Discover is unavailable"
           message={error}
@@ -688,7 +732,7 @@ export function DiscoverShelves() {
   if (!page) return null;
   return (
     <section aria-label="Discover">
-      {PAGE_HEADING}
+      <PageHeading onReorder={onReorder} />
       {/* The server's shelf order IS the composition — it resolves each
           account's saved order (personal content preferences) over the
           default, and only shelves present in this response are rendered.

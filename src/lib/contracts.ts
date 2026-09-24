@@ -187,6 +187,9 @@ export type RequestAcquisition = {
 export type RequestListItem = RequestRecord & {
   /** Display name of the requesting account; present only for staff viewers. */
   requestedBy?: string;
+  /** The requester's account id, same staff-only visibility: the staff avatar
+   *  route is keyed by it. */
+  requestedById?: string;
   acquisition?: RequestAcquisition | null;
 };
 

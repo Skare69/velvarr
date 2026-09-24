@@ -486,7 +486,8 @@ const ICON_PATHS = {
   tag: "M20 12.5 12.5 20a2 2 0 0 1-2.8 0L4 14.2V4h10.2l5.8 5.7a2 2 0 0 1 0 2.8ZM8.5 8.5h.01",
   download: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M7 10l5 5 5-5 M12 3v12",
   pause: "M9 5v14M15 5v14",
-  reorder: "M9 5h.01M9 12h.01M9 19h.01M15 5h.01M15 12h.01M15 19h.01",
+  reorder:
+    "M4 6h9M4 12h9M4 18h9M17.5 20V4m0 0-3.5 3.5M17.5 4 21 7.5M17.5 20l-3.5-3.5M17.5 20 21 16.5",
 } as const;
 
 export function Icon({

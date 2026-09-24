@@ -389,6 +389,19 @@ export const routes: RouteDef[] = [
   },
   {
     method: "GET",
+    segments: ["users", ":id", "avatar"],
+    auth: "session",
+    // Staff already see requester names, so they get the matching avatar;
+    // requester-role accounts can only ever read their own — no enumeration.
+    run: async (ctx, _request, p) => {
+      const id = p.id!;
+      if (id !== ctx.account.id && ctx.account.role === "requester")
+        throw new AppError(404, "user_not_found", "user not found");
+      return userAvatar(ctx, id);
+    },
+  },
+  {
+    method: "GET",
     segments: ["me", "avatar"],
     auth: "session",
     // The id comes from the session, never the URL: an account can only ever

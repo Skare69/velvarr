@@ -48,7 +48,7 @@ import {
   useTapReveal,
 } from "./shared.tsx";
 import { TitlesView } from "./catalog.tsx";
-import { PreferencesView } from "./preferences.tsx";
+import { PreferencesDialog } from "./preferences.tsx";
 import { PerformerView } from "./performer.tsx";
 import { DiscoverShelves, FacetsView } from "./discover.tsx";
 import { SearchView } from "./search.tsx";
@@ -695,7 +695,6 @@ const VIEWS = [
   "requests",
   "removals",
   "library",
-  "preferences",
   "admin",
   "settings",
 ] as const;
@@ -831,6 +830,7 @@ function Shell() {
   const navigation = useRef<HTMLDialogElement>(null);
   const accountMenu = useRef<HTMLDetailsElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [prefsOpen, setPrefsOpen] = useState(false);
   const pendingApprovals = usePendingApprovals(session.account, view);
   const nav = [
     { id: "discover", label: "Discover", icon: "discover", group: "browse" },
@@ -937,18 +937,25 @@ function Shell() {
             <AccountAvatar account={session.account} />
           </summary>
           <div className="panel account-popover">
-            <div className="truncate font-semibold">{session.account.name}</div>
-            <div className="mt-1 text-sm text-muted capitalize">
-              {session.account.role}
+            <div className="account-identity">
+              <AccountAvatar account={session.account} />
+              <div className="min-w-0">
+                <div className="truncate font-semibold">
+                  {session.account.name}
+                </div>
+                <div className="mt-1 text-sm text-muted capitalize">
+                  {session.account.role}
+                </div>
+              </div>
             </div>
             {/* Personal preferences are every account's own surface — never
-                the admin Settings view. */}
+                the admin Settings view. Now the modal, not a page. */}
             <button
               type="button"
               className="btn"
               onClick={() => {
                 if (accountMenu.current) accountMenu.current.open = false;
-                go("preferences");
+                setPrefsOpen(true);
               }}
             >
               <Icon name="settings" />
@@ -966,14 +973,15 @@ function Shell() {
         </details>
       </header>
       <main className="app-main" id="main-content" tabIndex={-1}>
-        {view === "discover" && <DiscoverShelves />}
+        {view === "discover" && (
+          <DiscoverShelves onReorder={() => setPrefsOpen(true)} />
+        )}
         {view === "facets" && <FacetsView />}
         {view === "titles" && <TitlesView />}
         {view === "following" && <FollowingView />}
         {view === "library" && <LibraryView />}
         {view === "requests" && <RequestsView />}
         {view === "search" && <SearchView />}
-        {view === "preferences" && <PreferencesView />}
         {view === "removals" && <RemovalsView />}
         {view === "admin" && (isAdmin ? <AdminView /> : <ForbiddenPanel />)}
         {view === "settings" &&
@@ -1052,6 +1060,7 @@ function Shell() {
           <Credit />
         </div>
       </dialog>
+      <PreferencesDialog open={prefsOpen} onClose={() => setPrefsOpen(false)} />
     </div>
   );
 }
