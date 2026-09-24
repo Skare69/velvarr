@@ -31,9 +31,13 @@ export default function RootLayout({
           >
             Velvarr
           </a>
-          <span>
-            v{pkg.version} ({pkg.released})
-          </span>
+          <a
+            href={`https://github.com/Skare69/velvarr/releases/tag/v${pkg.version}`}
+            target="_blank"
+            rel="noreferrer noopener"
+          >
+            v{pkg.version}
+          </a>
         </footer>
       </body>
     </html>
