@@ -546,9 +546,11 @@ const PAGE_HEADING = (
     <Link
       href="/?view=preferences"
       prefetch={false}
-      className="text-sm text-muted"
+      className="icon-button"
+      aria-label="Reorder shelves"
+      title="Reorder shelves"
     >
-      Reorder shelves
+      <Icon name="reorder" />
     </Link>
   </header>
 );
