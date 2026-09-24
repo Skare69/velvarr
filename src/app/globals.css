@@ -330,22 +330,19 @@ body:has(.app-shell) .app-footer {
   letter-spacing: -1.2px;
   text-decoration: none;
 }
+/* The logo PNG is a finished round mark with transparent corners: no
+ * backdrop, no clipping — the box only reserves layout space. */
 .brand-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 39px;
   height: 39px;
-  border-radius: 12px;
-  background: var(--color-accent);
-  color: var(--color-accent-ink);
   flex-shrink: 0;
-  overflow: hidden;
 }
 .brand-mark img {
   width: 100%;
   height: 100%;
-  border-radius: inherit;
   display: block;
 }
 .app-nav {
