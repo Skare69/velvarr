@@ -831,6 +831,24 @@ function Shell() {
   const accountMenu = useRef<HTMLDetailsElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
+  // A <details> menu stays open when you click anywhere else; close it on an
+  // outside click and on Escape, like every other menu on the page.
+  useEffect(() => {
+    const close = (event: MouseEvent) => {
+      const menu = accountMenu.current;
+      if (menu?.open && !menu.contains(event.target as Node)) menu.open = false;
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && accountMenu.current?.open)
+        accountMenu.current.open = false;
+    };
+    document.addEventListener("click", close);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("click", close);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, []);
   const pendingApprovals = usePendingApprovals(session.account, view);
   const nav = [
     { id: "discover", label: "Discover", icon: "discover", group: "browse" },

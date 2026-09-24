@@ -78,6 +78,7 @@ import {
   saveContentPreferences,
   linkFollows,
   unfollowPerformer,
+  refreshAccountName,
   updateAccount,
   upsertCatalogRecord,
 } from "../../../../server/storage.ts";
@@ -306,6 +307,10 @@ export async function login(request: Request): Promise<Response> {
       "Remote access is disabled for this account.",
     );
   }
+  // Jellyfin owns the display name: before the session reads the row, land
+  // any upstream rename so menus show the current name, not a stale one.
+  if (typeof user.name === "string" && user.name !== account.name)
+    refreshAccountName(account.id, user.name);
   const grant = createSession(account.id, token);
   return json({ account: grant.account }, 200, {
     "set-cookie": sessionCookie(grant, isSecureRequest(request)),

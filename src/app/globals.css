@@ -634,6 +634,12 @@ body:has(.app-shell) .app-footer {
   justify-content: space-between;
   margin-bottom: 8px;
 }
+.preferences-dialog li[draggable="true"] {
+  cursor: grab;
+}
+.preferences-dialog li.shelf-dragging {
+  opacity: 0.5;
+}
 
 .poster-grid,
 .performer-grid {

@@ -1352,6 +1352,13 @@ export function getAccount(id: string): Account | null {
   return row ? rowToAccount(row) : null;
 }
 
+/** The stored name is a snapshot taken at import; Jellyfin owns the display
+ *  name. A successful login refreshes it, so an upstream rename shows up at
+ *  the next sign-in instead of waiting for an admin import. */
+export function refreshAccountName(id: string, name: string): void {
+  S().updateAccountName.run(name, id);
+}
+
 export function updateAccount(
   id: string,
   changes: {

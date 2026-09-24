@@ -37,6 +37,8 @@ export function PreferencesView() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedOnce, setSavedOnce] = useState(false);
   const [announce, setAnnounce] = useState("");
+  // The shelf id currently being dragged, for the live reorder on dragover.
+  const dragId = useRef<DiscoverShelfId | null>(null);
 
   const loaded = saved.data;
 
@@ -119,12 +121,7 @@ export function PreferencesView() {
         <h3 id="discover-order-label" className="font-semibold">
           Discover shelf order
         </h3>
-        <p className="mt-1 text-sm text-muted">
-          Sets the order Discover shows its shelves in. Every shelf is listed;
-          only “From performers you follow” appears on Discover when it has
-          content — before you follow anyone it is absent, but keeps its place
-          here.
-        </p>
+        <p className="mt-1 text-sm text-muted">Drag to reorder.</p>
         <ol
           aria-label="Discover shelves, first shown first"
           className="mt-3 list-none space-y-1 p-0"
@@ -135,6 +132,24 @@ export function PreferencesView() {
               <li
                 key={id}
                 data-id={id}
+                draggable
+                onDragStart={(event) => {
+                  dragId.current = id;
+                  event.currentTarget.classList.add("shelf-dragging");
+                  event.dataTransfer.effectAllowed = "move";
+                }}
+                onDragOver={(event) => {
+                  // Live reorder while hovering over another row; the drag
+                  // guard keeps a row from overtaking itself.
+                  event.preventDefault();
+                  if (dragId.current && dragId.current !== id)
+                    move(dragId.current, i);
+                }}
+                onDrop={(event) => event.preventDefault()}
+                onDragEnd={(event) => {
+                  dragId.current = null;
+                  event.currentTarget.classList.remove("shelf-dragging");
+                }}
                 className="flex items-center gap-3 rounded border border-edge px-3 py-1"
               >
                 <span
@@ -191,7 +206,6 @@ export function PreferencesView() {
             setDraft((d) => (d === null ? d : { ...d, hiddenTags }))
           }
           allowFreeText
-          description="Titles carrying any hidden tag are left out of catalog Browse, Discover, search results and related titles. A hidden tag also covers the tags that contain it as a whole word — hiding Anal hides Anal Creampie, but never Analingus. Search-time includes and excludes are separate and always temporary."
           disabled={saving}
         />
         {orderList}
@@ -254,8 +268,7 @@ export function PreferencesView() {
 
   if (saved.error !== null && saved.data === null) {
     return (
-      <div className="panel p-5">
-        <h2 className="font-semibold">Content &amp; Discover preferences</h2>
+      <div>
         <ErrorPanel
           title="Preferences unavailable"
           message={saved.error}
@@ -265,16 +278,10 @@ export function PreferencesView() {
     );
   }
 
+  // The dialog owns the box: no inner panel, no essay — one border, two
+  // section headings, the controls.
   return (
-    <div className="panel p-5">
-      <h2 className="font-semibold">Content &amp; Discover preferences</h2>
-      <p className="mt-1 text-sm text-muted">
-        Hidden tags are personal: they hide movies and scenes carrying them from
-        catalog Browse, Discover, search results and related titles. This works
-        through provider metadata, so it is a viewing preference — not an access
-        restriction: direct links, your requests and your library history are
-        unaffected, and your list applies to your account only.
-      </p>
+    <div>
       {form ?? <p className="cat-note">Loading preferences…</p>}
       {saved.error !== null && saved.data !== null && (
         <ErrorPanel
