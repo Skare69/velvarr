@@ -7,6 +7,7 @@
 !next.config.ts
 !postcss.config.mjs
 !src
+!public
 
 # Defense in depth (already excluded by the allowlist above).
 .git
