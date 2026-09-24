@@ -16,8 +16,7 @@
     "setup": "node scripts/setup.mjs",
     "backup": "node scripts/backup.mjs",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{ts,tsx,json,mjs}\" \"tests/**/*.ts\" \"scripts/**/*.mjs\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"*.{ts,tsx,json,mjs}\" \"tests/**/*.ts\" \"scripts/**/*.mjs\"",
-    "envprobe2": "node -e \"console.log('D='+(process.env.VELVARR_DATA_DIR||'MISSING'),'K='+(process.env.VELVARR_SECRET_KEY||'').slice(0,6))\""
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"*.{ts,tsx,json,mjs}\" \"tests/**/*.ts\" \"scripts/**/*.mjs\""
   },
   "dependencies": {
     "@typesafe-ai/sdk": "^0.6.0",
