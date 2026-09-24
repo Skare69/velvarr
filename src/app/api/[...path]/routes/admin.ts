@@ -207,7 +207,9 @@ export async function adminUsers(ctx: AuthContext): Promise<Response> {
   });
 }
 
-export async function adminUserAvatar(
+/** One account's Jellyfin avatar bytes: admin rows ask by id, every account
+ *  asks for its own through /api/me/avatar. No upstream avatar is a 404. */
+export async function userAvatar(
   ctx: AuthContext,
   id: string,
 ): Promise<Response> {
@@ -216,7 +218,8 @@ export async function adminUserAvatar(
     status: 200,
     headers: {
       "content-type": image.contentType,
-      // Tag-keyed URL: a changed avatar is a different URL, so caching is safe.
+      // Admin rows use tag-keyed URLs, so a changed avatar is a new URL there;
+      // the untagged /api/me/avatar can lag by this max-age.
       "cache-control": "private, max-age=3600",
       "x-content-type-options": "nosniff",
     },
@@ -553,7 +556,7 @@ export const routes: RouteDef[] = [
     method: "GET",
     segments: ["admin", "users", ":id", "avatar"],
     auth: "admin",
-    run: async (ctx, _request, p) => adminUserAvatar(ctx, p.id!),
+    run: async (ctx, _request, p) => userAvatar(ctx, p.id!),
   },
   {
     method: "GET",

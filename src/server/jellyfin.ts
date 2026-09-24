@@ -867,8 +867,8 @@ export async function getLibraryImage(
   return { bytes: res.bytes, contentType: mime };
 }
 
-// Admin-only avatar proxy. Tag-keyed client URLs keep caching correct: a new
-// upstream avatar is a new URL, so a stale tag surfaces as a sanitized 404.
+// User avatar proxy: admin rows by id, each account's own via /api/me/avatar.
+// Jellyfin 404s a user without an avatar; that surfaces as a sanitized 404.
 export async function getUserImage(
   config: IntegrationConfig,
   userId: string,

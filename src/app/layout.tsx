@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import pkg from "../../package.json";
+import { Credit } from "../components/shared.tsx";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -24,20 +24,7 @@ export default function RootLayout({
       <body className="min-h-screen bg-canvas text-ink antialiased">
         {children}
         <footer className="app-footer">
-          <a
-            href="https://github.com/Skare69/velvarr"
-            target="_blank"
-            rel="noreferrer noopener"
-          >
-            Velvarr
-          </a>
-          <a
-            href={`https://github.com/Skare69/velvarr/releases/tag/v${pkg.version}`}
-            target="_blank"
-            rel="noreferrer noopener"
-          >
-            v{pkg.version}
-          </a>
+          <Credit />
         </footer>
       </body>
     </html>

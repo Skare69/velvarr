@@ -364,6 +364,7 @@ export async function providerPresence(
   }
 }
 
+import { userAvatar } from "./admin.ts";
 import type { RouteDef } from "../admission.ts";
 
 export const routes: RouteDef[] = [
@@ -385,6 +386,16 @@ export const routes: RouteDef[] = [
     segments: ["me"],
     auth: "session",
     run: async (ctx) => me(ctx),
+  },
+  {
+    method: "GET",
+    segments: ["me", "avatar"],
+    auth: "session",
+    // The id comes from the session, never the URL: an account can only ever
+    // read its own avatar. ponytail: untagged URL, so a changed Jellyfin
+    // avatar can take the hour's max-age to show; carry the tag on /api/me
+    // if that ever matters.
+    run: async (ctx) => userAvatar(ctx, ctx.account.id),
   },
   {
     method: "GET",

@@ -229,25 +229,33 @@ summary:focus-visible,
 .card:hover {
   border-color: var(--color-accent);
 }
+/* Fixed credit bar, only for screens without a shell (sign-in, setup,
+   errors): the shell carries the credit in its sidebar and More sheet. */
 .app-footer {
   position: fixed;
   inset: auto 0 0 0;
   z-index: 10;
   display: flex;
-  align-items: baseline;
   justify-content: center;
-  gap: 0.45rem;
   padding: 0.4rem 1rem;
-  font-size: 0.75rem;
-  color: var(--color-muted);
   background: color-mix(in srgb, var(--color-canvas) 86%, transparent);
   backdrop-filter: blur(8px);
 }
-.app-footer a:first-child {
+body:has(.app-shell) .app-footer {
+  display: none;
+}
+.credit {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  font-size: 0.75rem;
+  color: var(--color-muted);
+}
+.credit a:first-child {
   font-weight: 700;
   color: var(--color-ink);
 }
-.app-footer a:hover {
+.credit a:hover {
   color: var(--color-accent-text);
 }
 
@@ -405,15 +413,6 @@ summary:focus-visible,
 .sidebar-footer {
   margin-top: auto;
   padding: 28px 12px 0;
-  color: var(--color-muted);
-  font-size: 0.75rem;
-}
-.sidebar-footer strong {
-  display: block;
-  color: var(--color-muted);
-  font-size: 0.83rem;
-  font-weight: 500;
-  margin-bottom: 3px;
 }
 .app-topbar {
   position: fixed;
@@ -496,11 +495,17 @@ summary:focus-visible,
   justify-content: center;
   width: 39px;
   height: 39px;
+  overflow: hidden;
   border-radius: 50%;
   border: 1px solid var(--color-edge);
   background: var(--color-raised);
   color: var(--color-accent-text);
   font-weight: 700;
+}
+.account-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .account-popover {
   position: absolute;
@@ -549,21 +554,33 @@ summary:focus-visible,
 .page-toolbar > div {
   min-width: 150px;
 }
-.mobile-menu-button,
 .mobile-bottom-nav {
   display: none;
 }
+/* The More sheet: every destination plus the credit, rising from the bottom
+   bar. A native modal dialog, so Escape, the focus trap and the inert page
+   come free. */
 .mobile-navigation {
   position: fixed;
-  inset: 0 auto 0 0;
+  inset: auto 0 0 0;
   margin: 0;
-  padding: 24px 18px;
-  width: min(310px, 88vw);
-  height: 100dvh;
-  max-height: none;
+  padding: 20px 18px calc(20px + env(safe-area-inset-bottom));
+  width: 100%;
+  max-width: none;
+  max-height: 85dvh;
+  overflow-y: auto;
   border: 0;
+  border-radius: 16px 16px 0 0;
   background: var(--color-panel);
   color: var(--color-ink);
+}
+.mobile-navigation[open] {
+  animation: sheet-rise 200ms ease-out;
+}
+@keyframes sheet-rise {
+  from {
+    translate: 0 100%;
+  }
 }
 .mobile-navigation::backdrop {
   background: rgb(0 0 0 / 0.66);
@@ -574,7 +591,7 @@ summary:focus-visible,
   justify-content: space-between;
 }
 .mobile-navigation .app-nav {
-  margin-top: 24px;
+  margin-top: 16px;
 }
 
 .poster-grid,
@@ -1026,9 +1043,6 @@ summary:focus-visible,
     gap: 8px;
     padding: 10px 14px;
   }
-  .mobile-menu-button {
-    display: inline-flex;
-  }
   .app-main {
     padding: calc(var(--topbar-height) + 22px) 20px
       calc(90px + env(safe-area-inset-bottom));
@@ -1045,7 +1059,7 @@ summary:focus-visible,
     border-top: 1px solid var(--color-edge);
     background: color-mix(in oklab, var(--color-panel) 97%, transparent);
   }
-  .mobile-bottom-nav a {
+  .mobile-bottom-nav > * {
     display: flex;
     flex-direction: column;
     align-items: center;

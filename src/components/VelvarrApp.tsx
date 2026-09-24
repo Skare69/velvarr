@@ -30,6 +30,7 @@ import {
   api,
   CardStatusBadge,
   CardTypeBadge,
+  Credit,
   ErrorPanel,
   FileFacts,
   ForbiddenPanel,
@@ -926,30 +927,14 @@ function Shell() {
           {navLinks}
         </nav>
         <div className="sidebar-footer">
-          <strong>Your next watch, discovered.</strong>Powered by your own
-          library.
+          <Credit />
         </div>
       </aside>
       <header className="app-topbar">
-        <button
-          type="button"
-          className="icon-button mobile-menu-button"
-          aria-label="Open navigation"
-          aria-expanded={menuOpen}
-          aria-controls="mobile-navigation"
-          onClick={() => {
-            navigation.current?.showModal();
-            setMenuOpen(true);
-          }}
-        >
-          <Icon name="menu" />
-        </button>
         <GlobalSearchForm />
         <details ref={accountMenu} className="account-menu">
           <summary aria-label="Account menu" title={session.account.name}>
-            <span className="account-avatar">
-              {session.account.name.slice(0, 1).toUpperCase()}
-            </span>
+            <AccountAvatar account={session.account} />
           </summary>
           <div className="panel account-popover">
             <div className="truncate font-semibold">{session.account.name}</div>
@@ -1018,6 +1003,21 @@ function Shell() {
               {item.label}
             </a>
           ))}
+        {/* Seerr's phone layout: the pages the bar has no room for live
+            behind More, one entry point instead of a second (hamburger) one. */}
+        <button
+          type="button"
+          aria-haspopup="dialog"
+          aria-expanded={menuOpen}
+          aria-controls="mobile-navigation"
+          onClick={() => {
+            navigation.current?.showModal();
+            setMenuOpen(true);
+          }}
+        >
+          <Icon name="menu" />
+          More
+        </button>
       </nav>
       <dialog
         ref={navigation}
@@ -1026,9 +1026,10 @@ function Shell() {
         aria-label="Navigation"
         onClose={() => setMenuOpen(false)}
         onClick={(event) => {
+          // A backdrop tap targets the dialog itself, above the sheet's box.
           if (
             event.target === event.currentTarget &&
-            event.clientX > event.currentTarget.getBoundingClientRect().right
+            event.clientY < event.currentTarget.getBoundingClientRect().top
           )
             navigation.current?.close();
         }}
@@ -1047,6 +1048,9 @@ function Shell() {
         <nav className="app-nav" aria-label="Mobile navigation">
           {navLinks}
         </nav>
+        <div className="sidebar-footer">
+          <Credit />
+        </div>
       </dialog>
     </div>
   );
@@ -1701,6 +1705,28 @@ function AdminView() {
         />
       )}
     </div>
+  );
+}
+
+/** The signed-in account's own Jellyfin avatar: its initial until the image
+ *  loads, and for good when Jellyfin has none (the route 404s) — never a blank
+ *  or broken image. The server ignores `?account`; it keys the browser cache
+ *  per account, so a second sign-in here never shows the first one's face. */
+function AccountAvatar({ account }: { account: Account }) {
+  const [image, setImage] = useState<"loading" | "shown" | "none">("loading");
+  return (
+    <span className="account-avatar">
+      {image !== "shown" && account.name.slice(0, 1).toUpperCase()}
+      {image !== "none" && (
+        <img
+          src={`/api/me/avatar?account=${account.id}`}
+          alt=""
+          hidden={image === "loading"}
+          onLoad={() => setImage("shown")}
+          onError={() => setImage("none")}
+        />
+      )}
+    </span>
   );
 }
 

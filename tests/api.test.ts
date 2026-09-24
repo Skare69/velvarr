@@ -4714,10 +4714,11 @@ test("admin user rows carry live request counts and avatar tags only when upstre
   assert.ok(!("avatarTag" in ownerRow));
 });
 
-// The avatar route is the only image proxy for user rows: admins get the
-// upstream bytes; requesters are refused by authority before any upstream
-// contact.
-test("user avatar proxy serves Jellyfin bytes to admins and refuses requesters", async () => {
+// Two doors to one image proxy: admins read any user row's avatar; every
+// account reads only its own through the session route (the id comes from the
+// session, never the URL). Requesters are refused the admin door by authority
+// before any upstream contact.
+test("user avatar proxy serves admins any row and every account its own", async () => {
   const listed = await call("GET", "/api/admin/users", { cookie: owner });
   const listedBody = (await listed.json()) as {
     accounts: { id: string; avatarTag?: string }[];
@@ -4746,6 +4747,17 @@ test("user avatar proxy serves Jellyfin bytes to admins and refuses requesters",
   };
   assert.equal(typeof refusedBody.error.code, "string");
   assert.equal(typeof refusedBody.error.message, "string");
+
+  // A requester reads its own avatar; no upstream avatar is an honest 404
+  // (the account menu then shows the initial), and no session is a 401.
+  const own = await call("GET", "/api/me/avatar", { cookie: member2 });
+  assert.equal(own.status, 200);
+  assert.ok(Buffer.from(await own.arrayBuffer()).equals(PNG_1PX));
+  assert.equal(
+    (await call("GET", "/api/me/avatar", { cookie: member })).status,
+    404,
+  );
+  assert.equal((await call("GET", "/api/me/avatar")).status, 401);
 });
 
 // --- Wave 6: preferences, browse, related, hidden-tag filtering ---

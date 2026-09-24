@@ -25,6 +25,7 @@ import type {
   RequestRecord,
 } from "../lib/contracts.ts";
 import { REQUESTS_CHANGED } from "../lib/approvals.ts";
+import { version } from "../../package.json";
 
 /* ---------- API helper ---------- */
 
@@ -511,6 +512,30 @@ export function Icon({
     >
       <path d={ICON_PATHS[name]} />
     </svg>
+  );
+}
+
+/** The credit, a user-specified layout: bold "Velvarr" links to the repo, the
+ *  version to its GitHub release. The shell shows it in the sidebar and the
+ *  More sheet; the root layout shows it as a fixed bar on screens without one. */
+export function Credit() {
+  return (
+    <p className="credit">
+      <a
+        href="https://github.com/Skare69/velvarr"
+        target="_blank"
+        rel="noreferrer noopener"
+      >
+        Velvarr
+      </a>
+      <a
+        href={`https://github.com/Skare69/velvarr/releases/tag/v${version}`}
+        target="_blank"
+        rel="noreferrer noopener"
+      >
+        v{version}
+      </a>
+    </p>
   );
 }
 
