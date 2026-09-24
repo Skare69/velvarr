@@ -610,8 +610,8 @@ body:has(.app-shell) .app-footer {
   border-radius: 10px;
   transition: transform 180ms ease;
 }
-/* Seerr-style: the whole card grows slightly on hover — the affordance is
-   the zoom on every surface (rails, browse grids), not just an outline.
+/* Seerr-style: the whole card grows slightly on hover — the zoom plus a
+   pop-out shadow is the affordance on every surface (rails, browse grids).
    z-index lifts the scaled card over its neighbors. */
 .media-card:hover {
   transform: scale(1.04);
@@ -631,9 +631,7 @@ body:has(.app-shell) .app-footer {
 }
 .media-card:hover .media-art,
 .media-card:focus-within .media-art {
-  box-shadow:
-    inset 0 0 0 2px var(--color-accent),
-    0 6px 20px -4px rgb(0 0 0 / 0.5);
+  box-shadow: 0 6px 20px -4px rgb(0 0 0 / 0.5);
 }
 .media-meta {
   padding: 10px 1px 0;
@@ -770,31 +768,45 @@ body:has(.app-shell) .app-footer {
   height: 14px;
   stroke-width: 2.3;
 }
+/* One status palette for the poster badge and the request-tile chip
+   (discover.css), so both indicators on a tile can never drift apart. */
+:root {
+  --status-requested: rgb(217 119 6 / 0.9);
+  --status-requested-edge: rgb(251 191 36);
+  --status-approved: rgb(79 70 229 / 0.9);
+  --status-approved-edge: rgb(129 140 248);
+  --status-available: rgb(16 185 129 / 0.9);
+  --status-available-edge: rgb(52 211 153);
+  --status-declined: rgb(220 38 38 / 0.9);
+  --status-declined-edge: rgb(248 113 113);
+  --status-processing: rgb(37 99 235 / 0.9);
+  --status-processing-edge: rgb(96 165 250);
+}
 .media-status-requested {
-  background: rgb(217 119 6 / 0.9);
-  border: 1px solid rgb(251 191 36);
+  background: var(--status-requested);
+  border: 1px solid var(--status-requested-edge);
   color: #fff;
 }
 .media-status-approved {
-  background: rgb(79 70 229 / 0.9);
-  border: 1px solid rgb(129 140 248);
+  background: var(--status-approved);
+  border: 1px solid var(--status-approved-edge);
   color: #fff;
 }
 .media-status-available {
-  background: rgb(16 185 129 / 0.9);
-  border: 1px solid rgb(52 211 153);
+  background: var(--status-available);
+  border: 1px solid var(--status-available-edge);
   color: #fff;
 }
 .media-status-declined {
-  background: rgb(220 38 38 / 0.9);
-  border: 1px solid rgb(248 113 113);
+  background: var(--status-declined);
+  border: 1px solid var(--status-declined-edge);
   color: #fff;
 }
 /* Processing = active download (blue, like the request pill); paused = Whisparr
  * stopped watching, so the badge goes muted instead of demanding attention. */
 .media-status-processing {
-  background: rgb(37 99 235 / 0.9);
-  border: 1px solid rgb(96 165 250);
+  background: var(--status-processing);
+  border: 1px solid var(--status-processing-edge);
   color: #fff;
 }
 .media-status-paused {

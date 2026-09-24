@@ -372,9 +372,9 @@ function LibraryTile({ item }: { item: LibraryItem }) {
                 href={item.watchUrl}
                 target="_blank"
                 rel="noreferrer"
-                aria-label={`Open ${item.name} in Jellyfin`}
+                aria-label={`Watch ${item.name}`}
               >
-                <Icon name="play" /> Jellyfin
+                <Icon name="play" /> Watch
               </a>
             ) : (
               <span className="discovery-library-note">No playback access</span>

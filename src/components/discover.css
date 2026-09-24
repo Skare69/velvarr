@@ -34,14 +34,7 @@
   text-decoration: none;
 }
 .discovery-shelf-link:hover {
-  text-decoration: underline;
-  text-underline-offset: 4px;
-  text-decoration-thickness: 2px;
-  text-decoration-color: color-mix(
-    in oklab,
-    var(--color-accent) 70%,
-    transparent
-  );
+  color: var(--color-accent);
 }
 .discovery-shelf-link:focus-visible {
   outline: 2px solid var(--color-accent);
@@ -67,8 +60,6 @@
 .discovery-shelf-link:hover .discovery-browse-icon,
 .discovery-shelf-link:focus-visible .discovery-browse-icon {
   color: var(--color-accent);
-  border-color: color-mix(in oklab, var(--color-accent) 55%, var(--color-edge));
-  background: var(--color-accent-soft);
 }
 
 /* Previous/Next: page the rail they belong to; disabled at the real edges.
@@ -219,6 +210,29 @@
 .discovery-request-info .state-badge {
   align-self: flex-start;
   margin-top: 0.125rem;
+}
+/* The tile's info chip wears the poster badge palette (--status-* in
+   globals.css) instead of the page-chip palette in views.css, so the chip and
+   the upper-right badge always agree. Paused already matches (raised + muted). */
+.discovery-request-info .state-badge[data-state="requested"] {
+  background: var(--status-requested);
+  border: 1px solid var(--status-requested-edge);
+}
+.discovery-request-info .state-badge[data-state="approved"] {
+  background: var(--status-approved);
+  border: 1px solid var(--status-approved-edge);
+}
+.discovery-request-info .state-badge[data-state="available"] {
+  background: var(--status-available);
+  border: 1px solid var(--status-available-edge);
+}
+.discovery-request-info .state-badge[data-state="declined"] {
+  background: var(--status-declined);
+  border: 1px solid var(--status-declined-edge);
+}
+.discovery-request-info .state-badge[data-state="processing"] {
+  background: var(--status-processing);
+  border: 1px solid var(--status-processing-edge);
 }
 .discovery-request-poster {
   position: relative;
