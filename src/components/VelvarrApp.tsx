@@ -627,7 +627,7 @@ function LoginView({ onSignedIn }: { onSignedIn: () => void }) {
       <div className="panel auth-card">
         <div className="brand">
           <span className="brand-mark">
-            <Icon name="play" />
+            <img src="/velvarr-logo.png" alt="" />
           </span>
           Velvarr
         </div>
@@ -910,7 +910,7 @@ function Shell() {
       }}
     >
       <span className="brand-mark">
-        <Icon name="play" />
+        <img src="/velvarr-logo.png" alt="" />
       </span>
       Velvarr
     </a>
