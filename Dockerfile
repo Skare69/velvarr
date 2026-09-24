@@ -30,7 +30,7 @@ RUN groupadd --system --gid 10001 velvarr \
  && chown velvarr:velvarr /data
 COPY --from=build --chown=velvarr:velvarr /app/.next/standalone ./
 COPY --from=build --chown=velvarr:velvarr /app/.next/static ./.next/static
-# ponytail: no COPY public — M1 ships no public/ assets; add one line here if that changes.
+COPY --from=build --chown=velvarr:velvarr /app/public ./public
 USER velvarr
 EXPOSE 6699
 VOLUME /data

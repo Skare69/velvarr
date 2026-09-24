@@ -76,6 +76,16 @@ jobs:
             docker logs --tail 100 velvarr-smoke
             exit 1
           fi
+      # Next standalone output drops public/ unless the Dockerfile copies it —
+      # a missing asset must fail the image, not the menu (v0.27.0 shipped a
+      # broken logo this way).
+      - name: Assert public assets serve from the image
+        run: |
+          ctype=$(curl -fsS -o /dev/null -w '%{content_type}' http://127.0.0.1:6699/velvarr-logo.png)
+          if [ "$ctype" != "image/png" ]; then
+            echo "public/ assets missing from the image (got: $ctype)"
+            exit 1
+          fi
       - name: Assert non-root runtime
         run: docker exec velvarr-smoke node -e "if (process.getuid() === 0) { console.error('container must not run as root'); process.exit(1) }"
       - name: Restart and re-check readiness on persistent data
