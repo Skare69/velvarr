@@ -81,6 +81,7 @@ const tpdbTagNumbers = new Map<string, number>();
 export function resetMetaCache(): void {
   metaCache.clear();
   tpdbTagNumbers.clear();
+  counterpartMemo.clear();
 }
 
 function isCacheable(service: Service, method: string, body: unknown): boolean {
@@ -2020,6 +2021,73 @@ const TPDB_STUDIO_SLUG_LINK_RE =
 const STASH_STUDIO_LINK_RE =
   /^https:\/\/(?:www\.)?stashdb\.org\/studios\/([0-9a-f-]{36})\/?$/i;
 
+/** Hosts whose <handle> path names exactly one person. A handle is globally
+ * unique on these hosts, which is what makes a shared URL merge evidence for
+ * a person; anything that is not an identity page (a studio homepage on
+ * chaturbate, a pornhub video, a reddit community) must never merge people
+ * and yields no key at all. */
+const IDENTITY_HOSTS: Record<string, true> = {
+  "iafd.com": true,
+  "instagram.com": true,
+  "twitter.com": true,
+  "x.com": true,
+  "onlyfans.com": true,
+  "linktr.ee": true,
+  "chaturbate.com": true,
+  "tiktok.com": true,
+  "xvideos.com": true,
+  "pornhub.com": true,
+  "reddit.com": true,
+};
+
+/** Hosts where the first path segment is a bucket word and only that exact
+ * bucket is an identity page; every other path is content, not a person. */
+const IDENTITY_BUCKETS: Record<string, readonly string[]> = {
+  "xvideos.com": ["profiles"],
+  "pornhub.com": ["model", "pornstar", "users"],
+  "reddit.com": ["user"],
+};
+
+/** Normalized identity key for a third-party profile URL, undefined when the
+ * URL is not an identity-scoped page on an allowlisted host. Keys are
+ * host/handle: lowercased host (www. stripped) + handle (kind segments like
+ * user/model/pornstar/profiles dropped, one leading @ stripped, query/hash/
+ * trailing slash gone), so the same profile published with case, www, and
+ * formatting differences collapses to one key. IAFD is special-cased because
+ * its identity lives in a perfid= path segment, not a leading one. */
+export function identityLinkKey(url: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined; // not a URL at all
+  }
+  const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+  if (IDENTITY_HOSTS[host] !== true) return undefined;
+  if (host === "iafd.com") {
+    const seg = parsed.pathname
+      .split("/")
+      .find((s) => s.toLowerCase().startsWith("perfid="));
+    const perfid = seg?.slice("perfid=".length).toLowerCase();
+    return perfid !== undefined && perfid !== ""
+      ? `iafd.com/perfid=${perfid}`
+      : undefined;
+  }
+  const segments = parsed.pathname.split("/").filter((s) => s !== "");
+  const buckets = IDENTITY_BUCKETS[host];
+  if (
+    buckets !== undefined &&
+    !buckets.includes(segments[0]?.toLowerCase() ?? "")
+  ) {
+    return undefined; // content path (pornhub /video, reddit /r), not a profile
+  }
+  if (buckets !== undefined) segments.shift(); // drop the kind segment
+  const handle = segments.shift()?.replace(/^@/, "").toLowerCase();
+  return handle !== undefined && handle !== ""
+    ? `${host}/${handle}`
+    : undefined;
+}
+
 /** Explicit cross-provider identity for a catalog detail, taken only from
  * provider-published URLs on the record itself. Identity is performer-level
  * AND studio-level, both from published URLs only; never fuzzy-name matching,
@@ -2111,6 +2179,102 @@ export function crossProviderLink(detail: CatalogDetail): {
     unlinkedReason:
       "cross-provider identity is performer-level only; scenes are never linked across providers",
   };
+}
+
+/** Process-lifetime memo of computed performer auto-links, keyed by
+ * provider:kind:id. Each miss costs a name search plus per-candidate detail
+ * reads for a verdict that only changes when a provider republishes links,
+ * so every reference is computed once per process. Cleared by
+ * resetMetaCache so tests start cold. */
+const counterpartMemo = new Map<
+  string,
+  { linked?: CatalogReference; unlinkedReason?: string } | null
+>();
+
+/** The other provider's performer record for one performer detail. The
+ * explicit cross-provider URL on the record wins outright; otherwise a name
+ * search on the other provider only *nominates* candidates — a candidate
+ * merges only when its own record shares an identity-scoped third-party
+ * profile link (identityLinkKey) with this one. Names never merge anything;
+ * exactly one sharing candidate links, zero extends the explicit reason
+ * honestly, and two or more is ambiguous and refused, never guessed.
+ * Outage, not-configured, or bad payload returns the explicit reason
+ * unchanged; this never throws. */
+export async function linkedPerformerCounterpart(
+  detail: CatalogDetail,
+): Promise<{
+  linked?: CatalogReference;
+  unlinkedReason?: string;
+}> {
+  if (detail.reference.kind !== "performer") return crossProviderLink(detail);
+  const explicit = crossProviderLink(detail);
+  if (explicit.linked !== undefined) return explicit; // a direct pointer outranks link equality
+  const memoKey = `${detail.reference.provider}:${detail.reference.kind}:${detail.reference.id}`;
+  const memoed = counterpartMemo.get(memoKey);
+  // null memo = no auto link: fall back to the explicit verdict.
+  if (memoed !== undefined) return memoed ?? explicit;
+  try {
+    const mine = new Set(
+      detail.links
+        .map((l) => identityLinkKey(l.url))
+        .filter((k): k is string => k !== undefined),
+    );
+    // With no identity-scoped link of our own, no candidate can ever share
+    // one — skip the search and let the explicit reason stand.
+    if (mine.size === 0) return explicit;
+    const other: CatalogProvider =
+      detail.reference.provider === "tpdb" ? "stashdb" : "tpdb";
+    const otherName = other === "stashdb" ? "StashDB" : "TPDB";
+    const search = await searchCatalog(
+      other === "tpdb"
+        ? {
+            provider: "tpdb",
+            kind: "performer",
+            query: detail.title,
+            perPage: 10,
+          }
+        : { provider: "stashdb", kind: "performer", query: detail.title },
+    );
+    // ponytail: 10-candidate cap — the first name-search page only nominates;
+    // a wider net wants the provider's own paging plumbed through, not a
+    // bigger slice here.
+    const matches: CatalogDetail[] = [];
+    for (const item of search.items.slice(0, 10)) {
+      if (
+        item.reference.provider === detail.reference.provider &&
+        item.reference.id === detail.reference.id
+      ) {
+        continue; // the searched record itself, echoed back
+      }
+      // null covers deleted rows and missing ids: authoritatively gone.
+      const candidate = await getCatalogDetail(item.reference);
+      if (candidate === null) continue;
+      if (
+        candidate.links.some((l) => {
+          const key = identityLinkKey(l.url);
+          return key !== undefined && mine.has(key);
+        })
+      ) {
+        matches.push(candidate);
+      }
+    }
+    const result: { linked?: CatalogReference; unlinkedReason?: string } =
+      matches.length === 1
+        ? { linked: matches[0]!.reference }
+        : matches.length === 0
+          ? {
+              unlinkedReason: `${explicit.unlinkedReason}; no shared profile link with any searched ${otherName} performer either`,
+            }
+          : {
+              unlinkedReason: `${explicit.unlinkedReason}; ${matches.length} searched ${otherName} performers share profile links with this record — ambiguous, refusing to guess`,
+            };
+    counterpartMemo.set(memoKey, result);
+    return result;
+  } catch {
+    // Outage/not-configured/bad payload: the explicit reason stands, and the
+    // failure is not memoized so a later call can retry.
+    return explicit;
+  }
 }
 
 /** The other provider's studio row for one studio reference, resolved only

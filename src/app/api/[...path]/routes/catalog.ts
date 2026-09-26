@@ -111,6 +111,7 @@ import {
   getCatalogDetail,
   getProviderStatus,
   isProviderImageUrl,
+  linkedPerformerCounterpart,
   listCatalogTags,
   searchCatalog,
   searchCatalogTags,
@@ -710,9 +711,17 @@ export async function catalogDetail(
       ) ?? null)
     : null;
   const acquisition = media ? getAcquisitionByReference(media) : null;
+  // Performers take the async path: an explicit provider URL wins, then a
+  // shared third-party profile link (identity URL match) can resolve the
+  // counterpart, which may search the other provider. Studios/scenes have no
+  // identity-link fallback, so they stay on the sync resolver.
+  const link =
+    reference.kind === "performer"
+      ? await linkedPerformerCounterpart(detail)
+      : crossProviderLink(detail);
   return json({
     detail,
-    link: crossProviderLink(detail),
+    link,
     catalogRecord: record,
     myRequest: mine && {
       id: mine.id,

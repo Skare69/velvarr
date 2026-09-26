@@ -105,11 +105,11 @@ import {
   getJellyfinStatus,
 } from "../../../../server/jellyfin.ts";
 import {
-  crossProviderLink,
   fetchProviderArtwork,
   getCatalogDetail,
   getProviderStatus,
   isProviderImageUrl,
+  linkedPerformerCounterpart,
   listCatalogTags,
   searchCatalog,
   searchCatalogTags,
@@ -169,11 +169,12 @@ export async function listFollowsRoute(ctx: AuthContext): Promise<Response> {
   return json({ follows: listFollows(ctx.account.id) });
 }
 
-/** The same performer on the other provider, taken only from the link the
- * providers themselves published (crossProviderLink never name-matches), with
- * its own snapshot read from that provider. Null when there is no link, or
- * when the lookup fails: a metadata outage must not sink the follow the user
- * asked for. */
+/** The same performer on the other provider, taken only from links the
+ * providers themselves published (never name-matched): an explicit
+ * cross-provider URL first, then a shared third-party profile link
+ * (identity URL match). The counterpart's own snapshot is read from that
+ * provider. Null when no link resolves, or when the lookup fails: a
+ * metadata outage must not sink the follow the user asked for. */
 export async function performerCounterpart(
   reference: CatalogReference,
 ): Promise<{
@@ -183,7 +184,9 @@ export async function performerCounterpart(
 } | null> {
   try {
     const detail = await getCatalogDetail(reference);
-    const linked = detail ? crossProviderLink(detail).linked : undefined;
+    const linked = detail
+      ? (await linkedPerformerCounterpart(detail)).linked
+      : undefined;
     if (!linked) return null;
     const counterpart = await getCatalogDetail(linked);
     if (!counterpart) return null;

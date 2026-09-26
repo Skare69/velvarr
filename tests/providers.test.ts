@@ -19,7 +19,9 @@ import {
   getCatalogDetail,
   getProviderStatus,
   IMAGE_BYTE_CAP,
+  identityLinkKey,
   isProviderImageUrl,
+  linkedPerformerCounterpart,
   resolveSort,
   requestJson,
   resetMetaCache,
@@ -2950,5 +2952,315 @@ test("attested zero totals are known-zero on both providers; contradictions stay
     await stashFixture.close();
     await performerFixture.close();
     restore2();
+  }
+});
+
+// --- cross-provider performer auto-link via shared identity URLs ---
+
+const TPDB_AUTO_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+const STASH_NOLINK_ID = "2f6c4b8a-9d1e-4f3a-b7c5-8e0a2d4f6b8c";
+const STASH_MATCH_ID = "5d3a7c9e-1b2f-4a6d-8e9c-0f1b2a3c4d5e";
+
+// The source record: TPDB performer publishing IAFD + OnlyFans, no StashDB
+// URL — the shape crossProviderLink can never pair on its own.
+function tpdbAutoLinkDetail(): CatalogDetail {
+  return {
+    reference: { provider: "tpdb", kind: "performer", id: TPDB_AUTO_ID },
+    title: "Rossa Vax",
+    credits: [],
+    tags: [],
+    related: [],
+    links: [
+      {
+        url: "https://www.iafd.com/person.rme/perfid=RossVax/gender=f/",
+        label: "IAFD",
+      },
+      { url: "https://onlyfans.com/Rossavax", label: "OnlyFans" },
+    ],
+    aliases: [],
+  };
+}
+
+// StashDB fixture serving searchPerformers with two nominees and per-id
+// findPerformer details whose third-party urls decide the merge.
+async function startStashPerformerFixture(
+  performerUrls: Record<string, { url: string; type: string }[]>,
+): Promise<Fixture> {
+  return startFixture((req, res) => {
+    assert.equal(req.method, "POST");
+    assert.equal(req.url, "/graphql");
+    const body = JSON.parse(req.body) as {
+      query: string;
+      variables: Record<string, unknown>;
+    };
+    if (body.query.includes("searchPerformers")) {
+      replyJson(res, 200, {
+        data: {
+          searchPerformers: {
+            count: 2,
+            performers: [
+              { id: STASH_NOLINK_ID, name: "Rossa Vaxx", deleted: false },
+              { id: STASH_MATCH_ID, name: "Rossa Vax", deleted: false },
+            ],
+          },
+        },
+      });
+      return;
+    }
+    if (body.query.includes("findPerformer")) {
+      const id = String(body.variables.id);
+      replyJson(res, 200, {
+        data: {
+          findPerformer: {
+            id,
+            name: "Rossa",
+            deleted: false,
+            aliases: [],
+            urls: performerUrls[id] ?? [],
+          },
+        },
+      });
+      return;
+    }
+    replyJson(res, 500, { error: "unexpected query" });
+  });
+}
+
+test("identityLinkKey normalizes allowlisted identity URLs; everything else is undefined", () => {
+  // IAFD: identity lives in the perfid= segment; case/www/trailing-slash and
+  // segment-order variants collapse to one key.
+  assert.equal(
+    identityLinkKey("https://www.IAFD.com/person.rme/perfid=RossVax/gender=f/"),
+    "iafd.com/perfid=rossvax",
+  );
+  assert.equal(
+    identityLinkKey("https://iafd.com/PERSON.RME/gender=f/PERFID=RossVax"),
+    "iafd.com/perfid=rossvax",
+  );
+  assert.equal(identityLinkKey("https://www.iafd.com/person.rme/"), undefined);
+
+  // Plain handle hosts: kind buckets and @ stripped, case flattened.
+  assert.equal(
+    identityLinkKey("https://www.instagram.com/Some.One/"),
+    "instagram.com/some.one",
+  );
+  assert.equal(
+    identityLinkKey("https://twitter.com/Handle"),
+    "twitter.com/handle",
+  );
+  assert.equal(identityLinkKey("https://x.com/@handle"), "x.com/handle");
+  assert.equal(
+    identityLinkKey("https://onlyfans.com/handle"),
+    "onlyfans.com/handle",
+  );
+  assert.equal(identityLinkKey("https://linktr.ee/handle"), "linktr.ee/handle");
+  assert.equal(
+    identityLinkKey("https://www.chaturbate.com/handle/"),
+    "chaturbate.com/handle",
+  );
+  assert.equal(
+    identityLinkKey("https://www.tiktok.com/@handle?lang=en"),
+    "tiktok.com/handle",
+  );
+
+  // Bucketed hosts: only the identity bucket produces a key.
+  assert.equal(
+    identityLinkKey("https://www.xvideos.com/profiles/handle"),
+    "xvideos.com/handle",
+  );
+  assert.equal(
+    identityLinkKey("https://www.xvideos.com/video123/handle"),
+    undefined,
+  );
+  assert.equal(
+    identityLinkKey("https://www.pornhub.com/model/handle"),
+    "pornhub.com/handle",
+  );
+  assert.equal(
+    identityLinkKey("https://www.pornhub.com/pornstar/handle"),
+    "pornhub.com/handle",
+  );
+  assert.equal(
+    identityLinkKey("https://www.pornhub.com/users/handle"),
+    "pornhub.com/handle",
+  );
+  assert.equal(
+    identityLinkKey("https://www.pornhub.com/view_video.php?x=1"),
+    undefined,
+  );
+  assert.equal(
+    identityLinkKey("https://www.reddit.com/user/someone/"),
+    "reddit.com/someone",
+  );
+  assert.equal(
+    identityLinkKey("https://www.reddit.com/r/subreddit"),
+    undefined,
+  );
+
+  // Provider URLs, content hosts, non-URLs: never an identity key.
+  assert.equal(
+    identityLinkKey(`https://stashdb.org/studios/${TPDB_STUDIO_ID}`),
+    undefined,
+  );
+  assert.equal(identityLinkKey("https://www.private.com/x"), undefined);
+  assert.equal(identityLinkKey("https://instagram.com/"), undefined);
+  assert.equal(identityLinkKey("not a url"), undefined);
+});
+
+test("linkedPerformerCounterpart auto-links on exactly one shared identity URL and memoizes the search", async () => {
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  // The matching candidate publishes the same IAFD profile with different
+  // case, www, and trailing-slash formatting.
+  const fixture = await startStashPerformerFixture({
+    [STASH_NOLINK_ID]: [
+      { url: "https://twitter.com/someone_else", type: "Twitter" },
+    ],
+    [STASH_MATCH_ID]: [
+      {
+        url: "https://iafd.com/PERSON.RME/gender=f/PERFID=RossVax",
+        type: "IAFD",
+      },
+    ],
+  });
+  try {
+    process.env.STASHDB_BASE_URL = fixture.origin;
+    const expected = {
+      provider: "stashdb",
+      kind: "performer",
+      id: STASH_MATCH_ID,
+    };
+    const first = await linkedPerformerCounterpart(tpdbAutoLinkDetail());
+    assert.deepEqual(first.linked, expected);
+    assert.equal(first.unlinkedReason, undefined);
+
+    // Memo: the second call re-answers without issuing another search.
+    const second = await linkedPerformerCounterpart(tpdbAutoLinkDetail());
+    assert.deepEqual(second.linked, expected);
+    assert.equal(
+      fixture.requests.filter((r) => r.body.includes("searchPerformers"))
+        .length,
+      1,
+    );
+
+    // resetMetaCache clears the memo (and cache): the next call searches
+    // again — this is what makes beforeEach(resetMetaCache) isolate tests.
+    resetMetaCache();
+    const third = await linkedPerformerCounterpart(tpdbAutoLinkDetail());
+    assert.deepEqual(third.linked, expected);
+    assert.equal(
+      fixture.requests.filter((r) => r.body.includes("searchPerformers"))
+        .length,
+      2,
+    );
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
+test("linkedPerformerCounterpart with zero shared links extends the unlinked reason honestly", async () => {
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  const fixture = await startStashPerformerFixture({
+    [STASH_NOLINK_ID]: [
+      { url: "https://twitter.com/someone_else", type: "Twitter" },
+    ],
+    [STASH_MATCH_ID]: [
+      { url: "https://twitter.com/another_one", type: "Twitter" },
+    ],
+  });
+  try {
+    process.env.STASHDB_BASE_URL = fixture.origin;
+    const result = await linkedPerformerCounterpart(tpdbAutoLinkDetail());
+    assert.equal(result.linked, undefined);
+    assert.match(
+      result.unlinkedReason ?? "",
+      /no explicit StashDB performer URL on the TPDB performer record/,
+    );
+    assert.match(
+      result.unlinkedReason ?? "",
+      /no shared profile link with any searched StashDB performer either/,
+    );
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
+test("linkedPerformerCounterpart refuses to guess when two searched performers share links", async () => {
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  // Different handles on the same platforms both collide with the record —
+  // name-search ambiguity is refused, never merged.
+  const fixture = await startStashPerformerFixture({
+    [STASH_NOLINK_ID]: [
+      { url: "https://onlyfans.com/rossavax", type: "OnlyFans" },
+    ],
+    [STASH_MATCH_ID]: [
+      {
+        url: "https://www.iafd.com/person.rme/perfid=RossVax/gender=f/",
+        type: "IAFD",
+      },
+    ],
+  });
+  try {
+    process.env.STASHDB_BASE_URL = fixture.origin;
+    const result = await linkedPerformerCounterpart(tpdbAutoLinkDetail());
+    assert.equal(result.linked, undefined);
+    assert.match(
+      result.unlinkedReason ?? "",
+      /2 searched StashDB performers share profile links/,
+    );
+    assert.match(result.unlinkedReason ?? "", /refusing to guess/);
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
+test("an explicit cross-provider performer URL links without issuing any search request", async () => {
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  // Everything upstream would 500; the explicit pointer must short-circuit
+  // before the network entirely.
+  const fixture = await startFixture((req, res) => {
+    replyJson(res, 500, { error: "no request expected" });
+  });
+  try {
+    process.env.STASHDB_BASE_URL = fixture.origin;
+    const detail = tpdbAutoLinkDetail();
+    detail.links.push({
+      url: `https://stashdb.org/performers/${STASH_MATCH_ID}`,
+      label: "StashDB",
+    });
+    const result = await linkedPerformerCounterpart(detail);
+    assert.deepEqual(result.linked, {
+      provider: "stashdb",
+      kind: "performer",
+      id: STASH_MATCH_ID,
+    });
+    assert.equal(result.unlinkedReason, undefined);
+    assert.equal(fixture.requests.length, 0);
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
+test("an upstream outage returns the explicit unlinked reason unchanged, never throwing", async () => {
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  const outage = await startFixture((req, res) => {
+    replyJson(res, 500, { error: "outage" });
+  });
+  try {
+    process.env.STASHDB_BASE_URL = outage.origin;
+    const result = await linkedPerformerCounterpart(tpdbAutoLinkDetail());
+    assert.equal(result.linked, undefined);
+    // The explicit reason, unchanged — not extended, since no comparison ran.
+    assert.match(
+      result.unlinkedReason ?? "",
+      /no explicit StashDB performer URL on the TPDB performer record/,
+    );
+    assert.doesNotMatch(result.unlinkedReason ?? "", /shared profile link/);
+  } finally {
+    await outage.close();
+    restore();
   }
 });
