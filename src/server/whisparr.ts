@@ -6,6 +6,12 @@
 // deletes) is out of scope and never issued.
 
 import { AppError, requestJson } from "./http.ts";
+import {
+  looksWindows,
+  mappedPrefix,
+  pathComponents,
+  samePathPrefix,
+} from "./jellyfin.ts";
 import { isDeliverableMedia, UNDELIVERABLE_REASON } from "../lib/contracts.ts";
 import type {
   AcquisitionProgress,
@@ -295,6 +301,57 @@ function asMovieResources(dto: unknown): MovieResourceDto[] {
   if (Array.isArray(dto)) return dto as MovieResourceDto[];
   if (dto && typeof dto === "object") return [dto as MovieResourceDto];
   return [];
+}
+
+/** Resolve a Jellyfin item's file paths to its Whisparr identity via
+ * configured path mappings (path correspondence only — never title/name
+ * matching). Zero matches → null (also when Whisparr is unconfigured or
+ * the item has no paths); exactly one distinct identity → that
+ * MediaReference; more than one distinct identity → throws
+ * ambiguous_identity (the route turns it into catalogNote). */
+export async function findWhisparrItemByPath(
+  config: IntegrationConfig,
+  jellyfinPaths: string[],
+): Promise<MediaReference | null> {
+  if (jellyfinPaths.length === 0) return null;
+  const whisparr = config?.whisparr;
+  if (!whisparr?.url || !whisparr.apiKey) return null;
+  const dtos = asMovieResources(
+    await requestJson<unknown>(whisparr.url, "/api/v3/movie", whisparr.apiKey, {
+      service: "whisparr",
+    }),
+  );
+  const distinct = new Map<string, MediaReference>();
+  for (const dto of dtos) {
+    const routed = identityOf(dto);
+    const path = asString(dto.path)?.trim() ?? "";
+    if (routed === null || path === "") continue;
+    const mapped = mappedPrefix(path, whisparr.pathMappings);
+    const matches = jellyfinPaths.some((jp) =>
+      samePathPrefix(
+        mapped.comps,
+        pathComponents(jp),
+        mapped.fold || looksWindows(jp),
+      ),
+    );
+    if (!matches) continue;
+    const provider = routed.itemType === "movie" ? "tpdb" : "stashdb";
+    const key = `${provider}:${routed.itemType}:${routed.identity.toLowerCase()}`;
+    distinct.set(key, {
+      provider,
+      kind: routed.itemType,
+      id: routed.identity,
+    });
+  }
+  if (distinct.size > 1) {
+    throw new AppError(
+      409,
+      "ambiguous_identity",
+      "Multiple Whisparr items match this item's path.",
+    );
+  }
+  if (distinct.size === 0) return null;
+  return [...distinct.values()][0]!;
 }
 
 /** Prove the upstream returned exactly the requested kind and identity.

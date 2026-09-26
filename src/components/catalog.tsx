@@ -1607,7 +1607,7 @@ function DetailBody({
  * candidates from the providers, ranked deterministically; the optional Jev
  * pass only reranks those same candidates — it can never add titles. The
  * provider-supplied related references in the aside stay a distinct block. */
-function RelatedTitles({
+export function RelatedTitles({
   target,
   onNavigate,
 }: {

@@ -786,7 +786,7 @@ export async function getLibraryItem(
   userToken: string,
   account: Account,
   id: string,
-): Promise<LibraryItem> {
+): Promise<{ item: LibraryItem; paths: string[] }> {
   requireJellyfinConfig(config);
   const itemId = normalizeItemId(id);
   if (effectiveLibraries(config, account).length === 0) {
@@ -813,7 +813,17 @@ export async function getLibraryItem(
     userToken,
     { service: "jellyfin" },
   );
-  return mapLibraryItem(dto, user, config, playback?.MediaSources);
+  // File paths drive Whisparr path-correspondence identity resolution.
+  const paths = [
+    dto.Path ?? "",
+    ...(dto.MediaSources ?? []).map((s) => s.Path ?? ""),
+  ]
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+  return {
+    item: mapLibraryItem(dto, user, config, playback?.MediaSources),
+    paths: [...new Set(paths)],
+  };
 }
 
 export async function getLibraryImage(
@@ -929,17 +939,17 @@ interface CandidateItem {
 const SWEEP_PAGE = 60;
 const SWEEP_MAX_ITEMS = 12_000;
 
-function pathComponents(path: string): string[] {
+export function pathComponents(path: string): string[] {
   return path.split(/[\\/]+/).filter((c) => c.length > 0);
 }
 
-function looksWindows(path: string): boolean {
+export function looksWindows(path: string): boolean {
   return path.includes("\\") || /^[a-zA-Z]:[\\/]/.test(path);
 }
 
 // Full-component prefix test. Never a loose substring: components must line
 // up exactly, with case folding only for Windows-style paths.
-function samePathPrefix(
+export function samePathPrefix(
   prefix: string[],
   full: string[],
   fold: boolean,
@@ -955,7 +965,7 @@ function samePathPrefix(
 // Maps a Whisparr path through the first matching configured mapping and
 // returns comparable components plus the case-fold decision. With no
 // matching mapping the path is compared as-is (shared-mount deployments).
-function mappedPrefix(
+export function mappedPrefix(
   whisparrPath: string,
   mappings: WhisparrPathMapping[] | undefined,
 ): { comps: string[]; fold: boolean } {

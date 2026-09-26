@@ -123,6 +123,7 @@ import {
 import { suggestTags } from "../../../../server/judgment.ts";
 import {
   findWhisparrItem,
+  findWhisparrItemByPath,
   getWhisparrStatus,
 } from "../../../../server/whisparr.ts";
 import {
@@ -192,13 +193,26 @@ export async function libraryItem(
   ctx: AuthContext,
   id: string,
 ): Promise<Response> {
-  const item = await getLibraryItem(
+  const { item, paths } = await getLibraryItem(
     ctx.config,
     ctx.token,
     ctx.account,
     requireId(id),
   );
-  return json({ item });
+  // Additive enrichment: identity comes only from Whisparr path
+  // correspondence. A lookup failure is reported, never faked as a match.
+  let catalog: MediaReference | undefined;
+  let catalogNote: string | undefined;
+  try {
+    catalog = (await findWhisparrItemByPath(ctx.config, paths)) ?? undefined;
+  } catch (error) {
+    const whisparr = ctx.config?.whisparr;
+    if (whisparr?.url && whisparr.apiKey) {
+      catalogNote =
+        error instanceof AppError ? error.message : "Whisparr lookup failed.";
+    }
+  }
+  return json({ item, catalog, catalogNote });
 }
 
 /** Shared image response: strong ETag + If-None-Match revalidation so F5 is a

@@ -511,6 +511,10 @@ async function whisparrHandler(
   if (url.pathname === "/api/v3/movie") {
     const tpdbId = url.searchParams.get("tpdbId");
     const stashId = url.searchParams.get("stashId");
+    // Unfiltered list: the library-detail enrichment resolves identity by
+    // walking every stored movie and matching paths itself.
+    if (tpdbId === null && stashId === null)
+      return json(res, 200, whisparrMovies);
     return json(
       res,
       200,
@@ -1506,6 +1510,134 @@ test("empty grant list never means all libraries", async () => {
   });
   const libs = await call("GET", "/api/libraries", { cookie });
   assert.deepEqual(await libs.json(), { libraries: [] });
+});
+
+test("library detail: catalog enrichment via whisparr path mappings", async () => {
+  // The preceding test arms fx.fail.items and never consumes it (its empty
+  // grants short-circuit before the fixture); the Jellyfin reads here are real.
+  fx.fail.items = 0;
+  const saveWhisparr = (whisparrUrlOverride: string): Promise<Response> =>
+    call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: {
+        jellyfinUrl,
+        jellyfinExternalUrl: jellyfinUrl,
+        whisparrUrl: whisparrUrlOverride,
+        whisparrApiKey: whisparrKey,
+        pathMappings: [
+          { whisparrPrefix: "/data/whisparr", jellyfinPrefix: "/media" },
+        ],
+      },
+    });
+  assert.equal((await saveWhisparr(whisparrUrl)).status, 200);
+  try {
+    // One distinct identity behind the mapped path: the item carries its
+    // catalog reference.
+    const resolved = await call("GET", `/api/library/${ITEM_MOVIE}`, {
+      cookie: owner,
+    });
+    assert.equal(resolved.status, 200);
+    const resolvedBody = (await resolved.json()) as {
+      item: { id: string };
+      catalog?: { provider: string; kind: string; id: string };
+      catalogNote?: string;
+    };
+    assert.equal(resolvedBody.item.id, ITEM_MOVIE);
+    assert.deepEqual(resolvedBody.catalog, {
+      provider: "tpdb",
+      kind: "movie",
+      id: TPDB_MOVIE,
+    });
+    assert.equal(resolvedBody.catalogNote, undefined);
+
+    // Two distinct Whisparr identities behind one path is a real
+    // misconfiguration: surfaced as catalogNote, never silent.
+    whisparrMovies.push({
+      id: 412,
+      title: "Alpha Movie Duplicate",
+      monitored: true,
+      path: `/data/whisparr/${ITEM_MOVIE}.mkv`,
+      hasFile: true,
+      movieFileId: 6,
+      sizeOnDisk: 1,
+      added: "2026-09-10T12:00:00Z",
+      tmdbId: 0,
+      tpdbId: TPDB_MOVIE2,
+      foreignId: `tpdbId:${TPDB_MOVIE2}`,
+      itemType: "movie",
+      statistics: { movieFileCount: 1, sizeOnDisk: 1 },
+    });
+    const ambiguous = await call("GET", `/api/library/${ITEM_MOVIE}`, {
+      cookie: owner,
+    });
+    assert.equal(ambiguous.status, 200);
+    const ambiguousBody = (await ambiguous.json()) as {
+      catalog?: unknown;
+      catalogNote?: string;
+    };
+    assert.equal(ambiguousBody.catalog, undefined);
+    assert.equal(typeof ambiguousBody.catalogNote, "string");
+    whisparrMovies.pop();
+
+    // No whisparr item sits behind this item's path: bare item, no note —
+    // an honest absence, never a faked enrichment.
+    const bare = await call("GET", `/api/library/${ITEM_SHOW}`, {
+      cookie: owner,
+    });
+    assert.equal(bare.status, 200);
+    const bareBody = (await bare.json()) as {
+      catalog?: unknown;
+      catalogNote?: string;
+    };
+    assert.equal(bareBody.catalog, undefined);
+    assert.equal(bareBody.catalogNote, undefined);
+
+    // Whisparr configured but unreachable: the failure is named, not hidden.
+    assert.equal((await saveWhisparr("http://127.0.0.1:9")).status, 200);
+    const outage = await call("GET", `/api/library/${ITEM_MOVIE}`, {
+      cookie: owner,
+    });
+    assert.equal(outage.status, 200);
+    const outageBody = (await outage.json()) as {
+      catalog?: unknown;
+      catalogNote?: string;
+    };
+    assert.equal(outageBody.catalog, undefined);
+    assert.equal(typeof outageBody.catalogNote, "string");
+
+    // Whisparr unconfigured: no catalog, no note. A blank URL clears the
+    // connection, so the body must not also carry the key — key + blank URL
+    // is rejected by the integrations validation, never dropped.
+    assert.equal(
+      (
+        await call("PATCH", "/api/admin/integrations", {
+          cookie: owner,
+          body: {
+            jellyfinUrl,
+            jellyfinExternalUrl: jellyfinUrl,
+            whisparrUrl: "",
+          },
+        })
+      ).status,
+      200,
+    );
+    const unconfigured = await call("GET", `/api/library/${ITEM_MOVIE}`, {
+      cookie: owner,
+    });
+    assert.equal(unconfigured.status, 200);
+    const unconfiguredBody = (await unconfigured.json()) as {
+      catalog?: unknown;
+      catalogNote?: string;
+    };
+    assert.equal(unconfiguredBody.catalog, undefined);
+    assert.equal(unconfiguredBody.catalogNote, undefined);
+  } finally {
+    // Leave whisparr removed: later tests re-establish it themselves.
+    await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: { jellyfinUrl, jellyfinExternalUrl: jellyfinUrl, whisparrUrl: "" },
+    });
+  }
 });
 
 test("outages are errors, never empty successes; transient failures keep sessions", async () => {

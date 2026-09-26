@@ -974,7 +974,7 @@ function membershipHandler(): {
 test("getLibraryItem proves membership under a granted library before detail", async () => {
   const { handler, playbackAuth } = membershipHandler();
   await withFixture(handler, async (fx) => {
-    const item = await getLibraryItem(
+    const { item } = await getLibraryItem(
       jellyfinConfig(fx.origin, [LIB_A, LIB_B]),
       TOKEN,
       account([LIB_A, LIB_B]),
@@ -1035,12 +1035,12 @@ test("library items carry the media server's own file facts, path only for admin
   ): Promise<LibraryItem> => {
     let item: LibraryItem | null = null;
     await withFixture(handlerFor(source, isAdministrator), async (fx) => {
-      item = await getLibraryItem(
+      ({ item } = await getLibraryItem(
         jellyfinConfig(fx.origin, [LIB_A, LIB_B]),
         TOKEN,
         account([LIB_A, LIB_B]),
         ITEM_ID,
-      );
+      ));
     });
     assert.ok(item, "expected the item read to succeed");
     return item;

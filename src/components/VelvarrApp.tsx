@@ -13,10 +13,12 @@ import { useSearchParams } from "next/navigation";
 import type {
   Account,
   AdminAccount,
+  CatalogDetail,
   CatalogReference,
   Library,
   LibraryItem,
   LibraryPage,
+  MediaReference,
   PerformerFollow,
   ProviderStatus,
   RequestRecord,
@@ -31,6 +33,7 @@ import {
   CardStatusBadge,
   CardTypeBadge,
   Credit,
+  detailParams,
   ErrorPanel,
   FileFacts,
   ForbiddenPanel,
@@ -47,7 +50,7 @@ import {
   useSession,
   useTapReveal,
 } from "./shared.tsx";
-import { TitlesView } from "./catalog.tsx";
+import { RelatedTitles, TitlesView } from "./catalog.tsx";
 import { PreferencesDialog } from "./preferences.tsx";
 import { PerformerView } from "./performer.tsx";
 import { DiscoverShelves, FacetsView } from "./discover.tsx";
@@ -1469,12 +1472,25 @@ function LibraryView() {
 /* ---------- Library detail page ---------- */
 function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const setP = useParamsSetter();
 
-  const { data, error, reload } = useApiGet<{ item: LibraryItem }>(
-    `/api/library/${encodeURIComponent(id)}`,
-    [id],
-  );
+  const { data, error, reload } = useApiGet<{
+    item: LibraryItem;
+    catalog?: MediaReference;
+    catalogNote?: string;
+  }>(`/api/library/${encodeURIComponent(id)}`, [id]);
   const item = data?.item ?? null;
+  const catalog = data?.catalog;
+  const catalogNote = data?.catalogNote;
+  // Honest absence: a 404 here means the provider record is gone — no
+  // detail sections render, never fake ones.
+  const { data: catDetail } = useApiGet<{ detail: CatalogDetail }>(
+    catalog
+      ? `/api/catalog/${catalog.provider}/${catalog.kind}/${encodeURIComponent(catalog.id)}/detail`
+      : null,
+    [catalog?.provider, catalog?.kind, catalog?.id],
+  );
+  const detail = catDetail?.detail;
 
   useEffect(() => {
     const scrollY = window.scrollY;
@@ -1568,6 +1584,61 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
             <h3 className="mb-3 text-xl font-semibold text-ink">Overview</h3>
             <p>{item.overview || "No synopsis available."}</p>
           </section>
+          {catalogNote && (
+            <p className="text-sm text-muted">
+              Catalog details unavailable: {catalogNote}
+            </p>
+          )}
+          {catalog && detail && detail.tags.length > 0 && (
+            <section className="cat-section" aria-label="Tags">
+              <h2 className="cat-section-title">Tags</h2>
+              <div className="flex flex-wrap gap-2 mt-2">
+                {detail.tags.map((t) => (
+                  <span key={t.id} className="chip">
+                    {t.name}
+                  </span>
+                ))}
+              </div>
+            </section>
+          )}
+          {catalog && detail && detail.credits.length > 0 && (
+            <section className="cat-section cat-cast" aria-label="Performers">
+              <h2 className="cat-section-title">Cast</h2>
+              <div className="cat-people mt-2">
+                {detail.credits.map((c) => (
+                  <div
+                    key={`${c.reference.provider}:${c.reference.id}`}
+                    className="cat-person-cell"
+                  >
+                    <button
+                      type="button"
+                      className="cat-person"
+                      onClick={() =>
+                        setP(detailParams(c.reference), { push: true })
+                      }
+                    >
+                      <ItemImage
+                        name={c.name}
+                        src={imgSrc(c.imageUrl)}
+                        className="cat-person-img"
+                      />
+                      <span className="cat-person-name">{c.name}</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+          {catalog && (
+            <RelatedTitles
+              target={{
+                provider: catalog.provider,
+                kind: catalog.kind,
+                id: catalog.id,
+              }}
+              onNavigate={(r) => setP(detailParams(r), { push: true })}
+            />
+          )}
         </>
       )}
     </div>
