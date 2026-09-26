@@ -743,6 +743,25 @@ function GlobalSearchForm() {
     );
     window.scrollTo({ top: 0 });
   };
+
+  // Live search: the omnibox starts searching on keystrokes. A debounced
+  // timer writes the same { view: "search", q } URL the submit button writes,
+  // so SearchView's URL-driven fetch fires without Enter. The first write
+  // opens the surface (push, so Back returns to where you were); later
+  // keystrokes replace the entry so typing never fills the history stack.
+  // Guarded on input vs the URL's q: mounting on any view writes nothing.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const q = input.trim();
+      if (q === urlQ) return;
+      setParamsClearing(
+        setP,
+        { view: "search", q: q || null },
+        { push: params.get("view") !== "search" },
+      );
+    }, 300);
+    return () => clearTimeout(t);
+  }, [input, urlQ, params, setP]);
   return (
     <form role="search" onSubmit={submit} className="global-search">
       <Icon name="search" />

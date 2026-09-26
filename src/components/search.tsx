@@ -162,7 +162,8 @@ export function SearchView() {
   const setP = useParamsSetter();
   const q = (params.get("q") ?? "").trim();
   const ready = q.length >= 2;
-  // Search fires on an explicit URL change only — never on keystrokes.
+  // Search fires whenever the URL's q changes — the omnibox updates it live
+  // (debounced keystrokes), so results load without pressing Enter.
   const {
     data,
     error,
