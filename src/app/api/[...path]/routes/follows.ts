@@ -73,6 +73,7 @@ import {
   listFollowsByProvider,
   listRequests,
   listRemovalRequests,
+  mergePerformerFollows,
   revokeSession,
   saveConfig,
   saveContentPreferences,
@@ -142,13 +143,22 @@ import {
 export function performerFromBody(
   body: Record<string, unknown>,
 ): CatalogReference {
-  const performer = body.performer;
+  return performerField(body, "performer");
+}
+
+/** One keyed performer reference off a JSON body; the key names the field so
+ * a multi-ref body (merge) reports which side was malformed. */
+export function performerField(
+  body: Record<string, unknown>,
+  key: string,
+): CatalogReference {
+  const performer = body[key];
   if (
     performer === null ||
     typeof performer !== "object" ||
     Array.isArray(performer)
   ) {
-    throw new AppError(400, "invalid_field", "Invalid performer reference.");
+    throw new AppError(400, "invalid_field", `Invalid ${key} reference.`);
   }
   const p = performer as Record<string, unknown>;
   if (
@@ -156,13 +166,22 @@ export function performerFromBody(
     typeof p.kind !== "string" ||
     typeof p.id !== "string"
   ) {
-    throw new AppError(400, "invalid_field", "Invalid performer reference.");
+    throw new AppError(400, "invalid_field", `Invalid ${key} reference.`);
   }
-  const reference = parseCatalogReference(p.provider, p.kind, p.id);
-  if (reference.kind !== "performer") {
-    throw new AppError(400, "invalid_field", "Invalid performer reference.");
+  try {
+    const reference = parseCatalogReference(p.provider, p.kind, p.id);
+    if (reference.kind !== "performer") {
+      throw new AppError(400, "invalid_field", `Invalid ${key} reference.`);
+    }
+    return reference;
+  } catch (e) {
+    // A malformed ref in a JSON body is one invalid_field error, whichever
+    // check catches it; parseCatalogReference names it invalid_reference.
+    if (e instanceof AppError && e.code === "invalid_reference") {
+      throw new AppError(400, "invalid_field", `Invalid ${key} reference.`);
+    }
+    throw e;
   }
-  return reference;
 }
 
 export async function listFollowsRoute(ctx: AuthContext): Promise<Response> {
@@ -256,6 +275,29 @@ export async function deleteFollowRoute(
   return new Response(null, { status: 204 });
 }
 
+/** Merges two already-followed entries the user asserts are the same person
+ * and the providers never linked. Both sides must already be followed and on
+ * different providers; the survivor (`performer`) row names the counterpart,
+ * exactly as a provider-published pair would. */
+export async function mergeFollowsRoute(
+  request: Request,
+  ctx: AuthContext,
+): Promise<Response> {
+  const body = await readJson(request);
+  const performer = performerField(body, "performer");
+  const counterpart = performerField(body, "counterpart");
+  if (performer.provider === counterpart.provider) {
+    throw new AppError(
+      400,
+      "invalid_field",
+      "a merge pairs a TPDB entry with a StashDB entry",
+    );
+  }
+  // Same-provider and malformed refs are refused above, before storage runs.
+  const follow = mergePerformerFollows(ctx.account.id, performer, counterpart);
+  return json({ follow }, 200);
+}
+
 // --- bulk requests: everything a performer has ---
 
 import type { RouteDef } from "../admission.ts";
@@ -272,6 +314,12 @@ export const routes: RouteDef[] = [
     segments: ["follows"],
     auth: "session",
     run: async (ctx, request) => createFollowRoute(request, ctx),
+  },
+  {
+    method: "POST",
+    segments: ["follows", "merge"],
+    auth: "session",
+    run: async (ctx, request) => mergeFollowsRoute(request, ctx),
   },
   {
     method: "DELETE",

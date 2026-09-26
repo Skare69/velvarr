@@ -262,6 +262,7 @@ type Statements = {
   listPerformerFollowsByProvider: StatementSync;
   getPerformerFollowByRef: StatementSync;
   updatePerformerFollowLink: StatementSync;
+  getPerformerFollowLinkedTo: StatementSync;
   deletePerformerFollow: StatementSync;
   deletePerformerFollowsLinkedTo: StatementSync;
   isFollowingPerformer: StatementSync;
@@ -866,6 +867,9 @@ function S(): Statements {
       ),
       updatePerformerFollowLink: d.prepare(
         "UPDATE performer_follows SET linked_provider = ?, linked_external_id = ? WHERE account_id = ? AND provider = ? AND external_id = ?",
+      ),
+      getPerformerFollowLinkedTo: d.prepare(
+        "SELECT * FROM performer_follows WHERE account_id = ? AND linked_provider = ? AND linked_external_id = ?",
       ),
       deletePerformerFollow: d.prepare(
         "DELETE FROM performer_follows WHERE account_id = ? AND provider = ? AND external_id = ?",
@@ -1869,6 +1873,141 @@ export function isFollowing(
   return (
     S().isFollowingPerformer.get(accountId, provider, externalId) !== undefined
   );
+}
+
+/** The cross-provider identity for one followed performer, from whatever the
+ * account itself stored: the row's own link (the survivor side of a pair),
+ * else the reverse direction — a row linking TO this reference (the absorbed
+ * side reads the pair through its survivor). Null when neither side carries a
+ * link. Provider-published links are resolved by the caller first; this never
+ * consults the providers. */
+export function getPerformerLink(
+  accountId: string,
+  reference: CatalogReference,
+): CatalogReference | null {
+  open();
+  const row = S().getPerformerFollowByRef.get(
+    accountId,
+    reference.provider,
+    reference.id,
+  ) as PerformerFollowRow | undefined;
+  if (row?.linked_provider != null && row.linked_external_id != null) {
+    return {
+      provider: row.linked_provider as CatalogProvider,
+      kind: "performer",
+      id: row.linked_external_id,
+    };
+  }
+  const reverse = S().getPerformerFollowLinkedTo.get(
+    accountId,
+    reference.provider,
+    reference.id,
+  ) as PerformerFollowRow | undefined;
+  if (reverse) {
+    return {
+      provider: reverse.provider as CatalogProvider,
+      kind: "performer",
+      id: reverse.external_id,
+    };
+  }
+  return null;
+}
+
+const PROVIDER_LABELS: Record<CatalogProvider, string> = {
+  tpdb: "TPDB",
+  stashdb: "StashDB",
+};
+
+/** Merges two already-followed performer entries into one identity: the
+ * survivor row names the absorbed one, exactly as a provider-published pair
+ * would, so the list folds to one entry and unfollowing either side drops
+ * both. The merge is the user's assertion that these are the same person —
+ * this follows nothing, name-matches nothing, and never touches a pair the
+ * providers published. */
+export function mergePerformerFollows(
+  accountId: string,
+  survivor: CatalogReference,
+  absorbed: CatalogReference,
+): PerformerFollow {
+  if (
+    !validCatalogRef(survivor, ["performer"]) ||
+    !validCatalogRef(absorbed, ["performer"])
+  ) {
+    throw new AppError(400, "invalid_field", "performer reference is invalid");
+  }
+  const d = open();
+  return inTransaction(d, () => {
+    const survivorRow = S().getPerformerFollowByRef.get(
+      accountId,
+      survivor.provider,
+      survivor.id,
+    ) as PerformerFollowRow | undefined;
+    if (!survivorRow) {
+      throw new AppError(
+        404,
+        "follow_not_found",
+        `follow the ${PROVIDER_LABELS[survivor.provider]} entry first`,
+      );
+    }
+    const absorbedRow = S().getPerformerFollowByRef.get(
+      accountId,
+      absorbed.provider,
+      absorbed.id,
+    ) as PerformerFollowRow | undefined;
+    if (!absorbedRow) {
+      throw new AppError(
+        404,
+        "follow_not_found",
+        `follow the ${PROVIDER_LABELS[absorbed.provider]} entry first`,
+      );
+    }
+    // One row, one identity: a side already merged away, or already named by
+    // a third row, must not be silently rewritten into a second identity.
+    if (
+      survivorRow.linked_provider != null ||
+      absorbedRow.linked_provider != null
+    ) {
+      throw new AppError(
+        409,
+        "already_linked",
+        "one of these entries is already merged with another performer",
+      );
+    }
+    // By the check above neither row of the pair links out, so any hit here
+    // is a genuine third row naming one of them.
+    if (
+      S().getPerformerFollowLinkedTo.get(
+        accountId,
+        survivor.provider,
+        survivor.id,
+      ) ||
+      S().getPerformerFollowLinkedTo.get(
+        accountId,
+        absorbed.provider,
+        absorbed.id,
+      )
+    ) {
+      throw new AppError(
+        409,
+        "already_linked",
+        "one of these entries is already merged with another performer",
+      );
+    }
+    S().updatePerformerFollowLink.run(
+      absorbed.provider,
+      absorbed.id,
+      accountId,
+      survivor.provider,
+      survivor.id,
+    );
+    return rowToPerformerFollow(
+      S().getPerformerFollowByRef.get(
+        accountId,
+        survivor.provider,
+        survivor.id,
+      ) as PerformerFollowRow,
+    );
+  });
 }
 
 // --- content preferences (personal hidden tags and carousel order) ---

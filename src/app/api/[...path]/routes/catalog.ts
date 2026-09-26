@@ -64,6 +64,7 @@ import {
   getAccount,
   getConfig,
   getContentPreferences,
+  getPerformerLink,
   getSession,
   hasAuthoritativeAbsence,
   importAccounts,
@@ -713,12 +714,19 @@ export async function catalogDetail(
   const acquisition = media ? getAcquisitionByReference(media) : null;
   // Performers take the async path: an explicit provider URL wins, then a
   // shared third-party profile link (identity URL match) can resolve the
-  // counterpart, which may search the other provider. Studios/scenes have no
-  // identity-link fallback, so they stay on the sync resolver.
-  const link =
+  // counterpart, which may search the other provider. Only a performer none
+  // of that pairs falls back to the account's own stored merge — the user's
+  // assertion; absent there too, the published shape (including
+  // unlinkedReason) stands untouched. Studios/scenes have no identity-link
+  // fallback, so they stay on the sync resolver.
+  let link =
     reference.kind === "performer"
       ? await linkedPerformerCounterpart(detail)
       : crossProviderLink(detail);
+  if (link.linked === undefined && reference.kind === "performer") {
+    const userLink = getPerformerLink(ctx.account.id, reference);
+    if (userLink) link = { linked: userLink };
+  }
   return json({
     detail,
     link,

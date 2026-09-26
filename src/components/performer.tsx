@@ -530,6 +530,150 @@ function FollowStar({
   );
 }
 
+/* ---------- Merge a duplicate entry on the other provider ---------- */
+
+/** Two followed entries can be the same person even when the providers never
+ * published a link between them. Merging records YOUR assertion that both
+ * entries are the same person — Velvarr never matches performers by name, it
+ * only stores the pair the human declares. Rendered only while this page's
+ * provider link is missing. */
+function MergeControl({
+  reference,
+  onMerged,
+}: {
+  reference: CatalogReference;
+  onMerged: () => void;
+}) {
+  const other: CatalogProvider =
+    reference.provider === "tpdb" ? "stashdb" : "tpdb";
+  const [open, setOpen] = useState(false);
+  const [follows, setFollows] = useState<PerformerFollow[] | null>(null);
+  const [filter, setFilter] = useState("");
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Same live-flag pattern as FollowStar: a stale in-flight list never wins.
+  useEffect(() => {
+    if (!open || follows !== null) return;
+    let live = true;
+    setError(null);
+    api<{ follows: PerformerFollow[] }>("/api/follows")
+      .then((d) => {
+        if (live) setFollows(d.follows);
+      })
+      .catch((e) => {
+        if (live) setError(messageOf(e));
+      });
+    return () => {
+      live = false;
+    };
+  }, [open, follows]);
+
+  const merge = async (f: PerformerFollow) => {
+    setBusyId(f.id);
+    setError(null);
+    try {
+      await api("/api/follows/merge", {
+        method: "POST",
+        body: JSON.stringify({
+          performer: {
+            provider: reference.provider,
+            kind: "performer",
+            id: reference.id,
+          },
+          counterpart: f.reference,
+        }),
+      });
+      // The parent refetches the page; the link resolves and this panel
+      // unmounts, so the local list needs no update.
+      onMerged();
+    } catch (e) {
+      setError(messageOf(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const needle = filter.trim().toLowerCase();
+  const candidates = (follows ?? []).filter(
+    (f) =>
+      f.reference.provider === other &&
+      f.linked === null &&
+      (!needle || f.name.toLowerCase().includes(needle)),
+  );
+
+  return (
+    <div className="mt-4" aria-label="Merge duplicate entries">
+      {open ? (
+        <>
+          <label className="label" htmlFor="merge-filter">
+            Filter by name
+          </label>
+          <input
+            id="merge-filter"
+            className="mt-1 w-full"
+            type="search"
+            placeholder="Filter by name"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
+          {follows === null && error === null ? (
+            <p className="mt-2 text-sm text-muted" aria-live="polite">
+              Loading your follows…
+            </p>
+          ) : candidates.length === 0 ? (
+            <p className="mt-2 text-sm text-muted">
+              No standalone {providerLabel(other)} entry to merge. Follow her on{" "}
+              {providerLabel(other)} first, then merge the two entries here.
+            </p>
+          ) : (
+            <ul className="mt-2 space-y-2">
+              {candidates.map((f) => (
+                <li
+                  key={f.id}
+                  className="flex items-center justify-between gap-3"
+                >
+                  <span className="text-sm">{f.name}</span>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={busyId !== null}
+                    onClick={() => void merge(f)}
+                  >
+                    {busyId === f.id ? "Merging…" : "Merge"}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <button
+            type="button"
+            className="btn mt-3"
+            onClick={() => setOpen(false)}
+          >
+            Cancel
+          </button>
+        </>
+      ) : (
+        <>
+          <button type="button" className="btn" onClick={() => setOpen(true)}>
+            Merge with a duplicate entry…
+          </button>
+          <p className="mt-1 text-xs text-muted">
+            Use this only if you know both entries are the same person — the
+            merge records your assertion; Velvarr never matches by name.
+          </p>
+        </>
+      )}
+      {error !== null && open && (
+        <p className="bulk-error mt-2 text-xs" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
 /* ---------- Often appears with ---------- */
 
 /** Co-appearance on published credits — the providers' own filmographies are
@@ -938,6 +1082,10 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
                   {unlinkedReason ??
                     `${providerLabel(reference.provider)} publishes no ${providerLabel(missing)} link for this performer, and ${providerLabel(missing)} is the only source for ${missing === "tpdb" ? "movies" : "scenes"}. Velvarr pairs only the records the providers link themselves — it never matches performers by name.`}
                 </p>
+                <MergeControl
+                  reference={reference}
+                  onMerged={() => setReload((n) => n + 1)}
+                />
               </div>
             )}
             <RelatedPerformers

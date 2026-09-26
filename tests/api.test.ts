@@ -126,6 +126,16 @@ const TPDB_PERFORMER2 = "2a2b3c4d-0000-0000-0000-00000000000e";
 // in this file must stay single-provider.
 const TPDB_PERFORMER4 = "2a2b3c4d-0000-0000-0000-00000000000c";
 const STASH_PERFORMER2 = "4c4d5e6f-0000-0000-0000-0000000000d5";
+// A user-merge pair: both followed standalone, no provider publishes any URL
+// between them, so the identity exists only because the user asserts it.
+// (Spec's …000e was taken by TPDB_PERFORMER2; …014/…0d7/…0d8 are the next
+// free ids.) Fresh ids — the merge tests must not touch any other pair.
+const TPDB_PERFORMER5 = "2a2b3c4d-0000-0000-0000-000000000014";
+const STASH_PERFORMER3 = "4c4d5e6f-0000-0000-0000-0000000000d7";
+const STASH_PERFORMER4 = "4c4d5e6f-0000-0000-0000-0000000000d8";
+// Only a merge-refusal prop: followed, never merged, unfollowed in the same
+// test.
+const TPDB_PERFORMER6 = "2a2b3c4d-0000-0000-0000-000000000015";
 const TPDB_STUDIO = "2a2b3c4d-0000-0000-0000-0000000000a1";
 // Second studio on the /movies snapshot: no published counterpart anywhere,
 // so the unified Studios shelf can prove unlinked tiles still render.
@@ -709,6 +719,19 @@ async function tpdbHandler(
       },
     });
   }
+  // The user-merge pair's TPDB side, and one not-followed performer with no
+  // links: no extras.links, so no provider publishes a counterpart and the
+  // catalog link can only come from the account's own stored merge.
+  if (p === `/performers/${TPDB_PERFORMER5}`) {
+    return json(res, 200, {
+      data: { id: TPDB_PERFORMER5, name: "User-Merged Fixture Performer" },
+    });
+  }
+  if (p === `/performers/${TPDB_PERFORMER3}`) {
+    return json(res, 200, {
+      data: { id: TPDB_PERFORMER3, name: "Bulk Fixture Performer" },
+    });
+  }
   if (p === "/sites") {
     return json(res, 200, {
       data: [tpdbSiteRow(TPDB_STUDIO)],
@@ -866,8 +889,9 @@ async function stashdbHandler(
       },
     });
   }
-  // Only the counterpart of the linked TPDB record resolves; every other
-  // StashDB performer detail stays absent (data null), as before.
+  // Only the counterpart of the linked TPDB record resolves, plus the
+  // user-merge pair's StashDB side; every other StashDB performer detail
+  // stays absent (data null), as before.
   if (query.includes("findPerformer")) {
     const wanted = (body.variables as { id?: unknown } | undefined)?.id;
     return json(res, 200, {
@@ -883,7 +907,18 @@ async function stashdbHandler(
                 images: [],
               },
             }
-          : null,
+          : wanted === STASH_PERFORMER3
+            ? {
+                findPerformer: {
+                  id: STASH_PERFORMER3,
+                  name: "User-Merged Fixture Performer",
+                  deleted: false,
+                  aliases: [],
+                  urls: [],
+                  images: [],
+                },
+              }
+            : null,
     });
   }
   if (query.includes("searchTag")) {
@@ -3591,6 +3626,291 @@ test("one follow covers both metadata sources, lists the performer once, and unf
     remaining.some((f) => f.reference.id === TPDB_PERFORMER4),
     false,
   );
+});
+
+test("a user merge folds two standalone follows into one identity", async () => {
+  // No provider publishes a URL between these entries, so each follow goes
+  // in standalone (the counterpart lookup resolves nothing to pair).
+  const followStandalone = async (
+    provider: "tpdb" | "stashdb",
+    id: string,
+    name: string,
+  ) => {
+    const res = await call("POST", "/api/follows", {
+      cookie: member2,
+      body: { performer: { provider, kind: "performer", id }, name },
+    });
+    assert.equal(res.status, 201);
+    const body = (await res.json()) as { follow: FollowShape };
+    assert.equal(body.follow.linked, null);
+    return body.follow;
+  };
+  await followStandalone(
+    "tpdb",
+    TPDB_PERFORMER5,
+    "User-Merged Fixture Performer",
+  );
+  await followStandalone(
+    "stashdb",
+    STASH_PERFORMER3,
+    "User-Merged Fixture Performer",
+  );
+
+  const merged = await call("POST", "/api/follows/merge", {
+    cookie: member2,
+    body: {
+      performer: { provider: "tpdb", kind: "performer", id: TPDB_PERFORMER5 },
+      counterpart: {
+        provider: "stashdb",
+        kind: "performer",
+        id: STASH_PERFORMER3,
+      },
+    },
+  });
+  assert.equal(merged.status, 200);
+  const mergedBody = (await merged.json()) as { follow: FollowShape };
+  // The survivor is the requested performer row, now naming the counterpart
+  // exactly as a provider-published pair would.
+  assert.equal(mergedBody.follow.reference.id, TPDB_PERFORMER5);
+  assert.deepEqual(mergedBody.follow.linked, {
+    provider: "stashdb",
+    kind: "performer",
+    id: STASH_PERFORMER3,
+  });
+
+  // One person, one entry: the StashDB row folds away like a published pair.
+  const list = await call("GET", "/api/follows", { cookie: member2 });
+  const follows = ((await list.json()) as { follows: FollowShape[] }).follows;
+  const pair = follows.filter(
+    (f) =>
+      f.reference.id === TPDB_PERFORMER5 || f.reference.id === STASH_PERFORMER3,
+  );
+  assert.equal(pair.length, 1);
+  assert.equal(pair[0]?.reference.id, TPDB_PERFORMER5);
+
+  // Unfollowing the survivor drops both rows of the user-asserted pair.
+  const dropped = await call("DELETE", `/api/follows/tpdb/${TPDB_PERFORMER5}`, {
+    cookie: member2,
+  });
+  assert.equal(dropped.status, 204);
+  const after = await call("GET", "/api/follows", { cookie: member2 });
+  const afterIds = (
+    (await after.json()) as { follows: FollowShape[] }
+  ).follows.map((f) => f.reference.id);
+  assert.equal(afterIds.includes(TPDB_PERFORMER5), false);
+  assert.equal(afterIds.includes(STASH_PERFORMER3), false);
+});
+
+test("a merge refuses same-provider, unfollowed, and already-merged entries", async () => {
+  assert.equal(
+    (
+      await call("POST", "/api/follows/merge", {
+        body: {
+          performer: {
+            provider: "tpdb",
+            kind: "performer",
+            id: TPDB_PERFORMER5,
+          },
+          counterpart: {
+            provider: "stashdb",
+            kind: "performer",
+            id: STASH_PERFORMER3,
+          },
+        },
+      })
+    ).status,
+    401,
+  );
+
+  // Same provider is refused before any storage read: neither side is
+  // followed here, and the 400 still wins.
+  const sameProvider = await call("POST", "/api/follows/merge", {
+    cookie: member2,
+    body: {
+      performer: { provider: "tpdb", kind: "performer", id: TPDB_PERFORMER3 },
+      counterpart: {
+        provider: "tpdb",
+        kind: "performer",
+        id: TPDB_PERFORMER2,
+      },
+    },
+  });
+  assert.equal(sameProvider.status, 400);
+  assert.equal((await errorShape(sameProvider)).code, "invalid_field");
+
+  const follow = async (
+    provider: "tpdb" | "stashdb",
+    id: string,
+    name: string,
+  ) => {
+    const res = await call("POST", "/api/follows", {
+      cookie: member2,
+      body: { performer: { provider, kind: "performer", id }, name },
+    });
+    assert.equal(res.status, 201);
+  };
+  const merge = (
+    performer: { provider: string; id: string },
+    counterpart: { provider: string; id: string },
+  ) =>
+    call("POST", "/api/follows/merge", {
+      cookie: member2,
+      body: {
+        performer: { ...performer, kind: "performer" },
+        counterpart: { ...counterpart, kind: "performer" },
+      },
+    });
+  const tpdb5 = { provider: "tpdb", id: TPDB_PERFORMER5 };
+  const stash3 = { provider: "stashdb", id: STASH_PERFORMER3 };
+
+  await follow("tpdb", TPDB_PERFORMER5, "User-Merged Fixture Performer");
+  // Both sides must already be followed; the 404 names the missing side.
+  const missingCounterpart = await merge(tpdb5, stash3);
+  assert.equal(missingCounterpart.status, 404);
+  const missingBody = await errorShape(missingCounterpart);
+  assert.equal(missingBody.code, "follow_not_found");
+  assert.match(missingBody.message, /StashDB/);
+  // A missing survivor names its own side (the performer ref is checked
+  // first, so the message names TPDB even though both sides are unfollowed).
+  const missingSurvivor = await merge(
+    { provider: "tpdb", id: TPDB_PERFORMER3 },
+    stash3,
+  );
+  assert.equal(missingSurvivor.status, 404);
+  assert.match((await errorShape(missingSurvivor)).message, /TPDB/);
+
+  await follow("stashdb", STASH_PERFORMER3, "User-Merged Fixture Performer");
+  assert.equal((await merge(tpdb5, stash3)).status, 200);
+
+  // The survivor is already merged: a third entry cannot join.
+  await follow("stashdb", STASH_PERFORMER4, "Third Fixture Performer");
+  const survivorLinked = await merge(tpdb5, {
+    provider: "stashdb",
+    id: STASH_PERFORMER4,
+  });
+  assert.equal(survivorLinked.status, 409);
+  assert.equal((await errorShape(survivorLinked)).code, "already_linked");
+  // Reverse direction: merging from the absorbed side's page is the same 409.
+  const absorbedSide = await merge(
+    { provider: "stashdb", id: STASH_PERFORMER3 },
+    tpdb5,
+  );
+  assert.equal(absorbedSide.status, 409);
+  assert.equal((await errorShape(absorbedSide)).code, "already_linked");
+  // An unlinked survivor cannot absorb an entry a third row already names.
+  await follow("tpdb", TPDB_PERFORMER6, "Fourth Fixture Performer");
+  const namedByThird = await merge(
+    { provider: "tpdb", id: TPDB_PERFORMER6 },
+    stash3,
+  );
+  assert.equal(namedByThird.status, 409);
+  assert.equal((await errorShape(namedByThird)).code, "already_linked");
+
+  // Cleanup: every fresh id unfollowed, so later tests see the unchanged
+  // baseline (unfollowing the survivor drops its absorbed pair too).
+  const drop = (provider: string, id: string) =>
+    call("DELETE", `/api/follows/${provider}/${id}`, { cookie: member2 });
+  assert.equal((await drop("tpdb", TPDB_PERFORMER5)).status, 204);
+  assert.equal((await drop("stashdb", STASH_PERFORMER4)).status, 204);
+  assert.equal((await drop("tpdb", TPDB_PERFORMER6)).status, 204);
+  const baseline = await call("GET", "/api/follows", { cookie: member2 });
+  const baselineIds = (
+    (await baseline.json()) as { follows: FollowShape[] }
+  ).follows
+    .map((f) => f.reference.id)
+    .sort();
+  assert.deepEqual(baselineIds, [STASH_PERFORMER, TPDB_PERFORMER].sort());
+});
+
+test("catalog detail resolves a user-merged pair's link from the stored merge", async () => {
+  const follow = async (
+    provider: "tpdb" | "stashdb",
+    id: string,
+    name: string,
+  ) => {
+    const res = await call("POST", "/api/follows", {
+      cookie: member2,
+      body: { performer: { provider, kind: "performer", id }, name },
+    });
+    assert.equal(res.status, 201);
+  };
+  await follow("tpdb", TPDB_PERFORMER5, "User-Merged Fixture Performer");
+  await follow("stashdb", STASH_PERFORMER3, "User-Merged Fixture Performer");
+  const merged = await call("POST", "/api/follows/merge", {
+    cookie: member2,
+    body: {
+      performer: { provider: "tpdb", kind: "performer", id: TPDB_PERFORMER5 },
+      counterpart: {
+        provider: "stashdb",
+        kind: "performer",
+        id: STASH_PERFORMER3,
+      },
+    },
+  });
+  assert.equal(merged.status, 200);
+
+  // The provider publishes no link for this performer; the account's own
+  // merge is the only source, and it must replace unlinkedReason entirely.
+  const detail = await call(
+    "GET",
+    `/api/catalog/tpdb/performer/${TPDB_PERFORMER5}`,
+    { cookie: member2 },
+  );
+  assert.equal(detail.status, 200);
+  const detailBody = (await detail.json()) as {
+    link: { linked?: unknown; unlinkedReason?: unknown };
+  };
+  assert.deepEqual(detailBody.link, {
+    linked: { provider: "stashdb", kind: "performer", id: STASH_PERFORMER3 },
+  });
+  assert.equal("unlinkedReason" in detailBody.link, false);
+
+  // The absorbed side resolves the pair in reverse, from its own page.
+  const absorbed = await call(
+    "GET",
+    `/api/catalog/stashdb/performer/${STASH_PERFORMER3}`,
+    { cookie: member2 },
+  );
+  assert.equal(absorbed.status, 200);
+  const absorbedBody = (await absorbed.json()) as {
+    link: { linked?: unknown; unlinkedReason?: unknown };
+  };
+  assert.deepEqual(absorbedBody.link, {
+    linked: { provider: "tpdb", kind: "performer", id: TPDB_PERFORMER5 },
+  });
+  assert.equal("unlinkedReason" in absorbedBody.link, false);
+
+  // A performer nobody merged and no provider linked keeps the published
+  // unlinked shape untouched.
+  const unlinked = await call(
+    "GET",
+    `/api/catalog/tpdb/performer/${TPDB_PERFORMER3}`,
+    { cookie: member2 },
+  );
+  assert.equal(unlinked.status, 200);
+  const unlinkedBody = (await unlinked.json()) as {
+    link: { linked?: unknown; unlinkedReason?: unknown };
+  };
+  assert.equal(unlinkedBody.link.linked, undefined);
+  assert.match(
+    typeof unlinkedBody.link.unlinkedReason === "string"
+      ? unlinkedBody.link.unlinkedReason
+      : "",
+    /no explicit/,
+  );
+
+  // Cleanup: the baseline follow state again for the tests below.
+  const dropped = await call("DELETE", `/api/follows/tpdb/${TPDB_PERFORMER5}`, {
+    cookie: member2,
+  });
+  assert.equal(dropped.status, 204);
+  const baseline = await call("GET", "/api/follows", { cookie: member2 });
+  const baselineIds = (
+    (await baseline.json()) as { follows: FollowShape[] }
+  ).follows
+    .map((f) => f.reference.id)
+    .sort();
+  assert.deepEqual(baselineIds, [STASH_PERFORMER, TPDB_PERFORMER].sort());
 });
 
 test("catalog tags are authenticated, provider-scoped, and refuse short terms and unknown providers", async () => {
