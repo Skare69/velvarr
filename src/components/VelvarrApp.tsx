@@ -13,7 +13,6 @@ import { useSearchParams } from "next/navigation";
 import type {
   Account,
   AdminAccount,
-  CatalogDetail,
   CatalogReference,
   Library,
   LibraryItem,
@@ -50,7 +49,13 @@ import {
   useSession,
   useTapReveal,
 } from "./shared.tsx";
-import { RelatedTitles, TitlesView } from "./catalog.tsx";
+import {
+  DetailSections,
+  TitlesView,
+  useBrowseTo,
+  type DetailPayload,
+  type DetailTarget,
+} from "./catalog.tsx";
 import { PreferencesDialog } from "./preferences.tsx";
 import { PerformerView } from "./performer.tsx";
 import { DiscoverShelves, FacetsView } from "./discover.tsx";
@@ -1482,15 +1487,18 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const item = data?.item ?? null;
   const catalog = data?.catalog;
   const catalogNote = data?.catalogNote;
+  const target: DetailTarget | undefined = catalog
+    ? { provider: catalog.provider, kind: catalog.kind, id: catalog.id }
+    : undefined;
+  const browseTo = useBrowseTo();
   // Honest absence: a 404 here means the provider record is gone — no
   // detail sections render, never fake ones.
-  const { data: catDetail } = useApiGet<{ detail: CatalogDetail }>(
+  const { data: catDetail } = useApiGet<DetailPayload>(
     catalog
       ? `/api/catalog/${catalog.provider}/${catalog.kind}/${encodeURIComponent(catalog.id)}/detail`
       : null,
     [catalog?.provider, catalog?.kind, catalog?.id],
   );
-  const detail = catDetail?.detail;
 
   useEffect(() => {
     const scrollY = window.scrollY;
@@ -1580,63 +1588,28 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
               <FileFacts item={item} />
             </div>
           </div>
-          <section className="library-overview" aria-label="Overview">
-            <h3 className="mb-3 text-xl font-semibold text-ink">Overview</h3>
-            <p>{item.overview || "No synopsis available."}</p>
-          </section>
-          {catalogNote && (
+          {!catalog && (
+            <section className="library-overview" aria-label="Overview">
+              <h3 className="mb-3 text-xl font-semibold text-ink">Overview</h3>
+              <p>{item.overview || "No synopsis available."}</p>
+            </section>
+          )}
+          {/* ponytail: identity is Whisparr path correspondence only; the
+              upgrade path is mapping Jellyfin ProviderIds. */}
+          {!catalog && (
             <p className="text-sm text-muted">
-              Catalog details unavailable: {catalogNote}
+              Catalog details unavailable
+              {catalogNote
+                ? `: ${catalogNote}`
+                : " — no provider match was found for this item's file paths."}
             </p>
           )}
-          {catalog && detail && detail.tags.length > 0 && (
-            <section className="cat-section" aria-label="Tags">
-              <h2 className="cat-section-title">Tags</h2>
-              <div className="flex flex-wrap gap-2 mt-2">
-                {detail.tags.map((t) => (
-                  <span key={t.id} className="chip">
-                    {t.name}
-                  </span>
-                ))}
-              </div>
-            </section>
-          )}
-          {catalog && detail && detail.credits.length > 0 && (
-            <section className="cat-section cat-cast" aria-label="Performers">
-              <h2 className="cat-section-title">Cast</h2>
-              <div className="cat-people mt-2">
-                {detail.credits.map((c) => (
-                  <div
-                    key={`${c.reference.provider}:${c.reference.id}`}
-                    className="cat-person-cell"
-                  >
-                    <button
-                      type="button"
-                      className="cat-person"
-                      onClick={() =>
-                        setP(detailParams(c.reference), { push: true })
-                      }
-                    >
-                      <ItemImage
-                        name={c.name}
-                        src={imgSrc(c.imageUrl)}
-                        className="cat-person-img"
-                      />
-                      <span className="cat-person-name">{c.name}</span>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-          {catalog && (
-            <RelatedTitles
-              target={{
-                provider: catalog.provider,
-                kind: catalog.kind,
-                id: catalog.id,
-              }}
+          {catalog && catDetail && target && (
+            <DetailSections
+              payload={catDetail}
+              target={target}
               onNavigate={(r) => setP(detailParams(r), { push: true })}
+              onBrowse={browseTo}
             />
           )}
         </>

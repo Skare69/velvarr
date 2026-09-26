@@ -65,7 +65,7 @@ type CatalogSearchPage = {
   items: CatalogDetail[];
 };
 
-type DetailPayload = {
+export type DetailPayload = {
   detail: CatalogDetail & {
     /** StashDB studio detail only: provider-supplied child-studio count
      * (omitted when the provider supplies none — never defaulted to 0). */
@@ -87,7 +87,7 @@ type DetailPayload = {
   } | null;
 };
 
-type DetailTarget = {
+export type DetailTarget = {
   provider: CatalogProvider;
   kind: CatalogKind;
   id: string;
@@ -1177,7 +1177,7 @@ function MediaActions({
  * unified browse constraints. `param` is a canonical /api/browse key;
  * `id` is the provider-native id, or the YYYY string for `year`; `tag`
  * rides only for `include`; `studioMode` only for StashDB studios. */
-type BrowseFilter = {
+export type BrowseFilter = {
   param:
     | "studioTpdb"
     | "studioStashdb"
@@ -1210,17 +1210,12 @@ function DetailBody({
 }) {
   const d = payload.detail;
   const mediaKind = asMediaKind(target.kind);
-  const linked = "linked" in payload.link ? payload.link.linked : undefined;
   // A provider-supplied studio reference (kind "studio") becomes a real
   // control; without one the studio stays plain text.
   const studioRef =
     d.studio?.reference && d.studio.reference.kind === "studio"
       ? d.studio.reference
       : null;
-  // Tag chips become include constraints on media details — the unified
-  // browse takes provider-scoped tags on every kind. Performer and studio
-  // details keep their tags as plain text rather than dead controls.
-  const tagBrowse = mediaKind !== null;
   // Availability is a media-target concept: no fetch for performer/studio.
   const mediaTarget =
     mediaKind !== null
@@ -1233,18 +1228,9 @@ function DetailBody({
     mediaKind === "movie" && target.provider === "tpdb"
       ? (d.releaseDate?.slice(0, 4) ?? null)
       : null;
-  const showSourceUrl =
-    d.sourceUrl && !d.links.some((l) => l.url === d.sourceUrl)
-      ? d.sourceUrl
-      : null;
   const posterClass =
     target.kind === "performer" ? "cat-poster cat-poster-square" : "cat-poster";
   const backdrop = imgSrc(d.imageUrl);
-  // Remember studio/tag names so browse chips can label the ids the URL
-  // carries — details are where names are known.
-  useEffect(() => {
-    seedDetail(d, studioRef, tagBrowse);
-  }, [studioRef, tagBrowse, d, target.provider]);
   return (
     <>
       <header
@@ -1367,6 +1353,96 @@ function DetailBody({
         </div>
       </header>
 
+      <DetailSections
+        payload={payload}
+        target={target}
+        onNavigate={onNavigate}
+        onBrowse={onBrowse}
+      />
+    </>
+  );
+}
+
+// Detail filter entry points create canonical unified browse constraints:
+// type and the one constraint follow the filter's provider (year is
+// TPDB-movie-only), every other constraint resets — a detail entry point
+// starts a clean browse — and the old tags any/all modes are gone.
+// Constraint change → push.
+export function useBrowseTo(): (filter: BrowseFilter) => void {
+  const setP = useParamsSetter();
+  return useCallback(
+    (filter: BrowseFilter) => {
+      const patch: Record<string, string | null> = {
+        type:
+          filter.param === "year" || filter.provider === "tpdb"
+            ? "movie"
+            : "scene",
+        q: null,
+        include: null,
+        exclude: null,
+        year: null,
+        date: null,
+        date_operation: null,
+        performerTpdb: null,
+        performerStashdb: null,
+        studioTpdb: null,
+        studioStashdb: null,
+        studioMode: null,
+        sort: null,
+        direction: null,
+        page: null,
+        kind: null,
+        id: null,
+      };
+      if (filter.param === "include") {
+        patch.include = JSON.stringify([filter.tag]);
+      } else {
+        patch[filter.param] = filter.id;
+        if (filter.studioMode) patch.studioMode = filter.studioMode;
+      }
+      setP(patch, { push: true });
+    },
+    [setP],
+  );
+}
+
+/** Detail sections after the hero (Overview/Tags/Cast, aside,
+ * RelatedTitles), shared with the library item detail page. */
+export function DetailSections({
+  payload,
+  target,
+  onNavigate,
+  onBrowse,
+}: {
+  payload: DetailPayload;
+  target: DetailTarget;
+  onNavigate: (r: CatalogReference) => void;
+  onBrowse: (filter: BrowseFilter) => void;
+}) {
+  const d = payload.detail;
+  const mediaKind = asMediaKind(target.kind);
+  const linked = "linked" in payload.link ? payload.link.linked : undefined;
+  // A provider-supplied studio reference (kind "studio") becomes a real
+  // control; without one the studio stays plain text.
+  const studioRef =
+    d.studio?.reference && d.studio.reference.kind === "studio"
+      ? d.studio.reference
+      : null;
+  // Tag chips become include constraints on media details — the unified
+  // browse takes provider-scoped tags on every kind. Performer and studio
+  // details keep their tags as plain text rather than dead controls.
+  const tagBrowse = mediaKind !== null;
+  const showSourceUrl =
+    d.sourceUrl && !d.links.some((l) => l.url === d.sourceUrl)
+      ? d.sourceUrl
+      : null;
+  // Remember studio/tag names so browse chips can label the ids the URL
+  // carries — details are where names are known.
+  useEffect(() => {
+    seedDetail(d, studioRef, tagBrowse);
+  }, [studioRef, tagBrowse, d, target.provider]);
+  return (
+    <>
       <div className="cat-cols">
         <div>
           {(d.description || d.aliases.length > 0) && (
@@ -1701,45 +1777,7 @@ export function CatalogDetailView() {
   // Closing clears only the detail target. `provider` is also the browse
   // source, so clearing it silently switched a StashDB browse back to TPDB.
   const close = useCallback(() => setP({ kind: null, id: null }), [setP]);
-  // Detail filter entry points create canonical unified browse constraints:
-  // type and the one constraint follow the filter's provider (year is
-  // TPDB-movie-only), every other constraint resets — a detail entry point
-  // starts a clean browse — and the old tags any/all modes are gone.
-  // Constraint change → push.
-  const browseTo = useCallback(
-    (filter: BrowseFilter) => {
-      const patch: Record<string, string | null> = {
-        type:
-          filter.param === "year" || filter.provider === "tpdb"
-            ? "movie"
-            : "scene",
-        q: null,
-        include: null,
-        exclude: null,
-        year: null,
-        date: null,
-        date_operation: null,
-        performerTpdb: null,
-        performerStashdb: null,
-        studioTpdb: null,
-        studioStashdb: null,
-        studioMode: null,
-        sort: null,
-        direction: null,
-        page: null,
-        kind: null,
-        id: null,
-      };
-      if (filter.param === "include") {
-        patch.include = JSON.stringify([filter.tag]);
-      } else {
-        patch[filter.param] = filter.id;
-        if (filter.studioMode) patch.studioMode = filter.studioMode;
-      }
-      setP(patch, { push: true });
-    },
-    [setP],
-  );
+  const browseTo = useBrowseTo();
 
   // Escape closes; focus moves in on open and is restored on close.
   const open = refKey !== null;
