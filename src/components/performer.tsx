@@ -136,24 +136,33 @@ function Paging({
   hasMore,
   total,
   totalCountKnown,
+  perPage,
   onPage,
 }: {
   page: number;
   hasMore: boolean;
   total?: number;
   totalCountKnown: boolean;
+  perPage: number;
   onPage: (p: number) => void;
 }) {
   const go = (p: number) => {
     onPage(p);
     window.scrollTo({ top: 0 });
   };
+  // Same denominator rule as the catalog Paging: only an attested total
+  // becomes "Page x of y"; a capped/unknown total never fakes one.
+  const pages =
+    totalCountKnown && total != null
+      ? Math.max(1, Math.ceil(total / perPage))
+      : null;
   return (
     <div className="mt-6 flex items-center justify-between gap-3">
       <div className="text-sm text-muted">
         {/* A capped total is never rendered as a catalog size. */}
         {totalCountKnown && total != null ? `${total} results · ` : ""}Page{" "}
         {page}
+        {pages !== null ? ` of ${pages}` : ""}
       </div>
       {/* Same chevron treatment as the overview rails: icon-only arrows with
           honest disabled edges; the page contract (moviePage/scenePage keys,
@@ -266,6 +275,7 @@ function Listing({
             hasMore={data.hasMore}
             total={data.total}
             totalCountKnown={data.totalCountKnown}
+            perPage={perPage}
             onPage={onPage}
           />
         </>
