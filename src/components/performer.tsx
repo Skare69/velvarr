@@ -28,6 +28,7 @@ import type {
   CatalogReference,
   PerformerFollow,
 } from "../lib/contracts";
+import { mergeTagCounts } from "../lib/contracts";
 import { REQUESTS_CHANGED } from "../lib/approvals";
 import "./views.css";
 
@@ -597,6 +598,128 @@ function RelatedPerformers({
   );
 }
 
+/* ---------- Tags overview: counted across her listed titles ---------- */
+
+type TagCounts = {
+  tags: { name: string; count: number }[];
+  scanned: number;
+  capped: boolean;
+  errors: { provider: CatalogProvider; code: string; message: string }[];
+};
+
+const TAGS_SHOWN = 50;
+
+/** Tag counts from one provider side of her filmography, fetched after the
+ * page renders so it never delays the follow button or the listings. Each
+ * side reports its own coverage (`scanned`/`capped`) and its own errors — a
+ * failed side shrinks the overview and says so, never reads as complete. */
+function TagsOverview({
+  reference,
+  linked,
+}: {
+  reference: CatalogReference;
+  linked?: CatalogReference;
+}) {
+  const [reload, setReload] = useState(0);
+  const retry = useCallback(() => setReload((n) => n + 1), []);
+  const pathOf = (r: CatalogReference) =>
+    `/api/catalog/${r.provider}/performer/${encodeURIComponent(r.id)}/tags`;
+  const linkedPath = linked?.kind === "performer" ? pathOf(linked) : null;
+  const own = useApiGet<TagCounts>(pathOf(reference), [
+    reference.provider,
+    reference.id,
+    reload,
+  ]);
+  const other = useApiGet<TagCounts>(linkedPath, [
+    linkedPath,
+    linked?.id,
+    reload,
+  ]);
+  if (own.loading || (linkedPath !== null && other.loading)) return null;
+  const sides = [own.data, other.data].filter(
+    (d): d is TagCounts => d !== null,
+  );
+  // A whole-side fetch failure becomes evidence in the same shape the server
+  // reports partial provider errors in.
+  const fetchFailures: TagCounts["errors"] = [];
+  if (own.data === null && own.error !== null) {
+    fetchFailures.push({
+      provider: reference.provider,
+      code: "error",
+      message: own.error,
+    });
+  }
+  if (
+    linked !== undefined &&
+    linked.kind === "performer" &&
+    other.data === null &&
+    other.error !== null
+  ) {
+    fetchFailures.push({
+      provider: linked.provider,
+      code: "error",
+      message: other.error,
+    });
+  }
+  const errors = [...sides.flatMap((d) => d.errors), ...fetchFailures];
+  const merged = mergeTagCounts(sides.map((d) => d.tags));
+  if (merged.length === 0) {
+    // No tags counted and nothing failed: no listed titles carry tags, so
+    // the section disappears rather than claiming an overview.
+    if (errors.length === 0) return null;
+    return (
+      <p className="text-sm text-muted" role="alert">
+        Tags could not be loaded:{" "}
+        {errors
+          .map((e) => `${providerLabel(e.provider)}: ${e.message}`)
+          .join(" · ")}{" "}
+        <button type="button" className="btn" onClick={retry}>
+          Retry
+        </button>
+      </p>
+    );
+  }
+  const shown = merged.slice(0, TAGS_SHOWN);
+  const scanned = sides.reduce((n, d) => n + d.scanned, 0);
+  const capped = sides.some((d) => d.capped);
+  return (
+    <section aria-label="Tags overview">
+      <h3 className="font-semibold">Tags</h3>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {shown.map((t) => (
+          <span key={t.name} className="chip">
+            {t.name}
+            <span className="ml-1.5 text-muted">{t.count}</span>
+          </span>
+        ))}
+      </div>
+      {merged.length > shown.length && (
+        <p className="mt-2 text-xs text-muted">
+          +{merged.length - shown.length} more
+        </p>
+      )}
+      <p className="mt-2 text-xs text-muted">
+        Counted across {scanned} of her listed titles
+        {capped
+          ? " — the first pages each provider returns, not her whole filmography"
+          : ""}
+        .
+      </p>
+      {errors.length > 0 && (
+        <p className="mt-2 text-xs text-muted" role="alert">
+          Partial:{" "}
+          {errors
+            .map((e) => `${providerLabel(e.provider)}: ${e.message}`)
+            .join(" · ")}{" "}
+          <button type="button" className="btn" onClick={retry}>
+            Retry
+          </button>
+        </p>
+      )}
+    </section>
+  );
+}
+
 /* ---------- The performer page ---------- */
 
 export function PerformerView({ reference }: { reference: CatalogReference }) {
@@ -784,6 +907,7 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
           </div>
 
           <div className="mt-8 space-y-8">
+            <TagsOverview reference={reference} linked={linked} />
             {sides.map((s) => (
               <Listing
                 key={s.provider}

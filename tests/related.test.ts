@@ -13,7 +13,11 @@ import { beforeEach, test } from "node:test";
 
 import type { CatalogTagSelection } from "../src/lib/contracts.ts";
 import { resetMetaCache } from "../src/server/providers.ts";
-import { relatedPerformers, relatedTitles } from "../src/server/related.ts";
+import {
+  performerTags,
+  relatedPerformers,
+  relatedTitles,
+} from "../src/server/related.ts";
 import {
   appError,
   pathOf,
@@ -158,6 +162,9 @@ let scenesReply: unknown = {
   queryScenes: { count: 1, scenes: [stashSceneRow()] },
 };
 let filmography: unknown[] = [];
+let filmographyLinks: unknown = {};
+let filmographyCalls = 0;
+let filmographyFailAfter = 0;
 
 beforeEach(() => {
   sourceBody = sourceDetail();
@@ -165,6 +172,9 @@ beforeEach(() => {
   searchTagReply = { searchTag: [{ id: STASH_TAG_ID, name: "romance" }] };
   scenesReply = { queryScenes: { count: 1, scenes: [stashSceneRow()] } };
   filmography = [];
+  filmographyLinks = {};
+  filmographyCalls = 0;
+  filmographyFailAfter = 0;
 });
 
 const handler: FixtureHandler = (req, res, body) => {
@@ -185,7 +195,15 @@ const handler: FixtureHandler = (req, res, body) => {
     return sendJson(res, 500, { error: "down" });
   }
   if (req.method === "GET" && path === `/performers/${PERF_ID}/movies`) {
-    return sendJson(res, 200, { data: filmography, links: {}, meta: {} });
+    filmographyCalls += 1;
+    if (filmographyFailAfter > 0 && filmographyCalls > filmographyFailAfter) {
+      return sendJson(res, 500, { error: "down" });
+    }
+    return sendJson(res, 200, {
+      data: filmography,
+      links: filmographyLinks,
+      meta: {},
+    });
   }
   if (req.method === "GET" && path === `/performers/${DOWN_ID}/movies`) {
     return sendJson(res, 500, { error: "down" });
@@ -697,6 +715,123 @@ test("related performers refuse non-performer references", async () => {
   await withFx(async () => {
     await assert.rejects(
       relatedPerformers({ provider: "tpdb", kind: "movie", id: SOURCE_ID }, []),
+      appError(400, "invalid_reference"),
+    );
+  });
+});
+
+// --- performer tags overview ---
+
+test("performer tags count tags across visible filmography only", async () => {
+  await withFx(async () => {
+    filmography = [
+      movieRow(SOURCE_ID, "Film One", [
+        ROMANCE,
+        tpdbTag(999, TAG_DOC, "Documentary"),
+      ]),
+      movieRow(MOVIE_TWO, "Film Two", [ROMANCE]),
+      movieRow(MOVIE_HIDDEN, "Hidden Film", [COMEDY]),
+    ];
+    const result = await performerTags(
+      performerRef("tpdb", PERF_ID),
+      HIDE_COMEDY,
+    );
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.capped, false);
+    // The hidden film's Comedy never counts; order is count desc, name asc.
+    assert.deepEqual(result.tags, [
+      { name: "Romance", count: 2 },
+      { name: "Documentary", count: 1 },
+    ]);
+    assert.equal(result.scanned, 2);
+  });
+});
+
+test("performer tags stop at the page ceiling and say so", async () => {
+  await withFx(async () => {
+    filmography = [movieRow(SOURCE_ID, "Film One", [ROMANCE])];
+    filmographyLinks = { next: "/performers/x/movies?page=2" };
+    const result = await performerTags(performerRef("tpdb", PERF_ID), []);
+    // Three ceiling pages of the same single row: counted three times, and
+    // capped reports the scan stopped at the ceiling, not at exhaustion.
+    assert.deepEqual(result.tags, [{ name: "Romance", count: 3 }]);
+    assert.equal(result.scanned, 3);
+    assert.equal(result.capped, true);
+  });
+});
+
+test("performer tags count stashdb scenes and pair equal normalized labels", async () => {
+  await withFx(async (fx) => {
+    scenesReply = {
+      queryScenes: {
+        count: 2,
+        scenes: [
+          stashSceneRow(),
+          {
+            ...stashSceneRow(),
+            id: SCENE_UNRELATED,
+            tags: [
+              { id: TAG_DOC, name: "romance" },
+              { id: TAG_COMEDY, name: "Documentary" },
+            ],
+          },
+        ],
+      },
+    };
+    const result = await performerTags(performerRef("stashdb", STASH_PERF), []);
+    assert.deepEqual(result.errors, []);
+    // "Romance" and "romance" are one label; the first-seen spelling wins.
+    assert.deepEqual(result.tags, [
+      { name: "Romance", count: 2 },
+      { name: "Documentary", count: 1 },
+    ]);
+    assert.equal(result.scanned, 2);
+    // The stashdb scene search carries the native performer filter.
+    const stashReq = fx.log.find(
+      (r) => pathOf(r.url) === "/graphql" && r.body.includes("queryScenes"),
+    );
+    assert.ok(stashReq);
+    const payload: {
+      variables: { f: { performers: { value: string[]; modifier: string } } };
+    } = JSON.parse(stashReq.body);
+    assert.deepEqual(payload.variables.f.performers, {
+      value: [STASH_PERF],
+      modifier: "INCLUDES",
+    });
+  });
+});
+
+test("performer tags keep partial pages next to the named error", async () => {
+  await withFx(async () => {
+    filmography = [movieRow(SOURCE_ID, "Film One", [ROMANCE])];
+    filmographyLinks = { next: "/performers/x/movies?page=2" };
+    filmographyFailAfter = 1; // page 2 fails
+    const result = await performerTags(performerRef("tpdb", PERF_ID), []);
+    // Page one's evidence survives next to the error; a half-scanned
+    // overview never reads as complete or as a clean empty.
+    assert.deepEqual(result.tags, [{ name: "Romance", count: 1 }]);
+    assert.equal(result.scanned, 1);
+    assert.equal(result.capped, false);
+    assert.equal(result.errors.length, 1);
+    assert.equal(result.errors[0]!.provider, "tpdb");
+    assert.equal(result.errors[0]!.code, "upstream_unavailable");
+  });
+});
+
+test("a full performer-tags outage is a visible error, never an empty success", async () => {
+  await withFx(async () => {
+    const result = await performerTags(performerRef("tpdb", DOWN_ID), []);
+    assert.deepEqual(result.tags, []);
+    assert.equal(result.scanned, 0);
+    assert.equal(result.errors.length, 1);
+    assert.equal(result.errors[0]!.code, "upstream_unavailable");
+  });
+});
+
+test("performer tags refuse non-performer references", async () => {
+  await withFx(async () => {
+    await assert.rejects(
+      performerTags({ provider: "tpdb", kind: "movie", id: SOURCE_ID }, []),
       appError(400, "invalid_reference"),
     );
   });

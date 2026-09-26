@@ -136,6 +136,7 @@ import {
   type SourceError,
 } from "../../../../server/browse.ts";
 import {
+  performerTags,
   relatedPerformers,
   relatedTitles,
 } from "../../../../server/related.ts";
@@ -658,6 +659,24 @@ export async function relatedRoute(
   );
 }
 
+// Tag overview for one performer: counts across her visible filmography on
+// one provider, loaded separately from the detail so it never delays the
+// page's first paint. Same reference validation as the related rail.
+export async function performerTagsRoute(
+  ctx: AuthContext,
+  providerRaw: string,
+  kindRaw: string,
+  idRaw: string,
+): Promise<Response> {
+  const hiddenTags = getContentPreferences(ctx.account.id).hiddenTags;
+  return json(
+    await performerTags(
+      parseCatalogReference(providerRaw, kindRaw, idRaw),
+      hiddenTags,
+    ),
+  );
+}
+
 export async function catalogDetail(
   ctx: AuthContext,
   providerRaw: string,
@@ -773,6 +792,13 @@ export const routes: RouteDef[] = [
     auth: "session",
     run: async (ctx, request, p) =>
       relatedRoute(ctx, p.provider!, p.kind!, p.id!, new URL(request.url)),
+  },
+  {
+    method: "GET",
+    segments: ["catalog", ":provider", ":kind", ":id", "tags"],
+    auth: "session",
+    run: async (ctx, _request, p) =>
+      performerTagsRoute(ctx, p.provider!, p.kind!, p.id!),
   },
   {
     method: "GET",

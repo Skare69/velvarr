@@ -340,3 +340,90 @@ export async function relatedPerformers(
     }));
   return { items, errors: [] };
 }
+
+/** Tag overview for one performer: how many of her visible titles carry each
+ * provider-native tag, over the same filmography the page lists (TPDB movies,
+ * StashDB scenes). Hidden-tag filtration matches the listings; the counts
+ * cover exactly `scanned` rows and `capped` says the scan stopped at the page
+ * ceiling instead of exhausting the filmography — the page reports its own
+ * breadth rather than claiming "all tags ever". */
+export type PerformerTags = {
+  tags: { name: string; count: number }[];
+  scanned: number;
+  capped: boolean;
+  errors: SourceError[];
+};
+
+// ponytail: three pages of 100 rows per performer page view — the same
+// bounded-slice call as FILMOGRAPHY_SLICE, wider because counting wants
+// breadth. Widen TAG_SCAN_PAGES only if overviews feel thin; the provider
+// calls scale with it on every page view.
+const TAG_PAGE_ROWS = 100;
+const TAG_SCAN_PAGES = 3;
+const TAGS_RETURNED = 200;
+
+export async function performerTags(
+  reference: CatalogReference,
+  hiddenTags: CatalogTagSelection[],
+): Promise<PerformerTags> {
+  if (reference.kind !== "performer") {
+    throw new AppError(
+      400,
+      "invalid_reference",
+      "Performer tags need a performer reference.",
+    );
+  }
+  // One metadata source per kind, same mapping the page's listings use.
+  const query = (page: number): CatalogSearchQuery =>
+    reference.provider === "tpdb"
+      ? {
+          provider: "tpdb",
+          kind: "movie",
+          performer: reference.id,
+          page,
+          perPage: TAG_PAGE_ROWS,
+        }
+      : {
+          provider: "stashdb",
+          kind: "scene",
+          performer: reference.id,
+          page,
+          perPage: TAG_PAGE_ROWS,
+        };
+  const counts = new Map<string, { name: string; count: number }>();
+  let scanned = 0;
+  let capped = false;
+  const finish = (errors: SourceError[]): PerformerTags => ({
+    tags: [...counts.values()]
+      .sort((a, b) =>
+        a.count !== b.count ? b.count - a.count : a.name < b.name ? -1 : 1,
+      )
+      .slice(0, TAGS_RETURNED),
+    scanned,
+    capped,
+    errors,
+  });
+  for (let page = 1; page <= TAG_SCAN_PAGES; page++) {
+    let rows: CatalogSearchPage;
+    try {
+      rows = await searchCatalog(query(page));
+    } catch (err) {
+      // Partial evidence stays next to the named error; a half-scanned
+      // overview never reads as complete.
+      return finish([toSourceError(reference.provider, err)]);
+    }
+    for (const row of rows.items) {
+      if (isHiddenTitle(row, hiddenTags)) continue;
+      scanned += 1;
+      for (const tag of row.tags) {
+        const key = normalizeFacetName(tag.name);
+        const seen = counts.get(key);
+        if (seen !== undefined) seen.count += 1;
+        else counts.set(key, { name: tag.name, count: 1 });
+      }
+    }
+    if (!rows.hasMore) break;
+    capped = page === TAG_SCAN_PAGES;
+  }
+  return finish([]);
+}

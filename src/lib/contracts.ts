@@ -32,6 +32,28 @@ export function facetTokens(value: string): string[] {
     .filter((t) => t !== "");
 }
 
+/** One entry per normalized tag label across the given per-side count lists
+ * (e.g. the two provider sides of a performer's page): the first-seen
+ * spelling wins, counts sum, order is count desc then name. The same
+ * normalized-name pairing as tagCounterpart — a tag is its name — and never
+ * applied to performers or studios, which are entities, not labels. */
+export function mergeTagCounts(
+  lists: { name: string; count: number }[][],
+): { name: string; count: number }[] {
+  const merged = new Map<string, { name: string; count: number }>();
+  for (const list of lists) {
+    for (const entry of list) {
+      const key = normalizeFacetName(entry.name);
+      const seen = merged.get(key);
+      if (seen === undefined) merged.set(key, { ...entry });
+      else seen.count += entry.count;
+    }
+  }
+  return [...merged.values()].sort((a, b) =>
+    a.count !== b.count ? b.count - a.count : a.name < b.name ? -1 : 1,
+  );
+}
+
 /** Provider-scoped external identity. `id` is the provider's external UUID,
  * never the application-owned catalog record id. */
 export type CatalogReference = {
