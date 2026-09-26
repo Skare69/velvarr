@@ -254,16 +254,6 @@
   color: var(--color-ink);
   overflow-wrap: anywhere;
 }
-/* Each portrait card gains a sibling chip filtering the current surface by
-   that performer; the cell keeps the portrait grid layout intact. */
-.cat-person-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-.cat-person-cell .chip {
-  align-self: center;
-}
 
 /* Loading skeleton for the detail page. */
 .cat-hero-skel {

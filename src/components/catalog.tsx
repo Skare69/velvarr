@@ -1429,45 +1429,19 @@ function DetailBody({
               <h2 className="cat-section-title">Cast</h2>
               <div className="cat-people mt-2">
                 {d.credits.map((c) => (
-                  <div
+                  <button
                     key={`${c.reference.provider}:${c.reference.id}`}
-                    className="cat-person-cell"
+                    type="button"
+                    className="cat-person"
+                    onClick={() => onNavigate(c.reference)}
                   >
-                    <button
-                      type="button"
-                      className="cat-person"
-                      onClick={() => onNavigate(c.reference)}
-                    >
-                      <ItemImage
-                        name={c.name}
-                        src={imgSrc(c.imageUrl)}
-                        className="cat-person-img"
-                      />
-                      <span className="cat-person-name">{c.name}</span>
-                    </button>
-                    {/* Second entry point: the unified browse filtered by
-                        this performer, not their detail page. The provider
-                        decides which source qualifies. */}
-                    {mediaKind && (
-                      <button
-                        type="button"
-                        className="chip cat-person-filter"
-                        onClick={() =>
-                          onBrowse({
-                            param:
-                              c.reference.provider === "tpdb"
-                                ? "performerTpdb"
-                                : "performerStashdb",
-                            provider: c.reference.provider,
-                            id: c.reference.id,
-                          })
-                        }
-                      >
-                        Their{" "}
-                        {c.reference.provider === "tpdb" ? "movies" : "scenes"}
-                      </button>
-                    )}
-                  </div>
+                    <ItemImage
+                      name={c.name}
+                      src={imgSrc(c.imageUrl)}
+                      className="cat-person-img"
+                    />
+                    <span className="cat-person-name">{c.name}</span>
+                  </button>
                 ))}
               </div>
               {target.kind === "movie" && target.provider === "tpdb" && (
