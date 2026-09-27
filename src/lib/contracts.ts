@@ -171,8 +171,8 @@ export type CatalogTagSelection = {
  * renders titles from here, and storage validates saved ids against it. */
 export const DISCOVER_SHELVES = [
   { id: "new-releases", title: "New releases" },
-  { id: "trending", title: "Trending now" },
-  { id: "jellyfin-recent", title: "Recently added in your libraries" },
+  { id: "trending", title: "Trending" },
+  { id: "jellyfin-recent", title: "Recently added" },
   { id: "velvarr-requests", title: "Recent requests" },
   { id: "studios", title: "Studios" },
   { id: "genres", title: "Genres" },

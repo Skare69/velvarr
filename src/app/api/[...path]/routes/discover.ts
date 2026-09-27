@@ -776,7 +776,7 @@ export async function discover(ctx: AuthContext): Promise<Response> {
     shelfOf(
       {
         id: "trending",
-        title: "Trending now",
+        title: "Trending",
         description: "Scene trends from StashDB",
         source: "stashdb",
         kind: "catalog",
@@ -790,7 +790,7 @@ export async function discover(ctx: AuthContext): Promise<Response> {
     shelfOf(
       {
         id: "jellyfin-recent",
-        title: "Recently added in your libraries",
+        title: "Recently added",
         source: "jellyfin",
         kind: "library",
         browse: { view: "library", params: {} },
