@@ -26,9 +26,11 @@ import type {
   CatalogDetail,
   CatalogProvider,
   CatalogReference,
+  CatalogTagSelection,
   PerformerFollow,
 } from "../lib/contracts";
 import { mergeTagCounts } from "../lib/contracts";
+import { useBrowseTo } from "./catalog";
 import { REQUESTS_CHANGED } from "../lib/approvals";
 import "./views.css";
 
@@ -755,7 +757,7 @@ function RelatedPerformers({
 /* ---------- Tags overview: counted across her listed titles ---------- */
 
 type TagCounts = {
-  tags: { name: string; count: number }[];
+  tags: { name: string; count: number; id: string }[];
   scanned: number;
   capped: boolean;
   errors: { provider: CatalogProvider; code: string; message: string }[];
@@ -776,6 +778,8 @@ function TagsOverview({
 }) {
   const [reload, setReload] = useState(0);
   const retry = useCallback(() => setReload((n) => n + 1), []);
+  // A clicked chip opens unified browse: this performer + that tag.
+  const browseTo = useBrowseTo();
   const pathOf = (r: CatalogReference) =>
     `/api/catalog/${r.provider}/performer/${encodeURIComponent(r.id)}/tags`;
   const linkedPath = linked?.kind === "performer" ? pathOf(linked) : null;
@@ -790,9 +794,13 @@ function TagsOverview({
     reload,
   ]);
   if (own.loading || (linkedPath !== null && other.loading)) return null;
-  const sides = [own.data, other.data].filter(
-    (d): d is TagCounts => d !== null,
-  );
+  // Each side is single-provider, so its rows' native ids become that
+  // side's selection ids; the merge then keeps both for labels on both.
+  const sides: { provider: CatalogProvider; counts: TagCounts }[] = [];
+  if (own.data !== null)
+    sides.push({ provider: reference.provider, counts: own.data });
+  if (linked?.kind === "performer" && other.data !== null)
+    sides.push({ provider: linked.provider, counts: other.data });
   // A whole-side fetch failure becomes evidence in the same shape the server
   // reports partial provider errors in.
   const fetchFailures: TagCounts["errors"] = [];
@@ -815,8 +823,16 @@ function TagsOverview({
       message: other.error,
     });
   }
-  const errors = [...sides.flatMap((d) => d.errors), ...fetchFailures];
-  const merged = mergeTagCounts(sides.map((d) => d.tags));
+  const errors = [...sides.flatMap((s) => s.counts.errors), ...fetchFailures];
+  const merged = mergeTagCounts(
+    sides.map((s) =>
+      s.counts.tags.map((t) => ({
+        name: t.name,
+        count: t.count,
+        ...(s.provider === "tpdb" ? { tpdb: t.id } : { stashdb: t.id }),
+      })),
+    ),
+  );
   if (merged.length === 0) {
     // No tags counted and nothing failed: no listed titles carry tags, so
     // the section disappears rather than claiming an overview.
@@ -834,17 +850,34 @@ function TagsOverview({
     );
   }
   const shown = merged.slice(0, TAGS_SHOWN);
-  const scanned = sides.reduce((n, d) => n + d.scanned, 0);
-  const capped = sides.some((d) => d.capped);
+  const scanned = sides.reduce((n, s) => n + s.counts.scanned, 0);
+  const capped = sides.some((s) => s.counts.capped);
   return (
     <section aria-label="Tags overview">
       <h3 className="font-semibold">Tags</h3>
       <div className="mt-2 flex flex-wrap gap-2">
         {shown.map((t) => (
-          <span key={t.name} className="chip">
+          <button
+            key={t.name}
+            type="button"
+            className="chip"
+            onClick={() =>
+              // Only the page's own performer rides: the two performer
+              // params cannot co-exist on one browse query.
+              browseTo({
+                param:
+                  reference.provider === "tpdb"
+                    ? "performerTpdb"
+                    : "performerStashdb",
+                provider: reference.provider,
+                id: reference.id,
+                tag: t,
+              })
+            }
+          >
             {t.name}
             <span className="ml-1.5 text-muted">{t.count}</span>
-          </span>
+          </button>
         ))}
       </div>
       {merged.length > shown.length && (

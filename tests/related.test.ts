@@ -739,9 +739,11 @@ test("performer tags count tags across visible filmography only", async () => {
     assert.deepEqual(result.errors, []);
     assert.equal(result.capped, false);
     // The hidden film's Comedy never counts; order is count desc, name asc.
+    // Each row now carries the side's native tag id so the page's chips can
+    // open browse filtered by tag + performer.
     assert.deepEqual(result.tags, [
-      { name: "Romance", count: 2 },
-      { name: "Documentary", count: 1 },
+      { name: "Romance", count: 2, id: TAG_ROMANCE },
+      { name: "Documentary", count: 1, id: TAG_DOC },
     ]);
     assert.equal(result.scanned, 2);
   });
@@ -754,7 +756,9 @@ test("performer tags stop at the page ceiling and say so", async () => {
     const result = await performerTags(performerRef("tpdb", PERF_ID), []);
     // Three ceiling pages of the same single row: counted three times, and
     // capped reports the scan stopped at the ceiling, not at exhaustion.
-    assert.deepEqual(result.tags, [{ name: "Romance", count: 3 }]);
+    assert.deepEqual(result.tags, [
+      { name: "Romance", count: 3, id: TAG_ROMANCE },
+    ]);
     assert.equal(result.scanned, 3);
     assert.equal(result.capped, true);
   });
@@ -780,10 +784,11 @@ test("performer tags count stashdb scenes and pair equal normalized labels", asy
     };
     const result = await performerTags(performerRef("stashdb", STASH_PERF), []);
     assert.deepEqual(result.errors, []);
-    // "Romance" and "romance" are one label; the first-seen spelling wins.
+    // "Romance" and "romance" are one label; the first-seen spelling and
+    // its id win.
     assert.deepEqual(result.tags, [
-      { name: "Romance", count: 2 },
-      { name: "Documentary", count: 1 },
+      { name: "Romance", count: 2, id: STASH_TAG_ID },
+      { name: "Documentary", count: 1, id: TAG_COMEDY },
     ]);
     assert.equal(result.scanned, 2);
     // The stashdb scene search carries the native performer filter.
@@ -809,7 +814,9 @@ test("performer tags keep partial pages next to the named error", async () => {
     const result = await performerTags(performerRef("tpdb", PERF_ID), []);
     // Page one's evidence survives next to the error; a half-scanned
     // overview never reads as complete or as a clean empty.
-    assert.deepEqual(result.tags, [{ name: "Romance", count: 1 }]);
+    assert.deepEqual(result.tags, [
+      { name: "Romance", count: 1, id: TAG_ROMANCE },
+    ]);
     assert.equal(result.scanned, 1);
     assert.equal(result.capped, false);
     assert.equal(result.errors.length, 1);

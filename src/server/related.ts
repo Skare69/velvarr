@@ -346,9 +346,10 @@ export async function relatedPerformers(
  * StashDB scenes). Hidden-tag filtration matches the listings; the counts
  * cover exactly `scanned` rows and `capped` says the scan stopped at the page
  * ceiling instead of exhausting the filmography — the page reports its own
- * breadth rather than claiming "all tags ever". */
+ * breadth rather than claiming "all tags ever". `id` is the tag's native id
+ * on that side, so the page's tag chips can open browse filtered by it. */
 export type PerformerTags = {
-  tags: { name: string; count: number }[];
+  tags: { name: string; count: number; id: string }[];
   scanned: number;
   capped: boolean;
   errors: SourceError[];
@@ -390,7 +391,7 @@ export async function performerTags(
           page,
           perPage: TAG_PAGE_ROWS,
         };
-  const counts = new Map<string, { name: string; count: number }>();
+  const counts = new Map<string, { name: string; count: number; id: string }>();
   let scanned = 0;
   let capped = false;
   const finish = (errors: SourceError[]): PerformerTags => ({
@@ -419,7 +420,7 @@ export async function performerTags(
         const key = normalizeFacetName(tag.name);
         const seen = counts.get(key);
         if (seen !== undefined) seen.count += 1;
-        else counts.set(key, { name: tag.name, count: 1 });
+        else counts.set(key, { name: tag.name, count: 1, id: tag.id });
       }
     }
     if (!rows.hasMore) break;

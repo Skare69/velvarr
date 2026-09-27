@@ -34,19 +34,27 @@ export function facetTokens(value: string): string[] {
 
 /** One entry per normalized tag label across the given per-side count lists
  * (e.g. the two provider sides of a performer's page): the first-seen
- * spelling wins, counts sum, order is count desc then name. The same
- * normalized-name pairing as tagCounterpart — a tag is its name — and never
- * applied to performers or studios, which are entities, not labels. */
+ * spelling wins, counts sum, order is count desc then name. Provider ids
+ * ride along: a label seen on both sides keeps both ids, so the merged row
+ * is a valid browse include selection. The same normalized-name pairing as
+ * tagCounterpart — a tag is its name — and never applied to performers or
+ * studios, which are entities, not labels. */
 export function mergeTagCounts(
-  lists: { name: string; count: number }[][],
-): { name: string; count: number }[] {
-  const merged = new Map<string, { name: string; count: number }>();
+  lists: (CatalogTagSelection & { count: number })[][],
+): (CatalogTagSelection & { count: number })[] {
+  const merged = new Map<string, CatalogTagSelection & { count: number }>();
   for (const list of lists) {
     for (const entry of list) {
       const key = normalizeFacetName(entry.name);
       const seen = merged.get(key);
       if (seen === undefined) merged.set(key, { ...entry });
-      else seen.count += entry.count;
+      else {
+        seen.count += entry.count;
+        // Assign only defined ids: `??=` would still write undefined and
+        // forge own keys the wire never carried.
+        if (entry.tpdb !== undefined) seen.tpdb ??= entry.tpdb;
+        if (entry.stashdb !== undefined) seen.stashdb ??= entry.stashdb;
+      }
     }
   }
   return [...merged.values()].sort((a, b) =>

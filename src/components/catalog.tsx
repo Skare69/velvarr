@@ -1176,7 +1176,8 @@ function MediaActions({
 /** A provider-legal filter entry point handed from a detail page into the
  * unified browse constraints. `param` is a canonical /api/browse key;
  * `id` is the provider-native id, or the YYYY string for `year`; `tag`
- * rides only for `include`; `studioMode` only for StashDB studios. */
+ * rides for `include` and as a co-filter on the performer params;
+ * `studioMode` only for StashDB studios. */
 export type BrowseFilter = {
   param:
     | "studioTpdb"
@@ -1364,7 +1365,8 @@ function DetailBody({
 }
 
 // Detail filter entry points create canonical unified browse constraints:
-// type and the one constraint follow the filter's provider (year is
+// the jump always lands on the titles view (any view may host an entry
+// point), type and the one constraint follow the filter's provider (year is
 // TPDB-movie-only), every other constraint resets — a detail entry point
 // starts a clean browse — and the old tags any/all modes are gone.
 // Constraint change → push.
@@ -1372,7 +1374,11 @@ export function useBrowseTo(): (filter: BrowseFilter) => void {
   const setP = useParamsSetter();
   return useCallback(
     (filter: BrowseFilter) => {
+      // Any view may host an entry point (performer pages live on the
+      // following view), so the jump always lands on the titles view and
+      // drops that view's own keys (provider, per-view paging).
       const patch: Record<string, string | null> = {
+        view: "titles",
         type:
           filter.param === "year" || filter.provider === "tpdb"
             ? "movie"
@@ -1391,14 +1397,28 @@ export function useBrowseTo(): (filter: BrowseFilter) => void {
         sort: null,
         direction: null,
         page: null,
+        provider: null,
+        perPage: null,
+        moviePage: null,
+        scenePage: null,
         kind: null,
         id: null,
       };
-      if (filter.param === "include") {
-        patch.include = JSON.stringify([filter.tag]);
+      // Only the selection fields ride the URL; count-style extras a caller
+      // carries on its tag objects never leak into the wire.
+      const cleanTag = ({ name, tpdb, stashdb }: CatalogTagSelection) => ({
+        name,
+        ...(tpdb !== undefined ? { tpdb } : {}),
+        ...(stashdb !== undefined ? { stashdb } : {}),
+      });
+      if (filter.param === "include" && filter.tag !== undefined) {
+        patch.include = JSON.stringify([cleanTag(filter.tag)]);
       } else {
         patch[filter.param] = filter.id;
         if (filter.studioMode) patch.studioMode = filter.studioMode;
+        if (filter.tag !== undefined) {
+          patch.include = JSON.stringify([cleanTag(filter.tag)]);
+        }
       }
       setP(patch, { push: true });
     },

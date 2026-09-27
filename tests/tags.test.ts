@@ -46,6 +46,24 @@ test("mergeTagCounts breaks count ties by name ascending", () => {
   );
 });
 
+const TAG_ROMANCE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const STASH_TAG_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
 test("mergeTagCounts of nothing is empty", () => {
   assert.deepEqual(mergeTagCounts([]), []);
+});
+
+test("mergeTagCounts keeps both provider ids when a label spans the two sides", () => {
+  const merged = mergeTagCounts([
+    [{ name: "Romance", count: 2, tpdb: TAG_ROMANCE }],
+    [{ name: "Romance", count: 1, stashdb: STASH_TAG_ID }],
+  ]);
+  assert.deepEqual(merged, [
+    {
+      name: "Romance",
+      count: 3,
+      tpdb: TAG_ROMANCE,
+      stashdb: STASH_TAG_ID,
+    },
+  ]);
 });
