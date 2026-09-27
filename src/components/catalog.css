@@ -229,6 +229,7 @@
   gap: 0.7rem;
 }
 .cat-person {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
@@ -237,10 +238,39 @@
   border-radius: 10px;
   background: var(--color-panel);
   overflow: hidden;
+}
+.cat-person-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
   cursor: pointer;
 }
 .cat-person:hover {
   border-color: var(--color-accent);
+}
+/* Hover-revealed "+ filter": jumps to browse with this performer set. */
+.cat-person-filter {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  display: none;
+  padding: 0.1rem 0.5rem;
+  border: 1px solid var(--color-accent);
+  border-radius: 999px;
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.cat-person:hover .cat-person-filter,
+.cat-person:focus-within .cat-person-filter {
+  display: block;
 }
 .cat-person-img {
   width: 100%;

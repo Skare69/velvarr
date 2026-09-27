@@ -1526,21 +1526,49 @@ export function DetailSections({
             <section className="cat-section cat-cast" aria-label="Performers">
               <h2 className="cat-section-title">Cast</h2>
               <div className="cat-people mt-2">
-                {d.credits.map((c) => (
-                  <button
-                    key={`${c.reference.provider}:${c.reference.id}`}
-                    type="button"
-                    className="cat-person"
-                    onClick={() => onNavigate(c.reference)}
-                  >
-                    <ItemImage
-                      name={c.name}
-                      src={imgSrc(c.imageUrl)}
-                      className="cat-person-img"
-                    />
-                    <span className="cat-person-name">{c.name}</span>
-                  </button>
-                ))}
+                {d.credits.map((c) => {
+                  // Same binary provider split useBrowseTo applies to the
+                  // browse type: TPDB credits filter movies, StashDB scenes.
+                  const param =
+                    c.reference.provider === "stashdb"
+                      ? "performerStashdb"
+                      : "performerTpdb";
+                  const media = param === "performerTpdb" ? "movies" : "scenes";
+                  return (
+                    <div
+                      key={`${c.reference.provider}:${c.reference.id}`}
+                      className="cat-person"
+                    >
+                      <button
+                        type="button"
+                        className="cat-person-main"
+                        onClick={() => onNavigate(c.reference)}
+                      >
+                        <ItemImage
+                          name={c.name}
+                          src={imgSrc(c.imageUrl)}
+                          className="cat-person-img"
+                        />
+                        <span className="cat-person-name">{c.name}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="cat-person-filter"
+                        title={`Filter ${media} by ${c.name}`}
+                        aria-label={`Filter ${media} by ${c.name}`}
+                        onClick={() =>
+                          onBrowse({
+                            param,
+                            provider: c.reference.provider,
+                            id: c.reference.id,
+                          })
+                        }
+                      >
+                        + filter
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
               {target.kind === "movie" && target.provider === "tpdb" && (
                 <p className="mt-2 text-xs text-muted">
