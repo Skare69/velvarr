@@ -1492,8 +1492,14 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
     : undefined;
   const browseTo = useBrowseTo();
   // Honest absence: a 404 here means the provider record is gone — no
-  // detail sections render, never fake ones.
-  const { data: catDetail } = useApiGet<DetailPayload>(
+  // detail sections render, never fake ones. The failure itself is stated
+  // below the hero; discarding it left the page bare (card 440e5b8a).
+  const {
+    data: catDetail,
+    error: catError,
+    err: catErr,
+    reload: reloadCat,
+  } = useApiGet<DetailPayload>(
     catalog
       ? `/api/catalog/${catalog.provider}/${catalog.kind}/${encodeURIComponent(catalog.id)}/detail`
       : null,
@@ -1588,7 +1594,7 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
               <FileFacts item={item} />
             </div>
           </div>
-          {!catalog && (
+          {(!catalog || catError) && (
             <section className="library-overview" aria-label="Overview">
               <h3 className="mb-3 text-xl font-semibold text-ink">Overview</h3>
               <p>{item.overview || "No synopsis available."}</p>
@@ -1604,6 +1610,21 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
                 : " — no provider match was found for this item's file paths."}
             </p>
           )}
+          {catalog && catError ? (
+            catErr?.status === 404 ? (
+              // Authoritative absence, not an outage: stated, no retry.
+              <p className="text-sm text-muted">
+                Catalog details unavailable — this item is not in the provider
+                catalog.
+              </p>
+            ) : (
+              <ErrorPanel
+                title="Catalog details unavailable"
+                message={catError}
+                onRetry={reloadCat}
+              />
+            )
+          ) : null}
           {catalog && catDetail && target && (
             <DetailSections
               payload={catDetail}
