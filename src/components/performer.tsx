@@ -824,6 +824,7 @@ function TagsOverview({
     });
   }
   const errors = [...sides.flatMap((s) => s.counts.errors), ...fetchFailures];
+  // Alphabetical display order; the wire stays count-desc, this is view-side.
   const merged = mergeTagCounts(
     sides.map((s) =>
       s.counts.tags.map((t) => ({
@@ -832,7 +833,7 @@ function TagsOverview({
         ...(s.provider === "tpdb" ? { tpdb: t.id } : { stashdb: t.id }),
       })),
     ),
-  );
+  ).sort((a, b) => a.name.localeCompare(b.name));
   if (merged.length === 0) {
     // No tags counted and nothing failed: no listed titles carry tags, so
     // the section disappears rather than claiming an overview.

@@ -1488,34 +1488,36 @@ export function DetailSections({
             <section className="cat-section" aria-label="Tags">
               <h2 className="cat-section-title">Tags</h2>
               <div className="mt-2 flex flex-wrap gap-1">
-                {d.tags.map((t) =>
-                  // TPDB sometimes emits numeric-string tag ids that the
-                  // filter layer rejects with 400 — those stay plain text.
-                  tagBrowse && UUID_RE.test(t.id) ? (
-                    <button
-                      key={t.id}
-                      type="button"
-                      className="chip"
-                      onClick={() =>
-                        onBrowse({
-                          param: "include",
-                          provider: target.provider,
-                          id: t.id,
-                          tag:
-                            target.provider === "tpdb"
-                              ? { name: t.name, tpdb: t.id }
-                              : { name: t.name, stashdb: t.id },
-                        })
-                      }
-                    >
-                      {t.name}
-                    </button>
-                  ) : (
-                    <span key={t.id} className="chip">
-                      {t.name}
-                    </span>
-                  ),
-                )}
+                {[...d.tags]
+                  .sort((a, b) => a.name.localeCompare(b.name))
+                  .map((t) =>
+                    // TPDB sometimes emits numeric-string tag ids that the
+                    // filter layer rejects with 400 — those stay plain text.
+                    tagBrowse && UUID_RE.test(t.id) ? (
+                      <button
+                        key={t.id}
+                        type="button"
+                        className="chip"
+                        onClick={() =>
+                          onBrowse({
+                            param: "include",
+                            provider: target.provider,
+                            id: t.id,
+                            tag:
+                              target.provider === "tpdb"
+                                ? { name: t.name, tpdb: t.id }
+                                : { name: t.name, stashdb: t.id },
+                          })
+                        }
+                      >
+                        {t.name}
+                      </button>
+                    ) : (
+                      <span key={t.id} className="chip">
+                        {t.name}
+                      </span>
+                    ),
+                  )}
               </div>
             </section>
           )}
