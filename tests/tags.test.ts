@@ -5,7 +5,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { mergeTagCounts } from "../src/lib/contracts.ts";
+import type { CatalogReference } from "../src/lib/contracts.ts";
+import { mergeTagCounts, performerTagJump } from "../src/lib/contracts.ts";
 
 test("mergeTagCounts merges by normalized label, sums counts, orders count desc then name", () => {
   const merged = mergeTagCounts([
@@ -66,4 +67,70 @@ test("mergeTagCounts keeps both provider ids when a label spans the two sides", 
       stashdb: STASH_TAG_ID,
     },
   ]);
+});
+
+// --- performerTagJump: where a tag chip's browse jump lands ---
+
+const PAGE_TPDB: CatalogReference = {
+  provider: "tpdb",
+  kind: "performer",
+  id: "11111111-1111-4111-8111-111111111111",
+};
+const LINKED_STASHDB: CatalogReference = {
+  provider: "stashdb",
+  kind: "performer",
+  id: "22222222-2222-4222-8222-222222222222",
+};
+
+test("performerTagJump keeps the page performer for an own-side tag", () => {
+  assert.deepEqual(
+    performerTagJump(PAGE_TPDB, LINKED_STASHDB, {
+      name: "Romance",
+      tpdb: TAG_ROMANCE,
+    }),
+    { param: "performerTpdb", provider: "tpdb", id: PAGE_TPDB.id },
+  );
+});
+
+test("performerTagJump keeps the page performer when the label spans both sides", () => {
+  assert.deepEqual(
+    performerTagJump(PAGE_TPDB, LINKED_STASHDB, {
+      name: "Romance",
+      tpdb: TAG_ROMANCE,
+      stashdb: STASH_TAG_ID,
+    }),
+    { param: "performerTpdb", provider: "tpdb", id: PAGE_TPDB.id },
+  );
+});
+
+test("performerTagJump follows an other-side tag to the linked counterpart", () => {
+  // The reported card: a StashDB scene tag counted on her TPDB page landed
+  // on the movie filmography, which provably runs no scene side.
+  assert.deepEqual(
+    performerTagJump(PAGE_TPDB, LINKED_STASHDB, {
+      name: "Anal Fingering During Sex",
+      stashdb: STASH_TAG_ID,
+    }),
+    { param: "performerStashdb", provider: "stashdb", id: LINKED_STASHDB.id },
+  );
+});
+
+test("performerTagJump sends an other-side tag alone without a linked counterpart", () => {
+  assert.deepEqual(
+    performerTagJump(PAGE_TPDB, undefined, {
+      name: "Anal Fingering During Sex",
+      stashdb: STASH_TAG_ID,
+    }),
+    { param: "include", provider: "stashdb" },
+  );
+});
+
+test("performerTagJump mirrors from a StashDB page to the linked TPDB performer", () => {
+  assert.deepEqual(
+    performerTagJump(LINKED_STASHDB, PAGE_TPDB, {
+      name: "Romance",
+      tpdb: TAG_ROMANCE,
+    }),
+    { param: "performerTpdb", provider: "tpdb", id: PAGE_TPDB.id },
+  );
 });

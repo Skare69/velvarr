@@ -29,7 +29,7 @@ import type {
   CatalogTagSelection,
   PerformerFollow,
 } from "../lib/contracts";
-import { mergeTagCounts } from "../lib/contracts";
+import { mergeTagCounts, performerTagJump } from "../lib/contracts";
 import { useBrowseTo } from "./catalog";
 import { REQUESTS_CHANGED } from "../lib/approvals";
 import "./views.css";
@@ -862,19 +862,19 @@ function TagsOverview({
             key={t.name}
             type="button"
             className="chip"
-            onClick={() =>
-              // Only the page's own performer rides: the two performer
-              // params cannot co-exist on one browse query.
+            onClick={() => {
+              // The jump follows the tag: an other-side-only chip would
+              // land on a provably empty filmography (a TPDB performer
+              // query never runs the scene side), so it swaps in the
+              // linked counterpart or rides as a bare tag filter.
+              const jump = performerTagJump(reference, linked, t);
               browseTo({
-                param:
-                  reference.provider === "tpdb"
-                    ? "performerTpdb"
-                    : "performerStashdb",
-                provider: reference.provider,
-                id: reference.id,
+                param: jump.param,
+                provider: jump.provider,
+                id: jump.id ?? reference.id,
                 tag: t,
-              })
-            }
+              });
+            }}
           >
             {t.name}
             <span className="ml-1.5 text-muted">{t.count}</span>
