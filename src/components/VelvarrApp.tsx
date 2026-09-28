@@ -1501,7 +1501,7 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
     reload: reloadCat,
   } = useApiGet<DetailPayload>(
     catalog
-      ? `/api/catalog/${catalog.provider}/${catalog.kind}/${encodeURIComponent(catalog.id)}/detail`
+      ? `/api/catalog/${catalog.provider}/${catalog.kind}/${encodeURIComponent(catalog.id)}`
       : null,
     [catalog?.provider, catalog?.kind, catalog?.id],
   );

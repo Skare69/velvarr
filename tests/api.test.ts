@@ -2165,6 +2165,18 @@ test("catalog detail: validation before upstream, absence vs outage, own request
   assert.equal(body.myRequest, null);
   assert.equal(body.acquisition, null);
 
+  // The library panel's detail fetch must use this bare reference route: a
+  // /detail-suffixed variant matches no route and 404s as not_found, which
+  // the UI renders as "not in the provider catalog" — a fake absence for
+  // every library item (card 9497b69b).
+  const staleSuffix = await call(
+    "GET",
+    `/api/catalog/tpdb/movie/${TPDB_MOVIE}/detail`,
+    { cookie: member },
+  );
+  assert.equal(staleSuffix.status, 404);
+  assert.equal((await errorShape(staleSuffix, 404)).code, "not_found");
+
   // Authoritative absence is 404 with a distinct code; outage is an error.
   const missing = await call("GET", `/api/catalog/tpdb/movie/${TPDB_MOVIE2}`, {
     cookie: member,
