@@ -254,23 +254,19 @@
 .cat-person:hover {
   border-color: var(--color-accent);
 }
-/* Hover-revealed "+ filter": jumps to browse with this performer set. */
-.cat-person-filter {
+/* Hover-revealed "+ filter": jumps to browse with this performer set.
+   Skin comes from .btn/.btn-accent (same as the watch/request buttons);
+   only position and the hover reveal are local. The hide stays two-class
+   so it wins over .btn's display regardless of stylesheet order. */
+.cat-person .cat-person-filter {
   position: absolute;
   top: 0.4rem;
   right: 0.4rem;
   display: none;
-  padding: 0.1rem 0.5rem;
-  border: 1px solid var(--color-accent);
-  border-radius: 999px;
-  background: var(--color-panel);
-  color: var(--color-ink);
-  font-size: 0.72rem;
-  cursor: pointer;
 }
 .cat-person:hover .cat-person-filter,
 .cat-person:focus-within .cat-person-filter {
-  display: block;
+  display: inline-flex;
 }
 .cat-person-img {
   width: 100%;

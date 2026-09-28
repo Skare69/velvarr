@@ -1553,7 +1553,7 @@ export function DetailSections({
                       </button>
                       <button
                         type="button"
-                        className="cat-person-filter"
+                        className="btn btn-accent cat-person-filter"
                         title={`Filter ${media} by ${c.name}`}
                         aria-label={`Filter ${media} by ${c.name}`}
                         onClick={() =>
