@@ -254,14 +254,22 @@
 .cat-person:hover {
   border-color: var(--color-accent);
 }
-/* Hover-revealed "+ filter": jumps to browse with this performer set.
-   Skin comes from .btn/.btn-accent (same as the watch/request buttons);
-   only position and the hover reveal are local. The hide stays two-class
-   so it wins over .btn's display regardless of stylesheet order. */
+/* Hover-revealed filter button: jumps to browse with this performer set.
+   Same bar as the watch/request overlay button (.media-quick-action .btn):
+   full width, same height, padding, gap and font, pinned 12px inside the
+   poster like the overlay's padding. It anchors at the poster top because
+   the name sits under the poster and a bottom anchor would cover it. The
+   hide stays two-class so it wins over .btn's display regardless of
+   stylesheet order. */
 .cat-person .cat-person-filter {
   position: absolute;
-  top: 0.4rem;
-  right: 0.4rem;
+  top: 12px;
+  right: 12px;
+  left: 12px;
+  min-height: 36px;
+  padding: 7px 5px;
+  gap: 5px;
+  font-size: 0.75rem;
   display: none;
 }
 .cat-person:hover .cat-person-filter,

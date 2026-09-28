@@ -1564,7 +1564,7 @@ export function DetailSections({
                           })
                         }
                       >
-                        + filter
+                        <Icon name="plus" /> Filter
                       </button>
                     </div>
                   );
