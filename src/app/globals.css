@@ -420,6 +420,9 @@ body:has(.auth-page) {
   margin-top: auto;
   padding: 28px 12px 0;
 }
+.sidebar-footer .credit {
+  justify-content: center;
+}
 .app-topbar {
   position: fixed;
   top: 0;
