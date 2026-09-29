@@ -578,12 +578,9 @@ function ShelfSection({
 function PageHeading({ onReorder }: { onReorder: () => void }) {
   return (
     <header className="page-heading">
-      <div>
-        <h2 className="page-title">Discover</h2>
-      </div>
       <button
         type="button"
-        className="icon-button"
+        className="icon-button ml-auto"
         aria-label="Reorder shelves"
         title="Reorder shelves"
         onClick={onReorder}
