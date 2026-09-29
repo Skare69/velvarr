@@ -241,8 +241,14 @@ summary:focus-visible,
   background: color-mix(in srgb, var(--color-canvas) 86%, transparent);
   backdrop-filter: blur(8px);
 }
-body:has(.app-shell) .app-footer {
+body:has(.app-shell) .app-footer,
+body:has(.auth-page) .app-footer {
   display: none;
+}
+/* Auth pages carry the credit inside the card, so the body needs no
+   clearance for the fixed bar and the page fits the viewport exactly. */
+body:has(.auth-page) {
+  padding-bottom: 0;
 }
 .credit {
   display: flex;
@@ -1078,6 +1084,10 @@ body:has(.app-shell) .app-footer {
   font-size: 1.6rem;
   font-weight: 650;
   margin-bottom: 8px;
+}
+.auth-card .credit {
+  justify-content: center;
+  margin-top: 28px;
 }
 
 @media (min-width: 1800px) {

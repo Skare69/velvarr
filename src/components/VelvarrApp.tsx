@@ -687,6 +687,7 @@ function LoginView({ onSignedIn }: { onSignedIn: () => void }) {
             {pending ? "Signing in…" : "Sign in"}
           </button>
         </form>
+        <Credit />
       </div>
     </div>
   );
