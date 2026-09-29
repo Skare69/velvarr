@@ -62,18 +62,23 @@ export function mergeTagCounts(
   );
 }
 
-/** Where a performer-page tag chip's browse jump must land. The overview
- * counts both sides of her filmography, so a merged row can carry only the
- * other side's native id — and riding the page performer there lands on a
- * side that never runs the other catalog (`planBrowseSides` runs a TPDB
- * filmography on the tpdb side only), a provably empty page. The jump
- * follows the tag: an own-side id keeps the page performer; an other-side
- * tag swaps in the linked counterpart when the page knows one, and travels
- * as a bare tag filter when it does not. */
+/** Where a performer-page tag chip's browse jump must land. With a linked
+ * performer on the other provider, the jump is a union: both of her ids
+ * ride (primary `id` plus `counterpart`) and browse lands on All — her TPDB
+ * movies plus her StashDB scenes in one page. No side can lie: a side whose
+ * include tag cannot resolve itself self-disqualifies server-side
+ * (`includeIdsForSide` resolves labels via `tagCounterpart`, exact
+ * normalized name). Without a linked counterpart the old single-side rules
+ * stand: an own-side tag keeps the page performer; an other-side tag would
+ * land on a provably empty page (a TPDB performer query never runs the
+ * scene side), so it travels as a bare tag filter. */
 export type TagJump = {
   param: "performerTpdb" | "performerStashdb" | "include";
   provider: CatalogProvider;
   id?: string;
+  /** Only with a performer param: her id on the other provider, so browse
+   * runs both sides of her filmography at once. */
+  counterpart?: { param: "performerTpdb" | "performerStashdb"; id: string };
 };
 
 export function performerTagJump(
@@ -82,23 +87,28 @@ export function performerTagJump(
   tag: CatalogTagSelection,
 ): TagJump {
   const own = reference.provider;
-  if ((own === "tpdb" ? tag.tpdb : tag.stashdb) !== undefined) {
-    return {
-      param: own === "tpdb" ? "performerTpdb" : "performerStashdb",
-      provider: own,
-      id: reference.id,
-    };
-  }
   const other: CatalogProvider = own === "tpdb" ? "stashdb" : "tpdb";
   if (
     linked !== undefined &&
     linked.kind === "performer" &&
     linked.provider === other
   ) {
+    const ownParam = own === "tpdb" ? "performerTpdb" : "performerStashdb";
     return {
-      param: other === "tpdb" ? "performerTpdb" : "performerStashdb",
-      provider: other,
-      id: linked.id,
+      param: ownParam,
+      provider: own,
+      id: reference.id,
+      counterpart: {
+        param: other === "tpdb" ? "performerTpdb" : "performerStashdb",
+        id: linked.id,
+      },
+    };
+  }
+  if ((own === "tpdb" ? tag.tpdb : tag.stashdb) !== undefined) {
+    return {
+      param: own === "tpdb" ? "performerTpdb" : "performerStashdb",
+      provider: own,
+      id: reference.id,
     };
   }
   return { param: "include", provider: other };

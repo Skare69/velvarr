@@ -31,6 +31,7 @@ import type {
 } from "../lib/contracts";
 import { mergeTagCounts, performerTagJump } from "../lib/contracts";
 import { useBrowseTo } from "./catalog";
+import { seedName } from "../lib/names";
 import { REQUESTS_CHANGED } from "../lib/approvals";
 import "./views.css";
 
@@ -772,9 +773,11 @@ const TAGS_SHOWN = 50;
 function TagsOverview({
   reference,
   linked,
+  name,
 }: {
   reference: CatalogReference;
   linked?: CatalogReference;
+  name: string;
 }) {
   const [reload, setReload] = useState(0);
   const retry = useCallback(() => setReload((n) => n + 1), []);
@@ -863,15 +866,27 @@ function TagsOverview({
             type="button"
             className="chip"
             onClick={() => {
-              // The jump follows the tag: an other-side-only chip would
-              // land on a provably empty filmography (a TPDB performer
-              // query never runs the scene side), so it swaps in the
-              // linked counterpart or rides as a bare tag filter.
+              // A union jump rides both of her ids and lands on browse All
+              // (her TPDB movies plus her StashDB scenes). The page
+              // performer's name is seeded so the chip labels her by name;
+              // the linked side stays id-labeled — no known name, never
+              // faked.
+              seedName(
+                {
+                  provider: reference.provider,
+                  kind: "performer",
+                  id: reference.id,
+                },
+                name,
+              );
               const jump = performerTagJump(reference, linked, t);
               browseTo({
                 param: jump.param,
                 provider: jump.provider,
                 id: jump.id ?? reference.id,
+                ...(jump.counterpart !== undefined
+                  ? { counterpart: jump.counterpart }
+                  : {}),
                 tag: t,
               });
             }}
@@ -1095,7 +1110,11 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
           </div>
 
           <div className="mt-8 space-y-8">
-            <TagsOverview reference={reference} linked={linked} />
+            <TagsOverview
+              reference={reference}
+              linked={linked}
+              name={d.title}
+            />
             {sides.map((s) => (
               <Listing
                 key={s.provider}

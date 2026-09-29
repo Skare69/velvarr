@@ -1177,7 +1177,9 @@ function MediaActions({
  * unified browse constraints. `param` is a canonical /api/browse key;
  * `id` is the provider-native id, or the YYYY string for `year`; `tag`
  * rides for `include` and as a co-filter on the performer params;
- * `studioMode` only for StashDB studios. */
+ * `studioMode` only for StashDB studios; `counterpart` only with the
+ * performer params — her id on the other provider, so browse runs both
+ * sides at once. */
 export type BrowseFilter = {
   param:
     | "studioTpdb"
@@ -1190,6 +1192,7 @@ export type BrowseFilter = {
   id: string;
   tag?: CatalogTagSelection;
   studioMode?: "withChildren";
+  counterpart?: { param: "performerTpdb" | "performerStashdb"; id: string };
 };
 
 /** Tag filters accept UUID ids only; mirrors the server's UUID_RE. */
@@ -1415,6 +1418,12 @@ export function useBrowseTo(): (filter: BrowseFilter) => void {
         patch.include = JSON.stringify([cleanTag(filter.tag)]);
       } else {
         patch[filter.param] = filter.id;
+        // A union jump rides both of her ids; no single type can run both
+        // providers, so it lands on browse All.
+        if (filter.counterpart !== undefined) {
+          patch[filter.counterpart.param] = filter.counterpart.id;
+          patch.type = null;
+        }
         if (filter.studioMode) patch.studioMode = filter.studioMode;
         if (filter.tag !== undefined) {
           patch.include = JSON.stringify([cleanTag(filter.tag)]);
@@ -2066,6 +2075,12 @@ export function TitlesView() {
         page: null,
         sort: keepSort ? sortRaw : null,
         direction: keepSort ? dirRaw : null,
+        // Both performer chips active would 400 on a single type (the
+        // server refuses both ids with a kind), so the tab visibly drops
+        // the chip that cannot run on the target kind — the same clamp
+        // the sort gets above.
+        ...(t === "movie" ? { performerStashdb: null } : {}),
+        ...(t === "scene" ? { performerTpdb: null } : {}),
       });
     },
     [setP, sortRaw, dirRaw],

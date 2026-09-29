@@ -82,36 +82,71 @@ const LINKED_STASHDB: CatalogReference = {
   id: "22222222-2222-4222-8222-222222222222",
 };
 
-test("performerTagJump keeps the page performer for an own-side tag", () => {
+test("performerTagJump unions with the page performer for an own-side tag", () => {
   assert.deepEqual(
     performerTagJump(PAGE_TPDB, LINKED_STASHDB, {
       name: "Romance",
       tpdb: TAG_ROMANCE,
     }),
-    { param: "performerTpdb", provider: "tpdb", id: PAGE_TPDB.id },
+    {
+      param: "performerTpdb",
+      provider: "tpdb",
+      id: PAGE_TPDB.id,
+      counterpart: {
+        param: "performerStashdb",
+        id: LINKED_STASHDB.id,
+      },
+    },
   );
 });
 
-test("performerTagJump keeps the page performer when the label spans both sides", () => {
+test("performerTagJump unions when the label spans both sides", () => {
   assert.deepEqual(
     performerTagJump(PAGE_TPDB, LINKED_STASHDB, {
       name: "Romance",
       tpdb: TAG_ROMANCE,
       stashdb: STASH_TAG_ID,
     }),
-    { param: "performerTpdb", provider: "tpdb", id: PAGE_TPDB.id },
+    {
+      param: "performerTpdb",
+      provider: "tpdb",
+      id: PAGE_TPDB.id,
+      counterpart: {
+        param: "performerStashdb",
+        id: LINKED_STASHDB.id,
+      },
+    },
   );
 });
 
-test("performerTagJump follows an other-side tag to the linked counterpart", () => {
+test("performerTagJump unions an other-side tag with the page performer", () => {
   // The reported card: a StashDB scene tag counted on her TPDB page landed
-  // on the movie filmography, which provably runs no scene side.
+  // on the movie filmography, which provably runs no scene side. With a
+  // linked counterpart the jump rides both ids and lands on browse All.
   assert.deepEqual(
     performerTagJump(PAGE_TPDB, LINKED_STASHDB, {
       name: "Anal Fingering During Sex",
       stashdb: STASH_TAG_ID,
     }),
-    { param: "performerStashdb", provider: "stashdb", id: LINKED_STASHDB.id },
+    {
+      param: "performerTpdb",
+      provider: "tpdb",
+      id: PAGE_TPDB.id,
+      counterpart: {
+        param: "performerStashdb",
+        id: LINKED_STASHDB.id,
+      },
+    },
+  );
+});
+
+test("performerTagJump keeps the single-side jump for an own-side tag without a linked counterpart", () => {
+  assert.deepEqual(
+    performerTagJump(PAGE_TPDB, undefined, {
+      name: "Romance",
+      tpdb: TAG_ROMANCE,
+    }),
+    { param: "performerTpdb", provider: "tpdb", id: PAGE_TPDB.id },
   );
 });
 
@@ -131,6 +166,14 @@ test("performerTagJump mirrors from a StashDB page to the linked TPDB performer"
       name: "Romance",
       tpdb: TAG_ROMANCE,
     }),
-    { param: "performerTpdb", provider: "tpdb", id: PAGE_TPDB.id },
+    {
+      param: "performerStashdb",
+      provider: "stashdb",
+      id: LINKED_STASHDB.id,
+      counterpart: {
+        param: "performerTpdb",
+        id: PAGE_TPDB.id,
+      },
+    },
   );
 });

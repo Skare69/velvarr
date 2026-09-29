@@ -1429,6 +1429,30 @@ test("planBrowseSides refuses source-scoped filters on the wrong kind", () => {
       `${field} on ${type} must refuse`,
     );
   }
+  // The performer union (both ids) does not lift the wrong-kind refusals:
+  // a typed tab still refuses via the side it cannot run.
+  assert.throws(
+    () =>
+      planBrowseSides(
+        planQuery({
+          type: "movie",
+          performerTpdb: uuid(1),
+          performerStashdb: uuid(6),
+        }),
+      ),
+    /StashDB performer filter cannot apply to movies/,
+  );
+  assert.throws(
+    () =>
+      planBrowseSides(
+        planQuery({
+          type: "scene",
+          performerTpdb: uuid(1),
+          performerStashdb: uuid(6),
+        }),
+      ),
+    /TPDB performer filmography cannot apply to scenes/,
+  );
 });
 
 test("planBrowseSides refuses withChildren without a StashDB studio and with a TPDB studio", () => {
@@ -1501,6 +1525,14 @@ test("planBrowseSides picks sides: one-sided clauses kill only their own side", 
       .sides,
     ["tpdb", "stashdb"],
   );
+  // The performer pair unions by the same alternative-clauses rule as the
+  // unified studio tile: both ids together run both sides.
+  assert.deepEqual(
+    planBrowseSides(
+      planQuery({ performerTpdb: uuid(1), performerStashdb: uuid(6) }),
+    ).sides,
+    ["tpdb", "stashdb"],
+  );
 });
 
 test("planBrowseSides derives order: filmography claims none, defaults are release recency", () => {
@@ -1514,6 +1546,14 @@ test("planBrowseSides derives order: filmography claims none, defaults are relea
   assert.equal(film.filmography, true);
   assert.equal(film.nativeSort, undefined);
   assert.equal(film.mergeOrder, undefined);
+
+  // The performer union keeps the filmography route's no-sort claim.
+  const union = planBrowseSides(
+    planQuery({ performerTpdb: uuid(4), performerStashdb: uuid(6) }),
+  );
+  assert.equal(union.filmography, true);
+  assert.equal(union.nativeSort, undefined);
+  assert.equal(union.mergeOrder, undefined);
 
   const explicit = planBrowseSides(
     planQuery({ type: "movie", sort: "duration", direction: "asc" }),

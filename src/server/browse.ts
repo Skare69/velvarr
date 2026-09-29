@@ -780,14 +780,19 @@ export function planBrowseSides(query: BrowseQuery): BrowsePlan {
   // movie query, a TPDB studio kills the scene query. A unified studio tile
   // carries BOTH ids, and there the clauses are alternatives, not a
   // conjunction — each provider query takes its own side, the overview is
-  // the union. AND-ing them could only ever return nothing.
+  // the union. AND-ing them could only ever return nothing. The performer
+  // pair unions the same way: both ids together run both sides; a lone
+  // TPDB-side clause still kills the scene side, and a lone StashDB id the
+  // movie side. Wrong-kind refusals above still guard typed tabs.
+  const bothPerformers =
+    query.performerTpdb !== undefined && query.performerStashdb !== undefined;
   const movieWanted =
     query.type !== "scene" &&
-    query.performerStashdb === undefined &&
+    (query.performerStashdb === undefined || bothPerformers) &&
     (query.studioStashdb === undefined || query.studioTpdb !== undefined);
   const sceneWanted =
     query.type !== "movie" &&
-    !filmography &&
+    (!filmography || bothPerformers) &&
     (query.studioTpdb === undefined || query.studioStashdb !== undefined);
   const sides: CatalogProvider[] = [];
   if (movieWanted) sides.push("tpdb");
