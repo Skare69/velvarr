@@ -1,3 +1,5 @@
+import { RailSkeleton } from "../components/discover";
+
 export default function Loading() {
   return (
     <div className="min-h-screen md:flex" aria-hidden="true">
@@ -11,10 +13,11 @@ export default function Loading() {
         <div className="mx-auto max-w-6xl p-4 md:p-8">
           <div className="skel mb-6 h-9 w-64" />
           <div className="skel mb-4 h-9 w-full" />
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-            {Array.from({ length: 10 }, (_, i) => (
-              <div key={i} className="skel aspect-[2/3]" />
-            ))}
+          <div className="flex flex-col gap-5">
+            <RailSkeleton count={6} />
+            <RailSkeleton count={6} />
+            <RailSkeleton count={5} />
+            <RailSkeleton count={5} />
           </div>
         </div>
       </div>

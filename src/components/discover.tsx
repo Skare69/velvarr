@@ -103,7 +103,7 @@ const DATE_FMT = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
 
 /* ---------- Skeletons: same geometry as the final rail ---------- */
 
-function RailSkeleton({ count }: { count: number }) {
+export function RailSkeleton({ count }: { count: number }) {
   return (
     <div className="discovery-rail" aria-hidden="true">
       {Array.from({ length: count }, (_, i) => (

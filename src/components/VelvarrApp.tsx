@@ -58,7 +58,7 @@ import {
 } from "./catalog.tsx";
 import { PreferencesDialog } from "./preferences.tsx";
 import { PerformerView } from "./performer.tsx";
-import { DiscoverShelves, FacetsView } from "./discover.tsx";
+import { DiscoverShelves, FacetsView, RailSkeleton } from "./discover.tsx";
 import { SearchView } from "./search.tsx";
 import { RequestsView } from "./requests.tsx";
 import { RemovalsView } from "./removals.tsx";
@@ -119,10 +119,11 @@ function BootSkeleton() {
       </div>
       <main className="app-main">
         <div className="skel mb-6 h-8 w-48" />
-        <div className="poster-grid">
-          {Array.from({ length: 14 }, (_, i) => (
-            <div key={i} className="skel aspect-[2/3]" />
-          ))}
+        <div className="flex flex-col gap-5">
+          <RailSkeleton count={6} />
+          <RailSkeleton count={6} />
+          <RailSkeleton count={5} />
+          <RailSkeleton count={5} />
         </div>
       </main>
     </div>

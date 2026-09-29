@@ -293,8 +293,27 @@ body:has(.auth-page) {
   font-weight: 600;
 }
 .skel {
-  background: var(--color-raised);
   border-radius: 9px;
+  background-color: var(--color-raised);
+  /* Sweep shimmer: the paint is twice the element and slides across it
+   * (one 1.2 s linear loop). The global prefers-reduced-motion clamp
+   * stops the slide. */
+  background-image: linear-gradient(
+    100deg,
+    transparent 30%,
+    color-mix(in oklab, var(--color-edge) 55%, var(--color-raised)) 50%,
+    transparent 70%
+  );
+  background-size: 200% 100%;
+  animation: skel-sweep 1.2s linear infinite;
+}
+@keyframes skel-sweep {
+  from {
+    background-position: 0% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
 }
 
 .app-shell {
