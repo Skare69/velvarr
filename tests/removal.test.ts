@@ -12,6 +12,14 @@ import assert from "node:assert/strict";
 import { deleteLibraryItem } from "../src/server/jellyfin.ts";
 import { AppError } from "../src/server/http.ts";
 import {
+  REMOVAL_LADDER,
+  REMOVAL_LEVELS,
+  isDestructiveLevel,
+  isRemovalLevel,
+  removalLevelRank,
+  requiresUserToken,
+} from "../src/lib/contracts.ts";
+import {
   ADMIN_KEY,
   ITEM_ID,
   LIB_A,
@@ -288,4 +296,40 @@ test("deleteLibraryItem reports a timeout as uncertain", async () => {
     assert.equal(outcome.status, "uncertain");
     assertNoAdminKey(fx);
   });
+});
+
+test("the removal ladder pins escalation order and per-level facts", () => {
+  // Least → most destructive is the escalation order: a later approval may
+  // raise a shared execution to an explicitly chosen level, never lower it.
+  assert.deepEqual(REMOVAL_LEVELS, [
+    "unmonitor",
+    "drop",
+    "exclude",
+    "delete_files",
+    "delete_jellyfin_item",
+  ]);
+  // Only the irreversible rungs are destructive; only the Jellyfin item
+  // deletion runs under the requester's own media-server session.
+  assert.deepEqual(
+    REMOVAL_LADDER.map((rung) => [
+      rung.level,
+      rung.destructive,
+      rung.requiresUserToken,
+    ]),
+    [
+      ["unmonitor", false, false],
+      ["drop", false, false],
+      ["exclude", false, false],
+      ["delete_files", true, false],
+      ["delete_jellyfin_item", true, true],
+    ],
+  );
+  assert.equal(removalLevelRank("unmonitor"), 0);
+  assert.equal(removalLevelRank("delete_jellyfin_item"), 4);
+  assert.equal(isDestructiveLevel("delete_files"), true);
+  assert.equal(isDestructiveLevel("drop"), false);
+  assert.equal(requiresUserToken("delete_jellyfin_item"), true);
+  assert.equal(requiresUserToken("delete_files"), false);
+  assert.equal(isRemovalLevel("drop"), true);
+  assert.equal(isRemovalLevel("nope"), false);
 });
