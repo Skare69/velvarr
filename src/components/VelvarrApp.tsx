@@ -60,7 +60,6 @@ import { DiscoverShelves, FacetsView, RailSkeleton } from "./discover.tsx";
 import { SearchView } from "./search.tsx";
 import { RequestsView } from "./requests.tsx";
 import { RemovalsView } from "./removals.tsx";
-import { LimitsPanel, ReleaseStatusPanel } from "./limits.tsx";
 import { SettingsView } from "./settings.tsx";
 
 /* ---------- View helpers ---------- */
