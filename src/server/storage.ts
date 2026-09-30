@@ -1183,7 +1183,7 @@ function resolveWhisparrIdentity(
 }
 
 function issueSession(account: Account, jellyfinToken: string): SessionGrant {
-  const d = open();
+  open();
   const raw = randomBytes(32).toString("base64url");
   const now = Date.now();
   const expiresAt = now + SESSION_TTL_MS;
@@ -2443,7 +2443,7 @@ export function beginSubmission(
   id: string,
   claimToken: string,
 ): { attemptToken: string } {
-  const d = open();
+  open();
   const attemptToken = randomUUID();
   const res = S().beginSubmission.run(
     attemptToken,
@@ -2469,7 +2469,7 @@ export function completeSubmission(
   outcome: AttemptOutcome,
   error?: string,
 ): AcquisitionRecord {
-  const d = open();
+  open();
   const now = Date.now();
   let res: { changes: number | bigint };
   switch (outcome) {
@@ -2531,7 +2531,7 @@ export function recordAcquisitionObservation(
   observation: AcquisitionObservation,
   claimToken?: string,
 ): AcquisitionRecord {
-  const d = open();
+  open();
   const now = Date.now();
   const claim = claimToken ?? null;
   let res: { changes: number | bigint };

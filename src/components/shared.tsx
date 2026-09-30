@@ -819,8 +819,6 @@ function RequestableCard({
   const availability = status?.availability;
   const available = availability?.outcome === "available" ? availability : null;
   const requested = Boolean(status?.myRequest || status?.acquisition);
-  const approved =
-    status?.myRequest?.decision === "approved" || Boolean(status?.acquisition);
   // One ladder for every surface (lib/status): playable beats downloading
   // beats unmonitored; imported-but-unscanned is a decision fact, never
   // "Paused".

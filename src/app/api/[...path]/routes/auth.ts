@@ -3,88 +3,29 @@ import {
   readJson,
   fieldText,
   fieldUrl,
-  fieldBool,
-  fieldRole,
   fieldIds,
   optionalText,
-  requireId,
-  optionalBool,
-  queryInt,
-  parseCatalogProvider,
-  parseCatalogKind,
-  parseCatalogReference,
-  isMediaReference,
-  parseMediaReference,
-  sameMedia,
-  PROVIDER_UUID,
 } from "../parse.ts";
 import { type AuthContext, json } from "../admission.ts";
-import { createHash } from "node:crypto";
 import type {
-  Account,
-  AdminAccount,
-  CatalogDetail,
-  CatalogKind,
-  CatalogProvider,
-  CatalogReference,
-  CatalogTagSelection,
   ExternalUser,
   IntegrationConfig,
   Library,
-  LibraryItem,
-  MediaKind,
-  MediaReference,
   ProviderStatus,
-  RequestListItem,
-  RequestRecord,
-  Role,
-  WhisparrDelivery,
-  WhisparrPathMapping,
 } from "../../../../lib/contracts.ts";
 import {
-  isDeliverableMedia,
-  isRemovalLevel,
-  normalizeFacetName,
-  UNDELIVERABLE_REASON,
-} from "../../../../lib/contracts.ts";
-import {
-  approveRemovalRequest,
   bootstrap,
-  cancelRemovalRequest,
-  cancelRequest,
-  countRequestsByAccount,
-  createRemovalRequest,
-  createRequest,
   createSession,
-  decideRequest,
-  declineRemovalRequest,
-  followPerformer,
-  getAcquisitionByReference,
   getAccount,
   getConfig,
   getContentPreferences,
-  getSession,
-  hasAuthoritativeAbsence,
-  importAccounts,
   isInitialized,
-  isObservationStale,
-  listAccounts,
-  listFollows,
-  listFollowsByProvider,
-  listRequests,
-  listRemovalRequests,
   revokeSession,
-  saveConfig,
   saveContentPreferences,
-  linkFollows,
-  unfollowPerformer,
   refreshAccountName,
-  updateAccount,
-  upsertCatalogRecord,
 } from "../../../../server/storage.ts";
 import {
   consumeLoginAttempt,
-  guardMutation,
   readSessionToken,
   sessionCookie,
   isSecureRequest,
@@ -93,52 +34,11 @@ import {
 import { AppError, validateBaseUrl } from "../../../../server/http.ts";
 import {
   authenticate,
-  getLibraryImage,
-  getLibraryItem,
   getServer,
-  getUserImage,
   listLibraries,
-  listLibraryItems,
-  listRecentlyAddedItems,
   listUsers,
-  resolvePlaybackAccess,
-  validateUser,
-  getJellyfinStatus,
 } from "../../../../server/jellyfin.ts";
-import {
-  crossProviderLink,
-  fetchProviderArtwork,
-  getCatalogDetail,
-  getProviderStatus,
-  isProviderImageUrl,
-  listCatalogTags,
-  searchCatalog,
-  searchCatalogTags,
-  studioCounterpart,
-  tagCounterpart,
-  type CatalogSearchQuery,
-  type CatalogSortDirection,
-  type CatalogSortKey,
-  type ReleaseDateOperation,
-} from "../../../../server/providers.ts";
-import { suggestTags } from "../../../../server/judgment.ts";
-import {
-  findWhisparrItem,
-  getWhisparrStatus,
-} from "../../../../server/whisparr.ts";
-import {
-  browseTitles,
-  isHiddenTitle,
-  parseBrowseQuery,
-  searchBrowseTags,
-  searchVisibleCatalog,
-  type BrowsePage,
-  type SourceError,
-} from "../../../../server/browse.ts";
-import {
-  relatedPerformers,
-  relatedTitles,
-} from "../../../../server/related.ts";
+import { getProviderStatus } from "../../../../server/providers.ts";
 
 export function setupReady(): boolean {
   return (

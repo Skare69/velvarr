@@ -5,7 +5,6 @@ import { useSearchParams } from "next/navigation";
 import {
   ApiError,
   api,
-  duration,
   ErrorPanel,
   GridSkeleton,
   detailParams,
@@ -26,7 +25,6 @@ import type {
   CatalogDetail,
   CatalogProvider,
   CatalogReference,
-  CatalogTagSelection,
   PerformerFollow,
 } from "../lib/contracts";
 import { mergeTagCounts, performerTagJump } from "../lib/contracts";

@@ -1,7 +1,6 @@
 // Moved verbatim from route.ts (v0.24.1) — pure move, no logic edits.
 import {
   readJson,
-  fieldText,
   fieldUrl,
   fieldBool,
   fieldRole,
@@ -9,135 +8,32 @@ import {
   optionalText,
   requireId,
   optionalBool,
-  queryInt,
-  parseCatalogProvider,
-  parseCatalogKind,
-  parseCatalogReference,
-  isMediaReference,
-  parseMediaReference,
-  sameMedia,
-  PROVIDER_UUID,
 } from "../parse.ts";
 import { type AuthContext, json } from "../admission.ts";
-import { createHash } from "node:crypto";
 import type {
-  Account,
   AdminAccount,
-  CatalogDetail,
-  CatalogKind,
-  CatalogProvider,
-  CatalogReference,
-  CatalogTagSelection,
-  ExternalUser,
   IntegrationConfig,
-  Library,
-  LibraryItem,
-  MediaKind,
-  MediaReference,
-  ProviderStatus,
-  RequestListItem,
-  RequestRecord,
-  Role,
   WhisparrDelivery,
   WhisparrPathMapping,
 } from "../../../../lib/contracts.ts";
 import {
-  isDeliverableMedia,
-  isRemovalLevel,
-  normalizeFacetName,
-  UNDELIVERABLE_REASON,
-} from "../../../../lib/contracts.ts";
-import {
-  approveRemovalRequest,
-  bootstrap,
-  cancelRemovalRequest,
-  cancelRequest,
   countRequestsByAccount,
-  createRemovalRequest,
-  createRequest,
-  createSession,
-  decideRequest,
-  declineRemovalRequest,
-  followPerformer,
-  getAcquisitionByReference,
   getAccount,
-  getConfig,
-  getContentPreferences,
-  getSession,
-  hasAuthoritativeAbsence,
   importAccounts,
-  isInitialized,
-  isObservationStale,
   listAccounts,
-  listFollows,
-  listFollowsByProvider,
-  listRequests,
-  listRemovalRequests,
-  revokeSession,
   saveConfig,
-  saveContentPreferences,
-  linkFollows,
-  unfollowPerformer,
   updateAccount,
-  upsertCatalogRecord,
 } from "../../../../server/storage.ts";
-import {
-  consumeLoginAttempt,
-  guardMutation,
-  readSessionToken,
-  sessionCookie,
-  isSecureRequest,
-  verifySetupSecret,
-} from "../../../../server/security.ts";
 import { AppError, validateBaseUrl } from "../../../../server/http.ts";
 import {
-  authenticate,
-  getLibraryImage,
-  getLibraryItem,
   getServer,
   getUserImage,
   listLibraries,
-  listLibraryItems,
-  listRecentlyAddedItems,
   listUsers,
-  resolvePlaybackAccess,
-  validateUser,
   getJellyfinStatus,
 } from "../../../../server/jellyfin.ts";
-import {
-  crossProviderLink,
-  fetchProviderArtwork,
-  getCatalogDetail,
-  getProviderStatus,
-  isProviderImageUrl,
-  listCatalogTags,
-  searchCatalog,
-  searchCatalogTags,
-  studioCounterpart,
-  tagCounterpart,
-  type CatalogSearchQuery,
-  type CatalogSortDirection,
-  type CatalogSortKey,
-  type ReleaseDateOperation,
-} from "../../../../server/providers.ts";
-import { suggestTags } from "../../../../server/judgment.ts";
-import {
-  findWhisparrItem,
-  getWhisparrStatus,
-} from "../../../../server/whisparr.ts";
-import {
-  browseTitles,
-  isHiddenTitle,
-  parseBrowseQuery,
-  searchBrowseTags,
-  searchVisibleCatalog,
-  type BrowsePage,
-  type SourceError,
-} from "../../../../server/browse.ts";
-import {
-  relatedPerformers,
-  relatedTitles,
-} from "../../../../server/related.ts";
+import { getProviderStatus } from "../../../../server/providers.ts";
+import { getWhisparrStatus } from "../../../../server/whisparr.ts";
 
 export function integrationsShape(config: IntegrationConfig) {
   return {
@@ -530,7 +426,7 @@ export async function adminJellyfin(ctx: AuthContext): Promise<Response> {
 
 // --- catalog, requests, availability ---
 
-export async function adminProviders(ctx: AuthContext): Promise<Response> {
+export async function adminProviders(_ctx: AuthContext): Promise<Response> {
   const [tpdb, stashdb] = await Promise.all([
     getProviderStatus("tpdb"),
     getProviderStatus("stashdb"),

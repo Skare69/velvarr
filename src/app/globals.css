@@ -423,18 +423,6 @@ body:has(.auth-page) {
   background: color-mix(in oklab, var(--color-edge) 55%, var(--color-panel));
   margin: 15px 10px;
 }
-.nav-chip {
-  padding: 0.45rem 0.85rem;
-  border-radius: 7px;
-  font-size: 0.85rem;
-  color: var(--color-muted);
-  cursor: pointer;
-}
-.nav-chip[aria-current="page"] {
-  color: var(--color-accent);
-  background: var(--color-raised);
-  font-weight: 600;
-}
 .sidebar-footer {
   margin-top: auto;
   padding: 28px 12px 0;

@@ -18,7 +18,6 @@ import {
   fetchProviderArtwork,
   getCatalogDetail,
   getProviderStatus,
-  IMAGE_BYTE_CAP,
   identityLinkKey,
   isProviderImageUrl,
   linkedPerformerCounterpart,
@@ -551,7 +550,7 @@ test("tpdb pagination continuation follows pages until the provider stops offeri
 
 test("search deduplicates by provider id, keeps duplicate titles, drops malformed rows", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
-  const fixture = await startFixture((req, res) => {
+  const fixture = await startFixture((_req, res) => {
     replyJson(res, 200, {
       data: [
         { id: "not-a-uuid", title: "Broken Id" }, // dropped: non-UUID id
@@ -885,7 +884,7 @@ test("malformed and oversized upstream payloads are rejected, not normalized int
 
 test("upstream fields are normalized: bad dates, absurd durations, insecure images dropped", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
-  const fixture = await startFixture((req, res) => {
+  const fixture = await startFixture((_req, res) => {
     replyJson(res, 200, {
       data: {
         id: SCENE_ID,
@@ -1005,7 +1004,6 @@ test("artwork fetch: enforces content type, byte cap, and never sends credential
         return true;
       },
     );
-    assert.equal(IMAGE_BYTE_CAP, 8 * 1024 * 1024);
   } finally {
     await fixture.close();
   }
@@ -1080,7 +1078,7 @@ test("tpdb filmography pages the canonical performer route and rejects mixed fil
 
 test("stashdb scene search keeps artwork, performer filters, and real counts", async () => {
   const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
-  const fixture = await startFixture((req, res) => {
+  const fixture = await startFixture((_req, res) => {
     replyJson(res, 200, {
       data: {
         queryScenes: {
@@ -1141,7 +1139,7 @@ test("stashdb scene search keeps artwork, performer filters, and real counts", a
 
 test("stashdb performer search reports its real count but no continuation (provider cap)", async () => {
   const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
-  const fixture = await startFixture((req, res) => {
+  const fixture = await startFixture((_req, res) => {
     const performers = Array.from({ length: 10 }, (_, i) => {
       const hex = (i + 1).toString(16).padStart(32, "0");
       const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
@@ -2096,7 +2094,7 @@ test("studio and tag filters select provider matches, including TPDB cold UUID b
   }
 
   const restore2 = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
-  const stashFixture = await startFixture((req, res) => {
+  const stashFixture = await startFixture((_req, res) => {
     replyJson(res, 200, { data: { queryScenes: { count: 483, scenes: [] } } });
   });
   try {
@@ -2160,7 +2158,7 @@ test("studio and tag filters select provider matches, including TPDB cold UUID b
 
 test("unsupported filter and sort combinations are rejected explicitly", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
-  const fixture = await startFixture((req, res) => {
+  const fixture = await startFixture((_req, res) => {
     replyJson(res, 200, { data: [], links: { next: null }, meta: {} });
   });
   try {
@@ -2270,7 +2268,7 @@ test("unsupported filter and sort combinations are rejected explicitly", async (
   }
 
   const restore2 = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
-  const stashFixture = await startFixture((req, res) => {
+  const stashFixture = await startFixture((_req, res) => {
     replyJson(res, 200, { data: { queryScenes: { count: 1, scenes: [] } } });
   });
   try {
@@ -2371,7 +2369,7 @@ test("sort resolution maps exactly to upstream orders and refuses fake ones", ()
 
 test("stashdb studioMode withChildren emits parentStudio; default keeps studios INCLUDES; never both", async () => {
   const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
-  const fixture = await startFixture((req, res) => {
+  const fixture = await startFixture((_req, res) => {
     replyJson(res, 200, { data: { queryScenes: { count: 3, scenes: [] } } });
   });
   try {
@@ -2747,7 +2745,7 @@ function stashSceneInput(
 
 test("stashdb tagsAll emits native INCLUDES_ALL; combining criteria is rejected explicitly", async () => {
   const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
-  const fixture = await startFixture((req, res) => {
+  const fixture = await startFixture((_req, res) => {
     replyJson(res, 200, { data: { queryScenes: { count: 0, scenes: [] } } });
   });
   try {
@@ -2812,7 +2810,7 @@ test("stashdb tagsAll emits native INCLUDES_ALL; combining criteria is rejected 
 
 test("stashdb releaseDate maps operators to native date modifiers, shifting inclusive day bounds", async () => {
   const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
-  const fixture = await startFixture((req, res) => {
+  const fixture = await startFixture((_req, res) => {
     replyJson(res, 200, { data: { queryScenes: { count: 3, scenes: [] } } });
   });
   try {
@@ -2896,7 +2894,7 @@ test("attested zero totals are known-zero on both providers; contradictions stay
       meta: { total: 0 },
     },
   ];
-  const fixture = await startFixture((req, res) => {
+  const fixture = await startFixture((_req, res) => {
     const next = replies.shift();
     assert.ok(next !== undefined, "unexpected upstream call");
     replyJson(res, 200, { ...next, links: { next: null } });
@@ -2925,10 +2923,10 @@ test("attested zero totals are known-zero on both providers; contradictions stay
   }
 
   const restore2 = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
-  const stashFixture = await startFixture((req, res) => {
+  const stashFixture = await startFixture((_req, res) => {
     replyJson(res, 200, { data: { queryScenes: { count: 0, scenes: [] } } });
   });
-  const performerFixture = await startFixture((req, res) => {
+  const performerFixture = await startFixture((_req, res) => {
     replyJson(res, 200, {
       data: { searchPerformers: { count: 0, performers: [] } },
     });
@@ -3220,7 +3218,7 @@ test("an explicit cross-provider performer URL links without issuing any search 
   const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
   // Everything upstream would 500; the explicit pointer must short-circuit
   // before the network entirely.
-  const fixture = await startFixture((req, res) => {
+  const fixture = await startFixture((_req, res) => {
     replyJson(res, 500, { error: "no request expected" });
   });
   try {
@@ -3246,7 +3244,7 @@ test("an explicit cross-provider performer URL links without issuing any search 
 
 test("an upstream outage returns the explicit unlinked reason unchanged, never throwing", async () => {
   const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
-  const outage = await startFixture((req, res) => {
+  const outage = await startFixture((_req, res) => {
     replyJson(res, 500, { error: "outage" });
   });
   try {

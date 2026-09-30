@@ -47,7 +47,6 @@ import {
   queryOf,
   sendBytes,
   sendJson,
-  startFixture,
   whisparrConfig,
   withFixture,
 } from "./fixture.ts";
@@ -254,7 +253,7 @@ test("requestJson authenticates Whisparr with X-Api-Key, not Jellyfin auth", asy
 
 test("requestJson rejects header-injecting tokens before any request", async () => {
   await withFixture(
-    (req, res) => sendJson(res, 200, { ok: true }),
+    (_req, res) => sendJson(res, 200, { ok: true }),
     async (fx) => {
       await assert.rejects(
         requestJson(fx.origin, "/x", "bad\nEVIL: 1"),
@@ -357,7 +356,7 @@ test("provider transports use Bearer for TPDB and ApiKey for StashDB", async () 
 
 test("credential-free provider artwork sends no credential header", async () => {
   await withFixture(
-    (req, res) => sendBytes(res, 200, PNG_BYTES, "image/png"),
+    (_req, res) => sendBytes(res, 200, PNG_BYTES, "image/png"),
     async (fx) => {
       for (const service of ["tpdb", "stashdb"] as const) {
         fx.log.length = 0;
@@ -451,7 +450,7 @@ test("provider redirects are never followed to credential-capturing targets", as
 
 test("overall deadline fires while a stalled response body streams", async () => {
   await withFixture(
-    (req, res) => {
+    (_req, res) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.write('{"ok":');
       // Never end(): the body stalls after headers; the deadline must fire.
@@ -799,7 +798,7 @@ test("listLibraryItems marks items unplayable when the user policy denies playba
 
 test("empty library grants yield an empty page without any upstream call", async () => {
   await withFixture(
-    (req, res) => sendJson(res, 200, {}),
+    (_req, res) => sendJson(res, 200, {}),
     async (fx) => {
       const page = await listLibraryItems(
         jellyfinConfig(fx.origin, [LIB_A]),
@@ -819,7 +818,7 @@ test("empty library grants yield an empty page without any upstream call", async
 
 test("listLibraryItems denies libraries outside the grant intersection", async () => {
   await withFixture(
-    (req, res) => sendJson(res, 200, {}),
+    (_req, res) => sendJson(res, 200, {}),
     async (fx) => {
       await assert.rejects(
         listLibraryItems(
@@ -1261,7 +1260,7 @@ test("getLibraryImage reauthorizes membership first and enforces bounds", async 
         appError(502, "upstream_bad_response"),
       );
       // Within bounds and allowlisted, the bytes flow.
-      const image = await getLibraryImage(config, TOKEN, grants, ITEM_ID);
+      await getLibraryImage(config, TOKEN, grants, ITEM_ID);
       const imageFetches = fx.log.filter((r) =>
         pathOf(r.url).includes("/images/"),
       );
@@ -1972,7 +1971,6 @@ import {
   getWhisparrItem,
   observeWhisparrItem,
   resolveWhisparrItem,
-  type WhisparrDeliveryTarget,
 } from "../src/server/whisparr.ts";
 import type { WhisparrDelivery } from "../src/lib/contracts.ts";
 
@@ -2839,7 +2837,7 @@ test("listRecentlyAddedItems restricts results to granted libraries", async () =
 
 test("recently-added shelf with empty grants makes zero upstream calls", async () => {
   await withFixture(
-    (req, res) => sendJson(res, 200, {}),
+    (_req, res) => sendJson(res, 200, {}),
     async (fx) => {
       const result = await listRecentlyAddedItems(
         jellyfinConfig(fx.origin, [LIB_A]),

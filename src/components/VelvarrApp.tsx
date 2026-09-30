@@ -1905,15 +1905,6 @@ function AccountDialog({
       cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id],
     );
 
-  const reset = () => {
-    setEnabled(initial.enabled);
-    setRole(initial.role);
-    setAutoApprove(initial.autoApprove);
-    setCanRemove(initial.canRemove);
-    setLibIds(initial.libraryIds);
-    setError(null);
-  };
-
   const save = async () => {
     setPending(true);
     setError(null);

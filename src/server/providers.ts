@@ -318,7 +318,7 @@ const PROXYABLE_IMAGE_TYPES: Record<string, true> = {
   "image/svg+xml": true,
 };
 
-export const IMAGE_BYTE_CAP = 8 * 1024 * 1024;
+const IMAGE_BYTE_CAP = 8 * 1024 * 1024;
 
 type ImageUrlCheck =
   { ok: true; service: "tpdb" | "stashdb" } | { ok: false; reason: string };

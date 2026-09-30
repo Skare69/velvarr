@@ -99,8 +99,6 @@ function browseHref(shelf: Shelf): string {
 
 const NOT_CONFIGURED_CODES = ["provider_not_configured", "not_configured"];
 
-const DATE_FMT = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
-
 /* ---------- Skeletons: same geometry as the final rail ---------- */
 
 export function RailSkeleton({ count }: { count: number }) {
