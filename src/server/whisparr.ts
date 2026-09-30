@@ -11,7 +11,7 @@ import {
   mappedPrefix,
   pathComponents,
   samePathPrefix,
-} from "./jellyfin.ts";
+} from "./pathmap.ts";
 import { isDeliverableMedia, UNDELIVERABLE_REASON } from "../lib/contracts.ts";
 import type {
   AcquisitionProgress,
