@@ -7,10 +7,16 @@
 // cross-provider studio identity and tag counterpart pairing, and
 // the metadata read cache (TTL, stale-on-error, mutation exclusion).
 
-import http from "node:http";
-import type { AddressInfo } from "node:net";
 import assert from "node:assert/strict";
 import { test, beforeEach } from "node:test";
+
+import {
+  queryOf,
+  sendBytes,
+  sendJson,
+  startFixture,
+  type Fixture,
+} from "./fixture.ts";
 
 import { AppError } from "../src/server/http.ts";
 import {
@@ -64,75 +70,6 @@ const STASH_CROSS_ID = "d4f1a54f-ddc7-4f50-a356-d417802cab1c";
 const MISSING_ID = "00000000-0000-0000-0000-000000000000";
 const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-interface RecordedRequest {
-  method: string;
-  url: string;
-  headers: http.IncomingHttpHeaders;
-  body: string;
-}
-
-interface Fixture {
-  origin: string;
-  requests: RecordedRequest[];
-  close: () => Promise<void>;
-}
-
-function reply(
-  res: http.ServerResponse,
-  status: number,
-  contentType: string,
-  body: string | Buffer,
-): void {
-  res.writeHead(status, { "Content-Type": contentType });
-  res.end(body);
-}
-
-function replyJson(
-  res: http.ServerResponse,
-  status: number,
-  payload: unknown,
-): void {
-  reply(res, status, "application/json", JSON.stringify(payload));
-}
-
-async function startFixture(
-  handler: (
-    req: RecordedRequest,
-    res: http.ServerResponse,
-  ) => void | Promise<void>,
-): Promise<Fixture> {
-  const requests: RecordedRequest[] = [];
-  const server = http.createServer((req, res) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => {
-      const record: RecordedRequest = {
-        method: req.method ?? "",
-        url: req.url ?? "",
-        headers: req.headers,
-        body: Buffer.concat(chunks).toString("utf8"),
-      };
-      requests.push(record);
-      void Promise.resolve(handler(record, res)).catch(() => {
-        reply(res, 500, "text/plain", "fixture handler failure");
-      });
-    });
-  });
-  const listened = Promise.withResolvers<void>();
-  server.listen(0, "127.0.0.1", () => listened.resolve());
-  await listened.promise;
-  const addr = server.address() as AddressInfo;
-  return {
-    origin: `http://127.0.0.1:${addr.port}`,
-    requests,
-    close: async () => {
-      const closed = Promise.withResolvers<void>();
-      server.close(() => closed.resolve());
-      await closed.promise;
-    },
-  };
-}
-
 const ENV_KEYS = [
   "TPDB_API_TOKEN",
   "STASHDB_API_KEY",
@@ -160,16 +97,14 @@ function setEnv(
 }
 
 function queryParams(fixture: Fixture, index: number): URLSearchParams {
-  const record = fixture.requests[index];
-  const query = record === undefined ? "" : (record.url.split("?")[1] ?? "");
-  return new URLSearchParams(query);
+  return queryOf(fixture.log[index]?.url ?? "");
 }
 
 function stashBody(
   fixture: Fixture,
   index: number,
 ): { query: string; variables: Record<string, unknown> } {
-  const record = fixture.requests[index];
+  const record = fixture.log[index];
   assert.ok(record !== undefined, "expected a GraphQL request");
   assert.equal(record.method, "POST");
   assert.equal(record.url, "/graphql");
@@ -252,7 +187,7 @@ test("tpdb movie detail maps validated fields and canonical credit parents", asy
     assert.equal(req.method, "GET");
     assert.equal(req.url, `/movies/${MOVIE_ID}`);
     assert.equal(req.headers.authorization, `Bearer ${TPDB_TOKEN}`);
-    replyJson(res, 200, { data: tpdbMovieRow() });
+    sendJson(res, 200, { data: tpdbMovieRow() });
   });
   try {
     process.env.TPDB_BASE_URL = fixture.origin;
@@ -315,7 +250,7 @@ test("stashdb scene detail maps performers, clamps duration, drops absurd values
   });
   const fixture = await startFixture((req, res) => {
     assert.equal(req.headers.apikey, STASH_TOKEN);
-    replyJson(res, 200, {
+    sendJson(res, 200, {
       data: {
         findScene: {
           id: STASH_SCENE_ID,
@@ -418,11 +353,11 @@ test("stashdb scene detail maps performers, clamps duration, drops absurd values
 test("tpdb unfiltered totals are suppressed; filtered totals and continuation are real", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   const fixture = await startFixture((req, res) => {
-    const params = new URLSearchParams(req.url.split("?")[1] ?? "");
+    const params = queryOf(req.url ?? "");
     const page = Number(params.get("page") ?? "1");
-    if (req.url.startsWith("/movies")) {
+    if ((req.url ?? "").startsWith("/movies")) {
       // Fake-cap listing: total 10000 with a next link.
-      replyJson(res, 200, {
+      sendJson(res, 200, {
         data: [
           {
             id: MOVIE_ID,
@@ -446,7 +381,7 @@ test("tpdb unfiltered totals are suppressed; filtered totals and continuation ar
       return;
     }
     // Filtered performer search: genuinely real total.
-    replyJson(res, 200, {
+    sendJson(res, 200, {
       data: [
         {
           id: CANON_PERFORMER_ID,
@@ -495,11 +430,11 @@ test("tpdb unfiltered totals are suppressed; filtered totals and continuation ar
 test("tpdb pagination continuation follows pages until the provider stops offering next", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   const fixture = await startFixture((req, res) => {
-    const params = new URLSearchParams(req.url.split("?")[1] ?? "");
+    const params = queryOf(req.url ?? "");
     const page = Number(params.get("page") ?? "1");
     const next =
       page < 2 ? `${fixture.origin}/movies?page=${page + 1}&per_page=1` : null;
-    replyJson(res, 200, {
+    sendJson(res, 200, {
       data:
         page <= 2
           ? [
@@ -551,7 +486,7 @@ test("tpdb pagination continuation follows pages until the provider stops offeri
 test("search deduplicates by provider id, keeps duplicate titles, drops malformed rows", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   const fixture = await startFixture((_req, res) => {
-    replyJson(res, 200, {
+    sendJson(res, 200, {
       data: [
         { id: "not-a-uuid", title: "Broken Id" }, // dropped: non-UUID id
         { id: MOVIE_ID, title: "Same Title" }, // kept
@@ -585,17 +520,17 @@ test("requestJson caches metadata reads and serves stale on upstream failure", a
   let hits = 0;
   const TOKEN = "u".repeat(32);
   const fixture = await startFixture((req, res) => {
-    const path = req.url.split("?")[0];
-    if (fail) return replyJson(res, 503, { down: true });
+    const path = (req.url ?? "").split("?")[0];
+    if (fail) return sendJson(res, 503, { down: true });
     if (path === "/d") {
       hits += 1;
-      return replyJson(res, 200, { n: hits });
+      return sendJson(res, 200, { n: hits });
     }
-    replyJson(res, 200, { ok: true });
+    sendJson(res, 200, { ok: true });
   });
   try {
     const count = (p: string) =>
-      fixture.requests.filter((r) => r.url.split("?")[0] === p).length;
+      fixture.log.filter((r) => r.url.split("?")[0] === p).length;
     // TTL 0 forces a refresh on every call; stale-on-error must still win.
     const refresh = {
       service: "tpdb" as const,
@@ -680,18 +615,18 @@ test("tpdb 404 is authoritative absence; 401/500/network failures are distinct o
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   const fixture = await startFixture((req, res) => {
     if (req.url === `/movies/${MOVIE_ID}`) {
-      replyJson(res, 200, { data: tpdbMovieRow() });
+      sendJson(res, 200, { data: tpdbMovieRow() });
       return;
     }
     if (req.url === `/movies/${MISSING_ID}`) {
-      replyJson(res, 404, { message: "scene not found" });
+      sendJson(res, 404, { message: "scene not found" });
       return;
     }
     if (req.url === `/scenes/${SCENE_ID}`) {
-      reply(res, 401, "application/json", "{}");
+      sendJson(res, 401, {});
       return;
     }
-    reply(res, 500, "application/json", "{}");
+    sendJson(res, 500, {});
   });
   const dead = await startFixture(() => {});
   await dead.close(); // connection-refused outage target
@@ -743,14 +678,14 @@ test("tpdb 404 is authoritative absence; 401/500/network failures are distinct o
 
 test("stashdb data-null is authoritative absence; schema failure is an outage", async () => {
   const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
-  const fixture = await startFixture((req, res) => {
-    const body = JSON.parse(req.body) as { query: string };
-    if (body.query.includes("findScene")) {
-      replyJson(res, 200, { data: { findScene: null } });
+  const fixture = await startFixture((_req, res, body) => {
+    const parsed = JSON.parse(body) as { query: string };
+    if (parsed.query.includes("findScene")) {
+      sendJson(res, 200, { data: { findScene: null } });
       return;
     }
-    if (body.query.includes("findPerformer")) {
-      replyJson(res, 200, {
+    if (parsed.query.includes("findPerformer")) {
+      sendJson(res, 200, {
         data: {
           findPerformer: {
             id: CANON_PERFORMER_ID,
@@ -764,7 +699,7 @@ test("stashdb data-null is authoritative absence; schema failure is an outage", 
       });
       return;
     }
-    replyJson(res, 422, {
+    sendJson(res, 422, {
       errors: [{ message: "Cannot query field." }],
       data: null,
     });
@@ -804,47 +739,37 @@ test("malformed and oversized upstream payloads are rejected, not normalized int
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   const fixture = await startFixture((req, res) => {
     if (req.url === `/movies/${MOVIE_ID}`) {
-      replyJson(res, 200, { data: { id: MOVIE_ID, title: null } }); // missing title
+      sendJson(res, 200, { data: { id: MOVIE_ID, title: null } }); // missing title
       return;
     }
     if (req.url === `/scenes/${SCENE_ID}`) {
-      replyJson(res, 200, { data: { id: MOVIE_ID, title: "Wrong Id Row" } }); // id mismatch row -> unusable
+      sendJson(res, 200, { data: { id: MOVIE_ID, title: "Wrong Id Row" } }); // id mismatch row -> unusable
       return;
     }
-    if (req.url.startsWith("/movies?")) {
-      reply(
-        res,
-        200,
-        "application/json",
-        JSON.stringify({
-          data: [
-            {
-              id: MOVIE_ID,
-              title: "x".repeat(400),
-              description: "d".repeat(9000),
-              duration: 5_000_000,
-              date: "2026-13-40",
-              posters: { full: "http://cdn.theporndb.net/insecure.jpg" },
-              background: {},
-              performers: [],
-              tags: [],
-              scenes: [],
-              movies: [],
-            },
-            "not-an-object",
-          ],
-          links: { next: null },
-          meta: { total: 10000 },
-        }),
-      );
+    if ((req.url ?? "").startsWith("/movies?")) {
+      sendJson(res, 200, {
+        data: [
+          {
+            id: MOVIE_ID,
+            title: "x".repeat(400),
+            description: "d".repeat(9000),
+            duration: 5_000_000,
+            date: "2026-13-40",
+            posters: { full: "http://cdn.theporndb.net/insecure.jpg" },
+            background: {},
+            performers: [],
+            tags: [],
+            scenes: [],
+            movies: [],
+          },
+          "not-an-object",
+        ],
+        links: { next: null },
+        meta: { total: 10000 },
+      });
       return;
     }
-    reply(
-      res,
-      200,
-      "application/json",
-      `{"pad":"${"x".repeat(3 * 1024 * 1024)}"}`,
-    );
+    sendJson(res, 200, { pad: "x".repeat(3 * 1024 * 1024) });
   });
   try {
     process.env.TPDB_BASE_URL = fixture.origin;
@@ -885,7 +810,7 @@ test("malformed and oversized upstream payloads are rejected, not normalized int
 test("upstream fields are normalized: bad dates, absurd durations, insecure images dropped", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   const fixture = await startFixture((_req, res) => {
-    replyJson(res, 200, {
+    sendJson(res, 200, {
       data: {
         id: SCENE_ID,
         title: "  Padded Title  ",
@@ -968,18 +893,18 @@ test("artwork fetch: enforces content type, byte cap, and never sends credential
     assert.equal(req.headers.authorization, undefined);
     assert.equal(req.headers.apikey, undefined);
     if (req.url === "/ok.png") {
-      reply(res, 200, "image/png", PNG_BYTES);
+      sendBytes(res, 200, PNG_BYTES, "image/png");
       return;
     }
     if (req.url === "/page.html") {
-      reply(res, 200, "text/html; charset=utf-8", "<html></html>");
+      sendBytes(res, 200, "<html></html>", "text/html; charset=utf-8");
       return;
     }
     if (req.url === "/vector.svg") {
-      reply(res, 200, "image/svg+xml", "<svg/>");
+      sendBytes(res, 200, "<svg/>", "image/svg+xml");
       return;
     }
-    reply(res, 200, "image/jpeg", Buffer.alloc(512, 7));
+    sendBytes(res, 200, Buffer.alloc(512, 7), "image/jpeg");
   });
   try {
     const ok = await fetchProviderArtwork(`${fixture.origin}/ok.png`);
@@ -1014,10 +939,12 @@ test("artwork fetch: enforces content type, byte cap, and never sends credential
 test("tpdb filmography pages the canonical performer route and rejects mixed filters", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   const fixture = await startFixture((req, res) => {
-    const params = new URLSearchParams(req.url.split("?")[1] ?? "");
+    const params = queryOf(req.url ?? "");
     assert.equal(params.get("per_page"), "2");
-    if (req.url.startsWith(`/performers/${CANON_PERFORMER_ID}/movies`)) {
-      replyJson(res, 200, {
+    if (
+      (req.url ?? "").startsWith(`/performers/${CANON_PERFORMER_ID}/movies`)
+    ) {
+      sendJson(res, 200, {
         data: [
           {
             id: SCENE_ID,
@@ -1035,7 +962,7 @@ test("tpdb filmography pages the canonical performer route and rejects mixed fil
       });
       return;
     }
-    replyJson(res, 404, {});
+    sendJson(res, 404, {});
   });
   try {
     process.env.TPDB_BASE_URL = fixture.origin;
@@ -1079,7 +1006,7 @@ test("tpdb filmography pages the canonical performer route and rejects mixed fil
 test("stashdb scene search keeps artwork, performer filters, and real counts", async () => {
   const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
   const fixture = await startFixture((_req, res) => {
-    replyJson(res, 200, {
+    sendJson(res, 200, {
       data: {
         queryScenes: {
           count: 5,
@@ -1145,7 +1072,7 @@ test("stashdb performer search reports its real count but no continuation (provi
       const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
       return { id, name: `Anna ${i}`, deleted: false, images: [] };
     });
-    replyJson(res, 200, {
+    sendJson(res, 200, {
       data: { searchPerformers: { count: 872, performers } },
     });
   });
@@ -1177,10 +1104,10 @@ test("provider status verifies one cheap authenticated call; missing keys are no
   });
   const fixture = await startFixture((req, res) => {
     if (req.url === "/user") {
-      replyJson(res, 200, { data: { id: 136293, name: "Skare", roles: [] } });
+      sendJson(res, 200, { data: { id: 136293, name: "Skare", roles: [] } });
       return;
     }
-    replyJson(res, 200, {
+    sendJson(res, 200, {
       data: {
         me: {
           id: "01a08c89-631e-77fb-b770-ebd7dd304b14",
@@ -1200,10 +1127,7 @@ test("provider status verifies one cheap authenticated call; missing keys are no
       verified: true,
       account: "Skare",
     });
-    assert.equal(
-      fixture.requests[0]?.headers.authorization,
-      `Bearer ${TPDB_TOKEN}`,
-    );
+    assert.equal(fixture.log[0]?.headers.authorization, `Bearer ${TPDB_TOKEN}`);
 
     const stash = await getProviderStatus("stashdb");
     assert.deepEqual(stash, {
@@ -1212,7 +1136,7 @@ test("provider status verifies one cheap authenticated call; missing keys are no
       verified: true,
       account: "skare",
     });
-    assert.equal(fixture.requests[1]?.headers.apikey, STASH_TOKEN);
+    assert.equal(fixture.log[1]?.headers.apikey, STASH_TOKEN);
   } finally {
     await fixture.close();
     restore();
@@ -1461,12 +1385,12 @@ test("studioCounterpart resolves one stashdb studio per exact url and degrades t
   let fail = false;
   let malformed = false;
   const tpdbFixture = await startFixture((req, res) => {
-    const row = siteRows[req.url.replace(/^\/sites\//, "")];
-    if (row === undefined) return replyJson(res, 404, {});
-    replyJson(res, 200, { data: row });
+    const row = siteRows[(req.url ?? "").replace(/^\/sites\//, "")];
+    if (row === undefined) return sendJson(res, 404, {});
+    sendJson(res, 200, { data: row });
   });
-  const fixture = await startFixture((req, res) => {
-    const parsed = JSON.parse(req.body) as {
+  const fixture = await startFixture((_req, res, body) => {
+    const parsed = JSON.parse(body) as {
       query: string;
       variables?: { url?: string; input?: { url?: string } };
     };
@@ -1474,11 +1398,11 @@ test("studioCounterpart resolves one stashdb studio per exact url and degrades t
     assert.ok(parsed.query.includes("per_page: 5"));
     const url = parsed.variables?.url ?? parsed.variables?.input?.url ?? "";
     queried.push(url);
-    if (fail) return replyJson(res, 500, {});
+    if (fail) return sendJson(res, 500, {});
     if (malformed) {
-      return replyJson(res, 200, { data: { queryStudios: { rows: 1 } } });
+      return sendJson(res, 200, { data: { queryStudios: { rows: 1 } } });
     }
-    replyJson(res, 200, {
+    sendJson(res, 200, {
       data: { queryStudios: { studios: stashStudios[url] ?? [] } },
     });
   });
@@ -1581,17 +1505,17 @@ test("tagCounterpart pairs only exact normalized names and never throws on upstr
 
   const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
   let fail = false;
-  const stashFixture = await startFixture((req, res) => {
-    const parsed = JSON.parse(req.body) as {
+  const stashFixture = await startFixture((_req, res, body) => {
+    const parsed = JSON.parse(body) as {
       query: string;
       variables?: { t?: string };
     };
     assert.ok(parsed.query.includes("searchTag"));
-    if (fail) return replyJson(res, 500, {});
+    if (fail) return sendJson(res, 500, {});
     // The term search answers near-misses too; pairing filters to exact
     // normalized equality, so "All Sex" matches "all-sex" while "Anal"
     // matches neither "Anal Creampie" nor anything else here.
-    replyJson(res, 200, {
+    sendJson(res, 200, {
       data: {
         searchTag: [
           { id: STASH_TAG_ID, name: "Anal Creampie" },
@@ -1619,9 +1543,9 @@ test("tagCounterpart pairs only exact normalized names and never throws on upstr
   // Reverse direction: the same equality rule, the other provider's rows.
   const restore2 = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   const tpdbFixture = await startFixture((req, res) => {
-    const params = new URLSearchParams(req.url.split("?")[1] ?? "");
+    const params = queryOf(req.url ?? "");
     assert.equal(params.get("per_page"), "50");
-    replyJson(res, 200, {
+    sendJson(res, 200, {
       data: [{ id: 70, uuid: TPDB_TAG_A, name: "All Sex" }],
     });
   });
@@ -1679,8 +1603,8 @@ function tpdbSiteRow(): Record<string, unknown> {
 test("tpdb studio search and detail map sites rows with provider-supplied parents", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   const fixture = await startFixture((req, res) => {
-    if (req.url.startsWith("/sites?")) {
-      replyJson(res, 200, {
+    if ((req.url ?? "").startsWith("/sites?")) {
+      sendJson(res, 200, {
         data: [
           tpdbSiteRow(),
           {
@@ -1701,10 +1625,10 @@ test("tpdb studio search and detail map sites rows with provider-supplied parent
       return;
     }
     if (req.url === `/sites/${TPDB_STUDIO_ID}`) {
-      replyJson(res, 200, { data: tpdbSiteRow() });
+      sendJson(res, 200, { data: tpdbSiteRow() });
       return;
     }
-    replyJson(res, 404, {});
+    sendJson(res, 404, {});
   });
   try {
     process.env.TPDB_BASE_URL = fixture.origin;
@@ -1775,14 +1699,14 @@ test("tpdb studio search and detail map sites rows with provider-supplied parent
 test("tpdb studio-filtered movie queries resolve uuid to numeric site_id and keep capped totals suppressed", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   const fixture = await startFixture((req, res) => {
-    if (req.url.startsWith(`/sites/${TPDB_STUDIO_ID}`)) {
-      replyJson(res, 200, {
+    if ((req.url ?? "").startsWith(`/sites/${TPDB_STUDIO_ID}`)) {
+      sendJson(res, 200, {
         data: { uuid: TPDB_STUDIO_ID, id: TPDB_STUDIO_NUMERIC, name: "Vixen" },
       });
       return;
     }
-    if (req.url.startsWith("/movies?")) {
-      replyJson(res, 200, {
+    if ((req.url ?? "").startsWith("/movies?")) {
+      sendJson(res, 200, {
         data: [
           {
             id: SCENE_ID,
@@ -1801,7 +1725,7 @@ test("tpdb studio-filtered movie queries resolve uuid to numeric site_id and kee
       });
       return;
     }
-    replyJson(res, 404, {});
+    sendJson(res, 404, {});
   });
   try {
     process.env.TPDB_BASE_URL = fixture.origin;
@@ -1841,15 +1765,15 @@ test("stashdb studio search and findStudio map studios; absence stays authoritat
     ],
     parent: { id: STASH_PARENT_STUDIO_ID, name: "Vixen Media Group" },
   };
-  const fixture = await startFixture((req, res) => {
-    const parsed = JSON.parse(req.body) as {
+  const fixture = await startFixture((_req, res, body) => {
+    const parsed = JSON.parse(body) as {
       query: string;
       variables: { t?: string; id?: string };
     };
     const vars = parsed.variables ?? {};
     if (parsed.query.includes("searchStudio")) {
       assert.equal(vars.t, "vixen");
-      replyJson(res, 200, {
+      sendJson(res, 200, {
         data: {
           searchStudio: [
             stashStudioRow,
@@ -1868,11 +1792,11 @@ test("stashdb studio search and findStudio map studios; absence stays authoritat
       return;
     }
     if (vars.id === MISSING_ID) {
-      replyJson(res, 200, { data: { findStudio: null } });
+      sendJson(res, 200, { data: { findStudio: null } });
       return;
     }
     if (vars.id === STASH_DELETED_STUDIO_ID) {
-      replyJson(res, 200, {
+      sendJson(res, 200, {
         data: {
           findStudio: {
             ...stashStudioRow,
@@ -1883,7 +1807,7 @@ test("stashdb studio search and findStudio map studios; absence stays authoritat
       });
       return;
     }
-    replyJson(res, 200, { data: { findStudio: stashStudioRow } });
+    sendJson(res, 200, { data: { findStudio: stashStudioRow } });
   });
   try {
     process.env.STASHDB_BASE_URL = fixture.origin;
@@ -1950,10 +1874,10 @@ test("stashdb studio search and findStudio map studios; absence stays authoritat
 test("tag lookup returns provider-native ids without cross-provider mapping", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   const tpdbFixture = await startFixture((req, res) => {
-    const params = new URLSearchParams(req.url.split("?")[1] ?? "");
+    const params = queryOf(req.url ?? "");
     assert.equal(params.get("q"), "anal");
     assert.equal(params.get("per_page"), "50");
-    replyJson(res, 200, {
+    sendJson(res, 200, {
       data: [{ id: 70, uuid: TPDB_TAG_A, name: "Anal" }],
     });
   });
@@ -1972,10 +1896,10 @@ test("tag lookup returns provider-native ids without cross-provider mapping", as
   }
 
   const restore2 = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
-  const stashFixture = await startFixture((req, res) => {
-    const parsed = JSON.parse(req.body) as { variables: { t?: string } };
+  const stashFixture = await startFixture((_req, res, body) => {
+    const parsed = JSON.parse(body) as { variables: { t?: string } };
     assert.equal(parsed.variables?.t, "anal");
-    replyJson(res, 200, {
+    sendJson(res, 200, {
       data: {
         searchTag: [
           { id: STASH_TAG_ID, name: "Anal Creampie" },
@@ -2010,16 +1934,16 @@ test("studio and tag filters select provider matches, including TPDB cold UUID b
   ];
   let tagsUnavailable = false;
   const fixture = await startFixture((req, res) => {
-    const url = new URL(req.url, "http://fixture.test");
+    const url = new URL(req.url ?? "/", "http://fixture.test");
     if (url.pathname === `/sites/${TPDB_STUDIO_ID}`) {
-      return replyJson(res, 200, {
+      return sendJson(res, 200, {
         data: { uuid: TPDB_STUDIO_ID, id: TPDB_STUDIO_NUMERIC, name: "Vixen" },
       });
     }
     if (url.pathname === "/tags") {
-      if (tagsUnavailable) return replyJson(res, 503, {});
+      if (tagsUnavailable) return sendJson(res, 503, {});
       const first = url.searchParams.get("page") === "1";
-      return replyJson(res, 200, {
+      return sendJson(res, 200, {
         data: [tags[first ? 0 : 1]],
         links: { next: first ? "https://fixture.test/tags?page=2" : null },
       });
@@ -2027,7 +1951,7 @@ test("studio and tag filters select provider matches, including TPDB cold UUID b
     if (url.pathname === "/movies") {
       const params = url.searchParams;
       if (params.get("site_id") !== String(TPDB_STUDIO_NUMERIC))
-        return replyJson(res, 422, {});
+        return sendJson(res, 422, {});
       // Mirrors TPDB's deep-object filter: array UUIDs silently match nothing.
       const selected = tags.filter((tag) => params.has(`tags[${tag.id}]`));
       const data =
@@ -2040,13 +1964,13 @@ test("studio and tag filters select provider matches, including TPDB cold UUID b
                 ? selected.every(matches)
                 : selected.some(matches);
             });
-      return replyJson(res, 200, {
+      return sendJson(res, 200, {
         data,
         links: { next: null },
         meta: { total: data.length },
       });
     }
-    replyJson(res, 404, {});
+    sendJson(res, 404, {});
   });
   try {
     process.env.TPDB_BASE_URL = fixture.origin;
@@ -2095,7 +2019,7 @@ test("studio and tag filters select provider matches, including TPDB cold UUID b
 
   const restore2 = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
   const stashFixture = await startFixture((_req, res) => {
-    replyJson(res, 200, { data: { queryScenes: { count: 483, scenes: [] } } });
+    sendJson(res, 200, { data: { queryScenes: { count: 483, scenes: [] } } });
   });
   try {
     process.env.STASHDB_BASE_URL = stashFixture.origin;
@@ -2159,7 +2083,7 @@ test("studio and tag filters select provider matches, including TPDB cold UUID b
 test("unsupported filter and sort combinations are rejected explicitly", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   const fixture = await startFixture((_req, res) => {
-    replyJson(res, 200, { data: [], links: { next: null }, meta: {} });
+    sendJson(res, 200, { data: [], links: { next: null }, meta: {} });
   });
   try {
     process.env.TPDB_BASE_URL = fixture.origin;
@@ -2261,7 +2185,7 @@ test("unsupported filter and sort combinations are rejected explicitly", async (
         return true;
       },
     );
-    assert.equal(fixture.requests.length, 0); // nothing reached upstream
+    assert.equal(fixture.log.length, 0); // nothing reached upstream
   } finally {
     await fixture.close();
     restore();
@@ -2269,7 +2193,7 @@ test("unsupported filter and sort combinations are rejected explicitly", async (
 
   const restore2 = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
   const stashFixture = await startFixture((_req, res) => {
-    replyJson(res, 200, { data: { queryScenes: { count: 1, scenes: [] } } });
+    sendJson(res, 200, { data: { queryScenes: { count: 1, scenes: [] } } });
   });
   try {
     process.env.STASHDB_BASE_URL = stashFixture.origin;
@@ -2323,7 +2247,7 @@ test("unsupported filter and sort combinations are rejected explicitly", async (
         return true;
       },
     );
-    assert.equal(stashFixture.requests.length, 0);
+    assert.equal(stashFixture.log.length, 0);
   } finally {
     await stashFixture.close();
     restore2();
@@ -2370,7 +2294,7 @@ test("sort resolution maps exactly to upstream orders and refuses fake ones", ()
 test("stashdb studioMode withChildren emits parentStudio; default keeps studios INCLUDES; never both", async () => {
   const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
   const fixture = await startFixture((_req, res) => {
-    replyJson(res, 200, { data: { queryScenes: { count: 3, scenes: [] } } });
+    sendJson(res, 200, { data: { queryScenes: { count: 3, scenes: [] } } });
   });
   try {
     process.env.STASHDB_BASE_URL = fixture.origin;
@@ -2503,7 +2427,7 @@ test("studioMode is rejected before any upstream call outside stashdb scene + st
         },
       );
     }
-    assert.equal(fixture.requests.length, 0); // nothing reached upstream
+    assert.equal(fixture.log.length, 0); // nothing reached upstream
   } finally {
     await fixture.close();
     restore();
@@ -2512,18 +2436,18 @@ test("studioMode is rejected before any upstream call outside stashdb scene + st
 
 test("stashdb studio detail carries provider-supplied child count; absent stays absent", async () => {
   const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
-  const fixture = await startFixture((req, res) => {
-    const body = JSON.parse(req.body) as { variables: { id?: string } };
+  const fixture = await startFixture((_req, res, body) => {
+    const parsed = JSON.parse(body) as { variables: { id?: string } };
     const childIds =
-      body.variables.id === STASH_STUDIO_ID
+      parsed.variables.id === STASH_STUDIO_ID
         ? [STASH_TAG_ID, MISSING_ID, "not-a-uuid"] // 2 valid, one malformed
-        : body.variables.id === STASH_PARENT_STUDIO_ID
+        : parsed.variables.id === STASH_PARENT_STUDIO_ID
           ? [] // supplied empty list: a real zero, not an absence
           : undefined; // field absent entirely
-    replyJson(res, 200, {
+    sendJson(res, 200, {
       data: {
         findStudio: {
-          id: body.variables.id,
+          id: parsed.variables.id,
           name: "Studio",
           deleted: false,
           ...(childIds === undefined
@@ -2565,15 +2489,15 @@ test("stashdb studio detail carries provider-supplied child count; absent stays 
 test("tpdb releaseDate emits the upstream date + date_operation pair; ordinary browse stays unbounded", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   const fixture = await startFixture((req, res) => {
-    if (req.url.startsWith("/movies?")) {
-      replyJson(res, 200, {
+    if ((req.url ?? "").startsWith("/movies?")) {
+      sendJson(res, 200, {
         data: [{ ...tpdbMovieRow() }],
         links: { next: null },
         meta: { total: 1 },
       });
       return;
     }
-    replyJson(res, 404, {});
+    sendJson(res, 404, {});
   });
   try {
     process.env.TPDB_BASE_URL = fixture.origin;
@@ -2605,7 +2529,7 @@ test("tpdb releaseDate emits the upstream date + date_operation pair; ordinary b
     const browseParams = queryParams(fixture, 2);
     assert.equal(browseParams.get("date"), null);
     assert.equal(browseParams.get("date_operation"), null);
-    assert.equal(fixture.requests[2]?.url, "/movies?page=1&per_page=24");
+    assert.equal(fixture.log[2]?.url, "/movies?page=1&per_page=24");
   } finally {
     await fixture.close();
     restore();
@@ -2746,7 +2670,7 @@ function stashSceneInput(
 test("stashdb tagsAll emits native INCLUDES_ALL; combining criteria is rejected explicitly", async () => {
   const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
   const fixture = await startFixture((_req, res) => {
-    replyJson(res, 200, { data: { queryScenes: { count: 0, scenes: [] } } });
+    sendJson(res, 200, { data: { queryScenes: { count: 0, scenes: [] } } });
   });
   try {
     process.env.STASHDB_BASE_URL = fixture.origin;
@@ -2801,7 +2725,7 @@ test("stashdb tagsAll emits native INCLUDES_ALL; combining criteria is rejected 
         },
       );
     }
-    assert.equal(fixture.requests.length, 2); // only the two successful searches
+    assert.equal(fixture.log.length, 2); // only the two successful searches
   } finally {
     await fixture.close();
     restore();
@@ -2811,7 +2735,7 @@ test("stashdb tagsAll emits native INCLUDES_ALL; combining criteria is rejected 
 test("stashdb releaseDate maps operators to native date modifiers, shifting inclusive day bounds", async () => {
   const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
   const fixture = await startFixture((_req, res) => {
-    replyJson(res, 200, { data: { queryScenes: { count: 3, scenes: [] } } });
+    sendJson(res, 200, { data: { queryScenes: { count: 3, scenes: [] } } });
   });
   try {
     process.env.STASHDB_BASE_URL = fixture.origin;
@@ -2897,7 +2821,7 @@ test("attested zero totals are known-zero on both providers; contradictions stay
   const fixture = await startFixture((_req, res) => {
     const next = replies.shift();
     assert.ok(next !== undefined, "unexpected upstream call");
-    replyJson(res, 200, { ...next, links: { next: null } });
+    sendJson(res, 200, { ...next, links: { next: null } });
   });
   try {
     process.env.TPDB_BASE_URL = fixture.origin;
@@ -2924,10 +2848,10 @@ test("attested zero totals are known-zero on both providers; contradictions stay
 
   const restore2 = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
   const stashFixture = await startFixture((_req, res) => {
-    replyJson(res, 200, { data: { queryScenes: { count: 0, scenes: [] } } });
+    sendJson(res, 200, { data: { queryScenes: { count: 0, scenes: [] } } });
   });
   const performerFixture = await startFixture((_req, res) => {
-    replyJson(res, 200, {
+    sendJson(res, 200, {
       data: { searchPerformers: { count: 0, performers: [] } },
     });
   });
@@ -2984,15 +2908,15 @@ function tpdbAutoLinkDetail(): CatalogDetail {
 async function startStashPerformerFixture(
   performerUrls: Record<string, { url: string; type: string }[]>,
 ): Promise<Fixture> {
-  return startFixture((req, res) => {
+  return startFixture((req, res, body) => {
     assert.equal(req.method, "POST");
     assert.equal(req.url, "/graphql");
-    const body = JSON.parse(req.body) as {
+    const parsed = JSON.parse(body) as {
       query: string;
       variables: Record<string, unknown>;
     };
-    if (body.query.includes("searchPerformers")) {
-      replyJson(res, 200, {
+    if (parsed.query.includes("searchPerformers")) {
+      sendJson(res, 200, {
         data: {
           searchPerformers: {
             count: 2,
@@ -3005,9 +2929,9 @@ async function startStashPerformerFixture(
       });
       return;
     }
-    if (body.query.includes("findPerformer")) {
-      const id = String(body.variables.id);
-      replyJson(res, 200, {
+    if (parsed.query.includes("findPerformer")) {
+      const id = String(parsed.variables.id);
+      sendJson(res, 200, {
         data: {
           findPerformer: {
             id,
@@ -3020,7 +2944,7 @@ async function startStashPerformerFixture(
       });
       return;
     }
-    replyJson(res, 500, { error: "unexpected query" });
+    sendJson(res, 500, { error: "unexpected query" });
   });
 }
 
@@ -3135,8 +3059,7 @@ test("linkedPerformerCounterpart auto-links on exactly one shared identity URL a
     const second = await linkedPerformerCounterpart(tpdbAutoLinkDetail());
     assert.deepEqual(second.linked, expected);
     assert.equal(
-      fixture.requests.filter((r) => r.body.includes("searchPerformers"))
-        .length,
+      fixture.log.filter((r) => r.body.includes("searchPerformers")).length,
       1,
     );
 
@@ -3146,8 +3069,7 @@ test("linkedPerformerCounterpart auto-links on exactly one shared identity URL a
     const third = await linkedPerformerCounterpart(tpdbAutoLinkDetail());
     assert.deepEqual(third.linked, expected);
     assert.equal(
-      fixture.requests.filter((r) => r.body.includes("searchPerformers"))
-        .length,
+      fixture.log.filter((r) => r.body.includes("searchPerformers")).length,
       2,
     );
   } finally {
@@ -3219,7 +3141,7 @@ test("an explicit cross-provider performer URL links without issuing any search 
   // Everything upstream would 500; the explicit pointer must short-circuit
   // before the network entirely.
   const fixture = await startFixture((_req, res) => {
-    replyJson(res, 500, { error: "no request expected" });
+    sendJson(res, 500, { error: "no request expected" });
   });
   try {
     process.env.STASHDB_BASE_URL = fixture.origin;
@@ -3235,7 +3157,7 @@ test("an explicit cross-provider performer URL links without issuing any search 
       id: STASH_MATCH_ID,
     });
     assert.equal(result.unlinkedReason, undefined);
-    assert.equal(fixture.requests.length, 0);
+    assert.equal(fixture.log.length, 0);
   } finally {
     await fixture.close();
     restore();
@@ -3245,7 +3167,7 @@ test("an explicit cross-provider performer URL links without issuing any search 
 test("an upstream outage returns the explicit unlinked reason unchanged, never throwing", async () => {
   const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
   const outage = await startFixture((_req, res) => {
-    replyJson(res, 500, { error: "outage" });
+    sendJson(res, 500, { error: "outage" });
   });
   try {
     process.env.STASHDB_BASE_URL = outage.origin;

@@ -67,7 +67,7 @@ export function sendJson(
 export function sendBytes(
   res: http.ServerResponse,
   status: number,
-  bytes: Buffer,
+  bytes: string | Uint8Array,
   contentType: string,
 ): void {
   res.writeHead(status, { "content-type": contentType });
