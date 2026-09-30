@@ -31,10 +31,6 @@ import {
   type SourceError,
 } from "../../../../server/browse.ts";
 import { isHiddenTitle } from "../../../../server/catalog-visibility.ts";
-import {
-  relatedPerformers,
-  relatedTitles,
-} from "../../../../server/related.ts";
 
 export interface ShelfError {
   code: string;
