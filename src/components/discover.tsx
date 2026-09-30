@@ -573,22 +573,6 @@ function ShelfSection({
 
 /* ---------- The discover homepage ---------- */
 
-function PageHeading({ onReorder }: { onReorder: () => void }) {
-  return (
-    <header className="page-heading">
-      <button
-        type="button"
-        className="icon-button ml-auto"
-        aria-label="Reorder shelves"
-        title="Reorder shelves"
-        onClick={onReorder}
-      >
-        <Icon name="reorder" />
-      </button>
-    </header>
-  );
-}
-
 interface FacetDirectory {
   kind: string;
   tiles: FacetItem[];
@@ -667,12 +651,7 @@ export function FacetsView() {
   );
 }
 
-export function DiscoverShelves({
-  onReorder,
-}: {
-  /** Opens the shell's preferences dialog — the heading icon's whole job. */
-  onReorder: () => void;
-}) {
+export function DiscoverShelves() {
   const setP = useParamsSetter();
   // One GET per mount/retry, owned by the hook — deliberately no module-level
   // page cache: followed-titles is personal (who you follow, your hidden
@@ -703,7 +682,6 @@ export function DiscoverShelves({
   if (loading && !page) {
     return (
       <section aria-label="Discover" aria-busy="true">
-        <PageHeading onReorder={onReorder} />
         <RailSkeleton count={5} />
         <RailSkeleton count={5} />
         <RailSkeleton count={6} />
@@ -715,7 +693,6 @@ export function DiscoverShelves({
   if (error && !page) {
     return (
       <section aria-label="Discover">
-        <PageHeading onReorder={onReorder} />
         <ErrorPanel
           title="Discover is unavailable"
           message={error}
@@ -727,7 +704,6 @@ export function DiscoverShelves({
   if (!page) return null;
   return (
     <section aria-label="Discover">
-      <PageHeading onReorder={onReorder} />
       {/* The server's shelf order IS the composition — it resolves each
           account's saved order (personal content preferences) over the
           default, and only shelves present in this response are rendered.

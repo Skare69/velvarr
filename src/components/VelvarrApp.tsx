@@ -981,9 +981,7 @@ function Shell() {
         </details>
       </header>
       <main className="app-main" id="main-content" tabIndex={-1}>
-        {view === "discover" && (
-          <DiscoverShelves onReorder={() => setPrefsOpen(true)} />
-        )}
+        {view === "discover" && <DiscoverShelves />}
         {view === "facets" && <FacetsView />}
         {view === "titles" && <TitlesView />}
         {view === "following" && <FollowingView />}
