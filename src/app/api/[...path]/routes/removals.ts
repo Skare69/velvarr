@@ -2,6 +2,7 @@
 import {
   fieldText,
   requireId,
+  mediaFromBody,
   parseMediaReference,
   readJson,
 } from "../parse.ts";
@@ -24,7 +25,6 @@ import {
   validateUser,
 } from "../../../../server/jellyfin.ts";
 import { findWhisparrItem } from "../../../../server/whisparr.ts";
-import { mediaFromBody } from "./requests.ts";
 import { performerHint } from "./browse.ts";
 
 export function assertRemovalFlag(): void {

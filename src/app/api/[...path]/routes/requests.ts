@@ -1,5 +1,10 @@
 // Moved verbatim from route.ts (v0.24.1) — pure move, no logic edits.
-import { readJson, requireId, PROVIDER_UUID } from "../parse.ts";
+import {
+  readJson,
+  requireId,
+  mediaFromBody,
+  performerFromBody,
+} from "../parse.ts";
 import { type AuthContext, json } from "../admission.ts";
 import type {
   CatalogDetail,
@@ -21,33 +26,6 @@ import {
 } from "../../../../server/storage.ts";
 import { AppError } from "../../../../server/http.ts";
 import { searchCatalog } from "../../../../server/providers.ts";
-
-export function mediaFromBody(body: Record<string, unknown>): MediaReference {
-  const media = body.media;
-  if (media === null || typeof media !== "object" || Array.isArray(media)) {
-    throw new AppError(400, "invalid_field", "Invalid media reference.");
-  }
-  const m = media as Record<string, unknown>;
-  if (
-    (m.provider !== "tpdb" && m.provider !== "stashdb") ||
-    (m.kind !== "movie" && m.kind !== "scene") ||
-    typeof m.id !== "string" ||
-    !PROVIDER_UUID.test(m.id)
-  ) {
-    throw new AppError(400, "invalid_field", "Invalid media reference.");
-  }
-  const ref: MediaReference = {
-    provider: m.provider,
-    kind: m.kind,
-    id: m.id.toLowerCase(),
-  };
-  // Whisparr has no metadata source for a TPDB scene, so a request for one
-  // could only ever fail in the worker. Refuse it at the click instead.
-  if (!isDeliverableMedia(ref)) {
-    throw new AppError(400, "invalid_reference", UNDELIVERABLE_REASON);
-  }
-  return ref;
-}
 
 // Creates one user's request intent from a server-validated MediaReference.
 // With the autoApprove grant — or an admin role, which carries the same trust
@@ -233,7 +211,6 @@ export async function bulkRequestRoute(
 
 // Boundary mirror of the storage gate so the refusal is legible at the API
 // edge; storage re-checks the flag authoritatively on every mutation.
-import { performerFromBody } from "./follows.ts";
 import type { RouteDef } from "../admission.ts";
 
 export const routes: RouteDef[] = [

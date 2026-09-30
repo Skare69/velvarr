@@ -6,6 +6,10 @@ import type {
   MediaReference,
   Role,
 } from "../../../lib/contracts.ts";
+import {
+  isDeliverableMedia,
+  UNDELIVERABLE_REASON,
+} from "../../../lib/contracts.ts";
 import { AppError, validateBaseUrl } from "../../../server/http.ts";
 import type {
   CatalogSortDirection,
@@ -214,6 +218,79 @@ export function parseMediaReference(
     );
   }
   return reference;
+}
+
+// Body-reference parsers, moved verbatim from routes/requests.ts and
+// routes/follows.ts so route modules stop importing each other for parsing.
+export function mediaFromBody(body: Record<string, unknown>): MediaReference {
+  const media = body.media;
+  if (media === null || typeof media !== "object" || Array.isArray(media)) {
+    throw new AppError(400, "invalid_field", "Invalid media reference.");
+  }
+  const m = media as Record<string, unknown>;
+  if (
+    (m.provider !== "tpdb" && m.provider !== "stashdb") ||
+    (m.kind !== "movie" && m.kind !== "scene") ||
+    typeof m.id !== "string" ||
+    !PROVIDER_UUID.test(m.id)
+  ) {
+    throw new AppError(400, "invalid_field", "Invalid media reference.");
+  }
+  const ref: MediaReference = {
+    provider: m.provider,
+    kind: m.kind,
+    id: m.id.toLowerCase(),
+  };
+  // Whisparr has no metadata source for a TPDB scene, so a request for one
+  // could only ever fail in the worker. Refuse it at the click instead.
+  if (!isDeliverableMedia(ref)) {
+    throw new AppError(400, "invalid_reference", UNDELIVERABLE_REASON);
+  }
+  return ref;
+}
+
+export function performerFromBody(
+  body: Record<string, unknown>,
+): CatalogReference {
+  return performerField(body, "performer");
+}
+
+/** One keyed performer reference off a JSON body; the key names the field so
+ * a multi-ref body (merge) reports which side was malformed. */
+export function performerField(
+  body: Record<string, unknown>,
+  key: string,
+): CatalogReference {
+  const performer = body[key];
+  if (
+    performer === null ||
+    typeof performer !== "object" ||
+    Array.isArray(performer)
+  ) {
+    throw new AppError(400, "invalid_field", `Invalid ${key} reference.`);
+  }
+  const p = performer as Record<string, unknown>;
+  if (
+    typeof p.provider !== "string" ||
+    typeof p.kind !== "string" ||
+    typeof p.id !== "string"
+  ) {
+    throw new AppError(400, "invalid_field", `Invalid ${key} reference.`);
+  }
+  try {
+    const reference = parseCatalogReference(p.provider, p.kind, p.id);
+    if (reference.kind !== "performer") {
+      throw new AppError(400, "invalid_field", `Invalid ${key} reference.`);
+    }
+    return reference;
+  } catch (e) {
+    // A malformed ref in a JSON body is one invalid_field error, whichever
+    // check catches it; parseCatalogReference names it invalid_reference.
+    if (e instanceof AppError && e.code === "invalid_reference") {
+      throw new AppError(400, "invalid_field", `Invalid ${key} reference.`);
+    }
+    throw e;
+  }
 }
 
 export function sameMedia(a: MediaReference, b: MediaReference): boolean {

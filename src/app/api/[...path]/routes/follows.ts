@@ -1,5 +1,11 @@
 // Moved verbatim from route.ts (v0.24.1) — pure move, no logic edits.
-import { readJson, fieldText, parseCatalogReference } from "../parse.ts";
+import {
+  readJson,
+  fieldText,
+  parseCatalogReference,
+  performerFromBody,
+  performerField,
+} from "../parse.ts";
 import { type AuthContext, json } from "../admission.ts";
 import { AppError } from "../../../../server/http.ts";
 import type { CatalogReference } from "../../../../lib/contracts.ts";
@@ -15,50 +21,6 @@ import {
   isProviderImageUrl,
   linkedPerformerCounterpart,
 } from "../../../../server/providers.ts";
-
-export function performerFromBody(
-  body: Record<string, unknown>,
-): CatalogReference {
-  return performerField(body, "performer");
-}
-
-/** One keyed performer reference off a JSON body; the key names the field so
- * a multi-ref body (merge) reports which side was malformed. */
-export function performerField(
-  body: Record<string, unknown>,
-  key: string,
-): CatalogReference {
-  const performer = body[key];
-  if (
-    performer === null ||
-    typeof performer !== "object" ||
-    Array.isArray(performer)
-  ) {
-    throw new AppError(400, "invalid_field", `Invalid ${key} reference.`);
-  }
-  const p = performer as Record<string, unknown>;
-  if (
-    typeof p.provider !== "string" ||
-    typeof p.kind !== "string" ||
-    typeof p.id !== "string"
-  ) {
-    throw new AppError(400, "invalid_field", `Invalid ${key} reference.`);
-  }
-  try {
-    const reference = parseCatalogReference(p.provider, p.kind, p.id);
-    if (reference.kind !== "performer") {
-      throw new AppError(400, "invalid_field", `Invalid ${key} reference.`);
-    }
-    return reference;
-  } catch (e) {
-    // A malformed ref in a JSON body is one invalid_field error, whichever
-    // check catches it; parseCatalogReference names it invalid_reference.
-    if (e instanceof AppError && e.code === "invalid_reference") {
-      throw new AppError(400, "invalid_field", `Invalid ${key} reference.`);
-    }
-    throw e;
-  }
-}
 
 export async function listFollowsRoute(ctx: AuthContext): Promise<Response> {
   return json({ follows: listFollows(ctx.account.id) });
