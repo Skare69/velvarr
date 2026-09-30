@@ -127,13 +127,13 @@ import {
 } from "../../../../server/whisparr.ts";
 import {
   browseTitles,
-  isHiddenTitle,
   parseBrowseQuery,
   searchBrowseTags,
   searchVisibleCatalog,
   type BrowsePage,
   type SourceError,
 } from "../../../../server/browse.ts";
+import { isHiddenTitle } from "../../../../server/catalog-visibility.ts";
 import {
   relatedPerformers,
   relatedTitles,
