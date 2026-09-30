@@ -25,6 +25,9 @@
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
+  "overrides": {
+    "qs": "^6.16.0"
+  },
   "devDependencies": {
     "@stryker-mutator/core": "^10.0.0",
     "@tailwindcss/postcss": "4.3.3",
