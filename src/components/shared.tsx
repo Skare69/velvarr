@@ -476,6 +476,8 @@ const ICON_PATHS = {
   play: "m8 4 12 8-12 8V4Z",
   logout: "M10 3H4v18h6M10 12h11m-5-5 5 5-5 5",
   "arrow-right": "M4 12h16m-6-6 6 6-6 6",
+  "sort-asc": "M12 20V4m-6 6 6-6 6 6",
+  "sort-desc": "M12 4v16m-6-6 6 6 6-6",
   check: "m5 12 4 4L19 6",
   "check-double": "M18 6 7 17l-5-5 M22 10l-7.5 7.5-1.5-1.5",
   hourglass:

@@ -245,11 +245,14 @@ function SortSelect({
           <button
             type="button"
             className="btn shrink-0"
-            aria-label="Sort direction"
+            aria-label={
+              direction === "asc" ? "Sort ascending" : "Sort descending"
+            }
+            title={direction === "asc" ? "Sort ascending" : "Sort descending"}
             disabled={disabled}
             onClick={() => onDirection(direction === "asc" ? "desc" : "asc")}
           >
-            {direction === "asc" ? "Sort descending" : "Sort ascending"}
+            <Icon name={direction === "asc" ? "sort-asc" : "sort-desc"} />
           </button>
         )}
       </div>
@@ -1298,6 +1301,15 @@ export function TitlesView() {
                 </button>
               ))}
             </div>
+            <SortSelect
+              id="titles-sort"
+              type={type}
+              sort={sort}
+              direction={direction}
+              disabled={performerTpdb !== ""}
+              onSort={onSort}
+              onDirection={onDirection}
+            />
             <FiltersButton
               count={filterCount}
               onClick={() => setFiltersOpen(true)}
@@ -1390,15 +1402,6 @@ export function TitlesView() {
         count={filterCount}
         onClear={clearFilters}
       >
-        <SortSelect
-          id="titles-sort"
-          type={type}
-          sort={sort}
-          direction={direction}
-          disabled={performerTpdb !== ""}
-          onSort={onSort}
-          onDirection={onDirection}
-        />
         <SearchBox
           id="titles-q"
           label="Title search"
