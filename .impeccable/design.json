@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-30T00:00:00Z",
+  "title": "Design System: Velvarr",
+  "extensions": {
+    "colorMeta": {
+      "marquee-magenta": {
+        "role": "primary",
+        "displayName": "Marquee Magenta",
+        "canonical": "#ef3483",
+        "tonalRamp": [
+          "oklch(20% 0.06 1.08)",
+          "oklch(33% 0.085 1.08)",
+          "oklch(63.7% 0.226 1.08)",
+          "oklch(70% 0.21 1.08)",
+          "oklch(82% 0.13 1.08)"
+        ]
+      },
+      "plum-canvas": {
+        "role": "neutral",
+        "displayName": "Plum Canvas",
+        "canonical": "oklch(17% 0.022 325)",
+        "tonalRamp": [
+          "oklch(17% 0.022 325)",
+          "oklch(22.5% 0.028 325)",
+          "oklch(27.5% 0.034 325)",
+          "oklch(38% 0.04 325)",
+          "oklch(80% 0.022 325)",
+          "oklch(96.5% 0.006 325)"
+        ]
+      },
+      "mint-result": {
+        "role": "neutral",
+        "displayName": "Mint Result",
+        "canonical": "oklch(86% 0.14 159.2)",
+        "tonalRamp": ["oklch(45% 0.12 159.2)", "oklch(86% 0.14 159.2)"]
+      },
+      "signal-info": {
+        "role": "neutral",
+        "displayName": "Signal Info",
+        "canonical": "oklch(80% 0.12 250)"
+      },
+      "ember-danger": {
+        "role": "neutral",
+        "displayName": "Ember Danger",
+        "canonical": "oklch(80% 0.14 30)"
+      }
+    },
+    "typographyMeta": {
+      "body": { "displayName": "Body", "purpose": "All running text; 15px/1.5 system Segoe stack." },
+      "ui": { "displayName": "UI", "purpose": "Buttons and controls; 0.875rem/600." },
+      "label": { "displayName": "Label", "purpose": "Form labels and small caps of the chrome; 0.8rem/600 muted." }
+    },
+    "shadows": [
+      { "name": "poster-lift", "value": "0 6px 20px -4px rgb(0 0 0 / 0.5)", "purpose": "Hover pop under media cards; the only resting-to-hover shadow." },
+      { "name": "overlay-veil", "value": "rgb(0 0 0 / 0.66)", "purpose": "Dialog/sheet ::backdrop scrim." }
+    ],
+    "motion": [
+      { "name": "state-fade", "value": "160ms ease", "purpose": "Background, border, color, box-shadow state transitions." },
+      { "name": "sheet-rise", "value": "200ms ease-out", "purpose": "More sheet / modal entrance." },
+      { "name": "art-zoom", "value": "220ms", "purpose": "Poster image scale on card hover." },
+      { "name": "skeleton-sweep", "value": "1.2s linear infinite", "purpose": "Loading shimmer; clamped by prefers-reduced-motion." }
+    ],
+    "breakpoints": [
+      { "name": "phone", "value": "600px" },
+      { "name": "shell", "value": "1023px" },
+      { "name": "wide", "value": "1800px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one magenta action on a surface; request, approve, save.",
+      "html": "<button class=\"btn btn-accent\">Request</button>",
+      "css": ".btn { display:inline-flex; align-items:center; justify-content:center; gap:0.5rem; min-height:38px; padding:0.5rem 0.95rem; border-radius:7px; border:1px solid var(--color-edge); background:var(--color-raised); color:var(--color-ink); font-size:0.875rem; font-weight:600; cursor:pointer; transition: background-color 160ms, border-color 160ms, color 160ms, box-shadow 160ms; } .btn-accent { background:var(--color-accent); border-color:var(--color-accent); color:var(--color-accent-ink); } .btn-accent:hover { background:var(--color-accent-hover); border-color:var(--color-accent-hover); } .btn:active:not(:disabled) { transform:translateY(1px); } .btn:disabled { opacity:0.45; cursor:not-allowed; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Raised neutral action; everything that is not the one intent.",
+      "html": "<button class=\"btn\">Open in Jellyfin</button>",
+      "css": ".btn { display:inline-flex; align-items:center; justify-content:center; gap:0.5rem; min-height:38px; padding:0.5rem 0.95rem; border-radius:7px; border:1px solid var(--color-edge); background:var(--color-raised); color:var(--color-ink); font-size:0.875rem; font-weight:600; cursor:pointer; transition: background-color 160ms, border-color 160ms; } .btn:hover { background:color-mix(in oklab, var(--color-raised) 82%, var(--color-ink)); border-color:color-mix(in oklab, var(--color-edge) 72%, var(--color-ink)); }"
+    },
+    {
+      "name": "Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Text field with magenta focus border on a mixed canvas fill.",
+      "html": "<input class=\"input\" placeholder=\"Search the library\">",
+      "css": ".input { width:100%; min-height:40px; padding:0.55rem 0.75rem; border-radius:7px; border:1px solid var(--color-edge); background:color-mix(in oklab, var(--color-canvas) 65%, var(--color-panel)); color:var(--color-ink); font-size:0.9rem; font:inherit; } .input:focus { border-color:var(--color-accent); outline:none; } .input::placeholder { color:color-mix(in oklab, var(--color-muted) 78%, var(--color-panel)); }"
+    },
+    {
+      "name": "Media Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Poster card; whole card is the target, hover lifts art and magenta-edges.",
+      "html": "<a class=\"card media-card\" href=\"#\"><div class=\"media-art\"><img src=\"poster.jpg\" alt=\"\"></div><div class=\"media-meta\"><div class=\"media-title\">Title</div><div class=\"media-subtitle\">2024</div></div></a>",
+      "css": ".card { display:block; width:100%; text-align:left; background:var(--color-panel); border:1px solid var(--color-edge); border-radius:10px; overflow:hidden; cursor:pointer; padding:0; } .card:hover { border-color:var(--color-accent); } .media-card:hover .media-art { box-shadow:0 6px 20px -4px rgb(0 0 0 / 0.5); } .media-art img { display:block; width:100%; transition:transform 220ms; }"
+    },
+    {
+      "name": "Chip",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "Small status/label pill; accent variant on magenta-soft.",
+      "html": "<span class=\"chip chip-accent\">Requested</span>",
+      "css": ".chip { display:inline-block; padding:0.15rem 0.55rem; border-radius:5px; border:1px solid var(--color-edge); font-size:0.75rem; color:var(--color-muted); background:var(--color-raised); } .chip-accent { color:var(--color-accent-text); border-color:color-mix(in oklab, var(--color-accent) 45%, var(--color-panel)); background:var(--color-accent-soft); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Midnight Lobby",
+    "overview": "Velvarr is a plum-dark room where the only light comes from the artwork on the walls. The magenta marquee marks every action; UI is architecture — quiet panels, measured tones, nothing brighter than the posters. M3 in its science (one key color, tone distance as contrast, every pair measured), Seerr in its grammar (poster-first cards, real request states). Chrome chroma stays under 0.04 on hue 325; neutrals rotate off the key hue so darks read plum, never brown.",
+    "keyCharacteristics": [
+      "Single magenta voice for intent on tonal plum architecture",
+      "Flat by default, shadow only on touch (hover pop, overlay scrim)",
+      "Status hues (mint/info/ember) speak only for status, one shared palette",
+      "Measured WCAG pairs, documented in globals.css"
+    ],
+    "rules": [
+      { "name": "The Artwork Owns the Light", "body": "Chrome chroma ≤ 0.04; the only saturated, bright thing on screen is provider artwork.", "section": "colors" },
+      { "name": "The One Voice Rule", "body": "Magenta means intent — actions, focus, hover, selection — and nothing else.", "section": "colors" },
+      { "name": "Earned Depth", "body": "Tone + 1px edge at rest; shadows appear on touch or as overlay scrims only.", "section": "elevation" },
+      { "name": "Truth in Status", "body": "Badges render real state from src/lib/status.ts; never fake or embellish a status.", "section": "components" }
+    ],
+    "dos": [
+      "Do separate with tone distance + 1px edge (color-mix for blends)",
+      "Do keep focus rings 2px accent at 4px offset, :focus-visible only",
+      "Do respect prefers-reduced-motion"
+    ],
+    "donts": [
+      "Don't fake data or status — honesty is the product",
+      "Don't add a second accent hue, gradient text, or decorative glass",
+      "Don't float resting surfaces with ambient shadows",
+      "Don't alter the credit or the mobile More-sheet navigation without a card"
+    ]
+  }
+}
