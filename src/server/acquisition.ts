@@ -22,10 +22,8 @@ import {
 import { notifyRequestEvent, type RequestNotification } from "./notify.ts";
 import { requiresUserToken } from "../lib/contracts.ts";
 import type {
-  Account,
   AcquisitionRecord,
   IntegrationConfig,
-  MediaReference,
   RemovalExecution,
   RemovalObservedFacts,
 } from "../lib/contracts.ts";
@@ -95,21 +93,6 @@ const EMPTY_SUMMARY: WorkSummary = {
   overlap: false,
 };
 
-// listRequests filters on the viewer's role and touches no session or token;
-// this stub just reads the full request history so eligibility can be
-// re-checked against the current stored accounts before any dispatch.
-const ALL_REQUESTS_VIEWER = {
-  id: "",
-  name: "acquisition-worker",
-  role: "admin",
-  enabled: true,
-  libraryIds: [],
-  isOwner: false,
-  autoApprove: false,
-  canRemove: false,
-  joinedAt: 0,
-} as const satisfies Account;
-
 function reasonOf(e: unknown): string {
   const raw =
     e instanceof Error ? e.message : e instanceof AppError ? e.message : "";
@@ -147,21 +130,6 @@ function deliveryReady(config: IntegrationConfig | null): boolean {
     w.apiKey !== "" &&
     w.delivery?.enabled === true
   );
-}
-
-/** Admission re-read from storage: an approved request only dispatches while
- * at least one requester account is still present and enabled. */
-function hasEligibleRequester(media: MediaReference): boolean {
-  return storage
-    .listRequests(ALL_REQUESTS_VIEWER)
-    .some(
-      (r) =>
-        r.decision === "approved" &&
-        r.media.provider === media.provider &&
-        r.media.kind === media.kind &&
-        r.media.id === media.id &&
-        storage.getAccount(r.accountId)?.enabled === true,
-    );
 }
 
 function itemFacts(item: WhisparrItem): {
@@ -639,7 +607,7 @@ async function processOne(
     summary.blocked++;
     return;
   }
-  if (item.state === "unsent" && !hasEligibleRequester(item.media)) {
+  if (item.state === "unsent" && !storage.hasEligibleRequester(item.media)) {
     storage.recordAcquisitionObservation(item.id, {
       unavailable: true,
       reason: "no eligible requester remains for this acquisition",

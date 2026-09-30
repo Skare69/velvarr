@@ -216,6 +216,7 @@ type Statements = {
   cancelOwnRequest: StatementSync;
   countActiveRequestsExcept: StatementSync;
   countRequestsByAccount: StatementSync;
+  hasEligibleRequester: StatementSync;
   insertAcquisition: StatementSync;
   getAcquisition: StatementSync;
   getAcquisitionByIdentity: StatementSync;
@@ -700,6 +701,9 @@ function S(): Statements {
       ),
       countRequestsByAccount: d.prepare(
         "SELECT account_id, COUNT(*) AS n FROM requests GROUP BY account_id",
+      ),
+      hasEligibleRequester: d.prepare(
+        "SELECT EXISTS (SELECT 1 FROM requests r JOIN accounts a ON a.id = r.account_id AND a.enabled = 1 WHERE r.provider = ? AND r.kind = ? AND r.external_id = ? AND r.decision = 'approved') AS eligible",
       ),
       insertAcquisition: d.prepare(
         "INSERT OR IGNORE INTO acquisitions (id, instance_id, provider, kind, external_id, state, due_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -2241,6 +2245,18 @@ export function getRequest(id: string, viewer: Account): RequestRecord {
     throw new AppError(404, "request_not_found", "request not found");
   }
   return rowToRequest(row);
+}
+
+/** Admission re-read for the delivery loop: an approved request only
+ * dispatches while at least one requester account is still present and
+ * enabled. One indexed query instead of a full history scan. */
+export function hasEligibleRequester(media: MediaReference): boolean {
+  const row = S().hasEligibleRequester.get(
+    media.provider,
+    media.kind,
+    media.id,
+  ) as { eligible: number };
+  return row.eligible === 1;
 }
 
 /** Approval is transactional with the shared-acquisition attachment: two
