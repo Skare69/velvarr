@@ -13,6 +13,7 @@ import Link from "next/link";
 import "./catalog.css";
 import { TagPicker } from "./tag-picker.tsx";
 import {
+  api,
   detailParams,
   ErrorPanel,
   GridSkeleton,
@@ -20,6 +21,7 @@ import {
   imgSrc,
   intOr,
   ItemImage,
+  messageOf,
   MovieCard,
   providerLabel,
   SceneCard,
@@ -41,6 +43,9 @@ import { filterName, seedPerformerPick } from "../lib/names";
 // CatalogDetailView) live in catalog-detail.tsx; the browse view hosts the
 // detail overlay and reads its target from the URL.
 import { CatalogDetailView, detailTarget } from "./catalog-detail.tsx";
+// Endless scroll appends pages through this dedupe-append (lib stays
+// React-free so node --test can exercise it directly).
+import { mergePageItems } from "../lib/browse-items.ts";
 
 type CatalogSearchPage = {
   provider: CatalogProvider;
@@ -591,64 +596,6 @@ function PerformerPicker({
   );
 }
 
-/** Count text only when the service attests a real total; a capped total
- * (totalCountKnown false) renders paging alone and never a fake denominator.
- * Arrows reuse the discovery chevron buttons: same disabled, focus and
- * 44px-touch states as the rails. */
-function Paging({
-  page,
-  hasMore,
-  total,
-  totalCountKnown,
-  perPage,
-  onPage,
-}: {
-  page: number;
-  hasMore: boolean;
-  total?: number;
-  totalCountKnown: boolean;
-  perPage: number;
-  onPage: (p: number) => void;
-}) {
-  const go = (p: number) => {
-    onPage(p);
-    window.scrollTo({ top: 0 });
-  };
-  const pages =
-    totalCountKnown && total != null
-      ? Math.max(1, Math.ceil(total / perPage))
-      : null;
-  return (
-    <div className="mt-6 flex items-center justify-between gap-3">
-      <div className="text-sm text-muted">
-        {totalCountKnown && total != null ? `${total} results · ` : ""}Page{" "}
-        {page}
-        {pages !== null ? ` of ${pages}` : ""}
-      </div>
-      <div className="flex gap-2">
-        <button
-          type="button"
-          className="discovery-scroll-button"
-          aria-label="Previous page"
-          disabled={page <= 1}
-          onClick={() => go(page - 1)}
-        >
-          <Icon name="chevron-left" />
-        </button>
-        <button
-          type="button"
-          className="discovery-scroll-button"
-          aria-label="Next page"
-          disabled={!hasMore}
-          onClick={() => go(page + 1)}
-        >
-          <Icon name="chevron-right" />
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function NotConfigured({ provider }: { provider: CatalogProvider }) {
   return (
     <div className="panel p-6" role="note">
@@ -666,9 +613,9 @@ function NotConfigured({ provider }: { provider: CatalogProvider }) {
 
 /* ---------- Unified browse ---------- */
 
-/** One browse page from GET /api/browse. Wire shape mirrors the service's
- * BrowsePage plus the API's per-caller hiddenTagCount; kept local like the
- * old CatalogSearchPage — contracts.ts stays domain records. */
+/** One page from GET /api/browse. Wire shape mirrors the service's
+ * BrowsePage plus the API's per-caller hiddenTagCount; kept local —
+ * contracts.ts stays domain records. */
 type BrowsePage = {
   items: CatalogDetail[];
   page: number;
@@ -678,6 +625,19 @@ type BrowsePage = {
   totalCountKnown: boolean;
   errors: { provider: CatalogProvider; code: string; message: string }[];
   hiddenTagCount?: number;
+};
+
+/** The grid's accumulated state: items from every fetched page plus the
+ * meta of the latest fetch. `page` is the last fetched page number —
+ * component state, never a URL key. */
+type BrowseAccum = {
+  items: CatalogDetail[];
+  page: number;
+  hasMore: boolean;
+  total?: number;
+  totalCountKnown: boolean;
+  errors: { provider: CatalogProvider; code: string; message: string }[];
+  hiddenTagCount: number;
 };
 
 /** include/exclude ride the URL as JSON arrays of CatalogTagSelection.
@@ -701,9 +661,10 @@ function parseTags(v: string | null): CatalogTagSelection[] {
   }
 }
 
-/** Builds the GET /api/browse path from canonical URL keys — verbatim plan
- * names, include/exclude as JSON, `date_operation` for dateOperation. An
- * outage is an error, never an empty page. */
+/** Builds the filter part of the GET /api/browse path from canonical URL
+ * keys — verbatim plan names, include/exclude as JSON, `date_operation` for
+ * dateOperation. The caller appends `&page=${n}`: pages are component
+ * state under endless scroll. An outage is an error, never an empty page. */
 function browsePath(f: {
   type: "all" | "movie" | "scene";
   q: string;
@@ -720,7 +681,6 @@ function browsePath(f: {
   dateOperation: string;
   sort: string;
   direction: string;
-  page: number;
   perPage: number;
 }): string {
   const qs = new URLSearchParams();
@@ -743,7 +703,6 @@ function browsePath(f: {
     qs.set("sort", f.sort);
     if (f.direction) qs.set("direction", f.direction);
   }
-  qs.set("page", String(f.page));
   qs.set("perPage", String(f.perPage));
   return `/api/browse?${qs.toString()}`;
 }
@@ -803,7 +762,6 @@ export function useBrowseTo(): (filter: BrowseFilter) => void {
         studioMode: null,
         sort: null,
         direction: null,
-        page: null,
         provider: null,
         perPage: null,
         moviePage: null,
@@ -883,12 +841,17 @@ export function TitlesView() {
   const dirRaw = params.get("direction") ?? "";
   const direction =
     sort !== "" && (dirRaw === "asc" || dirRaw === "desc") ? dirRaw : "desc";
-  const page = Math.max(1, intOr(params.get("page"), 1));
   const [perPage, setPerPage] = useState(() =>
     Math.min(100, Math.max(1, intOr(params.get("perPage"), 24))),
   );
   const [reload, setReload] = useState(0);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  // Endless scroll: pages accumulate in component state — the URL keeps the
+  // filters, never a page number.
+  const [acc, setAcc] = useState<BrowseAccum | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const seqRef = useRef(0);
 
   /* Grid columns come from the rendered CSS tracks, so a fetched page is
    * always whole rows: nine columns means 27 items, not 24. The probe is
@@ -915,7 +878,7 @@ export function TitlesView() {
     if (rounded > 0 && rounded !== perPage) {
       setPerPage(rounded);
       // A page sized for other tracks is not comparable: reset it.
-      setP({ perPage: String(rounded), page: null });
+      setP({ perPage: String(rounded) });
     }
   }, [rounded, perPage, setP]);
 
@@ -928,7 +891,7 @@ export function TitlesView() {
       window.removeEventListener("velvarr:preferences-changed", bump);
   }, []);
 
-  const path = useMemo(
+  const basePath = useMemo(
     () =>
       browsePath({
         type,
@@ -946,7 +909,6 @@ export function TitlesView() {
         dateOperation,
         sort,
         direction,
-        page,
         perPage,
       }),
     [
@@ -965,22 +927,89 @@ export function TitlesView() {
       dateOperation,
       sort,
       direction,
-      page,
       perPage,
     ],
   );
-  const browse = useApiGet<BrowsePage>(path, [path, reload]);
-  // While a read is in flight nothing stale renders as current — a filter
-  // change can never show the previous query's rows under it.
-  const data = browse.loading ? null : browse.data;
-  const hiddenCount = data?.hiddenTagCount ?? 0;
+
+  /** One GET of a browse page. `reset` drops the accumulated grid first — a
+   * filter change can never show the previous query's rows under it; `more`
+   * appends, deduped, so provider reorders never render a card twice. A
+   * stale in-flight response (query changed meanwhile) is dropped. */
+  const load = useCallback(
+    async (n: number, mode: "reset" | "more") => {
+      const seq = ++seqRef.current;
+      if (mode === "reset") setAcc(null);
+      setLoading(true);
+      setError(null);
+      try {
+        const page = await api<BrowsePage>(`${basePath}&page=${n}`);
+        if (seqRef.current !== seq) return;
+        setAcc((prev) =>
+          mode === "reset" || prev === null
+            ? {
+                items: page.items,
+                page: n,
+                hasMore: page.hasMore,
+                total: page.total,
+                totalCountKnown: page.totalCountKnown,
+                errors: page.errors,
+                hiddenTagCount: page.hiddenTagCount ?? 0,
+              }
+            : {
+                ...prev,
+                items: mergePageItems(prev.items, page.items),
+                page: n,
+                hasMore: page.hasMore,
+                ...(page.total !== undefined ? { total: page.total } : {}),
+                totalCountKnown: page.totalCountKnown,
+                errors: page.errors,
+                hiddenTagCount: page.hiddenTagCount ?? prev.hiddenTagCount,
+              },
+        );
+      } catch (e) {
+        if (seqRef.current !== seq) return;
+        setError(messageOf(e));
+      } finally {
+        if (seqRef.current === seq) setLoading(false);
+      }
+    },
+    [basePath],
+  );
+
+  // Any filter, perPage or reload change restarts the grid at page 1.
+  useEffect(() => {
+    void load(1, "reset");
+  }, [load, reload]);
+
+  // Sentinel below the grid: the next page starts loading before the user
+  // reaches the bottom (800px early), so scrolling feels continuous.
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const [nearEnd, setNearEnd] = useState(false);
+  const hasGrid = acc !== null && acc.items.length > 0;
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      (entries) => setNearEnd(entries.some((e) => e.isIntersecting)),
+      { rootMargin: "800px 0px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasGrid]);
+
+  // Sentinel visible + more to have + idle: fetch the next page. The effect
+  // re-runs after each append, so short pages chain until the grid fills
+  // past the sentinel.
+  useEffect(() => {
+    if (!nearEnd || acc === null || !acc.hasMore || loading || error !== null)
+      return;
+    void load(acc.page + 1, "more");
+  }, [nearEnd, acc, loading, error, load]);
+
+  const hiddenCount = acc?.hiddenTagCount ?? 0;
 
   const openDetail = useCallback(
     (r: CatalogReference) => setP(detailParams(r), { push: true }),
-    [setP],
-  );
-  const onPage = useCallback(
-    (p: number) => setP({ page: p > 1 ? String(p) : null }),
     [setP],
   );
 
@@ -990,7 +1019,6 @@ export function TitlesView() {
       const keepSort = (sortsFor(t) as readonly string[]).includes(sortRaw);
       setP({
         type: t === "all" ? null : t,
-        page: null,
         sort: keepSort ? sortRaw : null,
         direction: keepSort ? dirRaw : null,
         // Both performer chips active would 400 on a single type (the
@@ -1005,15 +1033,11 @@ export function TitlesView() {
     },
     [setP, sortRaw, dirRaw],
   );
-  const onQ = useCallback(
-    (v: string) => setP({ q: v || null, page: null }),
-    [setP],
-  );
+  const onQ = useCallback((v: string) => setP({ q: v || null }), [setP]);
   const onInclude = useCallback(
     (tags: CatalogTagSelection[]) =>
       setP({
         include: tags.length > 0 ? JSON.stringify(tags) : null,
-        page: null,
       }),
     [setP],
   );
@@ -1021,7 +1045,6 @@ export function TitlesView() {
     (tags: CatalogTagSelection[]) =>
       setP({
         exclude: tags.length > 0 ? JSON.stringify(tags) : null,
-        page: null,
       }),
     [setP],
   );
@@ -1042,28 +1065,26 @@ export function TitlesView() {
         studioMode: null,
         sort: null,
         direction: null,
-        page: null,
       }),
     [setP],
   );
-  // StashDB composes a performer with everything else — only the page resets.
+  // StashDB composes a performer with everything else — no other key moves.
   const onPerformerStashdb = useCallback(
-    (id: string) => setP({ performerStashdb: id, page: null }),
+    (id: string) => setP({ performerStashdb: id }),
     [setP],
   );
   const onStarred = useCallback(
-    (on: boolean) => setP({ performerStarred: on ? "1" : null, page: null }),
+    (on: boolean) => setP({ performerStarred: on ? "1" : null }),
     [setP],
   );
   const onYear = useCallback(
-    (v: string) =>
-      setP({ year: v || null, date: null, date_operation: null, page: null }),
+    (v: string) => setP({ year: v || null, date: null, date_operation: null }),
     [setP],
   );
   // Both halves commit together — one without the other is a 400.
   const onDate = useCallback(
     (d: string | null, op: string | null) =>
-      setP({ date: d, date_operation: op, year: null, page: null }),
+      setP({ date: d, date_operation: op, year: null }),
     [setP],
   );
   const onSort = useCallback(
@@ -1071,25 +1092,23 @@ export function TitlesView() {
       setP({
         sort: v || null,
         direction: v ? direction || "desc" : null,
-        page: null,
       }),
     [setP, direction],
   );
   const onDirection = useCallback(
-    (d: "asc" | "desc") => setP({ direction: d, page: null }),
+    (d: "asc" | "desc") => setP({ direction: d }),
     [setP],
   );
   const onStudioTpdb = useCallback(
-    (id: string | null) => setP({ studioTpdb: id, page: null }),
+    (id: string | null) => setP({ studioTpdb: id }),
     [setP],
   );
   const onStudioStashdb = useCallback(
-    (id: string | null) => setP({ studioStashdb: id, page: null }),
+    (id: string | null) => setP({ studioStashdb: id }),
     [setP],
   );
   const onStudioMode = useCallback(
-    (m: string) =>
-      setP({ studioMode: m === "withChildren" ? m : null, page: null }),
+    (m: string) => setP({ studioMode: m === "withChildren" ? m : null }),
     [setP],
   );
   const clearFilters = useCallback(() => {
@@ -1108,7 +1127,6 @@ export function TitlesView() {
       studioMode: null,
       sort: null,
       direction: null,
-      page: null,
     });
   }, [setP]);
 
@@ -1179,7 +1197,7 @@ export function TitlesView() {
         label={`Performer: ${filterName("tpdb", "performer", performerTpdb)} (TPDB)`}
         // Chip removal only drops the constraint — unlike picking a
         // performer, which starts the filmography browse and clears the rest.
-        onRemove={() => setP({ performerTpdb: null, page: null })}
+        onRemove={() => setP({ performerTpdb: null })}
       />,
     );
   }
@@ -1188,7 +1206,7 @@ export function TitlesView() {
       <FilterChip
         key="performerStashdb"
         label={`Performer: ${filterName("stashdb", "performer", performerStashdb)} (StashDB)`}
-        onRemove={() => setP({ performerStashdb: null, page: null })}
+        onRemove={() => setP({ performerStashdb: null })}
       />,
     );
   }
@@ -1197,7 +1215,7 @@ export function TitlesView() {
       <FilterChip
         key="performerStarred"
         label="Performer: my starred performers"
-        onRemove={() => setP({ performerStarred: null, page: null })}
+        onRemove={() => setP({ performerStarred: null })}
       />,
     );
   }
@@ -1251,7 +1269,7 @@ export function TitlesView() {
       <FilterChip
         key="sort"
         label={`Sort: ${SORT_LABELS[sort as SortKey]} (${direction})`}
-        onRemove={() => setP({ sort: null, direction: null, page: null })}
+        onRemove={() => setP({ sort: null, direction: null })}
       />,
     );
   }
@@ -1327,14 +1345,14 @@ export function TitlesView() {
         <div className="mt-4">
           {notConfigured !== null ? (
             <NotConfigured provider={notConfigured} />
-          ) : browse.error !== null ? (
-            // An outage is an error, never an empty page.
+          ) : error !== null && acc === null ? (
+            // A failed first page is an outage: an error, never an empty page.
             <ErrorPanel
               title="Browse unavailable"
-              message={browse.error}
+              message={error}
               onRetry={retry}
             />
-          ) : data === null ? (
+          ) : acc === null ? (
             <GridSkeleton
               aspect="aspect-[2/3]"
               cols={POSTER_GRID}
@@ -1342,7 +1360,7 @@ export function TitlesView() {
             />
           ) : (
             <>
-              {data.errors.map((e) => (
+              {acc.errors.map((e) => (
                 <ErrorPanel
                   key={e.provider}
                   title={`${providerLabel(e.provider)} unavailable`}
@@ -1350,10 +1368,10 @@ export function TitlesView() {
                   onRetry={retry}
                 />
               ))}
-              {data.items.length === 0 ? (
+              {acc.items.length === 0 ? (
                 // Empty is only claimed when no source failed: the error
                 // panels above carry the failures.
-                data.errors.length === 0 && (
+                acc.errors.length === 0 && (
                   <div className="panel p-8 text-center text-sm text-muted">
                     {filterCount > 0
                       ? "No titles match your filters. Remove a filter, or check excluded and personal hidden tags."
@@ -1363,7 +1381,7 @@ export function TitlesView() {
               ) : (
                 <>
                   <div className={POSTER_GRID}>
-                    {data.items.map((it) =>
+                    {acc.items.map((it) =>
                       it.reference.kind === "scene" ? (
                         <SceneCard
                           key={`${it.reference.provider}:${it.reference.id}`}
@@ -1379,14 +1397,38 @@ export function TitlesView() {
                       ),
                     )}
                   </div>
-                  <Paging
-                    page={page}
-                    hasMore={data.hasMore}
-                    total={data.total}
-                    totalCountKnown={data.totalCountKnown}
-                    perPage={perPage}
-                    onPage={onPage}
-                  />
+                  {loading && (
+                    <p
+                      className="mt-6 text-center text-sm text-muted"
+                      role="status"
+                    >
+                      Loading more…
+                    </p>
+                  )}
+                  {!loading && error !== null && (
+                    <div className="mt-6 flex items-center justify-center gap-3 text-sm text-muted">
+                      <span>Couldn&rsquo;t load more titles.</span>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => void load(acc.page + 1, "more")}
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  )}
+                  {!loading &&
+                    error === null &&
+                    !acc.hasMore &&
+                    acc.totalCountKnown &&
+                    acc.total != null && (
+                      // Count only when the service attests a real total; a
+                      // capped total ends the scroll without a denominator.
+                      <p className="mt-6 text-center text-sm text-muted">
+                        {acc.total} titles
+                      </p>
+                    )}
+                  <div ref={sentinelRef} aria-hidden="true" />
                 </>
               )}
             </>

@@ -663,6 +663,14 @@ body:has(.auth-page) {
   grid-template-columns: repeat(auto-fill, minmax(142px, 1fr));
   gap: 22px 16px;
 }
+/* Endless-scroll grids: cards far off-screen skip layout and paint, and the
+   browser drops their rendered representation once they scroll away — the
+   lazy load/unload of a long browse. `auto` remembers the real size after
+   first paint; the 340px is only the pre-paint estimate. */
+.poster-grid > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 340px;
+}
 .media-card {
   display: block;
   padding: 0;
