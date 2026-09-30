@@ -282,6 +282,24 @@ const scoreAnswer = (score: number) => ({ type: "score", score });
 const ids = (items: { reference: { id: string } }[]) =>
   items.map((d) => d.reference.id);
 
+test("a candidate without a studio still ranks by its shared tags", async () => {
+  await withFx(async () => {
+    // A row with no site maps to a detail with no studio: the sameCompany
+    // tie-break must skip it, not throw the whole rail away.
+    scenesReply = { queryScenes: { count: 0, scenes: [] } };
+    listing = [
+      movieRow(SOURCE_ID, "Source Title", [ROMANCE, COMEDY], STUDIO_ID),
+      { ...movieRow(MOVIE_ONE, "Studioless", [ROMANCE]), site: null },
+      movieRow(MOVIE_BOOST, "Same Studio", [ROMANCE, COMEDY], STUDIO_ID),
+    ];
+    const result = await relatedTitles(movieRef(SOURCE_ID), []);
+    assert.deepEqual(result.errors, []);
+    // Same studio ranks first via the tie-break; the studio-less row is
+    // still present, ranked by its one shared tag.
+    assert.deepEqual(ids(result.items), [MOVIE_BOOST, MOVIE_ONE]);
+  });
+});
+
 // --- tags ranking ---
 
 test("ranks by shared tags deterministically; self, duplicates, zero-shared, hidden, and direct related references stay out", async () => {

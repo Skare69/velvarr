@@ -12,7 +12,8 @@
     "build": "next build",
     "start": "next start --hostname 127.0.0.1 --port 6699",
     "check": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test": "node --experimental-strip-types --test --test-concurrency=4 tests/*.test.ts",
+    "test:mutation": "stryker run",
     "setup": "node scripts/setup.mjs",
     "backup": "node scripts/backup.mjs",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{ts,tsx,json,mjs}\" \"tests/**/*.ts\" \"scripts/**/*.mjs\"",
@@ -25,6 +26,7 @@
     "react-dom": "19.3.0"
   },
   "devDependencies": {
+    "@stryker-mutator/core": "^10.0.0",
     "@tailwindcss/postcss": "4.3.3",
     "@types/node": "24.13.4",
     "@types/react": "19.3.0",

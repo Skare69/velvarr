@@ -57,6 +57,40 @@ test("an acquisition makes the row approved unless the decision says otherwise",
     }),
     "declined",
   );
+  assert.equal(
+    statusOf({
+      acquisition: acq("monitoring"),
+      myRequest: { decision: "cancelled" },
+    }),
+    "declined",
+  );
+});
+
+test("an imported title keeps decided rows decided", () => {
+  // Imported + declined/cancelled: done acquiring, the decision still speaks.
+  assert.equal(
+    statusOf({
+      acquisition: acq("imported", false),
+      myRequest: { decision: "declined" },
+    }),
+    "declined",
+  );
+  assert.equal(
+    statusOf({
+      acquisition: acq("imported", true),
+      myRequest: { decision: "cancelled" },
+    }),
+    "declined",
+  );
+  // Monitored and not yet imported with a pending request: still being
+  // acquired, so approved — the decision has not lapsed into a badge yet.
+  assert.equal(
+    statusOf({
+      acquisition: acq("monitoring"),
+      myRequest: { decision: "pending" },
+    }),
+    "approved",
+  );
 });
 
 test("decision-only rows: pending, approved, declined; nothing means no badge", () => {

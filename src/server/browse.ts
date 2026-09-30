@@ -16,7 +16,12 @@
 // never a fake empty page or fake end — narrow the filters. Raise
 // MAX_SCAN_PAGES only when real browsing measurably needs it.
 
+// Stryker disable all — the mutation window re-opens below the parse/adapters
+// block and covers the pure merge/plan logic only (mergeStreams, nativeQuery,
+// planBrowseSides); parse helpers and fetch adapters stay out of scope.
+
 import { isHiddenTitle, tagMatches } from "./catalog-visibility.ts";
+
 import { AppError } from "./http.ts";
 import { suggestTags } from "./judgment.ts";
 import {
@@ -447,6 +452,7 @@ function allSourcesFailed(streams: Stream[]): never {
   );
 }
 
+// Stryker restore all
 /** Consumes the ordered (or, with no shared order, stable-concatenated)
  * prefix of the given streams and slices out one visible page. */
 async function mergeStreams(
@@ -755,6 +761,7 @@ export function planBrowseSides(query: BrowseQuery): BrowsePlan {
   if (sceneWanted) sides.push("stashdb");
   return { sides, filmography, nativeSort, mergeOrder };
 }
+// Stryker disable all
 
 /** Composes the visible catalog page: native provider filters first, local
  * mandatory predicates only where a provider cannot express them, stable
