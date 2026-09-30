@@ -1227,18 +1227,14 @@ function LibraryView() {
   const itemId = params.get("item");
 
   const [searchInput, setSearchInput] = useState(search);
-  const [libs, setLibs] = useState<Library[] | null>(null);
-  const [libsError, setLibsError] = useState<string | null>(null);
   const closeItem = useCallback(() => setP({ item: null }), [setP]);
 
-  const loadLibs = useCallback(() => {
-    setLibsError(null);
-    api<{ libraries: Library[] }>("/api/libraries")
-      .then((d) => setLibs(d.libraries))
-      .catch((e) => setLibsError(messageOf(e)));
-  }, []);
-
-  useEffect(loadLibs, [loadLibs]);
+  const {
+    data: libsData,
+    error: libsError,
+    reload: reloadLibs,
+  } = useApiGet<{ libraries: Library[] }>("/api/libraries", []);
+  const libs = libsData?.libraries ?? null;
 
   // ponytail: fixed 400ms debounce; typed-submit (Enter) flushes immediately
   useEffect(() => {
@@ -1316,7 +1312,7 @@ function LibraryView() {
             Library
           </label>
           {libsError ? (
-            <ErrorPanel message={libsError} onRetry={loadLibs} />
+            <ErrorPanel message={libsError} onRetry={reloadLibs} />
           ) : (
             <select
               id="lib-filter"
@@ -1607,30 +1603,25 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
 const JOINED_FMT = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
 
 function AdminView() {
-  const [accounts, setAccounts] = useState<AdminAccount[] | null>(null);
   const [editing, setEditing] = useState<AdminAccount | null>(null);
-  const [libs, setLibs] = useState<Library[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [forbidden, setForbidden] = useState(false);
+  const [importForbidden, setImportForbidden] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importMsg, setImportMsg] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
 
-  const load = useCallback(() => {
-    setError(null);
-    setForbidden(false);
-    api<{ accounts: AdminAccount[]; libraries: Library[] }>("/api/admin/users")
-      .then((d) => {
-        setAccounts(d.accounts);
-        setLibs(d.libraries);
-      })
-      .catch((e) => {
-        if (e instanceof ApiError && e.status === 403) setForbidden(true);
-        else setError(messageOf(e));
-      });
-  }, []);
-
-  useEffect(load, [load]);
+  const {
+    data,
+    error,
+    err: readErr,
+    reload,
+  } = useApiGet<{ accounts: AdminAccount[]; libraries: Library[] }>(
+    "/api/admin/users",
+    [],
+  );
+  const accounts = data?.accounts ?? null;
+  const libs = data?.libraries ?? [];
+  // The read's 403 is the hook's ApiError; the import POST reports its own.
+  const forbidden = readErr?.status === 403 || importForbidden;
 
   const importUsers = async () => {
     setImporting(true);
@@ -1646,9 +1637,9 @@ function AdminView() {
           ? `Imported ${r.accounts.length} account${r.accounts.length === 1 ? "" : "s"} — disabled until you grant access.`
           : "No new Jellyfin users to import.",
       );
-      load();
+      reload();
     } catch (e) {
-      if (e instanceof ApiError && e.status === 403) setForbidden(true);
+      if (e instanceof ApiError && e.status === 403) setImportForbidden(true);
       else setImportError(messageOf(e));
     } finally {
       setImporting(false);
@@ -1670,7 +1661,7 @@ function AdminView() {
           <button
             type="button"
             className="btn"
-            onClick={load}
+            onClick={reload}
             disabled={importing}
           >
             Refresh
@@ -1699,7 +1690,7 @@ function AdminView() {
         <ErrorPanel
           title="Accounts unavailable"
           message={error}
-          onRetry={load}
+          onRetry={reload}
         />
       ) : accounts == null ? (
         <div className="panel p-4" aria-label="Loading accounts">
@@ -1770,10 +1761,8 @@ function AdminView() {
           account={editing}
           libraries={libs}
           onClose={() => setEditing(null)}
-          onSaved={(acc) => {
-            setAccounts(
-              (cur) => cur?.map((x) => (x.id === acc.id ? acc : x)) ?? cur,
-            );
+          onSaved={() => {
+            reload();
             setEditing(null);
           }}
         />
