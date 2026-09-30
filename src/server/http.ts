@@ -1,6 +1,8 @@
 // Shared upstream HTTP layer for the Jellyfin, Whisparr, TPDB, and StashDB
 // integrations.
 
+import { isIP } from "node:net";
+
 export class AppError extends Error {
   status: number;
   code: string;
@@ -40,11 +42,14 @@ function serviceName(service: Service): string {
   }
 }
 
-/** The one loopback test: lowercases, strips IPv6 brackets, and accepts the
- * whole 127.0.0.0/8. security.ts shares it for VELVARR_ORIGIN validation. */
+/** The one loopback test: literal 127.0.0.0/8 IPv4, "localhost" and "::1"
+ * only. DNS names are never loopback, whatever their labels — security.ts
+ * shares this for VELVARR_ORIGIN validation, and the artwork proxy uses it to
+ * exempt loopback from the https and provider-host rules. */
 export function isLoopbackHost(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  return h === "localhost" || h === "::1" || h.startsWith("127.");
+  if (h === "localhost" || h === "::1") return true;
+  return isIP(h) === 4 && Number(h.split(".")[0]) === 127;
 }
 
 function isPrivateHost(hostname: string): boolean {

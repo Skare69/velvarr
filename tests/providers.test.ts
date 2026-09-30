@@ -18,7 +18,7 @@ import {
   type Fixture,
 } from "./fixture.ts";
 
-import { AppError } from "../src/server/http.ts";
+import { AppError, isLoopbackHost } from "../src/server/http.ts";
 import {
   crossProviderLink,
   fetchProviderArtwork,
@@ -886,6 +886,18 @@ test("artwork URL gate: https + provider hosts only, derived from live records",
     false,
   );
   assert.equal(isProviderImageUrl("not a url").ok, false);
+  // A DNS name beginning "127." is an attacker-controlled hostname, not the
+  // loopback literal (architecture review v0.34.0). isLoopbackHost matches
+  // only literal 127.0.0.0/8 IPv4, "localhost" and "::1" — otherwise the
+  // artwork proxy fetches whatever its DNS points at.
+  assert.equal(isLoopbackHost("127.attacker.example"), false);
+  assert.equal(isLoopbackHost("127.0.0.1"), true);
+  assert.equal(isLoopbackHost("localhost"), true);
+  assert.equal(isLoopbackHost("::1"), true);
+  assert.equal(
+    isProviderImageUrl("http://127.attacker.example/x.jpg").ok,
+    false,
+  );
 });
 
 test("artwork fetch: enforces content type, byte cap, and never sends credentials", async () => {
