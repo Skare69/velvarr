@@ -256,6 +256,19 @@ test("parseBrowseQuery round-trips pinned keys and rejects malformed input", () 
   });
   assert.equal(parseBrowseQuery(new URLSearchParams()).type, "all");
   assert.equal(parseBrowseQuery(new URLSearchParams()).perPage, 24);
+  assert.equal(
+    parseBrowseQuery(new URLSearchParams("performerStarred=1"))
+      .performerStarred,
+    true,
+  );
+  assert.equal(
+    "performerStarred" in parseBrowseQuery(new URLSearchParams()),
+    false,
+  );
+  assert.throws(
+    () => parseBrowseQuery(new URLSearchParams("performerStarred=yes")),
+    /performerStarred must be one of: 1/,
+  );
   // TPDB site slugs are studio identity beside the uuid.
   assert.equal(
     parseBrowseQuery(new URLSearchParams("studioTpdb=evilangel")).studioTpdb,
@@ -1566,4 +1579,47 @@ test("planBrowseSides derives order: filmography claims none, defaults are relea
   const native = planBrowseSides(planQuery({ type: "movie", sort: "title" }));
   assert.deepEqual(native.nativeSort, { key: "title" });
   assert.equal(native.mergeOrder, undefined);
+});
+
+test("planBrowseSides routes the starred-performer filter: stashdb scenes only, refuse movies and performer combos", () => {
+  const starred = planBrowseSides(planQuery({ performerStarred: true }));
+  assert.deepEqual(starred.sides, ["stashdb"]);
+  assert.equal(starred.filmography, false);
+  assert.deepEqual(
+    planBrowseSides(
+      planQuery({ performerStarred: true, studioStashdb: uuid(7) }),
+    ).sides,
+    ["stashdb"],
+  );
+  assert.throws(
+    () => planBrowseSides(planQuery({ performerStarred: true, type: "movie" })),
+    /A starred-performer filter cannot apply to movies; browse All or Scenes\./,
+  );
+  assert.throws(
+    () =>
+      planBrowseSides(
+        planQuery({ performerStarred: true, performerTpdb: uuid(1) }),
+      ),
+    /A starred-performer filter cannot be combined with a TPDB performer\./,
+  );
+  assert.throws(
+    () =>
+      planBrowseSides(
+        planQuery({ performerStarred: true, performerStashdb: uuid(6) }),
+      ),
+    /A starred-performer filter cannot be combined with a StashDB performer\./,
+  );
+});
+
+test("browseTitles with starred and no StashDB-side follows returns an honest empty page before any upstream call", async () => {
+  const page = await browseTitles(planQuery({ performerStarred: true }), []);
+  assert.deepEqual(page, {
+    items: [],
+    page: 1,
+    perPage: 60,
+    hasMore: false,
+    total: 0,
+    totalCountKnown: true,
+    errors: [],
+  });
 });

@@ -64,6 +64,7 @@ export type BrowseQuery = {
   studioStashdb?: string;
   performerTpdb?: string;
   performerStashdb?: string;
+  performerStarred?: true;
   studioMode: "exact" | "withChildren";
   year?: number;
   date?: string;
@@ -231,6 +232,11 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
     throw invalidQuery("perPage must be an integer between 1 and 100.");
   }
   const q = params.get("q")?.trim();
+  const performerStarred = parseEnum(
+    params.get("performerStarred"),
+    ["1"],
+    "performerStarred",
+  );
   return {
     type: type ?? "all",
     ...(q !== undefined && q !== "" ? { q } : {}),
@@ -244,6 +250,9 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
       performerTpdb: parseId(params, "performerTpdb"),
       performerStashdb: parseId(params, "performerStashdb"),
     }),
+    ...(performerStarred !== undefined
+      ? { performerStarred: true as const }
+      : {}),
     studioMode: studioMode ?? "exact",
     ...(year !== undefined ? { year } : {}),
     ...(date !== "" && dateOperation !== undefined
@@ -545,6 +554,7 @@ function nativeQuery(
     provider: CatalogProvider;
     includeIds: string[];
     excludeIds: string[];
+    performerIds?: string[];
   },
   sort: SortOrder | undefined,
   filmography: boolean,
@@ -586,9 +596,11 @@ function nativeQuery(
     provider: "stashdb",
     kind: "scene",
     ...(query.q !== undefined ? { query: query.q } : {}),
-    ...(query.performerStashdb !== undefined
-      ? { performer: query.performerStashdb }
-      : {}),
+    ...(plan.performerIds !== undefined
+      ? { performers: plan.performerIds }
+      : query.performerStashdb !== undefined
+        ? { performer: query.performerStashdb }
+        : {}),
     ...(query.studioStashdb !== undefined
       ? { studio: query.studioStashdb, studioMode: query.studioMode }
       : {}),
@@ -658,6 +670,27 @@ export function planBrowseSides(query: BrowseQuery): BrowsePlan {
   if (query.studioTpdb !== undefined && query.type === "scene") {
     refuse(
       "A TPDB studio filter cannot apply to scenes; browse All or Movies.",
+    );
+  }
+  if (query.performerStarred !== undefined && query.type === "movie") {
+    refuse(
+      "A starred-performer filter cannot apply to movies; browse All or Scenes.",
+    );
+  }
+  if (
+    query.performerStarred !== undefined &&
+    query.performerTpdb !== undefined
+  ) {
+    refuse(
+      "A starred-performer filter cannot be combined with a TPDB performer.",
+    );
+  }
+  if (
+    query.performerStarred !== undefined &&
+    query.performerStashdb !== undefined
+  ) {
+    refuse(
+      "A starred-performer filter cannot be combined with a StashDB performer.",
     );
   }
   if (query.studioMode === "withChildren") {
@@ -751,7 +784,8 @@ export function planBrowseSides(query: BrowseQuery): BrowsePlan {
   const movieWanted =
     query.type !== "scene" &&
     (query.performerStashdb === undefined || bothPerformers) &&
-    (query.studioStashdb === undefined || query.studioTpdb !== undefined);
+    (query.studioStashdb === undefined || query.studioTpdb !== undefined) &&
+    query.performerStarred === undefined;
   const sceneWanted =
     query.type !== "movie" &&
     (!filmography || bothPerformers) &&
@@ -769,8 +803,22 @@ export function planBrowseSides(query: BrowseQuery): BrowsePlan {
 export async function browseTitles(
   query: BrowseQuery,
   hiddenTags: CatalogTagSelection[],
+  starredPerformerIds: string[] = [],
 ): Promise<BrowsePage> {
   const plan = planBrowseSides(query);
+  if (query.performerStarred === true && starredPerformerIds.length === 0) {
+    // Starred but the account follows no StashDB-side performer: nothing can
+    // match, provably, before any upstream call.
+    return {
+      items: [],
+      page: query.page,
+      perPage: query.perPage,
+      hasMore: false,
+      total: 0,
+      totalCountKnown: true,
+      errors: [],
+    };
+  }
   const filmography = plan.filmography;
   const nativeSort = plan.nativeSort;
   const mergeOrder = plan.mergeOrder;
@@ -792,6 +840,7 @@ export async function browseTitles(
     localFiltered: boolean;
     localInclude: CatalogTagSelection[];
     localYear?: number;
+    performerIds?: string[];
   }[] = [];
   if (movieWanted && tpdbIncludes !== undefined) {
     plans.push({
@@ -824,6 +873,8 @@ export async function browseTitles(
         query.year !== undefined,
       localInclude: [],
       localYear: query.year,
+      performerIds:
+        query.performerStarred === true ? starredPerformerIds : undefined,
     });
   }
   if (plans.length === 0) {

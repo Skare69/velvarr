@@ -710,6 +710,7 @@ function browsePath(f: {
   studioStashdb: string;
   performerTpdb: string;
   performerStashdb: string;
+  performerStarred: boolean;
   studioMode: string;
   year: string;
   date: string;
@@ -728,6 +729,7 @@ function browsePath(f: {
   if (f.studioStashdb) qs.set("studioStashdb", f.studioStashdb);
   if (f.performerTpdb) qs.set("performerTpdb", f.performerTpdb);
   if (f.performerStashdb) qs.set("performerStashdb", f.performerStashdb);
+  if (f.performerStarred) qs.set("performerStarred", "1");
   if (f.studioMode) qs.set("studioMode", f.studioMode);
   if (f.year) qs.set("year", f.year);
   if (f.date) {
@@ -792,6 +794,7 @@ export function useBrowseTo(): (filter: BrowseFilter) => void {
         date_operation: null,
         performerTpdb: null,
         performerStashdb: null,
+        performerStarred: null,
         studioTpdb: null,
         studioStashdb: null,
         studioMode: null,
@@ -860,6 +863,7 @@ export function TitlesView() {
   const studioStashdb = params.get("studioStashdb") ?? "";
   const performerTpdb = params.get("performerTpdb") ?? "";
   const performerStashdb = params.get("performerStashdb") ?? "";
+  const performerStarred = params.get("performerStarred") === "1";
   const studioMode =
     params.get("studioMode") === "withChildren" ? "withChildren" : "";
   const year = params.get("year") ?? "";
@@ -932,6 +936,7 @@ export function TitlesView() {
         studioStashdb,
         performerTpdb,
         performerStashdb,
+        performerStarred,
         studioMode,
         year,
         date,
@@ -950,6 +955,7 @@ export function TitlesView() {
       studioStashdb,
       performerTpdb,
       performerStashdb,
+      performerStarred,
       studioMode,
       year,
       date,
@@ -988,7 +994,9 @@ export function TitlesView() {
         // server refuses both ids with a kind), so the tab visibly drops
         // the chip that cannot run on the target kind — the same clamp
         // the sort gets above.
-        ...(t === "movie" ? { performerStashdb: null } : {}),
+        ...(t === "movie"
+          ? { performerStashdb: null, performerStarred: null }
+          : {}),
         ...(t === "scene" ? { performerTpdb: null } : {}),
       });
     },
@@ -1040,6 +1048,10 @@ export function TitlesView() {
     (id: string) => setP({ performerStashdb: id, page: null }),
     [setP],
   );
+  const onStarred = useCallback(
+    (on: boolean) => setP({ performerStarred: on ? "1" : null, page: null }),
+    [setP],
+  );
   const onYear = useCallback(
     (v: string) =>
       setP({ year: v || null, date: null, date_operation: null, page: null }),
@@ -1087,6 +1099,7 @@ export function TitlesView() {
       date_operation: null,
       performerTpdb: null,
       performerStashdb: null,
+      performerStarred: null,
       studioTpdb: null,
       studioStashdb: null,
       studioMode: null,
@@ -1104,6 +1117,7 @@ export function TitlesView() {
     (date ? 1 : 0) +
     (performerTpdb ? 1 : 0) +
     (performerStashdb ? 1 : 0) +
+    (performerStarred ? 1 : 0) +
     (studioTpdb ? 1 : 0) +
     (studioStashdb ? 1 : 0) +
     (studioMode ? 1 : 0) +
@@ -1172,6 +1186,15 @@ export function TitlesView() {
         key="performerStashdb"
         label={`Performer: ${filterName("stashdb", "performer", performerStashdb)} (StashDB)`}
         onRemove={() => setP({ performerStashdb: null, page: null })}
+      />,
+    );
+  }
+  if (performerStarred) {
+    chips.push(
+      <FilterChip
+        key="performerStarred"
+        label="Performer: my starred performers"
+        onRemove={() => setP({ performerStarred: null, page: null })}
       />,
     );
   }
@@ -1406,6 +1429,25 @@ export function TitlesView() {
               : onPerformerStashdb(performerId)
           }
         />
+        <div>
+          <label
+            className="label flex items-center gap-2"
+            htmlFor="titles-starred"
+          >
+            <input
+              id="titles-starred"
+              type="checkbox"
+              className="check"
+              checked={performerStarred}
+              onChange={(e) => onStarred(e.target.checked)}
+            />
+            My starred performers
+          </label>
+          <p className="cat-note">
+            Scenes featuring any performer you follow. Performers known only to
+            TPDB cannot match this filter.
+          </p>
+        </div>
         <YearBox
           id="titles-year"
           value={year}

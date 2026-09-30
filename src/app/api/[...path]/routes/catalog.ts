@@ -20,6 +20,7 @@ import {
   getContentPreferences,
   getPerformerLink,
   isObservationStale,
+  listFollows,
   listRequests,
   upsertCatalogRecord,
 } from "../../../../server/storage.ts";
@@ -483,10 +484,25 @@ export async function browseRoute(
   ctx: AuthContext,
 ): Promise<Response> {
   const hiddenTags = getContentPreferences(ctx.account.id).hiddenTags;
-  const page = await browseTitles(
-    parseBrowseQuery(new URL(request.url).searchParams),
-    hiddenTags,
-  );
+  const parsedQuery = parseBrowseQuery(new URL(request.url).searchParams);
+  // Only StashDB-side identities can match — TPDB has no multi-performer
+  // criterion (ponytail: TPDB-only follows are invisible to this filter; N
+  // filmography streams if movies ever need it).
+  const starredPerformerIds =
+    parsedQuery.performerStarred === true
+      ? [
+          ...new Set(
+            listFollows(ctx.account.id).flatMap((follow) => {
+              if (follow.reference.provider === "stashdb")
+                return [follow.reference.id];
+              if (follow.linked?.provider === "stashdb")
+                return [follow.linked.id];
+              return [];
+            }),
+          ),
+        ]
+      : [];
+  const page = await browseTitles(parsedQuery, hiddenTags, starredPerformerIds);
   return json({ ...page, hiddenTagCount: hiddenTags.length });
 }
 

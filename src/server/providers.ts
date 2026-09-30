@@ -1049,6 +1049,9 @@ export type CatalogSearchQuery =
       kind: "scene";
       query?: string;
       performer?: string;
+      /** Any-of performer inclusion (INCLUDES) for the starred-performers
+       * browse filter: multiple ids, never combined with `performer`. */
+      performers?: string[];
       studio?: string;
       /** Only real on a StashDB scene search paired with `studio`. Omitted or
        * "exact" keeps the studios INCLUDES criterion (this studio only);
@@ -1688,6 +1691,12 @@ export async function searchCatalog(
   if (query.performer !== undefined) {
     input.performers = {
       value: [requireStashPerformerId(query.performer)],
+      modifier: "INCLUDES",
+    };
+  } else if (query.performers !== undefined) {
+    // Any-of (INCLUDES): the starred-performers browse filter.
+    input.performers = {
+      value: query.performers.map(requireStashPerformerId),
       modifier: "INCLUDES",
     };
   }
