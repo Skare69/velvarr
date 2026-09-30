@@ -47,13 +47,12 @@ import {
   useSession,
   useTapReveal,
 } from "./shared.tsx";
+import { TitlesView, useBrowseTo } from "./catalog.tsx";
 import {
   DetailSections,
-  TitlesView,
-  useBrowseTo,
   type DetailPayload,
   type DetailTarget,
-} from "./catalog.tsx";
+} from "./catalog-detail.tsx";
 import { PreferencesDialog } from "./preferences.tsx";
 import { PerformerView } from "./performer.tsx";
 import { DiscoverShelves, FacetsView, RailSkeleton } from "./discover.tsx";

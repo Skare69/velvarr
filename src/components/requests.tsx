@@ -13,7 +13,7 @@ import {
   useCatalogSummary,
   useSession,
 } from "./shared";
-import { acquisitionText } from "./catalog";
+import { acquisitionText } from "./catalog-detail";
 import "./views.css";
 import type {
   MediaReference,
