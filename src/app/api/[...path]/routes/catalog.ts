@@ -29,7 +29,6 @@ import { suggestTags } from "../../../../server/judgment.ts";
 import { AppError } from "../../../../server/http.ts";
 import { imageResponse } from "./library.ts";
 import {
-  crossProviderLink,
   fetchProviderArtwork,
   getCatalogDetail,
   isProviderImageUrl,
@@ -42,6 +41,7 @@ import {
   type CatalogSortKey,
   type ReleaseDateOperation,
 } from "../../../../server/providers.ts";
+import { crossProviderLink } from "../../../../server/identity-links.ts";
 import {
   browseTitles,
   parseBrowseQuery,

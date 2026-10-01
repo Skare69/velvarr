@@ -21,10 +21,12 @@ import {
 import { AppError, isLoopbackHost } from "../src/server/http.ts";
 import {
   crossProviderLink,
+  identityLinkKey,
+} from "../src/server/identity-links.ts";
+import {
   fetchProviderArtwork,
   getCatalogDetail,
   getProviderStatus,
-  identityLinkKey,
   isProviderImageUrl,
   linkedPerformerCounterpart,
   resolveSort,
