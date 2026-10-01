@@ -21,7 +21,7 @@ const config = {
   // (measured: 5–27 flaky failures at default fan-out, green at ≤4 suites).
   commandRunner: {
     command:
-      "node --experimental-strip-types --test --test-concurrency=1 tests/status.test.ts tests/tags.test.ts tests/related.test.ts tests/browse.test.ts tests/providers.test.ts tests/api.test.ts tests/removal.test.ts tests/approvals.test.ts tests/decisions.test.ts tests/names.test.ts",
+      "node --experimental-strip-types --test --test-concurrency=1 tests/status.test.ts tests/tags.test.ts tests/related.test.ts tests/browse.test.ts tests/browse-items.test.ts tests/providers.test.ts tests/api.test.ts tests/removal.test.ts tests/approvals.test.ts tests/decisions.test.ts tests/names.test.ts",
   },
   // The command runner only reports an exit code, so per-test coverage is
   // impossible; Stryker runs every mutant against the whole scoped command.
@@ -42,16 +42,20 @@ const config = {
   // No `incremental` here: with the command runner a stale cache replayed
   // statuses from an older command (one replay reported decisions.ts at 0%
   // that the current suite kills completely). The honest cost is the full
-  // run: 978 mutants × ~19 s scoped ÷ 8 workers ≈ 36 min.
+  // run: ~21 min at 1025 mutants (2026-10-01 measurement).
   reporters: ["clear-text", "progress"],
   // stryker.log (cwd) captures the full run including worker deaths; the
   // console progress lines survive on stdout.
   fileLogLevel: "trace",
-  // break is the measured clean-run score (79.96), floored; a regression
-  // below it fails the run. Accepted survivors: display-copy strings, the
-  // REQUESTS_CHANGED event name, and empty-array shape defaults asserted
-  // nowhere — vocabulary and shape, not decision logic.
-  thresholds: { high: 85, low: 75, break: 79 },
+  // break is the measured clean-run score (82.54, 2026-10-01, the first run
+  // with the endless-scroll suite in the runner: browse-items.ts 11/11
+  // killed), floored; a regression below it fails the run. Accepted
+  // survivors: display-copy strings, the REQUESTS_CHANGED event name,
+  // empty-array shape defaults asserted nowhere, and the fetch-param
+  // conditionals and sort comparators in browse.ts/contracts.ts/related.ts
+  // that the provider fixtures assert only loosely — vocabulary, shape and
+  // ordering, not dedupe/merge logic.
+  thresholds: { high: 85, low: 75, break: 82 },
 };
 
 export default config;
