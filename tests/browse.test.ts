@@ -741,8 +741,55 @@ test("provider outage keeps the healthy source visible and reports the failure",
       assert.equal(page.errors.length, 1);
       assert.equal(page.errors[0]!.provider, "tpdb");
       assert.equal(page.totalCountKnown, false);
-      // An errored source must never be reported as a proven end.
-      assert.equal(page.hasMore, true);
+      // Both streams are done (the errored one exhausted itself on the
+      // failed fetch): hasMore ends instead of baiting endless empty pages.
+      assert.equal(page.hasMore, false);
+    },
+  );
+});
+
+test("a partial outage ends the browse: no page offers endless empty continuation", async () => {
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [{ rows: [], next: null, total: 0 }],
+      scenes: { count: 1, rows: [stashRow(uuid(3), "Survivor", "2024-06-01")] },
+      tpdbMoviesStatus: 500,
+    }),
+    async () => {
+      const first = await browseTitles(
+        {
+          type: "all",
+          include: [],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      assert.deepEqual(
+        first.items.map((d) => d.title),
+        ["Survivor"],
+      );
+      assert.equal(first.hasMore, false);
+      // Whatever still asks for the next page gets the named error and
+      // again a proven end — never a fake continuation.
+      const second = await browseTitles(
+        {
+          type: "all",
+          include: [],
+          exclude: [],
+          studioMode: "exact",
+          page: 2,
+          perPage: 10,
+        },
+        [],
+      );
+      assert.deepEqual(second.items, []);
+      assert.equal(second.errors.length, 1);
+      assert.equal(second.errors[0]!.provider, "tpdb");
+      assert.equal(second.hasMore, false);
     },
   );
 });

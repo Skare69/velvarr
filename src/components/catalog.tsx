@@ -944,28 +944,33 @@ export function TitlesView() {
       try {
         const page = await api<BrowsePage>(`${basePath}&page=${n}`);
         if (seqRef.current !== seq) return;
-        setAcc((prev) =>
-          mode === "reset" || prev === null
-            ? {
-                items: page.items,
-                page: n,
-                hasMore: page.hasMore,
-                total: page.total,
-                totalCountKnown: page.totalCountKnown,
-                errors: page.errors,
-                hiddenTagCount: page.hiddenTagCount ?? 0,
-              }
-            : {
-                ...prev,
-                items: mergePageItems(prev.items, page.items),
-                page: n,
-                hasMore: page.hasMore,
-                ...(page.total !== undefined ? { total: page.total } : {}),
-                totalCountKnown: page.totalCountKnown,
-                errors: page.errors,
-                hiddenTagCount: page.hiddenTagCount ?? prev.hiddenTagCount,
-              },
-        );
+        setAcc((prev) => {
+          if (mode === "reset" || prev === null) {
+            return {
+              items: page.items,
+              page: n,
+              hasMore: page.hasMore,
+              total: page.total,
+              totalCountKnown: page.totalCountKnown,
+              errors: page.errors,
+              hiddenTagCount: page.hiddenTagCount ?? 0,
+            };
+          }
+          const items = mergePageItems(prev.items, page.items);
+          return {
+            ...prev,
+            items,
+            page: n,
+            // A page that adds no items cannot progress: end automatic
+            // pagination, or the sentinel re-fires forever. Named errors
+            // stay visible; retry refetches from page 1.
+            hasMore: items.length > prev.items.length ? page.hasMore : false,
+            ...(page.total !== undefined ? { total: page.total } : {}),
+            totalCountKnown: page.totalCountKnown,
+            errors: page.errors,
+            hiddenTagCount: page.hiddenTagCount ?? prev.hiddenTagCount,
+          };
+        });
       } catch (e) {
         if (seqRef.current !== seq) return;
         setError(messageOf(e));

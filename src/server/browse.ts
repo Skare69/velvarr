@@ -532,9 +532,11 @@ async function mergeStreams(
       totalKnown = true;
     }
   }
-  // A source error means this page may be incomplete: claim continuation
-  // rather than a false end. Exhaustion is the only proven stop.
-  const hasMore = errors.length > 0 || !exhausted;
+  // An errored stream exhausted itself on its failed fetch (Stream.fetch
+  // marks it so), so once every stream is done, further pages would repeat
+  // this result forever: the browse ends. The named errors above still say
+  // the page may be incomplete; the client's retry refetches from page 1.
+  const hasMore = !exhausted;
   return {
     items,
     page: Math.floor(start / count) + 1,
