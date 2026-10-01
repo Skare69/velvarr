@@ -10,6 +10,7 @@ import {
   imgSrc,
   ItemImage,
   messageOf,
+  useApiGet,
   useCatalogSummary,
   useSession,
 } from "./shared";
@@ -254,8 +255,11 @@ type Row = RequestListItem;
 
 export function RequestsView() {
   const { account, providers } = useSession();
-  const [rows, setRows] = useState<Row[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { data, error, reload } = useApiGet<{ requests: Row[] }>(
+    "/api/requests",
+    [],
+  );
+  const rows = data === null ? null : data.requests;
   const [busyId, setBusyId] = useState<string | null>(null);
   const busyRef = useRef(false);
   const [rowError, setRowError] = useState<{
@@ -266,17 +270,11 @@ export function RequestsView() {
 
   const isStaff = account.role === "admin" || account.role === "moderator";
 
-  const load = useCallback(() => {
-    setError(null);
-    api<{ requests: Row[] }>("/api/requests")
-      .then((d) => {
-        setRows(d.requests);
-        window.dispatchEvent(new Event(REQUESTS_CHANGED));
-      })
-      .catch((e: unknown) => setError(messageOf(e)));
-  }, []);
-
-  useEffect(load, [load]);
+  // Old load dispatched this on every successful read; data identity marks
+  // each read for the pending-approvals badge consumer.
+  useEffect(() => {
+    if (data !== null) window.dispatchEvent(new Event(REQUESTS_CHANGED));
+  }, [data]);
 
   // Poll only while something is actually moving and the tab is watching.
   const anyDownloading =
@@ -286,18 +284,18 @@ export function RequestsView() {
     // ponytail: fixed 15s client poll over the worker's 60s recheck; add a
     // push channel only if operators need sub-minute progress movement.
     const tick = () => {
-      if (document.visibilityState === "visible") load();
+      if (document.visibilityState === "visible") reload();
     };
     const id = window.setInterval(tick, 15_000);
     const onVisible = () => {
-      if (document.visibilityState === "visible") load();
+      if (document.visibilityState === "visible") reload();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       window.clearInterval(id);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [anyDownloading, load]);
+  }, [anyDownloading, reload]);
 
   const decide = useCallback(
     (
@@ -316,7 +314,7 @@ export function RequestsView() {
           setAnnouncement(`Request ${decision}.`);
           busyRef.current = false;
           setBusyId(null);
-          load(); // re-read; server truth, no optimism
+          reload(); // re-read; server truth, no optimism
         })
         .catch((e: unknown) => {
           const msg = decisionError(e);
@@ -326,7 +324,7 @@ export function RequestsView() {
           setRowError({ id: record.id, message: msg });
         });
     },
-    [load],
+    [reload],
   );
 
   const groups = useMemo(
@@ -344,7 +342,11 @@ export function RequestsView() {
   if (error !== null) {
     // Provider/server outage is an error with retry, never an empty state.
     content = (
-      <ErrorPanel title="Requests unavailable" message={error} onRetry={load} />
+      <ErrorPanel
+        title="Requests unavailable"
+        message={error}
+        onRetry={reload}
+      />
     );
   } else if (rows === null) {
     content = (
@@ -438,7 +440,7 @@ export function RequestsView() {
           className="btn shrink-0"
           onClick={() => {
             setRowError(null);
-            load();
+            reload();
           }}
         >
           Refresh

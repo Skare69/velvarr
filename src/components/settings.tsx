@@ -18,6 +18,7 @@ import {
   ErrorPanel,
   ForbiddenPanel,
   messageOf,
+  useApiGet,
   useSession,
 } from "./shared.tsx";
 import { LimitsPanel, ReleaseStatusPanel } from "./limits.tsx";
@@ -572,41 +573,34 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
 }
 
 function WhisparrCard({ onForbidden }: { onForbidden: () => void }) {
-  const [status, setStatus] = useState<WhisparrStatus | null>(null);
+  const {
+    data: status,
+    error,
+    err,
+    loading,
+    reload,
+  } = useApiGet<WhisparrStatus>("/api/admin/whisparr", []);
   const [checkedAt, setCheckedAt] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [ready, setReady] = useState(false);
-
-  const load = useCallback(() => {
-    setLoading(true);
-    setError(null);
-    api<WhisparrStatus>("/api/admin/whisparr")
-      .then((s) => {
-        setStatus(s);
-        setCheckedAt(new Date().toLocaleTimeString());
-        setReady(true);
-        setLoading(false);
-      })
-      .catch((e) => {
-        if (e instanceof ApiError && e.status === 403) onForbidden();
-        else {
-          setError(messageOf(e));
-          setReady(true);
-          setLoading(false);
-        }
-      });
-  }, [onForbidden]);
+  const ready = status !== null || error !== null;
 
   useEffect(() => {
-    load();
-  }, [load]);
+    if (status !== null) setCheckedAt(new Date().toLocaleTimeString());
+  }, [status]);
+
+  useEffect(() => {
+    if (err !== null && err.status === 403) onForbidden();
+  }, [err, onForbidden]);
 
   return (
     <div className="panel p-5">
       <div className="flex items-center justify-between gap-3">
         <h3 className="font-semibold">Whisparr</h3>
-        <button type="button" className="btn" onClick={load} disabled={loading}>
+        <button
+          type="button"
+          className="btn"
+          onClick={reload}
+          disabled={loading}
+        >
           {loading ? "Checking…" : "Refresh"}
         </button>
       </div>
@@ -621,7 +615,7 @@ function WhisparrCard({ onForbidden }: { onForbidden: () => void }) {
           <ErrorPanel
             title="Whisparr unavailable"
             message={error}
-            onRetry={load}
+            onRetry={reload}
           />
         </div>
       ) : !status?.configured ? (
@@ -678,41 +672,34 @@ function WhisparrCard({ onForbidden }: { onForbidden: () => void }) {
   );
 }
 function JellyfinCard({ onForbidden }: { onForbidden: () => void }) {
-  const [status, setStatus] = useState<JellyfinStatus | null>(null);
+  const {
+    data: status,
+    error,
+    err,
+    loading,
+    reload,
+  } = useApiGet<JellyfinStatus>("/api/admin/jellyfin", []);
   const [checkedAt, setCheckedAt] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [ready, setReady] = useState(false);
-
-  const load = useCallback(() => {
-    setLoading(true);
-    setError(null);
-    api<JellyfinStatus>("/api/admin/jellyfin")
-      .then((s) => {
-        setStatus(s);
-        setCheckedAt(new Date().toLocaleTimeString());
-        setReady(true);
-        setLoading(false);
-      })
-      .catch((e) => {
-        if (e instanceof ApiError && e.status === 403) onForbidden();
-        else {
-          setError(messageOf(e));
-          setReady(true);
-          setLoading(false);
-        }
-      });
-  }, [onForbidden]);
+  const ready = status !== null || error !== null;
 
   useEffect(() => {
-    load();
-  }, [load]);
+    if (status !== null) setCheckedAt(new Date().toLocaleTimeString());
+  }, [status]);
+
+  useEffect(() => {
+    if (err !== null && err.status === 403) onForbidden();
+  }, [err, onForbidden]);
 
   return (
     <div className="panel p-5">
       <div className="flex items-center justify-between gap-3">
         <h3 className="font-semibold">Jellyfin</h3>
-        <button type="button" className="btn" onClick={load} disabled={loading}>
+        <button
+          type="button"
+          className="btn"
+          onClick={reload}
+          disabled={loading}
+        >
           {loading ? "Testing…" : "Test connection"}
         </button>
       </div>
@@ -726,7 +713,7 @@ function JellyfinCard({ onForbidden }: { onForbidden: () => void }) {
           <ErrorPanel
             title="Jellyfin unavailable"
             message={error}
-            onRetry={load}
+            onRetry={reload}
           />
         </div>
       ) : !status?.configured ? (
