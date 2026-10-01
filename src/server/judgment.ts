@@ -45,6 +45,14 @@ function typeSafe(stored: string | undefined): TypeSafeClient | null {
   return cached.client;
 }
 
+// Answered same-work judgments: the answer depends only on the two
+// identities, and availability re-asks the same near-miss pairs on every
+// check. Failures are never stored, so an outage cannot pin a "no".
+// ponytail: in-memory, 2,000-pair FIFO cap; persist only if restarts make the
+// re-asking cost visible.
+const SAME_WORK_MEMO_MAX = 2000;
+const sameWorkMemo = new Map<string, boolean>();
+
 /** P(same work) between the requested record and a library candidate. The
  * year policy stays in code: two records with contradicting years are never
  * the same work, and no call is spent asking. */
@@ -58,6 +66,9 @@ export async function sameWork(
   if (a.year !== undefined && b.year !== undefined && a.year !== b.year) {
     return false;
   }
+  const memoKey = JSON.stringify([a, b]);
+  const known = sameWorkMemo.get(memoKey);
+  if (known !== undefined) return known;
   try {
     const res = await ts.systemOne({
       state: { requested: a, candidate: b },
@@ -68,7 +79,12 @@ export async function sameWork(
         }),
       },
     });
-    return res.answers.sameWork.noul >= SAME_WORK_P;
+    const same = res.answers.sameWork.noul >= SAME_WORK_P;
+    if (sameWorkMemo.size >= SAME_WORK_MEMO_MAX) {
+      sameWorkMemo.delete(sameWorkMemo.keys().next().value!);
+    }
+    sameWorkMemo.set(memoKey, same);
+    return same;
   } catch {
     // An outage or a malformed answer degrades to exact matching, never
     // to a guess.

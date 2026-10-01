@@ -74,12 +74,16 @@ import { getConfig } from "./storage.ts";
 const META_CACHE_TTL_MS = 10 * 60_000;
 const META_CACHE_MAX = 500;
 const metaCache = new Map<string, { at: number; bytes: Uint8Array }>();
+// Identical reads already in flight share one upstream request: a card's
+// detail and availability lanes ask for the same record at the same moment.
+const metaInFlight = new Map<string, Promise<Uint8Array>>();
 const tpdbTagNumbers = new Map<string, number>();
 
 /** Test seam: the suite reuses one fixture upstream per file; tests reset
  * between phases so cached reads never mask a scripted outage. */
 export function resetMetaCache(): void {
   metaCache.clear();
+  metaInFlight.clear();
   tpdbTagNumbers.clear();
   counterpartMemo.clear();
 }
@@ -130,13 +134,28 @@ export async function requestJson<T>(
   const hit = cacheable ? metaCache.get(key) : undefined;
   if (hit && Date.now() - hit.at < ttl) return parseJson<T>(hit.bytes, service);
   try {
-    const bytes = await requestJsonBytes(baseUrl, path, token, {
-      service,
-      method,
-      body: options.body,
-      timeoutMs: options.timeoutMs,
-    });
-    if (cacheable) cachePut(key, bytes);
+    let pending = cacheable ? metaInFlight.get(key) : undefined;
+    if (pending === undefined) {
+      pending = requestJsonBytes(baseUrl, path, token, {
+        service,
+        method,
+        body: options.body,
+        timeoutMs: options.timeoutMs,
+      });
+      if (cacheable) {
+        const own = pending;
+        metaInFlight.set(key, own);
+        own
+          .then(
+            (bytes) => cachePut(key, bytes),
+            () => {},
+          )
+          .finally(() => {
+            if (metaInFlight.get(key) === own) metaInFlight.delete(key);
+          });
+      }
+    }
+    const bytes = await pending;
     return parseJson<T>(bytes, service);
   } catch (error) {
     // Only flaky infrastructure justifies stale data: an outage or timeout

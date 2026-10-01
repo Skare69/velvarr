@@ -60,8 +60,11 @@ export async function availability(
       ...(acquisition?.whisparrTitle
         ? { title: acquisition.whisparrTitle }
         : {}),
+      ...(acquisition?.state === "imported" ? { imported: true } : {}),
       ...(await performerHint(media)),
     },
+    // The one cache-eligible caller: repeated badge calls share one sweep.
+    { cachedSweep: true },
   );
   // Scan lag (hazard 9): Whisparr has imported the item but Jellyfin's fresh
   // check under this caller's token found no authorized match — the library

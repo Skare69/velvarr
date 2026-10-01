@@ -577,6 +577,19 @@ test("requestJson caches metadata reads and serves stale on upstream failure", a
     await requestJson(fixture.origin, "/j", TOKEN);
     await requestJson(fixture.origin, "/j", TOKEN);
     assert.equal(count("/j"), 2);
+    // Concurrent identical cold reads share one upstream request; uncached
+    // Jellyfin reads never coalesce.
+    const [c1, c2] = await Promise.all([
+      requestJson<{ ok: boolean }>(fixture.origin, "/c", TOKEN, cached),
+      requestJson<{ ok: boolean }>(fixture.origin, "/c", TOKEN, cached),
+    ]);
+    assert.deepEqual([c1.ok, c2.ok], [true, true]);
+    assert.equal(count("/c"), 1);
+    await Promise.all([
+      requestJson(fixture.origin, "/jc", TOKEN),
+      requestJson(fixture.origin, "/jc", TOKEN),
+    ]);
+    assert.equal(count("/jc"), 2);
     // StashDB GraphQL reads cache; mutations never do.
     await requestJson(fixture.origin, "/graphql", TOKEN, {
       service: "stashdb",

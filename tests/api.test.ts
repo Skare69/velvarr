@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { Buffer } from "node:buffer";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resetMetaCache } from "../src/server/providers.ts";
+import { resetSweepCache } from "../src/server/jellyfin.ts";
 import { countPendingApprovals } from "../src/lib/approvals.ts";
 import type { RouteDef } from "../src/app/api/[...path]/admission.ts";
 import { routes as authRoutes } from "../src/app/api/[...path]/routes/auth.ts";
@@ -241,6 +242,8 @@ const fx = {
   impersonate: null as string | null, // force /Users/Me identity for regression testing
 
   fail: { items: 0, views: 0, me401: 0 },
+  // Every /Users/{id}/Items hit; the sweep cache test reads the delta.
+  sweepHits: 0,
   // Wired only inside the removal impact test: every request either fixture
   // server sees while it is on, so the test can prove the preview is GET-only.
   journalOn: false,
@@ -411,6 +414,7 @@ async function jellyfinHandler(
       fx.fail.items -= 1;
       return json(res, 500, {});
     }
+    fx.sweepHits += 1;
     const grants = grantsFor(userId ?? undefined);
     const parentId = url.searchParams.get("parentId");
     if (parentId && grants && !grants.includes(parentId))
@@ -2821,6 +2825,8 @@ test("availability: distinct verdicts under the caller's own token", async () =>
   );
 
   // unavailable: an upstream failure is never reported as missing.
+  // Forget any cached sweep so the armed fixture failure actually surfaces.
+  resetSweepCache();
   fx.fail.items = 1;
   const unavailable = await call(
     "GET",
@@ -4524,6 +4530,8 @@ test("scan lag: imported-but-unscanned is awaiting_scan; outage and denial stay 
   assert.equal(detailBody.acquisition?.observationStale, false);
 
   // A Jellyfin outage during scan lag stays unavailable, never awaiting_scan.
+  // Forget any cached sweep so the armed fixture failure actually surfaces.
+  resetSweepCache();
   fx.fail.items = 1;
   const outage = await call(
     "GET",
@@ -4551,6 +4559,107 @@ test("scan lag: imported-but-unscanned is awaiting_scan; outage and denial stay 
     { cookie: member },
   );
   assert.equal((await outcomeOf(gone)).outcome, "missing");
+});
+
+// Sweep cache: one scan per user per window; stale-index verdicts re-check.
+test("availability: cached sweep serves repeated calls; removed title reads missing, gained title reads available", async () => {
+  // Cold cache so the fixture sweep counter measures only this test.
+  resetSweepCache();
+  const probeId = "2a2b3c4d-0000-0000-0000-0000000000c1";
+  const probeItem = "3".repeat(32);
+
+  // (a) A missing title: two calls by the same member hit the fixture's
+  // sweep endpoint only for the first call.
+  const missesBefore = fx.sweepHits;
+  const miss1 = await call("GET", `/api/availability/tpdb/movie/${probeId}`, {
+    cookie: member,
+  });
+  assert.equal((await outcomeOf(miss1)).outcome, "missing");
+  assert.ok(fx.sweepHits > missesBefore, "first call sweeps the fixture");
+  const afterFirst = fx.sweepHits;
+  const miss2 = await call("GET", `/api/availability/tpdb/movie/${probeId}`, {
+    cookie: member,
+  });
+  assert.equal((await outcomeOf(miss2)).outcome, "missing");
+  assert.equal(fx.sweepHits, afterFirst, "second call reuses the cached sweep");
+
+  // Acquire the probe title with path-only hints (no title, so the near-miss
+  // judgment never runs) and add the matching library item.
+  const req = await call("POST", "/api/requests", {
+    cookie: member,
+    body: {
+      media: { provider: "tpdb", kind: "movie", id: probeId },
+    },
+  });
+  assert.equal(req.status, 201);
+  const reqId = ((await req.json()) as { request: { id: string } }).request.id;
+  await call("PATCH", `/api/requests/${reqId}`, {
+    cookie: owner,
+    body: { decision: "approved" },
+  });
+  const acq = getAcquisitionByReference({
+    provider: "tpdb",
+    kind: "movie",
+    id: probeId,
+  });
+  assert.ok(acq);
+  recordAcquisitionObservation(acq.id, {
+    state: "monitoring",
+    item: { whisparrId: 501, path: `/data/whisparr/${probeItem}.mkv` },
+  });
+  fx.items.push({
+    Id: probeItem,
+    Name: "Cache Probe Movie",
+    libraryId: MOVIES_LIB,
+  });
+  const removeProbe = () => {
+    const at = fx.items.findIndex((item) => item.Id === probeItem);
+    if (at !== -1) fx.items.splice(at, 1);
+  };
+  // The cached sweep predates the fixture item; start phase (b) cold.
+  resetSweepCache();
+
+  // (b) Available, then removed from the fixture library: within TTL and
+  // without a reset the wire reads missing, never denied — the stale-index
+  // denial forces one fresh sweep that no longer finds the item.
+  const avail = await call("GET", `/api/availability/tpdb/movie/${probeId}`, {
+    cookie: member,
+  });
+  assert.equal((await outcomeOf(avail)).outcome, "available");
+  removeProbe();
+  const afterRemoval = await call(
+    "GET",
+    `/api/availability/tpdb/movie/${probeId}`,
+    { cookie: member },
+  );
+  assert.equal((await outcomeOf(afterRemoval)).outcome, "missing");
+
+  // (c) Imported while absent reads as scan lag; once the fixture library
+  // gains the item, the very next call (no reset) reads available — the
+  // cached miss is re-checked against a fresh sweep.
+  recordAcquisitionObservation(acq.id, {
+    state: "imported",
+    item: { whisparrId: 501, path: `/data/whisparr/${probeItem}.mkv` },
+  });
+  const lagging = await call("GET", `/api/availability/tpdb/movie/${probeId}`, {
+    cookie: member,
+  });
+  assert.equal((await outcomeOf(lagging)).outcome, "awaiting_scan");
+  fx.items.push({
+    Id: probeItem,
+    Name: "Cache Probe Movie",
+    libraryId: MOVIES_LIB,
+  });
+  const recheckBefore = fx.sweepHits;
+  const back = await call("GET", `/api/availability/tpdb/movie/${probeId}`, {
+    cookie: member,
+  });
+  assert.equal((await outcomeOf(back)).outcome, "available");
+  assert.ok(fx.sweepHits > recheckBefore, "cached miss was re-checked live");
+
+  // Restore the fixture for later tests.
+  removeProbe();
+  resetSweepCache();
 });
 
 // --- M4: hazard 5 — foreign origin rejected on EVERY mutating route ---

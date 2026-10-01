@@ -190,6 +190,37 @@ test("sameWork asks the model and applies the probability gate", async () => {
   }
 });
 
+test("an answered pair is asked once; an outage is never remembered", async () => {
+  process.env.TYPESAFE_API_KEY = "test-key";
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  let down = true;
+  globalThis.fetch = async () => {
+    calls++;
+    if (down) throw new Error("down");
+    return new Response(
+      JSON.stringify({ answers: { sameWork: { type: "noul", noul: 0.93 } } }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+  const requested = { title: "Heat", year: 1995 };
+  const candidate = { title: "Heat (Director's Cut)", year: 1995 };
+  try {
+    // The outage answers false but must not pin that "no" for the pair.
+    assert.equal(await sameWork(requested, candidate), false);
+    const afterOutage = calls;
+    down = false;
+    assert.equal(await sameWork(requested, candidate), true);
+    assert.ok(calls > afterOutage, "the pair is asked again after an outage");
+    const afterAnswer = calls;
+    assert.equal(await sameWork(requested, candidate), true);
+    assert.equal(calls, afterAnswer, "an answered pair is not asked again");
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.TYPESAFE_API_KEY;
+  }
+});
+
 test("contradicting years are refused in code, without a call", async () => {
   process.env.TYPESAFE_API_KEY = "test-key";
   const realFetch = globalThis.fetch;

@@ -926,6 +926,9 @@ type PlaybackHints = {
   year?: number;
   /** Whisparr's stored movie/scene path, before any path mapping. */
   whisparrPath?: string;
+  /** Whisparr reports the file imported; a cached sweep miss is re-checked
+   * live against a fresh sweep before the caller may report scan lag. */
+  imported?: boolean;
 };
 
 interface CandidateItem {
@@ -1075,6 +1078,69 @@ async function sweepVisibleItems(
   return out;
 }
 
+// ponytail: in-memory, 5-minute TTL, 20-user FIFO cap; a persisted
+// provider-id index only if one sweep per window still hurts.
+const SWEEP_TTL_MS = 5 * 60_000;
+const SWEEP_CACHE_MAX = 20;
+// Keyed by server URL + the user id taken from the caller's own /Users/Me
+// read, so one Jellyfin user's sweep is never served to another. Entries
+// hold the in-flight promise: concurrent callers share one sweep.
+const sweepCache = new Map<
+  string,
+  { at: number; items: Promise<CandidateItem[]> }
+>();
+
+/** Test seam: the suite reuses one fixture upstream per file; tests reset
+ * between phases so a cached sweep never masks a scripted library change. */
+export function resetSweepCache(): void {
+  sweepCache.clear();
+}
+
+function sweepCacheInsert(
+  key: string,
+  at: number,
+  items: Promise<CandidateItem[]>,
+): void {
+  // On insert: drop expired entries, then FIFO-evict the oldest at the cap.
+  const cutoff = at - SWEEP_TTL_MS;
+  for (const [k, v] of sweepCache) {
+    if (v.at < cutoff) sweepCache.delete(k);
+  }
+  if (sweepCache.size >= SWEEP_CACHE_MAX) {
+    const oldest = sweepCache.keys().next().value;
+    if (oldest !== undefined) sweepCache.delete(oldest);
+  }
+  sweepCache.delete(key);
+  sweepCache.set(key, { at, items });
+}
+
+/** The caller's visible-item scan, cached per user. Entries older than
+ * notBefore are ignored and replaced by a fresh sweep; the promise is
+ * stored before awaiting so concurrent callers share one sweep. */
+async function cachedSweep(
+  config: IntegrationConfig,
+  userToken: string,
+  userId: string,
+  notBefore: number,
+): Promise<{ at: number; items: Promise<CandidateItem[]> }> {
+  const key = `${config.jellyfin.url}\u0000${userId}`;
+  const hit = sweepCache.get(key);
+  if (hit !== undefined && hit.at >= notBefore) return hit;
+  const at = Date.now();
+  const items = sweepVisibleItems(config, userToken, userId);
+  sweepCacheInsert(key, at, items);
+  // A rejected sweep removes only its own entry — a concurrent replacement
+  // stays — and is never served to a later lookup. The handler also keeps
+  // the rejection handled for callers that never await this promise.
+  void items.catch(() => {
+    const current = sweepCache.get(key);
+    if (current !== undefined && current.items === items) {
+      sweepCache.delete(key);
+    }
+  });
+  return { at, items };
+}
+
 // Verdict for one exactly matched candidate. Every call re-runs under the
 // user token, so item-level policy applies each time. A visible-but-ungranted
 // item is 'denied', never 'missing'; a placeholder or empty file is
@@ -1191,10 +1257,22 @@ async function verdictForItem(
 
 // Per-user availability verdict for one external identity. Runs entirely
 // under the caller's Jellyfin user token, reads existing state only, and
-// never mutates the server. Every call re-sweeps the live catalog, so a
-// persisted Whisparr path is only ever a matching hint: a renamed file, a
-// vanished media source, or a changed edition set re-runs the match and can
-// never resurrect a stale 'available'. Matching precedence, strictest first:
+// never mutates the server. Only the visible-item scan is cached (per user,
+// SWEEP_TTL_MS, when the caller opts in through cachedSweep); everything
+// else stays live on every call: getCurrentUser re-reads the caller's
+// policy, and verdictForItem re-proves every 'available' with fresh
+// Ancestors + PlaybackInfo calls. A persisted Whisparr path is only ever a
+// matching hint: a renamed file, a vanished media source, or a changed
+// edition set re-runs the match and can never resurrect a stale
+// 'available'. A verdict computed from a cached sweep (entry.at < started)
+// is returned only when it is 'available' or a plain 'missing'; any other
+// outcome — denied, ambiguous, unavailable, or a missing whose imported
+// hint would read as scan lag — re-runs ONCE against a forced-fresh sweep
+// and returns that verdict. So a title removed from the library can never
+// read as denied/ambiguous from a stale index, and an imported title's
+// miss is re-checked live, clearing the moment Jellyfin matches it. The
+// remaining staleness is a title added to Jellyfin outside Velvarr reading
+// 'missing' for up to SWEEP_TTL_MS. Matching precedence, strictest first:
 // 1. exact ProviderIds match, compared in-process (no server-side filter
 //    exists on Jellyfin 12.0.0 — verified live);
 // 2. exact Whisparr-to-Jellyfin path correspondence through the configured
@@ -1213,6 +1291,7 @@ export async function resolvePlaybackAccess(
   userToken: string,
   account: Account,
   hints: PlaybackHints,
+  opts?: { cachedSweep?: boolean },
 ): Promise<PlaybackAccess> {
   requireJellyfinConfig(config);
   if (!hints || typeof hints.id !== "string" || hints.id.trim() === "") {
@@ -1225,8 +1304,83 @@ export async function resolvePlaybackAccess(
     };
   }
   try {
+    const started = Date.now();
     const user = await getCurrentUser(config, userToken);
-    const candidates = await sweepVisibleItems(config, userToken, user.id);
+    const first = await resolveFromSweep(
+      config,
+      userToken,
+      user,
+      account,
+      hints,
+      // Fresh sweep by default; cache-eligible callers accept entries from
+      // the last SWEEP_TTL_MS.
+      opts?.cachedSweep === true ? started - SWEEP_TTL_MS : started,
+    );
+    if (
+      first.sweepAt !== null &&
+      first.sweepAt < started &&
+      !cachedSafeVerdict(first.access, hints)
+    ) {
+      // Forced fresh: notBefore = started rejects the entry this verdict
+      // came from but accepts one a concurrent resolve inserted meanwhile,
+      // so concurrent forced-fresh callers still share one new sweep.
+      const fresh = await resolveFromSweep(
+        config,
+        userToken,
+        user,
+        account,
+        hints,
+        started,
+      );
+      return fresh.access;
+    }
+    return first.access;
+  } catch (err) {
+    if (err instanceof AppError && err.upstreamStatus === 401) throw err;
+    if (err instanceof AppError) {
+      return { outcome: "unavailable", reason: err.message };
+    }
+    throw err;
+  }
+}
+
+/** Verdicts that may stand when computed from a cached sweep: 'available'
+ * was just re-proven live by verdictForItem, and a plain 'missing' is only
+ * the documented sweep-TTL staleness. Everything else — denied, ambiguous,
+ * unavailable, or a missing that would mask scan lag for an imported
+ * hint — must re-run against a fresh sweep. */
+function cachedSafeVerdict(
+  verdict: PlaybackAccess,
+  hints: PlaybackHints,
+): boolean {
+  if (verdict.outcome === "available") return true;
+  return verdict.outcome === "missing" && hints.imported !== true;
+}
+
+/** One match attempt: the strictest-first precedence over one set of
+ * candidates, with the per-attempt failure mapping (401 propagates, every
+ * other upstream AppError is 'unavailable'). sweepAt is the cache stamp of
+ * the sweep the verdict was computed from — kept when a later item read
+ * fails, so a removed item's 404 on a cached sweep still earns the fresh
+ * retry — or null when the sweep itself could not be read. */
+async function resolveFromSweep(
+  config: IntegrationConfig,
+  userToken: string,
+  user: ExternalUser,
+  account: Account,
+  hints: PlaybackHints,
+  notBefore: number,
+): Promise<{ access: PlaybackAccess; sweepAt: number | null }> {
+  let sweepAt: number | null = null;
+  try {
+    const { at, items } = await cachedSweep(
+      config,
+      userToken,
+      user.id,
+      notBefore,
+    );
+    sweepAt = at;
+    const candidates = await items;
     const mapped = hints.whisparrPath
       ? mappedPrefix(hints.whisparrPath, config.whisparr?.pathMappings)
       : undefined;
@@ -1237,24 +1391,42 @@ export async function resolvePlaybackAccess(
     );
     if (exact.length > 1) {
       return {
-        outcome: "ambiguous",
-        reason: "Multiple Jellyfin items match this identity.",
+        access: {
+          outcome: "ambiguous",
+          reason: "Multiple Jellyfin items match this identity.",
+        },
+        sweepAt: at,
       };
     }
     if (exact.length === 1) {
-      return await verdictForItem(config, userToken, user, account, exact[0]!);
+      return {
+        access: await verdictForItem(
+          config,
+          userToken,
+          user,
+          account,
+          exact[0]!,
+        ),
+        sweepAt: at,
+      };
     }
     if (await candidatesMayMatch(candidates, hints)) {
       return {
-        outcome: "ambiguous",
-        reason: "Title/year similarity only; administrator review required.",
+        access: {
+          outcome: "ambiguous",
+          reason: "Title/year similarity only; administrator review required.",
+        },
+        sweepAt: at,
       };
     }
-    return { outcome: "missing" };
+    return { access: { outcome: "missing" }, sweepAt: at };
   } catch (err) {
     if (err instanceof AppError && err.upstreamStatus === 401) throw err;
     if (err instanceof AppError) {
-      return { outcome: "unavailable", reason: err.message };
+      return {
+        access: { outcome: "unavailable", reason: err.message },
+        sweepAt,
+      };
     }
     throw err;
   }
