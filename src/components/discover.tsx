@@ -549,9 +549,6 @@ function ShelfSection({
         </h3>
         {hasRail && rail.nav}
       </div>
-      {shelf.description && (
-        <p className="text-sm text-muted">{shelf.description}</p>
-      )}
       {/* A source that failed while its sibling filled the rail still gets
           named — partial success never reads as complete. */}
       {!shelf.error && (shelf.errors?.length ?? 0) > 0 && (
