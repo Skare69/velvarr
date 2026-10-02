@@ -122,12 +122,6 @@ export function ReleaseStatusPanel() {
         "Only a local lab Jellyfin 12.0.0 was exercised. The operator's installed homelab Jellyfin is unproven.",
     },
     {
-      area: "Removal",
-      state: "Not proven",
-      detail:
-        "Removal is implemented but has never been executed against a real system — the entire removal ladder is proven against loopback fixtures only. It stays off unless VELVARR_ENABLE_REMOVAL=1 is set and an account holds the removal grant.",
-    },
-    {
       area: "Container behavior",
       state: "CI only",
       detail:

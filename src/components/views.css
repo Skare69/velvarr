@@ -1,4 +1,4 @@
-/* Supporting views (search, performer, requests, removals): view-scoped CSS.
+/* Supporting views (search, performer, requests): view-scoped CSS.
    Palette tokens and shared component classes (.btn, .panel, .chip, …) live
    in globals.css — this file only adds what those cannot express. */
 
@@ -55,7 +55,7 @@
   );
 }
 
-/* ---------- Requests / Removals rows ---------- */
+/* ---------- Requests rows ---------- */
 
 /* Two-column row on sm+: facts left, badge + actions right; a clean single
    column below (grid auto-stacks, nothing overflows at 390px). */

@@ -225,7 +225,6 @@ function AccountDialog({
   const [enabled, setEnabled] = useState(initial.enabled);
   const [role, setRole] = useState<Role>(initial.role);
   const [autoApprove, setAutoApprove] = useState(initial.autoApprove);
-  const [canRemove, setCanRemove] = useState(initial.canRemove);
   const [libIds, setLibIds] = useState<string[]>(initial.libraryIds);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -234,7 +233,6 @@ function AccountDialog({
     (!owner && enabled !== initial.enabled) ||
     (!owner && role !== initial.role) ||
     (!owner && autoApprove !== initial.autoApprove) ||
-    canRemove !== initial.canRemove ||
     libIds.length !== initial.libraryIds.length ||
     !libIds.every((x) => initial.libraryIds.includes(x));
 
@@ -261,7 +259,6 @@ function AccountDialog({
             enabled: owner ? initial.enabled : enabled,
             role: owner ? initial.role : role,
             autoApprove: owner ? initial.autoApprove : autoApprove,
-            canRemove,
             libraryIds: libIds,
           }),
         },
@@ -343,23 +340,6 @@ function AccountDialog({
             {initial.role === "admin"
               ? "Admin requests are approved the moment they are made."
               : "Lets this user approve their own requests without a moderator."}
-          </p>
-        </div>
-
-        <div>
-          <span className="label">Removals</span>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="check"
-              checked={canRemove}
-              disabled={pending}
-              onChange={(e) => setCanRemove(e.target.checked)}
-            />
-            Can request and approve removals
-          </label>
-          <p className="mt-1 text-xs text-muted">
-            Removal requests also need the operator to enable removals.
           </p>
         </div>
 

@@ -19,9 +19,7 @@ import {
   SceneCard,
   useApiGet,
   useParamsSetter,
-  useSession,
 } from "./shared";
-import { levelLabel } from "./removals";
 import { isDeliverableMedia } from "../lib/contracts";
 import type {
   AcquisitionState,
@@ -33,7 +31,6 @@ import type {
   PlaybackAccess,
   RequestDecision,
   RequestRecord,
-  RemovalRequest,
 } from "../lib/contracts";
 import { REQUESTS_CHANGED } from "../lib/approvals";
 // Detail-seeded names: studio/tag chips label the ids the URL carries —
@@ -202,163 +199,6 @@ function useAvailability(
     [target?.provider, target?.kind, target?.id],
   );
   return data;
-}
-
-/** Error codes from POST /api/removals, mapped faithfully. */
-function removalRequestError(e: unknown): string {
-  if (e instanceof ApiError) {
-    switch (e.code) {
-      case "removal_disabled":
-        return "Removal is turned off by the operator — it cannot be requested right now.";
-      case "account_not_admitted":
-        return "Your account does not have the removal grant — ask an administrator.";
-      case "removal_request_exists":
-        return "A removal request for this item already exists.";
-      case "invalid_reason":
-        return "Give a reason for the removal.";
-      case "invalid_reference":
-        return "This item is not removable media.";
-    }
-  }
-  return messageOf(e);
-}
-
-/** Requester-side removal entry: a reason, never a level — the level is the
- * approver's explicit choice. Rendered only for removable media kinds
- * (movie/scene), at the end of the detail aside. */
-function RemovalAction({
-  target,
-}: {
-  target: { provider: CatalogProvider; kind: MediaKind; id: string };
-}) {
-  const { account } = useSession();
-  const grant = account.canRemove;
-  const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [created, setCreated] = useState<RemovalRequest | null>(null);
-  const [announcement, setAnnouncement] = useState("");
-
-  // One read gives the operator flag (enabled) and this user's existing
-  // removal requests, so the surface never guesses its own availability.
-  const {
-    data,
-    error: loadError,
-    reload,
-  } = useApiGet<{ removals: RemovalRequest[]; enabled: boolean }>(
-    grant ? "/api/removals" : null,
-    [grant, target.provider, target.kind, target.id],
-  );
-
-  const existing =
-    data?.removals.find(
-      (r) =>
-        r.media.provider === target.provider &&
-        r.media.kind === target.kind &&
-        r.media.id === target.id &&
-        (r.decision === "pending" || r.decision === "approved"),
-    ) ?? null;
-  const shown = created ?? existing;
-
-  const submit = () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    api<{ removal: RemovalRequest }>("/api/removals", {
-      method: "POST",
-      body: JSON.stringify({
-        media: {
-          provider: target.provider,
-          kind: target.kind,
-          id: target.id,
-        },
-        reason: reason.trim(),
-      }),
-    })
-      .then((d) => {
-        setCreated(d.removal);
-        setReason("");
-        setAnnouncement(
-          "Removal request submitted — an approver will choose the level.",
-        );
-      })
-      .catch((e: unknown) => {
-        const msg = removalRequestError(e);
-        setError(msg);
-        setAnnouncement(msg);
-        if (
-          e instanceof ApiError &&
-          (e.code === "removal_request_exists" || e.code === "forbidden")
-        )
-          reload(); // surface the server's real state
-      })
-      .finally(() => setBusy(false));
-  };
-
-  if (!grant) return null;
-  return (
-    <section className="cat-section" aria-label="Removal">
-      <h2 className="cat-section-title">Removal</h2>
-      <div className="sr-only" role="status" aria-live="polite">
-        {announcement}
-      </div>
-      {shown ? (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <span
-            className={`chip ${shown.decision === "pending" ? "chip-accent" : ""}`}
-          >
-            Removal {shown.decision}
-          </span>
-          {shown.level !== null && (
-            <span className="chip">Level: {levelLabel(shown.level)}</span>
-          )}
-        </div>
-      ) : loadError !== null ? (
-        <div className="mt-2">
-          <ErrorPanel
-            title="Removal state unavailable"
-            message={loadError}
-            onRetry={reload}
-          />
-        </div>
-      ) : data === null ? (
-        <div className="skel mt-2 h-16 w-full" aria-hidden="true" />
-      ) : data.enabled ? (
-        <form
-          className="mt-2 max-w-prose"
-          onSubmit={(e) => {
-            e.preventDefault();
-            submit();
-          }}
-        >
-          <label htmlFor="removal-reason" className="label">
-            Why should this be removed? (shown to the approver)
-          </label>
-          <textarea
-            id="removal-reason"
-            className="input mt-1"
-            rows={2}
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-          />
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <button
-              type="submit"
-              className="btn btn-accent"
-              disabled={busy || reason.trim() === ""}
-            >
-              {busy ? "Requesting…" : "Request removal"}
-            </button>
-            {error !== null && (
-              <span className="text-sm text-danger" role="alert">
-                {error}
-              </span>
-            )}
-          </div>
-        </form>
-      ) : null}
-    </section>
-  );
 }
 
 function MediaActions({
@@ -885,21 +725,11 @@ export function DetailSections({
               </div>
             </section>
           )}
-
-          {mediaKind && (
-            <RemovalAction
-              target={{
-                provider: target.provider,
-                kind: mediaKind,
-                id: target.id,
-              }}
-            />
-          )}
         </aside>
       </div>
 
       {/* Fetched separately from the detail payload, so the related reads
-          never delay playback, request or removal actions above. */}
+          never delay playback or request actions above. */}
       {mediaKind && (
         <RelatedTitles
           target={{ provider: target.provider, kind: mediaKind, id: target.id }}

@@ -467,7 +467,6 @@ const ICON_PATHS = {
   settings: "M4 7h16M4 17h16M8 4v6M16 14v6",
   users:
     "M14 8a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z M2 21v-2a8 8 0 0 1 16 0v2 M17 4a4 4 0 0 1 0 8m2 3a6 6 0 0 1 3 6",
-  removals: "M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7",
   menu: "M4 6h16M4 12h16M4 18h16",
   close: "m6 6 12 12M6 18 18 6",
   "chevron-left": "m15 5-7 7 7 7",

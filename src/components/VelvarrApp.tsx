@@ -38,7 +38,6 @@ import { PreferencesDialog } from "./preferences.tsx";
 import { DiscoverShelves, FacetsView, RailSkeleton } from "./discover.tsx";
 import { SearchView } from "./search.tsx";
 import { RequestsView } from "./requests.tsx";
-import { RemovalsView } from "./removals.tsx";
 import { SettingsView } from "./settings.tsx";
 import { AdminView } from "./admin.tsx";
 import { FollowingView } from "./following.tsx";
@@ -642,7 +641,6 @@ const VIEWS = [
   "following",
   "search",
   "requests",
-  "removals",
   "library",
   "admin",
   "settings",
@@ -833,7 +831,6 @@ function Shell() {
     },
     { id: "library", label: "Library", icon: "library", group: "manage" },
     { id: "requests", label: "Requests", icon: "requests", group: "manage" },
-    { id: "removals", label: "Removals", icon: "removals", group: "manage" },
     { id: "admin", label: "Users", icon: "users", group: "admin" },
     { id: "settings", label: "Settings", icon: "settings", group: "admin" },
   ] as const;
@@ -966,7 +963,6 @@ function Shell() {
         {view === "library" && <LibraryView />}
         {view === "requests" && <RequestsView />}
         {view === "search" && <SearchView />}
-        {view === "removals" && <RemovalsView />}
         {view === "admin" && (isAdmin ? <AdminView /> : <ForbiddenPanel />)}
         {view === "settings" &&
           (isAdmin ? <SettingsView /> : <ForbiddenPanel />)}

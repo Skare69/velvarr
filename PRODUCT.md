@@ -25,7 +25,6 @@ Self-hosted homelab, always-on. Production: Whisparr `192.168.50.246:6969`, Jell
 ## Capabilities and Constraints
 
 - Discovery/browse, catalog detail, requests and approvals, follows, library, settings, admin accounts.
-- Removal feature ships flag-disabled (`VELVARR_ENABLE_REMOVAL=1`); never enable without operator fixtures.
 - Honesty rules are product law: absent upstream fields are dropped, partial success never reads as complete, status derives from real state (`src/lib/status.ts`).
 - Shared logic in `src/lib/` is React-free; UI in `src/components/`; the URL is the state (`?view=…`).
 - Mobile navigation is a bottom bar plus a More sheet — no hamburger.

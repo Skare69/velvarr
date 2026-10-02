@@ -28,7 +28,6 @@
 - **Personal preferences** — per-account hidden tags and Discover shelf ordering
 - **Similar titles** on movies and scenes (shared published tags) and **Often appears with** on performers (co-appearance)
 - **Optional Discord notifier** posting to a private webhook, identity-only by default
-- **Optional removal ladder** (ships disabled) with approver-chosen levels and an insert-only audit log
 - **Optional AI-assisted matching** via [TypeSafe](https://typesafe.ai) — a near-miss Jellyfin title is flagged "ambiguous — administrator review", never auto-`available`; without a key, matching is exact
 
 ## Getting started
