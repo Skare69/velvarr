@@ -1,6 +1,6 @@
 // Velvarr shared records: the vocabulary both the client and the server use.
 // Mostly plain records; the few functions here are choke points that must give
-// the same answer on both sides (deliverability, the removal ladder).
+// the same answer on both sides (deliverability).
 
 export type Role = "admin" | "moderator" | "requester";
 
@@ -275,115 +275,6 @@ export type RequestListItem = RequestRecord & {
   acquisition?: RequestAcquisition | null;
 };
 
-/** The escalation ladder, least → most destructive. One table: rank orders
- * escalation, `destructive` marks the irreversible rungs, `requiresUserToken`
- * marks the rung the integration worker can never execute because it needs
- * the requester's own media-server session. Every other module reads these
- * facts from here instead of re-testing level names. */
-export const REMOVAL_LADDER = [
-  { level: "unmonitor", destructive: false, requiresUserToken: false },
-  { level: "drop", destructive: false, requiresUserToken: false },
-  { level: "exclude", destructive: false, requiresUserToken: false },
-  { level: "delete_files", destructive: true, requiresUserToken: false },
-  { level: "delete_jellyfin_item", destructive: true, requiresUserToken: true },
-] as const;
-
-export type RemovalLevel = (typeof REMOVAL_LADDER)[number]["level"];
-
-export const REMOVAL_LEVELS: readonly RemovalLevel[] = REMOVAL_LADDER.map(
-  (rung) => rung.level,
-);
-
-/** Runtime check, never a cast. */
-export function isRemovalLevel(value: string): value is RemovalLevel {
-  return REMOVAL_LEVELS.includes(value as RemovalLevel);
-}
-
-/** Escalation order: a later approval may raise an unstarted shared execution
- * to a level some approver explicitly chose, never lower it. */
-export function removalLevelRank(level: RemovalLevel): number {
-  return REMOVAL_LADDER.findIndex((rung) => rung.level === level);
-}
-
-/** Irreversible rungs: file deletion and Jellyfin item deletion. */
-export function isDestructiveLevel(level: RemovalLevel): boolean {
-  return REMOVAL_LADDER.some(
-    (rung) => rung.level === level && rung.destructive,
-  );
-}
-
-/** True when the rung can only run under the requester's own media-server
- * session, so the integration worker must refuse it rather than downgrade. */
-export function requiresUserToken(level: RemovalLevel): boolean {
-  return REMOVAL_LADDER.some(
-    (rung) => rung.level === level && rung.requiresUserToken,
-  );
-}
-
-export type RemovalDecision = "pending" | "approved" | "declined" | "cancelled";
-
-/** One user's durable removal intent. The requester supplies only a reason;
- * the level is chosen by the approver, never by the requester. */
-export type RemovalRequest = {
-  id: string;
-  accountId: string;
-  media: MediaReference;
-  reason: string;
-  decision: RemovalDecision;
-  /** Set only at approval; null while pending and after decline or cancel. */
-  level: RemovalLevel | null;
-  /** Unix milliseconds. */
-  createdAt: number;
-  decidedAt: number | null;
-};
-
-type RemovalExecutionState =
-  "unsent" | "executing" | "uncertain" | "done" | "failed" | "blocked";
-
-/** Shared durable removal work for one resolved identity on one logical
- * Whisparr instance; several requests attach to it. Carries no per-user
- * history and stores the external facts observed before the call so a retry
- * can re-resolve by identity and compare. */
-export type RemovalExecution = {
-  id: string;
-  instanceId: string;
-  media: MediaReference;
-  state: RemovalExecutionState;
-  level: RemovalLevel;
-  /** Compare-and-set tokens; stale workers holding old tokens fail writes. */
-  claimToken: string | null;
-  claimedAt: number | null;
-  attemptToken: string | null;
-  attemptAt: number | null;
-  /** External facts observed before the call: Whisparr item id, path, file
-   * count, size, and the item's added timestamp. A retry re-resolves by
-   * identity and compares these before touching anything. */
-  whisparrItemId: number | null;
-  whisparrPath: string | null;
-  whisparrFileCount: number | null;
-  whisparrSize: number | null;
-  whisparrAdded: string | null;
-  /** Parties who created this execution: the first requester and the approver
-   * whose approval attached it. Later attachments live on their own requests. */
-  requesterId: string;
-  approverId: string;
-  /** Next due attempt, unix milliseconds. */
-  dueAt: number | null;
-  createdAt: number;
-  updatedAt: number;
-};
-
-export type RemovalAttemptOutcome = "done" | "failed" | "uncertain";
-
-/** External facts a worker observes before any removal call. */
-export type RemovalObservedFacts = {
-  whisparrItemId?: number;
-  path?: string;
-  fileCount?: number;
-  size?: number;
-  added?: string;
-};
-
 export type AcquisitionState =
   | "unsent"
   | "submitting"
@@ -529,9 +420,6 @@ export type Account = {
   isOwner: boolean;
   /** Explicit auto-approve grant for requests; independent of library grants. */
   autoApprove: boolean;
-  /** Explicit removal grant, required (with the operator flag) to create or
-   * approve removal requests; default false, set by an administrator. */
-  canRemove: boolean;
   /** Unix milliseconds the account row was created (Jellyfin import time). */
   joinedAt: number;
 };

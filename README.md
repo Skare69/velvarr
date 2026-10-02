@@ -59,7 +59,6 @@ bun run dev     # http://127.0.0.1:6699
 | `VELVARR_ORIGIN`             | no               | Pin the public origin (e.g. behind a reverse proxy); mutations from other origins are refused. Unset, CSRF safety comes from the `HttpOnly` + `SameSite=Strict` session cookie alone. |
 | `VELVARR_DATA_DIR`           | no               | Data directory; default `./data`, `/data` in the container.                          |
 | `VELVARR_ALLOW_HTTP`         | no               | `1` allows plain HTTP for private/Docker-network addresses on the LAN.               |
-| `VELVARR_ENABLE_REMOVAL`     | no               | `1` enables the removal ladder instance-wide; per-account grants are still required. |
 | `VELVARR_DISCORD_WEBHOOK_URL`| no               | Private Discord webhook for notifications; https only.                               |
 | `VELVARR_DISCORD_DETAIL`     | no               | `1` includes titles in notifications; off by default, messages stay identity-only.   |
 | `TYPESAFE_API_KEY`           | no               | Enables AI-assisted Jellyfin matching; a key saved in Settings → Metadata providers takes precedence. |

@@ -143,7 +143,6 @@ export async function adminUpdateUser(
   const role = fieldRole(body, "role");
   const libraryIds = fieldIds(body, "libraryIds");
   const autoApprove = optionalBool(body, "autoApprove");
-  const canRemove = optionalBool(body, "canRemove");
   const configured = new Set(ctx.config.jellyfin.libraryIds);
   if (libraryIds.some((libraryId) => !configured.has(libraryId))) {
     throw new AppError(400, "invalid_field", "Unknown library selected.");
@@ -160,7 +159,6 @@ export async function adminUpdateUser(
     role,
     libraryIds,
     ...(autoApprove !== undefined ? { autoApprove } : {}),
-    ...(canRemove !== undefined ? { canRemove } : {}),
   });
   return json({ account });
 }

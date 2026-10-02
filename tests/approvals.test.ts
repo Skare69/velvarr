@@ -17,7 +17,6 @@ const account = (over: Partial<Account>): Account =>
     libraryIds: [],
     isOwner: false,
     autoApprove: false,
-    canRemove: false,
     joinedAt: 0,
     ...over,
   }) as Account;

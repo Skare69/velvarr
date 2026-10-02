@@ -14,7 +14,6 @@ import { routes as followRoutes } from "./routes/follows.ts";
 import { routes as catalogRoutes } from "./routes/catalog.ts";
 import { routes as browseRoutes } from "./routes/browse.ts";
 import { routes as libraryRoutes } from "./routes/library.ts";
-import { routes as removalRoutes } from "./routes/removals.ts";
 import { routes as adminRoutes } from "./routes/admin.ts";
 import { routes as discoverRoutes } from "./routes/discover.ts";
 
@@ -25,7 +24,6 @@ const ROUTES: RouteDef[] = [
   ...catalogRoutes,
   ...browseRoutes,
   ...libraryRoutes,
-  ...removalRoutes,
   ...adminRoutes,
   ...discoverRoutes,
 ];

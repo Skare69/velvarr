@@ -207,10 +207,6 @@ export async function bulkRequestRoute(
   return json({ requested, skipped, autoApproved, failed, scanned, capped });
 }
 
-// --- removals: guarded removal intents ---
-
-// Boundary mirror of the storage gate so the refusal is legible at the API
-// edge; storage re-checks the flag authoritatively on every mutation.
 import type { RouteDef } from "../admission.ts";
 
 export const routes: RouteDef[] = [
