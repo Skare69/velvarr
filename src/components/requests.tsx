@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   ApiError,
   api,
@@ -12,6 +13,7 @@ import {
   messageOf,
   useApiGet,
   useCatalogSummary,
+  useParamsSetter,
   useSession,
 } from "./shared";
 import { acquisitionText } from "./catalog-detail";
@@ -27,6 +29,11 @@ import {
   GROUP_LABEL,
   GROUP_ORDER,
   REQUEST_DECISION_ERRORS,
+  REQUEST_SORTS,
+  REQUEST_STATUSES,
+  REQUEST_STATUS_LABELS,
+  REQUEST_TYPES,
+  filterRequestRows,
 } from "../lib/decisions";
 
 /* Facts displayed per row, kept visibly separate:
@@ -253,13 +260,28 @@ function RequestCard({
 
 type Row = RequestListItem;
 
+/** URL params are untrusted input: anything outside the vocabulary falls
+ *  back to the default instead of rendering an empty list. */
+function oneOf<T extends string>(
+  v: string | null,
+  allowed: readonly T[],
+  dflt: T,
+): T {
+  return allowed.find((a) => a === v) ?? dflt;
+}
+
 export function RequestsView() {
   const { account, providers } = useSession();
+  const params = useSearchParams();
+  const setP = useParamsSetter();
   const { data, error, reload } = useApiGet<{ requests: Row[] }>(
     "/api/requests",
     [],
   );
   const rows = data === null ? null : data.requests;
+  const type = oneOf(params.get("type"), REQUEST_TYPES, "all");
+  const status = oneOf(params.get("status"), REQUEST_STATUSES, "all");
+  const sort = oneOf(params.get("sort"), REQUEST_SORTS, "recent");
   const [busyId, setBusyId] = useState<string | null>(null);
   const busyRef = useRef(false);
   const [rowError, setRowError] = useState<{
@@ -327,15 +349,18 @@ export function RequestsView() {
     [reload],
   );
 
+  const filtered = useMemo(
+    () => filterRequestRows(rows ?? [], type, status, sort),
+    [rows, type, status, sort],
+  );
+
   const groups = useMemo(
     () =>
       GROUP_ORDER.map((decision) => ({
         decision,
-        items: (rows ?? [])
-          .filter((row) => row.decision === decision)
-          .sort((a, b) => b.createdAt - a.createdAt),
+        items: filtered.filter((row) => row.decision === decision),
       })).filter((g) => g.items.length > 0),
-    [rows],
+    [filtered],
   );
 
   let content;
@@ -367,6 +392,19 @@ export function RequestsView() {
         {isStaff
           ? "No one has requested anything yet."
           : "You have not requested anything yet. Find something in the catalog and request it."}
+      </div>
+    );
+  } else if (filtered.length === 0) {
+    content = (
+      <div className="panel p-8 text-center text-sm text-muted">
+        <p>No requests match the current filters.</p>
+        <button
+          type="button"
+          className="btn mt-4"
+          onClick={() => setP({ type: null, status: null, sort: null })}
+        >
+          Clear filters
+        </button>
       </div>
     );
   } else {
@@ -447,13 +485,72 @@ export function RequestsView() {
         </button>
       </div>
 
-      <p className="page-description mb-6 mt-4 max-w-prose">
+      <p className="page-description mb-4 mt-4 max-w-prose">
         A request is one person&rsquo;s intent. Downloading is shared work that
         several requests can attach to, and playback access is decided per
         person — neither is changed here. Cancelling removes only that
         request&rsquo;s intent — never shared media — and a title already
         imported into the library has nothing left to cancel.
       </p>
+
+      <div className="mb-6 flex flex-wrap items-end gap-3">
+        <div>
+          <label className="label" htmlFor="req-type">
+            Type
+          </label>
+          <select
+            id="req-type"
+            className="input"
+            value={type}
+            onChange={(e) =>
+              setP({ type: e.target.value === "all" ? null : e.target.value })
+            }
+          >
+            <option value="all">All</option>
+            <option value="movie">Movies</option>
+            <option value="scene">Scenes</option>
+          </select>
+        </div>
+        <div>
+          <label className="label" htmlFor="req-status">
+            Status
+          </label>
+          <select
+            id="req-status"
+            className="input"
+            value={status}
+            onChange={(e) =>
+              setP({
+                status: e.target.value === "all" ? null : e.target.value,
+              })
+            }
+          >
+            {REQUEST_STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {REQUEST_STATUS_LABELS[s]}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="label" htmlFor="req-sort">
+            Sort
+          </label>
+          <select
+            id="req-sort"
+            className="input"
+            value={sort}
+            onChange={(e) =>
+              setP({
+                sort: e.target.value === "recent" ? null : e.target.value,
+              })
+            }
+          >
+            <option value="recent">Most recent</option>
+            <option value="modified">Last modified</option>
+          </select>
+        </div>
+      </div>
 
       {content}
     </div>
