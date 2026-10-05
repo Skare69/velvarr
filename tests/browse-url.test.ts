@@ -110,6 +110,38 @@ test("typePatch keeps a supported sort, drops an unsupported one", () => {
   });
 });
 
+test("typePatch drops filmography-refused filters when a TPDB performer leaves Scenes", () => {
+  // The filmography route only composes on the Scenes tab (the unified
+  // pair runs the StashDB side there); moving to All/Movies drops exactly
+  // what planBrowseSides refuses there, keeping the performer pick.
+  assert.deepEqual(typePatch("movie", "duration", "desc", true), {
+    type: "movie",
+    q: null,
+    year: null,
+    date: null,
+    date_operation: null,
+    studioTpdb: null,
+    sort: null,
+    direction: null,
+  });
+  assert.deepEqual(typePatch("all", "duration", "desc", true), {
+    type: null,
+    q: null,
+    year: null,
+    date: null,
+    date_operation: null,
+    studioTpdb: null,
+    sort: null,
+    direction: null,
+  });
+  // On the Scenes tab the pair composes: the normal per-type sort path.
+  assert.deepEqual(typePatch("scene", "duration", "desc", true), {
+    type: "scene",
+    sort: "duration",
+    direction: "desc",
+  });
+});
+
 test("starredPatch off is a single null; on drops both performer picks and clamps movies to All", () => {
   assert.deepEqual(starredPatch(false, "all", "duration", "asc"), {
     performerStarred: null,
@@ -242,4 +274,33 @@ test("mirror: patched queries always pass parseBrowseQuery + planBrowseSides", (
   assertPlanAccepts(
     performerStashdbPatch(stashId, "movie", "duration", "desc"),
   );
+  // Tab switch off a Scenes filmography URL: the URL holds the unified
+  // pair plus the filters and sort that tab allows; the patch to All or
+  // Movies must strip everything the filmography route refuses before
+  // parseBrowseQuery + planBrowseSides run.
+  const scenesUrl = new URLSearchParams({
+    type: "scene",
+    performerTpdb: tpdbId,
+    performerStashdb: stashId,
+    q: "query",
+    year: "2020",
+    date: "2024-01-01",
+    date_operation: ">=",
+    studioTpdb: "55b0c8d6-2222-4333-8444-555566667777",
+    sort: "duration",
+    direction: "desc",
+  });
+  for (const target of ["all", "movie"] as const) {
+    const params = new URLSearchParams(scenesUrl);
+    const patch = typePatch(target, "duration", "desc", true);
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === null) params.delete(key);
+      else params.set(key, value);
+    }
+    const plan = planBrowseSides(parseBrowseQuery(params));
+    assert.ok(plan.sides.length > 0);
+    // On All both sides run the unified pair; on Movies only TPDB
+    // qualifies (browse.ts sceneWanted is false there).
+    if (target === "all") assert.ok(plan.sides.includes("stashdb"));
+  }
 });

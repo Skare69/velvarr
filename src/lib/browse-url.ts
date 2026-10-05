@@ -71,7 +71,24 @@ export function typePatch(
   t: BrowseType,
   sortRaw: string,
   dirRaw: string,
+  tpdbPerformer = false,
 ): Record<string, string | null> {
+  // A TPDB performer filmography only composes on the Scenes tab (the
+  // unified pair runs the StashDB side there). Moving to All/Movies would
+  // refuse the search, year, date, studio and sort the Scenes tab allowed
+  // — drop exactly those, keeping the performer pick.
+  if (tpdbPerformer && t !== "scene") {
+    return {
+      type: t === "all" ? null : t,
+      q: null,
+      year: null,
+      date: null,
+      date_operation: null,
+      studioTpdb: null,
+      sort: null,
+      direction: null,
+    };
+  }
   const { sort, direction } = sortPair(t, sortRaw, dirRaw);
   return {
     type: t === "all" ? null : t,

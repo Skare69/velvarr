@@ -1015,10 +1015,14 @@ export function TitlesView() {
   const onType = useCallback(
     (t: "all" | "movie" | "scene") => {
       // Sorts are per-type — see typePatch; filters never drop on a tab
-      // switch.
-      setP(typePatch(t, sortRaw, dirRaw), { push: true });
+      // switch. One clamp: a TPDB performer filmography only composes on
+      // the Scenes tab, so moving off it drops the filters that route
+      // refuses (typePatch's tpdbPerformer branch).
+      setP(typePatch(t, sortRaw, dirRaw, performerTpdb !== ""), {
+        push: true,
+      });
     },
-    [setP, sortRaw, dirRaw],
+    [setP, sortRaw, dirRaw, performerTpdb],
   );
   // Typed fields refine mid-edit (SearchBox debounces, the date input fires
   // per keystroke): push only when the value appears or disappears, replace
