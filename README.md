@@ -6,7 +6,8 @@
 
 <p align="center">
   <a href="https://github.com/Skare69/velvarr/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/skare69/velvarr/actions/workflows/ci.yml/badge.svg"/></a>
-  <a href="https://bun.sh"><img alt="Runtime: Bun" src="https://img.shields.io/badge/runtime-Bun-000000?logo=bun&logoColor=white"/></a>
+  <a href="https://bun.sh"><img alt="Package manager: Bun" src="https://img.shields.io/badge/package%20manager-Bun-000000?logo=bun&logoColor=white"/></a>
+  <a href="https://nodejs.org"><img alt="Runtime: Node.js 24" src="https://img.shields.io/badge/runtime-Node.js%2024-339933?logo=node.js&logoColor=white"/></a>
   <a href="https://nextjs.org"><img alt="Next.js version" src="https://img.shields.io/github/package-json/dependency-version/Skare69/velvarr/next?label=Next.js&logo=nextdotjs&logoColor=white&color=000000"/></a>
   <a href="https://react.dev"><img alt="React version" src="https://img.shields.io/github/package-json/dependency-version/Skare69/velvarr/react?label=React&logo=react&logoColor=white&color=61dafb"/></a>
   <a href="https://www.typescriptlang.org"><img alt="TypeScript version" src="https://img.shields.io/github/package-json/dependency-version/Skare69/velvarr/dev/typescript?label=TypeScript&logo=typescript&logoColor=white&color=3178c6"/></a>
@@ -19,14 +20,15 @@
 
 ## Features
 
-- **Provider-backed catalogs** — movies (TPDB), scenes (TPDB + StashDB), performers, and studios, each with the filters and sort orders that provider actually supports
+- **Provider-backed catalogs** — movies (TPDB), scenes (TPDB + StashDB), performers (with the biography facts the provider publishes), and studios, each with the filters and sort orders that provider actually supports
 - **One Browse surface** — TPDB movies and StashDB scenes in a single grid with title search, tag include/exclude, studio, performer, year, and date filters; every constraint rides in the URL
 - **Global search** across both providers, plus unified **Studios** and **Genres** rails; results are never merged across providers and cross-provider identity comes only from links the providers publish — never name matching
-- **Durable requests** with administrator or moderator approval and an optional per-account auto-approve grant
+- **Durable requests** with administrator or moderator approval and an optional per-account auto-approve grant; the Requests list filters by media type and status and sorts by most recent or last modified
 - **Crash-safe acquisition worker** — every attempt is persisted before any network call and reconciled by exact identity after a restart; never a lost or duplicated add
 - **Per-user Jellyfin availability** and credential-free watch links
 - **Personal preferences** — per-account hidden tags and Discover shelf ordering
 - **Similar titles** on movies and scenes (shared published tags) and **Often appears with** on performers (co-appearance)
+- **Update notice** — the sidebar shows a chip linking to a newer GitHub release; the server asks api.github.com at most once an hour (`VELVARR_UPDATE_CHECK=0` disables it)
 - **Optional Discord notifier** posting to a private webhook, identity-only by default
 - **Optional AI-assisted matching** via [TypeSafe](https://typesafe.ai) — a near-miss Jellyfin title is flagged "ambiguous — administrator review", never auto-`available`; without a key, matching is exact
 
@@ -80,4 +82,6 @@ To restore: start from a **fresh** data directory, copy the snapshot in as `velv
 | `legacy/seerr-whisparr` | Seerr integration snapshot; reference only                       |
 | `upstream`              | [seerr-team/seerr](https://github.com/seerr-team/seerr); not a merge source |
 
-No LICENSE file yet — that choice belongs to the operator.
+## License
+
+Licensed under the [MIT License](LICENSE).
