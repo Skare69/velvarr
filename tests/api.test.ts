@@ -27,6 +27,7 @@ import { routes as browseRoutes } from "../src/app/api/[...path]/routes/browse.t
 import { routes as libraryRoutes } from "../src/app/api/[...path]/routes/library.ts";
 import { routes as adminRoutes } from "../src/app/api/[...path]/routes/admin.ts";
 import { routes as discoverRoutes } from "../src/app/api/[...path]/routes/discover.ts";
+import { allowArtworkFixture } from "./fixture.ts";
 
 test("route tables never shadow: every request shape matches at most one def", () => {
   const all: RouteDef[] = [
@@ -985,7 +986,9 @@ function listen(
   });
   server.listen(0, "127.0.0.1", () => {
     const address = server.address() as { port: number };
-    resolve({ server, url: `http://127.0.0.1:${address.port}` });
+    const url = `http://127.0.0.1:${address.port}`;
+    allowArtworkFixture(url);
+    resolve({ server, url });
   });
   return promise;
 }

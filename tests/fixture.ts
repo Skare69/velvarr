@@ -45,6 +45,15 @@ export interface Fixture {
   close: () => Promise<void>;
 }
 
+/** Registers a fixture origin with the artwork gate's test-only loopback
+ * seam (VELVARR_TEST_ARTWORK_ORIGIN): the proxy admits a loopback URL only
+ * when its exact origin appears there, so suites can fetch fixture artwork
+ * while a production deployment keeps every loopback port closed. */
+export function allowArtworkFixture(origin: string): void {
+  const prev = process.env.VELVARR_TEST_ARTWORK_ORIGIN;
+  process.env.VELVARR_TEST_ARTWORK_ORIGIN = prev ? `${prev},${origin}` : origin;
+}
+
 /** Jellyfin reports ids dashed in some payloads and bare in others; suites
  * need both spellings of the same id to prove the normalizer. */
 export function dashed(id: string): string {
@@ -162,8 +171,10 @@ export function startFixture(handler: FixtureHandler): Promise<Fixture> {
   server.on("clientError", (_err, socket) => socket.destroy());
   server.listen(0, "127.0.0.1", () => {
     const address = server.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${address.port}`;
+    allowArtworkFixture(origin);
     resolve({
-      origin: `http://127.0.0.1:${address.port}`,
+      origin,
       log,
       close: () => {
         server.closeAllConnections();

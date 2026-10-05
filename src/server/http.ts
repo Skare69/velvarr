@@ -44,8 +44,9 @@ function serviceName(service: Service): string {
 
 /** The one loopback test: literal 127.0.0.0/8 IPv4, "localhost" and "::1"
  * only. DNS names are never loopback, whatever their labels — security.ts
- * shares this for VELVARR_ORIGIN validation, and the artwork proxy uses it to
- * exempt loopback from the https and provider-host rules. */
+ * shares this for VELVARR_ORIGIN validation, and the artwork proxy pairs it
+ * with the VELVARR_TEST_ARTWORK_ORIGIN opt-in so only test fixtures that
+ * name their exact origin are admitted. */
 export function isLoopbackHost(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (h === "localhost" || h === "::1") return true;

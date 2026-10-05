@@ -1024,6 +1024,31 @@ test("artwork URL gate: https + provider hosts only, derived from live records",
   );
 });
 
+test("artwork gate: loopback only with the named test-fixture origin", () => {
+  const prev = process.env.VELVARR_TEST_ARTWORK_ORIGIN;
+  try {
+    // No opt-in: every loopback port is closed — the proxy must not become
+    // a port scanner for a signed-in user (release v0.36.1 finding).
+    delete process.env.VELVARR_TEST_ARTWORK_ORIGIN;
+    assert.equal(isProviderImageUrl("http://127.0.0.1:22/x").ok, false);
+    assert.equal(isProviderImageUrl("http://localhost:22/x").ok, false);
+    assert.equal(isProviderImageUrl("http://[::1]:22/x").ok, false);
+    assert.equal(
+      isProviderImageUrl("https://cdn.theporndb.net/x.jpg").ok,
+      true,
+    );
+    // The opt-in names one exact origin: that origin opens, its neighbours
+    // stay shut.
+    process.env.VELVARR_TEST_ARTWORK_ORIGIN = "http://127.0.0.1:22";
+    assert.equal(isProviderImageUrl("http://127.0.0.1:22/x").ok, true);
+    assert.equal(isProviderImageUrl("http://127.0.0.1:23/x").ok, false);
+    assert.equal(isProviderImageUrl("http://localhost:22/x").ok, false);
+  } finally {
+    if (prev === undefined) delete process.env.VELVARR_TEST_ARTWORK_ORIGIN;
+    else process.env.VELVARR_TEST_ARTWORK_ORIGIN = prev;
+  }
+});
+
 test("artwork fetch: enforces content type, byte cap, and never sends credentials", async () => {
   const fixture = await startFixture((req, res) => {
     assert.equal(req.headers.authorization, undefined);

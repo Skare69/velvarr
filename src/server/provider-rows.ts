@@ -121,9 +121,11 @@ const PROVIDER_IMAGE_HOSTS: Record<string, true> = {
 export type ImageUrlCheck =
   { ok: true; service: "tpdb" | "stashdb" } | { ok: false; reason: string };
 
-/** Pure gate: is this URL a provider-hosted artwork source? Loopback
- * plain http is accepted only as the local test fixture seam (mirrors the
- * lab-HTTP stance in http.ts); production hosts must be https. */
+/** Pure gate: is this URL a provider-hosted artwork source? Production hosts
+ * must be https and on the allowlist above. Loopback plain http is accepted
+ * only when the test-only VELVARR_TEST_ARTWORK_ORIGIN opt-in names the URL's
+ * exact origin — the test fixtures register themselves there, so production
+ * deployments leave every loopback port closed (SSRF hardening v0.36.1). */
 export function isProviderImageUrl(url: string): ImageUrlCheck {
   let u: URL;
   try {
@@ -131,16 +133,18 @@ export function isProviderImageUrl(url: string): ImageUrlCheck {
   } catch {
     return { ok: false, reason: "not an absolute URL" };
   }
-  if (u.protocol !== "https:" && !isLoopbackHost(u.hostname)) {
+  const loopbackFixture =
+    isLoopbackHost(u.hostname) &&
+    (process.env.VELVARR_TEST_ARTWORK_ORIGIN ?? "")
+      .split(",")
+      .includes(u.origin);
+  if (u.protocol !== "https:" && !loopbackFixture) {
     return { ok: false, reason: "artwork URLs must be https" };
   }
   if (u.username || u.password || u.hash) {
     return { ok: false, reason: "artwork URLs must not carry credentials" };
   }
-  if (
-    PROVIDER_IMAGE_HOSTS[u.hostname] !== true &&
-    !isLoopbackHost(u.hostname)
-  ) {
+  if (PROVIDER_IMAGE_HOSTS[u.hostname] !== true && !loopbackFixture) {
     return {
       ok: false,
       reason: `host ${u.hostname} is not a provider artwork host`,
