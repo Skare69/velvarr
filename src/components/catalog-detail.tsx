@@ -486,6 +486,11 @@ export function DetailSections({
     };
   }, []);
   const [pendingFilter, setPendingFilter] = useState<string | null>(null);
+  // Up-counter over + Filter clicks: only the newest click may navigate when
+  // its counterpart resolves. Two quick clicks share the same hrefAtClick,
+  // so location alone cannot order them — without this, whichever lookup
+  // settles first wins and the user lands on the wrong credit.
+  const clickSeq = useRef(0);
   // Remember studio/tag names so browse chips can label the ids the URL
   // carries — details are where names are known.
   useEffect(() => {
@@ -590,15 +595,19 @@ export function DetailSections({
                         aria-busy={pendingFilter === key || undefined}
                         onClick={() => {
                           const hrefAtClick = window.location.href;
+                          const seq = ++clickSeq.current;
                           setPendingFilter(key);
                           void performerCounterpart(c.reference)
                             .then((counterpart) => {
                               // A response is stale once the user went
-                              // anywhere else since the click: navigating
-                              // now would pull them out of where they are.
+                              // anywhere else since the click, or clicked
+                              // another credit after it: navigating now
+                              // would pull them out of where they are or
+                              // override the newer click.
                               if (
                                 !aliveRef.current ||
-                                window.location.href !== hrefAtClick
+                                window.location.href !== hrefAtClick ||
+                                seq !== clickSeq.current
                               )
                                 return;
                               onBrowse({
