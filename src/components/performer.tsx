@@ -31,6 +31,7 @@ import type {
 import { mergeTagCounts, performerTagJump } from "../lib/contracts";
 import { useBrowseTo } from "./catalog";
 import { seedName } from "../lib/names";
+import { formatCareerRange } from "../lib/person";
 import { REQUESTS_CHANGED } from "../lib/approvals";
 import "./views.css";
 
@@ -990,9 +991,7 @@ function PerformerBio({ person }: { person: CatalogPerson }) {
       ["Breasts", person.breastType],
       [
         "Career",
-        person.careerStartYear !== undefined
-          ? `${person.careerStartYear}–${person.careerEndYear ?? "present"}`
-          : undefined,
+        formatCareerRange(person.careerStartYear, person.careerEndYear),
       ],
       ["Tattoos", person.tattoos?.join(", ")],
       ["Piercings", person.piercings?.join(", ")],
