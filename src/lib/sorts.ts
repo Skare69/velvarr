@@ -66,13 +66,16 @@ export function sortSpec(
   return SORT_CAPABILITIES[provider]?.[kind]?.find((s) => s.key === sort);
 }
 
-/** Every key some provider implements — the parse vocabulary. Only feeds
- * .includes() checks, so a duplicate key would be inert, never a behavior. */
-export const SORT_KEYS: readonly SortKey[] = Object.values(
-  SORT_CAPABILITIES,
-).flatMap((kinds) =>
-  Object.values(kinds).flatMap((specs) => (specs ?? []).map((s) => s.key)),
-);
+/** Every key some provider implements, deduplicated: parseEnum joins the
+ * vocabulary into the browse 400 message (each key readable once) and
+ * isCatalogSortKey includes-checks it. */
+export const SORT_KEYS: readonly SortKey[] = [
+  ...new Set(
+    Object.values(SORT_CAPABILITIES).flatMap((kinds) =>
+      Object.values(kinds).flatMap((specs) => (specs ?? []).map((s) => s.key)),
+    ),
+  ),
+];
 
 /** Sorts BOTH browse sources carry on a merged All page (StashDB's `date` is
  * the release-recency order under its own key — the merge maps recency onto

@@ -25,6 +25,7 @@ import {
   browseSortIsDirectional,
   browseSortsFor,
   SORT_CAPABILITIES,
+  SORT_KEYS,
   SORT_LABELS,
 } from "../src/lib/sorts.ts";
 import {
@@ -311,6 +312,21 @@ test("parseBrowseQuery round-trips pinned keys and rejects malformed input", () 
       query,
     );
   }
+  // SORT_KEYS dedupes across providers: parseEnum joins it into the 400
+  // message, so each key must appear exactly once there.
+  assert.throws(
+    () => parseBrowseQuery(new URLSearchParams("sort=bogus")),
+    (err: unknown) => {
+      if (!(err instanceof AppError) || !appError(400, "invalid_query")(err))
+        return false;
+      return SORT_KEYS.every(
+        (key) =>
+          (err.message.match(new RegExp(`\\b${key}\\b`, "g")) ?? []).length ===
+          1,
+      );
+    },
+    "sort=bogus",
+  );
 });
 
 // --- combination policy: refuse, never ignore ---
