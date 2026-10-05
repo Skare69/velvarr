@@ -21,7 +21,7 @@ const config = {
   // (measured: 5–27 flaky failures at default fan-out, green at ≤4 suites).
   commandRunner: {
     command:
-      "node --experimental-strip-types --import ./tests/setup.ts --test --test-concurrency=1 tests/status.test.ts tests/tags.test.ts tests/related.test.ts tests/browse.test.ts tests/browse-items.test.ts tests/providers.test.ts tests/api.test.ts tests/approvals.test.ts tests/decisions.test.ts tests/names.test.ts tests/update.test.ts tests/browse-url.test.ts",
+      "node --experimental-strip-types --import ./tests/setup.ts --test --test-concurrency=1 tests/status.test.ts tests/tags.test.ts tests/related.test.ts tests/browse.test.ts tests/browse-items.test.ts tests/providers.test.ts tests/api.test.ts tests/approvals.test.ts tests/decisions.test.ts tests/names.test.ts tests/update.test.ts tests/browse-url.test.ts tests/person.test.ts tests/api-get.test.ts",
   },
   // The command runner only reports an exit code, so per-test coverage is
   // impossible; Stryker runs every mutant against the whole scoped command.
@@ -47,16 +47,18 @@ const config = {
   // stryker.log (cwd) captures the full run including worker deaths; the
   // console progress lines survive on stdout.
   fileLogLevel: "trace",
-  // break is the measured clean-run score (82.86, 2026-10-05, the first run
-  // with the update suite in the runner: update.ts 24/29 detected after the
-  // v0.36.0 review run failed at 81.90 with it omitted), floored; a
-  // regression below it fails the run. Accepted survivors: display-copy
-  // strings, the REQUESTS_CHANGED event name, empty-array shape defaults
-  // asserted nowhere, the fetch-param conditionals and sort comparators in
-  // browse.ts/contracts.ts/related.ts that the provider fixtures assert only
-  // loosely — vocabulary, shape and ordering, not dedupe/merge logic — and
-  // update.ts's four outcome-equivalent mutants (guard some-vs-every,
-  // loop-bound and comparison rewrites that cannot flip a returned boolean).
+  // break is the measured clean-run score (82.11, 2026-10-06, the first run
+  // with the person and api-get suites in the runner; 82.86 on 2026-10-05
+  // with update added, after the v0.36.0 review run failed at 81.90 with it
+  // omitted), floored; a regression below it fails the run. Accepted
+  // survivors: display-copy strings, the REQUESTS_CHANGED event name,
+  // empty-array shape defaults asserted nowhere, the fetch-param conditionals
+  // and sort comparators in browse.ts/contracts.ts/related.ts that the
+  // provider fixtures assert only loosely — vocabulary, shape and ordering,
+  // not dedupe/merge logic — update.ts's four outcome-equivalent mutants
+  // (guard some-vs-every, loop-bound and comparison rewrites that cannot flip
+  // a returned boolean), and api-get.ts's FIFO-cap edges (has/clear/eviction
+  // conditionals asserted only loosely by the queue-order tests).
   thresholds: { high: 85, low: 75, break: 82 },
 };
 
