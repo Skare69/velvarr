@@ -298,24 +298,14 @@ function asMovieResources(dto: unknown): MovieResourceDto[] {
   return [];
 }
 
-/** Resolve a Jellyfin item's file paths to its Whisparr identity via
- * configured path mappings (path correspondence only — never title/name
- * matching). Zero matches → null (also when Whisparr is unconfigured or
- * the item has no paths); exactly one distinct identity → that
- * MediaReference; more than one distinct identity → throws
- * ambiguous_identity (the route turns it into catalogNote). */
-export async function findWhisparrItemByPath(
-  config: IntegrationConfig,
+/** Path-correspondence matches for one Jellyfin item across the already
+ *  fetched Whisparr resources: zero matches → [], one → [that reference],
+ *  several distinct → all of them (the caller decides ambiguity policy). */
+function matchesByPaths(
+  dtos: MovieResourceDto[],
+  whisparr: NonNullable<IntegrationConfig["whisparr"]>,
   jellyfinPaths: string[],
-): Promise<MediaReference | null> {
-  if (jellyfinPaths.length === 0) return null;
-  const whisparr = config?.whisparr;
-  if (!whisparr?.url || !whisparr.apiKey) return null;
-  const dtos = asMovieResources(
-    await requestJson<unknown>(whisparr.url, "/api/v3/movie", whisparr.apiKey, {
-      service: "whisparr",
-    }),
-  );
+): MediaReference[] {
   const distinct = new Map<string, MediaReference>();
   for (const dto of dtos) {
     const routed = identityOf(dto);
@@ -338,15 +328,63 @@ export async function findWhisparrItemByPath(
       id: routed.identity,
     });
   }
-  if (distinct.size > 1) {
+  return [...distinct.values()];
+}
+
+/** Resolve a Jellyfin item's file paths to its Whisparr identity via
+ * configured path mappings (path correspondence only — never title/name
+ * matching). Zero matches → null (also when Whisparr is unconfigured or
+ * the item has no paths); exactly one distinct identity → that
+ * MediaReference; more than one distinct identity → throws
+ * ambiguous_identity (the route turns it into catalogNote). */
+export async function findWhisparrItemByPath(
+  config: IntegrationConfig,
+  jellyfinPaths: string[],
+): Promise<MediaReference | null> {
+  if (jellyfinPaths.length === 0) return null;
+  const whisparr = config?.whisparr;
+  if (!whisparr?.url || !whisparr.apiKey) return null;
+  const dtos = asMovieResources(
+    await requestJson<unknown>(whisparr.url, "/api/v3/movie", whisparr.apiKey, {
+      service: "whisparr",
+    }),
+  );
+  const matches = matchesByPaths(dtos, whisparr, jellyfinPaths);
+  if (matches.length > 1) {
     throw new AppError(
       409,
       "ambiguous_identity",
       "Multiple Whisparr items match this item's path.",
     );
   }
-  if (distinct.size === 0) return null;
-  return [...distinct.values()][0]!;
+  return matches[0] ?? null;
+}
+
+/** One Whisparr sweep for a whole list of Jellyfin items: a single
+ * /api/v3/movie fetch resolves every entry's identity via path
+ * correspondence. Unconfigured Whisparr or no usable paths → empty map
+ * without any upstream call. An entry with zero or several distinct
+ * matches is simply absent — the caller keeps its own label, and a single
+ * ambiguous entry never sinks the batch. Upstream failures propagate. */
+export async function resolveIdentitiesByPath(
+  config: IntegrationConfig,
+  entries: { id: string; paths: string[] }[],
+): Promise<Map<string, MediaReference>> {
+  const whisparr = config?.whisparr;
+  if (!whisparr?.url || !whisparr.apiKey) return new Map();
+  const usable = entries.filter((e) => e.paths.length > 0);
+  if (usable.length === 0) return new Map();
+  const dtos = asMovieResources(
+    await requestJson<unknown>(whisparr.url, "/api/v3/movie", whisparr.apiKey, {
+      service: "whisparr",
+    }),
+  );
+  const resolved = new Map<string, MediaReference>();
+  for (const entry of usable) {
+    const matches = matchesByPaths(dtos, whisparr, entry.paths);
+    if (matches.length === 1) resolved.set(entry.id, matches[0]!);
+  }
+  return resolved;
 }
 
 /** Prove the upstream returned exactly the requested kind and identity.

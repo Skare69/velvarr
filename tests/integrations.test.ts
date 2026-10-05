@@ -2808,6 +2808,194 @@ test("listRecentlyAddedItems includes Episode items — scenes filed under a TV 
   });
 });
 
+test("listRecentlyAddedItems labels Whisparr-managed scenes as scene", async () => {
+  // Whisparr files scenes Radarr-style, so Jellyfin types them "Movie".
+  // Path correspondence — never name matching — upgrades only the item whose
+  // file path sits inside a Whisparr scene's folder.
+  const items = [
+    {
+      ...datedItem(0x381, "Library Scene", "2026-09-03T10:00:00.000Z"),
+      MediaSources: [{ Path: "/media/scenes/alpha/scene.mkv" }],
+    },
+    {
+      ...datedItem(0x382, "Whisparr Feature", "2026-09-02T10:00:00.000Z"),
+      MediaSources: [{ Path: "/media/movies/beta/feature.mkv" }],
+    },
+    datedItem(0x383, "Untracked", "2026-09-01T10:00:00.000Z"),
+  ];
+  const whisparrItems = [
+    {
+      id: 1,
+      title: "Alpha",
+      path: "/media/scenes/alpha",
+      stashId: dashed(hexId(0x5a1)),
+    },
+    { id: 2, title: "Beta", path: "/media/movies/beta", tpdbId: 12345 },
+  ];
+  const handler: FixtureHandler = (req, res, body) => {
+    if (pathOf(req.url ?? "") === "/api/v3/movie")
+      return sendJson(res, 200, whisparrItems);
+    itemsByParentHandler({ [LIB_A]: items })(req, res, body);
+  };
+  await withFixture(handler, async (fx) => {
+    const result = await listRecentlyAddedItems(
+      {
+        ...jellyfinConfig(fx.origin, [LIB_A]),
+        whisparr: { url: fx.origin, apiKey: WH_KEY },
+      },
+      TOKEN,
+      account([LIB_A]),
+      5,
+    );
+    assert.deepEqual(
+      result.map((item) => [item.name, item.kind]),
+      [
+        ["Library Scene", "scene"],
+        ["Whisparr Feature", "movie"],
+        ["Untracked", "movie"],
+      ],
+    );
+    const sweeps = fx.log.filter(
+      (r) => r.method === "GET" && pathOf(r.url) === "/api/v3/movie",
+    );
+    assert.equal(sweeps.length, 1);
+  });
+});
+
+test("ambiguous Whisparr paths keep the honest library kind", async () => {
+  const items = [
+    {
+      ...datedItem(0x384, "Contested", "2026-09-03T10:00:00.000Z"),
+      MediaSources: [{ Path: "/media/scenes/alpha/scene.mkv" }],
+    },
+  ];
+  const whisparrItems = [
+    {
+      id: 1,
+      title: "Alpha",
+      path: "/media/scenes/alpha",
+      stashId: dashed(hexId(0x5a2)),
+    },
+    {
+      id: 2,
+      title: "Alpha File Dup",
+      path: "/media/scenes/alpha/scene.mkv",
+      stashId: dashed(hexId(0x5a3)),
+    },
+  ];
+  const handler: FixtureHandler = (req, res, body) => {
+    if (pathOf(req.url ?? "") === "/api/v3/movie")
+      return sendJson(res, 200, whisparrItems);
+    itemsByParentHandler({ [LIB_A]: items })(req, res, body);
+  };
+  await withFixture(handler, async (fx) => {
+    const result = await listRecentlyAddedItems(
+      {
+        ...jellyfinConfig(fx.origin, [LIB_A]),
+        whisparr: { url: fx.origin, apiKey: WH_KEY },
+      },
+      TOKEN,
+      account([LIB_A]),
+      5,
+    );
+    assert.deepEqual(
+      result.map((item) => [item.name, item.kind]),
+      [["Contested", "movie"]],
+    );
+  });
+});
+
+test("a Whisparr outage degrades to library kinds, never sinks the shelf", async () => {
+  const items = [
+    {
+      ...datedItem(0x385, "Offline Scene", "2026-09-03T10:00:00.000Z"),
+      MediaSources: [{ Path: "/media/scenes/alpha/scene.mkv" }],
+    },
+  ];
+  const handler: FixtureHandler = (req, res, body) => {
+    if (pathOf(req.url ?? "") === "/api/v3/movie")
+      return sendJson(res, 500, { error: "down" });
+    itemsByParentHandler({ [LIB_A]: items })(req, res, body);
+  };
+  await withFixture(handler, async (fx) => {
+    const result = await listRecentlyAddedItems(
+      {
+        ...jellyfinConfig(fx.origin, [LIB_A]),
+        whisparr: { url: fx.origin, apiKey: WH_KEY },
+      },
+      TOKEN,
+      account([LIB_A]),
+      5,
+    );
+    assert.deepEqual(
+      result.map((item) => [item.name, item.kind]),
+      [["Offline Scene", "movie"]],
+    );
+  });
+});
+
+test("unconfigured Whisparr upgrades nothing and calls nothing", async () => {
+  const items = [
+    {
+      ...datedItem(0x386, "Plain", "2026-09-03T10:00:00.000Z"),
+      MediaSources: [{ Path: "/media/scenes/alpha/scene.mkv" }],
+    },
+  ];
+  await withFixture(itemsByParentHandler({ [LIB_A]: items }), async (fx) => {
+    const result = await listRecentlyAddedItems(
+      jellyfinConfig(fx.origin, [LIB_A]),
+      TOKEN,
+      account([LIB_A]),
+      5,
+    );
+    assert.deepEqual(
+      result.map((item) => item.kind),
+      ["movie"],
+    );
+    assert.equal(
+      fx.log.filter((r) => pathOf(r.url) === "/api/v3/movie").length,
+      0,
+    );
+  });
+});
+
+test("listLibraryItems labels Whisparr-managed scenes as scene in the grid", async () => {
+  const items = [
+    {
+      ...datedItem(0x387, "Grid Scene", "2026-09-03T10:00:00.000Z"),
+      MediaSources: [{ Path: "/media/scenes/alpha/scene.mkv" }],
+    },
+  ];
+  const whisparrItems = [
+    {
+      id: 1,
+      title: "Alpha",
+      path: "/media/scenes/alpha",
+      stashId: dashed(hexId(0x5a4)),
+    },
+  ];
+  const handler: FixtureHandler = (req, res, body) => {
+    if (pathOf(req.url ?? "") === "/api/v3/movie")
+      return sendJson(res, 200, whisparrItems);
+    itemsByParentHandler({ [LIB_A]: items })(req, res, body);
+  };
+  await withFixture(handler, async (fx) => {
+    const page = await listLibraryItems(
+      {
+        ...jellyfinConfig(fx.origin, [LIB_A]),
+        whisparr: { url: fx.origin, apiKey: WH_KEY },
+      },
+      TOKEN,
+      account([LIB_A]),
+      { start: 0, limit: 24, search: "", libraryId: LIB_A },
+    );
+    assert.deepEqual(
+      page.items.map((item) => [item.name, item.kind]),
+      [["Grid Scene", "scene"]],
+    );
+  });
+});
+
 test("listRecentlyAddedItems restricts results to granted libraries", async () => {
   const byParent: Record<string, unknown[]> = {
     [LIB_A]: [datedItem(0x341, "Old A", "2026-09-01T10:00:00.000Z")],

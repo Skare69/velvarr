@@ -11,6 +11,7 @@ import {
   validateBaseUrl,
 } from "./http.ts";
 import { sameWork } from "./judgment.ts";
+import { resolveIdentitiesByPath } from "./whisparr.ts";
 import {
   looksWindows,
   mappedPrefix,
@@ -456,6 +457,47 @@ function mapLibraryItem(
   };
 }
 
+/** File paths that drive Whisparr path-correspondence identity resolution:
+ * the item's own path plus every media source path, trimmed, deduped. */
+function dtoPaths(dto: BaseItemDto): string[] {
+  return [
+    ...new Set(
+      [dto.Path ?? "", ...(dto.MediaSources ?? []).map((s) => s.Path ?? "")]
+        .map((p) => p.trim())
+        .filter((p) => p.length > 0),
+    ),
+  ];
+}
+
+/** Library kind labels come from Jellyfin's Type — which names Whisparr-managed
+ * scenes "Movie" (Radarr-style filing under a movies library). One Whisparr
+ * path-correspondence sweep upgrades an item to "scene" only when Whisparr
+ * itself declares that identity a scene; everything else keeps the honest
+ * library kind. A Whisparr failure degrades to library kinds — the labels
+ * stay true and the list never sinks because enrichment failed. */
+async function withSceneIdentity(
+  config: IntegrationConfig,
+  dtos: BaseItemDto[],
+  items: LibraryItem[],
+): Promise<LibraryItem[]> {
+  const entries = items
+    .map((item, i) => ({ id: item.id, paths: dtoPaths(dtos[i]!) }))
+    .filter((e) => e.paths.length > 0);
+  if (entries.length === 0) return items;
+  let sceneIds: Set<string>;
+  try {
+    const resolved = await resolveIdentitiesByPath(config, entries);
+    sceneIds = new Set(
+      [...resolved].filter(([, ref]) => ref.kind === "scene").map(([id]) => id),
+    );
+  } catch {
+    return items;
+  }
+  return items.map((item) =>
+    sceneIds.has(item.id) ? { ...item, kind: "scene" } : item,
+  );
+}
+
 function itemsPath(userId: string, params: Record<string, string>): string {
   const query = new URLSearchParams({
     sortBy: "SortName",
@@ -613,7 +655,11 @@ async function mergeAcrossLibraries(
   }
 
   return {
-    items: picked.map((dto) => mapLibraryItem(dto, user, config, undefined)),
+    items: await withSceneIdentity(
+      config,
+      picked,
+      picked.map((dto) => mapLibraryItem(dto, user, config, undefined)),
+    ),
     total,
     start,
     limit,
@@ -672,8 +718,10 @@ export async function listLibraryItems(
       search,
     });
     return {
-      items: page.items.map((dto) =>
-        mapLibraryItem(dto, user, config, undefined),
+      items: await withSceneIdentity(
+        config,
+        page.items,
+        page.items.map((dto) => mapLibraryItem(dto, user, config, undefined)),
       ),
       total: page.total,
       start,
@@ -728,11 +776,15 @@ export async function listRecentlyAddedItems(
       }),
     ),
   );
-  return pages
+  const top = pages
     .flatMap((page) => page.items)
     .sort(compareByDateCreatedDesc)
-    .slice(0, n)
-    .map((dto) => mapLibraryItem(dto, user, config, undefined));
+    .slice(0, n);
+  return withSceneIdentity(
+    config,
+    top,
+    top.map((dto) => mapLibraryItem(dto, user, config, undefined)),
+  );
 }
 
 // Exact membership proof: the item must be visible to the caller's user
@@ -809,15 +861,10 @@ export async function getLibraryItem(
     { service: "jellyfin" },
   );
   // File paths drive Whisparr path-correspondence identity resolution.
-  const paths = [
-    dto.Path ?? "",
-    ...(dto.MediaSources ?? []).map((s) => s.Path ?? ""),
-  ]
-    .map((p) => p.trim())
-    .filter((p) => p.length > 0);
+  const paths = dtoPaths(dto);
   return {
     item: mapLibraryItem(dto, user, config, playback?.MediaSources),
-    paths: [...new Set(paths)],
+    paths,
   };
 }
 
@@ -932,12 +979,7 @@ const SWEEP_PAGE = 60;
 const SWEEP_MAX_ITEMS = 12_000;
 
 function toCandidate(dto: BaseItemDto): CandidateItem {
-  const paths = [
-    dto.Path ?? "",
-    ...(dto.MediaSources ?? []).map((s) => s.Path ?? ""),
-  ]
-    .map((p) => p.trim())
-    .filter((p) => p.length > 0);
+  const paths = dtoPaths(dto);
   const providerValues = Object.values(dto.ProviderIds ?? {})
     .map((v) => String(v).trim().toLowerCase())
     .filter((v) => v.length > 0);
