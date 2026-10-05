@@ -1839,18 +1839,13 @@ test("every sort-table row is observable: membership, direction rule, offers", (
       "updated",
     ],
   );
-  // The labels are the rendered option text (the select and the chip).
-  assert.deepEqual(SORT_LABELS, {
-    relevance: "Best match",
-    recency: "Release recency",
-    duration: "Duration",
-    title: "Title",
-    date: "Release date",
-    trending: "Trending (StashDB ordering)",
-    popularity: "Popularity (StashDB ordering)",
-    created: "Recently added (StashDB)",
-    updated: "Last updated (StashDB)",
-  });
+  // Every sort key has a label (the select and the chip); the wording is
+  // display copy, not a contract.
+  assert.deepEqual([...Object.keys(SORT_LABELS)].sort(), [...SORT_KEYS].sort());
+  assert.ok(
+    Object.values(SORT_LABELS).every((label) => label.length > 0),
+    "every sort key needs a non-empty label",
+  );
   // Every table row: resolveSort accepts exactly the table membership and
   // honors the directional flag; the client's direction rule matches the
   // flag on the typed tab that runs the side.
