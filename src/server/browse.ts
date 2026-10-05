@@ -860,8 +860,10 @@ export async function browseTitles(
     });
   }
   if (plans.length === 0) {
-    // Reachable only when include tags resolve on no qualifying source:
-    // nothing can match, provably, before any upstream call.
+    // Reachable when the query provably matches nothing before any upstream
+    // call: conflicting one-sided clauses, a source-scoped filter on a tab
+    // of the other kind (no sides survive it), or include tags that resolve
+    // on no qualifying source.
     return {
       items: [],
       page: query.page,

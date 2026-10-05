@@ -344,8 +344,8 @@ export type AcquisitionRecord = {
   whisparrPath: string | null;
   whisparrTitle: string | null;
   /** Whether Whisparr is still monitoring the item. `false` means an operator
-   * (or an M7 unmonitor) paused it: no release will ever be grabbed, which is
-   * not the same as "watching for a release". */
+   * paused it: no release will ever be grabbed, which is not the same as
+   * "watching for a release". */
   whisparrMonitored: boolean | null;
   /** Download progress of the current grab, observed with the state. Non-null
    * only while downloading; cleared by any other observed state so a stale

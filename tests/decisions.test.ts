@@ -1,7 +1,7 @@
-// The requests' shared decision vocabulary: one lifecycle order and
-// per-endpoint error messages. The order is the render contract for
-// requests; the key set is the wire codes the PATCH routes emit, so a
-// dropped key would strand a code with no message.
+// The requests' decision vocabulary: one lifecycle order and the PATCH
+// error messages. The order is the render contract for requests; the key
+// set is the wire codes the PATCH route emits, so a dropped key would
+// strand a code with no message.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";

@@ -235,8 +235,8 @@
   margin-top: 0.125rem;
 }
 /* The tile's info chip wears the poster badge palette (--status-* in
-   globals.css) instead of the page-chip palette in views.css, so the chip and
-   the upper-right badge always agree. Paused already matches (raised + muted). */
+   globals.css) instead of the page-chip palette in views.css. Paused already
+   matches (raised + muted). */
 .discovery-request-info .state-badge[data-state="requested"] {
   background: var(--status-requested);
   border: 1px solid var(--status-requested-edge);

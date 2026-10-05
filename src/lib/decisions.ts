@@ -1,24 +1,21 @@
-// Decision vocabulary for the intent lists (requests): the shared
-// four-state lifecycle and the per-endpoint PATCH error wording. The
-// acquisition status cases derive from lib/status's acquisitionPhase — the
-// one precedence the cards display — so a filter can never disagree with
-// the card it mirrors. No React, no component imports.
+// Decision vocabulary for the requests list: the four-state lifecycle and
+// the PATCH error wording. The acquisition status cases derive from
+// lib/status's acquisitionPhase — the one precedence the cards display —
+// so a filter can never disagree with the card it mirrors. No React, no
+// component imports.
 
 import type { RequestDecision, RequestListItem } from "./contracts";
 import { acquisitionPhase } from "./status.ts";
 
-/** Both intent kinds share the same four-state lifecycle. */
-export type DecisionKind = RequestDecision;
-
-/** Group order for every intent list; sections render in this sequence. */
-export const GROUP_ORDER: readonly DecisionKind[] = [
+/** Group order for the requests list; sections render in this sequence. */
+export const GROUP_ORDER: readonly RequestDecision[] = [
   "pending",
   "approved",
   "declined",
   "cancelled",
 ];
 
-export const GROUP_LABEL: Record<DecisionKind, string> = {
+export const GROUP_LABEL: Record<RequestDecision, string> = {
   pending: "Pending",
   approved: "Approved",
   declined: "Declined",

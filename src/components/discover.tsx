@@ -256,11 +256,6 @@ function CatalogTile({
   );
 }
 
-/** The status chip is the request's REAL state, not just the decision: an
- * approval means the request was accepted, never that the title is
- * watchable — the shared.tsx ladder (library availability, acquisition
- * progress, then decision) owns the wording. */
-
 /** Requester identity chip: Jellyfin avatar in front of the name, the initial
  *  when the image 404s (no upstream avatar) — never a broken image. Staff
  *  view other accounts through the staff avatar route; a requester-role
@@ -302,10 +297,10 @@ function RequestTile({
   const session = useSession();
   const availability = useAvailability(item.media);
   const acq = item.acquisition;
-  // The badge and chip are the truth, not the decision: a request whose
-  // title already plays in the library reads "In library" here exactly as it
-  // does on the library rail; an approval alone is only ever a single check.
-  // The one ladder (lib/status) serves this tile and every card.
+  // The chip is the truth, not the decision: a request whose title already
+  // plays in the library reads "In library" here exactly as it does on the
+  // library rail; an approval alone is only ever a single check. The one
+  // ladder (lib/status) serves this tile and every card.
   const statusKind: CardStatusKind =
     statusOf({
       availability,

@@ -843,7 +843,7 @@ body:has(.auth-page) {
   stroke-width: 2.3;
 }
 /* One status palette for the poster badge and the request-tile chip
-   (discover.css), so both indicators on a tile can never drift apart. */
+   (discover.css), so the same state reads the same on every tile. */
 :root {
   --status-requested: rgb(217 119 6 / 0.9);
   --status-requested-edge: rgb(251 191 36);
