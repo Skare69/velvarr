@@ -18,6 +18,7 @@ import { resetSweepCache } from "../src/server/jellyfin.ts";
 import { resetUpdateCache } from "../src/server/update.ts";
 import { countPendingApprovals } from "../src/lib/approvals.ts";
 import type { RouteDef } from "../src/app/api/[...path]/admission.ts";
+import { resetSessionCache } from "../src/app/api/[...path]/admission.ts";
 import { routes as authRoutes } from "../src/app/api/[...path]/routes/auth.ts";
 import { routes as requestRoutes } from "../src/app/api/[...path]/routes/requests.ts";
 import { routes as followRoutes } from "../src/app/api/[...path]/routes/follows.ts";
@@ -1814,11 +1815,15 @@ test("identity regressions: foreign identity, upstream invalidation, remote deni
   const remote = await call("GET", "/api/me", { cookie });
   assert.equal(remote.status, 403);
   fxMember2.remote = true;
+  // Validation is cached for 60 s; the reset stands in for the TTL.
+  resetSessionCache();
   // Permission denial does not revoke: still signed in after policy restored.
   assert.equal((await call("GET", "/api/me", { cookie })).status, 200);
 
   // Upstream identity swap (stolen token mapping to a different user) revokes.
   fx.impersonate = OUTSIDER_ID;
+  // Validation is cached for 60 s; the reset stands in for the TTL.
+  resetSessionCache();
   assert.equal((await call("GET", "/api/me", { cookie })).status, 401);
   fx.impersonate = null;
   assert.equal(
@@ -1849,6 +1854,35 @@ test("identity regressions: foreign identity, upstream invalidation, remote deni
   // limiter allows for this account; the request and Wave A follow tests
   // below share this live session instead of logging in again.
   member2 = cookie;
+});
+
+test("session validation is cached: one /Users/Me per token per TTL window", async () => {
+  const cookie = await loginAs("member");
+  fx.journalOn = true;
+  fx.journal.length = 0;
+  try {
+    await call("GET", "/api/me", { cookie });
+    await call("GET", "/api/me", { cookie });
+    const meCalls = fx.journal.filter((entry) => entry.path === "/Users/Me");
+    assert.equal(meCalls.length, 1);
+  } finally {
+    fx.journalOn = false;
+  }
+
+  // A cached validation never hides a Jellyfin-side disable once the cache
+  // is out of the way (the reset stands in for the 60 s TTL expiring).
+  const fxMember = fx.users.find((user) => user.id === MEMBER_ID)!;
+  fxMember.disabled = true;
+  // Validation is cached for 60 s; the reset stands in for the TTL.
+  resetSessionCache();
+  // The disable also revokes the session, so assert the code on this one
+  // response before the stored session is gone.
+  assert.equal(
+    (await errorShape(await call("GET", "/api/me", { cookie }), 403)).code,
+    "account_disabled",
+  );
+  fxMember.disabled = false;
+  resetSessionCache();
 });
 
 test("integration rotation: no re-auth, pinned server, whisparr add/remove", async () => {
