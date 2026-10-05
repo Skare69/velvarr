@@ -97,7 +97,10 @@ export function clearApiCache(): void {
  * identical GETs dedupe into one network request. A manual `reload()` always
  * shows the loading state and always issues a fresh GET — it never joins an
  * in-flight request, which may have been sent before the mutation it
- * re-reads. On revalidation failure the cached snapshot is
+ * re-reads. `revalidating` is true while a fetch is in flight — including
+ * the background refresh that follows a cache hit, where `loading` stays
+ * false — so callers can show a refresh that `loading` hides.
+ * On revalidation failure the cached snapshot is
  * dropped (`data` becomes null) so a stale snapshot never reads as current;
  * a live first fetch keeps the old "never blanks on retry" behavior.
  *
@@ -112,6 +115,8 @@ export function useApiGet<T>(
   error: string | null;
   err: ApiError | null;
   loading: boolean;
+  /** True while a fetch (first or background revalidation) is in flight. */
+  revalidating: boolean;
   reload: () => void;
 } {
   const [data, setData] = useState<T | null>(() =>
@@ -124,6 +129,10 @@ export function useApiGet<T>(
   const [loading, setLoading] = useState(
     path !== null && !apiGetCache.has(path),
   );
+  // A path always starts a fetch (live or cache revalidation), so this is
+  // true from the first render: a remount never paints a settled state that
+  // a pending revalidation is about to replace.
+  const [revalidating, setRevalidating] = useState(path !== null);
   const [tick, setTick] = useState(0);
   const lastTick = useRef(tick);
   const reload = useCallback(() => setTick((n) => n + 1), []);
@@ -133,6 +142,7 @@ export function useApiGet<T>(
       setError(null);
       setErr(null);
       setLoading(false);
+      setRevalidating(false);
       return;
     }
     // Manual reload() vs mount/path change: only a reload shows the loading
@@ -150,6 +160,8 @@ export function useApiGet<T>(
     } else {
       setLoading(true);
     }
+    // Every effect run with a path starts a fetch; `revalidating` spans it.
+    setRevalidating(true);
     // api-get.ts owns joining and cache currency; `manual` keeps a reload()
     // from joining a request that may predate the mutation it re-reads.
     const pending = apiGetCache.get<T>(path, () => api<T>(path), manual);
@@ -158,12 +170,14 @@ export function useApiGet<T>(
         if (live) {
           setData(d);
           setLoading(false);
+          setRevalidating(false);
         }
       })
       .catch((e: unknown) => {
         if (live) {
           setError(messageOf(e));
           setErr(e instanceof ApiError ? e : null);
+          setRevalidating(false);
           setLoading(false);
           // A failed revalidation must not leave the cached snapshot standing
           // in as current state; a live first fetch has no snapshot to drop.
@@ -174,7 +188,7 @@ export function useApiGet<T>(
       live = false; // stale in-flight responses are ignored
     };
   }, [...deps, path, tick]);
-  return { data, error, err, loading, reload };
+  return { data, error, err, loading, revalidating, reload };
 }
 
 /* ---------- Touch: first tap reveals, second tap opens ---------- */

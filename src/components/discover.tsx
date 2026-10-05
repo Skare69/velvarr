@@ -617,11 +617,13 @@ export function DiscoverShelves() {
   const setP = useParamsSetter();
   // The page rides useApiGet's per-tab cache: cleared on sign-out and on any
   // 401, and revalidated on every mount, so no snapshot outlives its account.
-  // While a revalidation runs, `busy` (fed from `loading`) shows the refresh.
+  // While a revalidation runs, `busy` (fed from `revalidating`; `loading`
+  // implies `revalidating`) shows the refresh over the cached shelves.
   const {
     data: page,
     error,
     loading,
+    revalidating,
     reload,
   } = useApiGet<DiscoverPage>("/api/discover", []);
 
@@ -674,7 +676,7 @@ export function DiscoverShelves() {
         <ShelfSection
           key={s.id}
           shelf={s}
-          busy={loading}
+          busy={revalidating}
           onRetry={reload}
           onOpen={openDetail}
         />

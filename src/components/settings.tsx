@@ -577,15 +577,18 @@ function WhisparrCard({ onForbidden }: { onForbidden: () => void }) {
     data: status,
     error,
     err,
-    loading,
+    revalidating,
     reload,
   } = useApiGet<WhisparrStatus>("/api/admin/whisparr", []);
   const [checkedAt, setCheckedAt] = useState<string | null>(null);
   const ready = status !== null || error !== null;
 
+  // Stamp only a check that finished: a remount revalidating the cached
+  // snapshot must not present it as "Checked <now>".
   useEffect(() => {
-    if (status !== null) setCheckedAt(new Date().toLocaleTimeString());
-  }, [status]);
+    if (status !== null && !revalidating)
+      setCheckedAt(new Date().toLocaleTimeString());
+  }, [status, revalidating]);
 
   useEffect(() => {
     if (err !== null && err.status === 403) onForbidden();
@@ -599,9 +602,9 @@ function WhisparrCard({ onForbidden }: { onForbidden: () => void }) {
           type="button"
           className="btn"
           onClick={reload}
-          disabled={loading}
+          disabled={revalidating}
         >
-          {loading ? "Checking…" : "Refresh"}
+          {revalidating ? "Checking…" : "Refresh"}
         </button>
       </div>
 
@@ -676,15 +679,18 @@ function JellyfinCard({ onForbidden }: { onForbidden: () => void }) {
     data: status,
     error,
     err,
-    loading,
+    revalidating,
     reload,
   } = useApiGet<JellyfinStatus>("/api/admin/jellyfin", []);
   const [checkedAt, setCheckedAt] = useState<string | null>(null);
   const ready = status !== null || error !== null;
 
+  // Stamp only a check that finished: a remount revalidating the cached
+  // snapshot must not present it as "Checked <now>".
   useEffect(() => {
-    if (status !== null) setCheckedAt(new Date().toLocaleTimeString());
-  }, [status]);
+    if (status !== null && !revalidating)
+      setCheckedAt(new Date().toLocaleTimeString());
+  }, [status, revalidating]);
 
   useEffect(() => {
     if (err !== null && err.status === 403) onForbidden();
@@ -698,9 +704,9 @@ function JellyfinCard({ onForbidden }: { onForbidden: () => void }) {
           type="button"
           className="btn"
           onClick={reload}
-          disabled={loading}
+          disabled={revalidating}
         >
-          {loading ? "Testing…" : "Test connection"}
+          {revalidating ? "Testing…" : "Test connection"}
         </button>
       </div>
 
