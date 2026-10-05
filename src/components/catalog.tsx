@@ -1107,18 +1107,42 @@ export function TitlesView() {
           studioMode: null,
           sort: null,
           direction: null,
+          // A TPDB performer cannot constrain the scenes side: on that tab
+          // no side would qualify and the grid would show an empty page
+          // that names the wrong cause — drop to the combined browse, the
+          // same clamp onStarred applies in the other direction.
+          ...(type === "scene" ? { type: null } : {}),
         },
         { push: true },
       ),
-    [setP],
+    [setP, type],
   );
   // StashDB composes a performer with everything else — no other key moves.
   const onPerformerStashdb = useCallback(
     // Starred and a picked performer refuse each other on the server; the
     // pick replaces the starred filter instead of letting the browse 400.
-    (id: string) =>
-      setP({ performerStashdb: id, performerStarred: null }, { push: true }),
-    [setP],
+    // A StashDB performer cannot constrain the movies side: on that tab no
+    // side would qualify and the grid would show an empty page that names
+    // the wrong cause — drop to the combined browse, keeping the sort only
+    // where the all tab supports it (the clamp onStarred applies).
+    (id: string) => {
+      const keepSort = (sortsFor("all") as readonly string[]).includes(sortRaw);
+      setP(
+        {
+          performerStashdb: id,
+          performerStarred: null,
+          ...(type === "movie"
+            ? {
+                type: null,
+                sort: keepSort ? sortRaw : null,
+                direction: keepSort ? dirRaw : null,
+              }
+            : {}),
+        },
+        { push: true },
+      );
+    },
+    [setP, type, sortRaw, dirRaw],
   );
   const onStarred = useCallback(
     (on: boolean) => {
