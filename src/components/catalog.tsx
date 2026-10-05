@@ -1067,7 +1067,8 @@ export function TitlesView() {
     [setP, type, sortRaw, dirRaw],
   );
   const onStarred = useCallback(
-    (on: boolean) => setP(starredPatch(on, type, sortRaw, dirRaw), { push: true }),
+    (on: boolean) =>
+      setP(starredPatch(on, type, sortRaw, dirRaw), { push: true }),
     [setP, type, sortRaw, dirRaw],
   );
   const onYear = useCallback(
