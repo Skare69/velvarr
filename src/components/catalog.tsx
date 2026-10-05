@@ -1021,20 +1021,15 @@ export function TitlesView() {
   const onType = useCallback(
     (t: "all" | "movie" | "scene") => {
       // Sorts are per-type: one the new type does not support is dropped.
+      // Filters never drop here: a source-scoped filter on the wrong tab
+      // yields an honest empty page (the server runs no side), so the chips
+      // and the URL stay truthful while the tab shows no results.
       const keepSort = (sortsFor(t) as readonly string[]).includes(sortRaw);
       setP(
         {
           type: t === "all" ? null : t,
           sort: keepSort ? sortRaw : null,
           direction: keepSort ? dirRaw : null,
-          // Both performer chips active would 400 on a single type (the
-          // server refuses both ids with a kind), so the tab visibly drops
-          // the chip that cannot run on the target kind — the same clamp
-          // the sort gets above.
-          ...(t === "movie"
-            ? { performerStashdb: null, performerStarred: null }
-            : {}),
-          ...(t === "scene" ? { performerTpdb: null } : {}),
         },
         { push: true },
       );

@@ -118,6 +118,34 @@ export function detailTarget(params: URLSearchParams): DetailTarget | null {
   return { provider, kind, id };
 }
 
+/** Resolves a credit's other-provider identity for the "+ Filter" jump from
+ * the link the providers published (identity URL match), with the account's
+ * own stored merge as fallback — the same resolution the performer page
+ * uses. Returns null when the providers never paired her (or resolution
+ * fails), so the jump filters with the known side only. */
+async function performerCounterpart(
+  reference: CatalogReference,
+): Promise<BrowseFilter["counterpart"] | null> {
+  try {
+    const payload = await api<{
+      link: { linked?: CatalogReference } | { unlinkedReason?: string };
+    }>(
+      `/api/catalog/${reference.provider}/performer/${encodeURIComponent(reference.id)}`,
+    );
+    const linked = "linked" in payload.link ? payload.link.linked : undefined;
+    if (linked?.kind !== "performer") return null;
+    return {
+      param:
+        linked.provider === "stashdb" ? "performerStashdb" : "performerTpdb",
+      id: linked.id,
+    };
+  } catch {
+    // ponytail: best-effort enrichment — an outage while resolving still
+    // browses the side we have; no error panel blocks the jump.
+    return null;
+  }
+}
+
 function DetailSkeleton() {
   return (
     <div aria-label="Loading details" aria-busy="true">
@@ -576,11 +604,13 @@ export function DetailSections({
                 {d.credits.map((c) => {
                   // Same binary provider split useBrowseTo applies to the
                   // browse type: TPDB credits filter movies, StashDB scenes.
+                  // At click time her counterpart identity is resolved, so
+                  // the linked jump adds BOTH ids and lands on browse All
+                  // (movies and scenes in one grid).
                   const param =
                     c.reference.provider === "stashdb"
                       ? "performerStashdb"
                       : "performerTpdb";
-                  const media = param === "performerTpdb" ? "movies" : "scenes";
                   return (
                     <div
                       key={`${c.reference.provider}:${c.reference.id}`}
@@ -601,15 +631,19 @@ export function DetailSections({
                       <button
                         type="button"
                         className="btn btn-accent cat-person-filter"
-                        title={`Filter ${media} by ${c.name}`}
-                        aria-label={`Filter ${media} by ${c.name}`}
-                        onClick={() =>
-                          onBrowse({
-                            param,
-                            provider: c.reference.provider,
-                            id: c.reference.id,
-                          })
-                        }
+                        title={`Filter by ${c.name}`}
+                        aria-label={`Filter by ${c.name}`}
+                        onClick={() => {
+                          void performerCounterpart(c.reference).then(
+                            (counterpart) =>
+                              onBrowse({
+                                param,
+                                provider: c.reference.provider,
+                                id: c.reference.id,
+                                ...(counterpart ? { counterpart } : {}),
+                              }),
+                          );
+                        }}
                       >
                         <Icon name="plus" /> Filter
                       </button>

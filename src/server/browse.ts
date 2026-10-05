@@ -652,33 +652,12 @@ export type BrowsePlan = {
 };
 
 export function planBrowseSides(query: BrowseQuery): BrowsePlan {
-  // Source-scoped constraints must never silently narrow to one kind or run
-  // the other side unfiltered.
-  if (query.performerStashdb !== undefined && query.type === "movie") {
-    refuse(
-      "A StashDB performer filter cannot apply to movies; browse All or Scenes.",
-    );
-  }
-  if (query.studioStashdb !== undefined && query.type === "movie") {
-    refuse(
-      "A StashDB studio filter cannot apply to movies; browse All or Scenes.",
-    );
-  }
-  if (query.performerTpdb !== undefined && query.type === "scene") {
-    refuse(
-      "A TPDB performer filmography cannot apply to scenes; browse All or Movies.",
-    );
-  }
-  if (query.studioTpdb !== undefined && query.type === "scene") {
-    refuse(
-      "A TPDB studio filter cannot apply to scenes; browse All or Movies.",
-    );
-  }
-  if (query.performerStarred !== undefined && query.type === "movie") {
-    refuse(
-      "A starred-performer filter cannot apply to movies; browse All or Scenes.",
-    );
-  }
+  // A source-scoped constraint on the wrong typed tab never refuses and
+  // never runs the other side unfiltered: the side it cannot constrain
+  // simply does not qualify, so the tab keeps the filter in the URL and
+  // shows an honest empty page. A unified pair (both performer ids, both
+  // studio ids) keeps the side the tab names — each side carries its own
+  // constraint.
   if (
     query.performerStarred !== undefined &&
     query.performerTpdb !== undefined
@@ -780,7 +759,8 @@ export function planBrowseSides(query: BrowseQuery): BrowsePlan {
   // the union. AND-ing them could only ever return nothing. The performer
   // pair unions the same way: both ids together run both sides; a lone
   // TPDB-side clause still kills the scene side, and a lone StashDB id the
-  // movie side. Wrong-kind refusals above still guard typed tabs.
+  // movie side. On a typed tab the wrong-kind clause yields no sides at
+  // all: the tab keeps the filter and shows an honest empty page.
   const bothPerformers =
     query.performerTpdb !== undefined && query.performerStashdb !== undefined;
   const movieWanted =

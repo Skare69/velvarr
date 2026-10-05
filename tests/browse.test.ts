@@ -315,13 +315,9 @@ test("browseTitles refuses unsupported combinations before any upstream call", a
     }),
     async () => {
       const refusals: [string, Partial<BrowseQuery>][] = [
-        [
-          "performerStashdb + movies",
-          { type: "movie", performerStashdb: uuid(2) },
-        ],
-        ["studioStashdb + movies", { type: "movie", studioStashdb: uuid(2) }],
-        ["performerTpdb + scenes", { type: "scene", performerTpdb: uuid(1) }],
-        ["studioTpdb + scenes", { type: "scene", studioTpdb: uuid(1) }],
+        // The wrong-kind combos (a StashDB filter on the movie tab, a TPDB
+        // filter on the scene tab) no longer refuse: they keep the filter and run no side —
+        // pinned by the empty-page test below and the planBrowseSides tests.
         [
           "withChildren needs stash studio",
           { type: "all", studioMode: "withChildren" },
@@ -372,6 +368,42 @@ test("browseTitles refuses unsupported combinations before any upstream call", a
           label,
         );
       }
+    },
+  );
+});
+
+test("browseTitles keeps a source-scoped filter on the wrong typed tab: honest empty page, no upstream call", async () => {
+  let upstreamCalls = 0;
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: () => {
+        upstreamCalls += 1;
+      },
+      onScenesRequest: () => {
+        upstreamCalls += 1;
+      },
+    }),
+    async () => {
+      // A scenes-only performer filter cannot run on the movie tab, and
+      // nothing may run unfiltered in its place: no side qualifies, so the
+      // page is provably empty before any upstream call.
+      const page = await browseTitles(
+        planQuery({ type: "movie", performerStashdb: uuid(2) }),
+        [],
+      );
+      assert.deepEqual(page, {
+        items: [],
+        page: 1,
+        perPage: 60,
+        hasMore: false,
+        total: 0,
+        totalCountKnown: true,
+        errors: [],
+      });
+      assert.equal(upstreamCalls, 0);
     },
   );
 });
@@ -1472,46 +1504,62 @@ function planQuery(overrides: Partial<BrowseQuery> = {}): BrowseQuery {
   };
 }
 
-test("planBrowseSides refuses source-scoped filters on the wrong kind", () => {
-  for (const [field, type, fragment] of [
-    ["performerStashdb", "movie", "browse All or Scenes"],
-    ["studioStashdb", "movie", "browse All or Scenes"],
-    ["performerTpdb", "scene", "browse All or Movies"],
-    ["studioTpdb", "scene", "browse All or Movies"],
+// Contract move: a source-scoped filter on the wrong typed tab no longer
+// refuses (400) — the tab keeps the filter in the URL and shows an honest
+// empty page, and a unified pair keeps running the side the tab names.
+test("planBrowseSides keeps source-scoped filters on the wrong kind: no side qualifies; unions keep the side that can", () => {
+  for (const [field, type] of [
+    ["performerStashdb", "movie"],
+    ["studioStashdb", "movie"],
+    ["performerTpdb", "scene"],
+    ["studioTpdb", "scene"],
+    ["performerStarred", "movie"],
   ] as const) {
-    assert.throws(
-      () => planBrowseSides(planQuery({ type, [field]: uuid(1) })),
-      (e: AppError) =>
-        e instanceof AppError &&
-        e.status === 400 &&
-        e.code === "invalid_search" &&
-        e.message.includes(fragment),
-      `${field} on ${type} must refuse`,
-    );
+    const sides = planBrowseSides(
+      planQuery({
+        type,
+        // ponytail: computed key needs the cast — the loop covers exactly
+        // the five source-scoped fields above.
+        [field]: field === "performerStarred" ? true : uuid(1),
+      } as Partial<BrowseQuery>),
+    ).sides;
+    assert.deepEqual(sides, [], `${field} on ${type} runs no side`);
   }
-  // The performer union (both ids) does not lift the wrong-kind refusals:
-  // a typed tab still refuses via the side it cannot run.
-  assert.throws(
-    () =>
-      planBrowseSides(
-        planQuery({
-          type: "movie",
-          performerTpdb: uuid(1),
-          performerStashdb: uuid(6),
-        }),
-      ),
-    /StashDB performer filter cannot apply to movies/,
+  // The performer union (both ids) runs the one side the tab names, with
+  // its own constraint: Movies shows her TPDB filmography, Scenes her
+  // StashDB side.
+  assert.deepEqual(
+    planBrowseSides(
+      planQuery({
+        type: "movie",
+        performerTpdb: uuid(1),
+        performerStashdb: uuid(6),
+      }),
+    ).sides,
+    ["tpdb"],
   );
-  assert.throws(
-    () =>
-      planBrowseSides(
-        planQuery({
-          type: "scene",
-          performerTpdb: uuid(1),
-          performerStashdb: uuid(6),
-        }),
-      ),
-    /TPDB performer filmography cannot apply to scenes/,
+  assert.deepEqual(
+    planBrowseSides(
+      planQuery({
+        type: "scene",
+        performerTpdb: uuid(1),
+        performerStashdb: uuid(6),
+      }),
+    ).sides,
+    ["stashdb"],
+  );
+  // The unified studio tile behaves the same way.
+  assert.deepEqual(
+    planBrowseSides(
+      planQuery({ type: "movie", studioTpdb: uuid(1), studioStashdb: uuid(2) }),
+    ).sides,
+    ["tpdb"],
+  );
+  assert.deepEqual(
+    planBrowseSides(
+      planQuery({ type: "scene", studioTpdb: uuid(1), studioStashdb: uuid(2) }),
+    ).sides,
+    ["stashdb"],
   );
 });
 
@@ -1628,7 +1676,7 @@ test("planBrowseSides derives order: filmography claims none, defaults are relea
   assert.equal(native.mergeOrder, undefined);
 });
 
-test("planBrowseSides routes the starred-performer filter: stashdb scenes only, refuse movies and performer combos", () => {
+test("planBrowseSides routes the starred-performer filter: stashdb scenes only, empty page on movies, refuse performer combos", () => {
   const starred = planBrowseSides(planQuery({ performerStarred: true }));
   assert.deepEqual(starred.sides, ["stashdb"]);
   assert.equal(starred.filmography, false);
@@ -1638,9 +1686,11 @@ test("planBrowseSides routes the starred-performer filter: stashdb scenes only, 
     ).sides,
     ["stashdb"],
   );
-  assert.throws(
-    () => planBrowseSides(planQuery({ performerStarred: true, type: "movie" })),
-    /A starred-performer filter cannot apply to movies; browse All or Scenes\./,
+  // Movies can never match a scenes-only starred filter: the tab keeps the
+  // chip in the URL and runs no side (honest empty page).
+  assert.deepEqual(
+    planBrowseSides(planQuery({ performerStarred: true, type: "movie" })).sides,
+    [],
   );
   assert.throws(
     () =>
