@@ -615,10 +615,9 @@ export function FacetsView() {
 
 export function DiscoverShelves() {
   const setP = useParamsSetter();
-  // One GET per mount/retry, owned by the hook — deliberately no module-level
-  // page cache: followed-titles is personal (who you follow, your hidden
-  // tags), so a cached snapshot could hand one account's rail to the next
-  // sign-in. useApiGet refetches on every mount; sign-out unmounts the app.
+  // The page rides useApiGet's per-tab cache: cleared on sign-out and on any
+  // 401, and revalidated on every mount, so no snapshot outlives its account.
+  // While a revalidation runs, `busy` (fed from `loading`) shows the refresh.
   const {
     data: page,
     error,

@@ -632,9 +632,11 @@ export async function catalogDetail(
 }
 
 // Artwork proxy: provider-hosted URLs only, byte-capped pass-through,
-// cacheable per URL (ETag + private max-age, revalidated on F5), nothing
-// persisted, and no Velvarr or provider credentials ever reach the image
-// host (fetchProviderArtwork sends none).
+// cacheable per URL (ETag + private max-age, revalidated on F5). Upstream
+// bytes are cached in server memory (never on disk) for a day, so a browser
+// revalidation or another device skips the upstream fetch. No Velvarr or
+// provider credentials ever reach the image host (fetchProviderArtwork sends
+// none).
 export async function catalogImage(request: Request): Promise<Response> {
   const target = new URL(request.url).searchParams.get("url");
   if (target === null || target === "") {

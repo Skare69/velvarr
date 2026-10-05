@@ -101,11 +101,29 @@ const metaCache = new Map<string, { at: number; bytes: Uint8Array }>();
 const metaInFlight = new Map<string, Promise<Uint8Array>>();
 const tpdbTagNumbers = new Map<string, number>();
 
+// Artwork bytes are far larger than metadata payloads, so the cap is a byte
+// budget with FIFO eviction instead of an entry count.
+const ARTWORK_CACHE_TTL_MS = 24 * 60 * 60_000;
+const ARTWORK_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+const artworkCache = new Map<
+  string,
+  { at: number; bytes: Uint8Array; contentType: string }
+>();
+let artworkCacheBytes = 0;
+// Identical artwork reads in flight share one upstream request.
+const artworkInFlight = new Map<
+  string,
+  Promise<{ bytes: Uint8Array; contentType: string }>
+>();
+
 /** Test seam: the suite reuses one fixture upstream per file; tests reset
  * between phases so cached reads never mask a scripted outage. */
 export function resetMetaCache(): void {
   metaCache.clear();
   metaInFlight.clear();
+  artworkCache.clear();
+  artworkCacheBytes = 0;
+  artworkInFlight.clear();
   tpdbTagNumbers.clear();
   counterpartMemo.clear();
 }
@@ -275,7 +293,8 @@ async function stashQuery(
   return value === undefined ? null : value;
 }
 
-// --- artwork: provider-hosted images only, pass-through, never persisted ---
+// --- artwork: provider-hosted images only; memory-cached for a day, never
+// written to disk, never sends credentials, never follows redirects ---
 
 const PROXYABLE_IMAGE_TYPES: Record<string, true> = {
   "image/jpeg": true,
@@ -293,11 +312,15 @@ const IMAGE_BYTE_CAP = 8 * 1024 * 1024;
 
 /** Fetch artwork bytes for a URL previously seen on a validated provider
  * record. Never sends provider credentials, never follows redirects (the
- * transport errors on 3xx), never persists anything. */
+ * transport errors on 3xx). Successful image responses are cached in process
+ * memory for a day (Seerr's default for hosts without max-age) and never
+ * written to disk. */
 export async function fetchProviderArtwork(
   url: string,
   options: { timeoutMs?: number; sizeLimit?: number } = {},
 ): Promise<{ bytes: Uint8Array; contentType: string }> {
+  // Validation always runs, even on a cache hit: the cache key is only as
+  // trustworthy as the gate that fed it.
   const check = isProviderImageUrl(url);
   if (!check.ok) {
     throw new AppError(
@@ -306,24 +329,72 @@ export async function fetchProviderArtwork(
       `Rejected artwork URL: ${check.reason}.`,
     );
   }
-  const u = new URL(url);
-  // ponytail: requestBytes rejoins origin+pathname, dropping any query string;
-  // provider artwork URLs carry none today — a future query-bearing URL fails
-  // visibly at the CDN instead of silently changing what is served.
-  const { bytes, contentType } = await requestBytes(u.origin, u.pathname, "", {
-    service: check.service,
-    timeoutMs: options.timeoutMs,
-    sizeLimit: options.sizeLimit ?? IMAGE_BYTE_CAP,
-  });
-  const mime = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
-  if (PROXYABLE_IMAGE_TYPES[mime] !== true) {
-    throw new AppError(
-      502,
-      "upstream_bad_response",
-      "Artwork content type is not an image.",
+  // A custom sizeLimit narrows what this caller accepts; a cached entry
+  // fetched at the default cap could exceed it, so such calls bypass the
+  // cache (test callers and explicit limits stay exact).
+  const fetchOnce = async (): Promise<{
+    bytes: Uint8Array;
+    contentType: string;
+  }> => {
+    const u = new URL(url);
+    // ponytail: requestBytes rejoins origin+pathname, dropping any query string;
+    // provider artwork URLs carry none today — a future query-bearing URL fails
+    // visibly at the CDN instead of silently changing what is served.
+    const { bytes, contentType } = await requestBytes(
+      u.origin,
+      u.pathname,
+      "",
+      {
+        service: check.service,
+        timeoutMs: options.timeoutMs,
+        sizeLimit: options.sizeLimit ?? IMAGE_BYTE_CAP,
+      },
     );
+    const mime = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
+    if (PROXYABLE_IMAGE_TYPES[mime] !== true) {
+      // Only verified images are ever cached; errors never enter the cache.
+      throw new AppError(
+        502,
+        "upstream_bad_response",
+        "Artwork content type is not an image.",
+      );
+    }
+    return { bytes, contentType };
+  };
+
+  if (options.sizeLimit !== undefined) return fetchOnce();
+
+  const hit = artworkCache.get(url);
+  if (hit && Date.now() - hit.at < ARTWORK_CACHE_TTL_MS) {
+    return { bytes: hit.bytes, contentType: hit.contentType };
   }
-  return { bytes, contentType };
+  if (hit) {
+    artworkCacheBytes -= hit.bytes.length;
+    artworkCache.delete(url);
+  }
+  const inFlight = artworkInFlight.get(url);
+  if (inFlight) return inFlight;
+  const pending = fetchOnce()
+    .then((entry) => {
+      artworkCache.set(url, { at: Date.now(), ...entry });
+      artworkCacheBytes += entry.bytes.length;
+      // ponytail: fixed TTL (Seerr's no-max-age default) and FIFO eviction of
+      // oldest entries until the new one fits; honor upstream max-age if
+      // images go stale. Cache is memory-only and resets on restart — a disk
+      // cache (Seerr's config/cache/images) is the upgrade if restarts hurt.
+      while (
+        artworkCacheBytes > ARTWORK_CACHE_MAX_BYTES &&
+        artworkCache.size > 1
+      ) {
+        const oldest = artworkCache.keys().next().value!;
+        artworkCacheBytes -= artworkCache.get(oldest)!.bytes.length;
+        artworkCache.delete(oldest);
+      }
+      return entry;
+    })
+    .finally(() => artworkInFlight.delete(url));
+  artworkInFlight.set(url, pending);
+  return pending;
 }
 
 // --- public interface ---

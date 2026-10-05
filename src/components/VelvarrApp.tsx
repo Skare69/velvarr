@@ -20,6 +20,7 @@ import { countPendingApprovals, REQUESTS_CHANGED } from "../lib/approvals.ts";
 import {
   ApiError,
   api,
+  clearApiCache,
   Credit,
   ErrorPanel,
   ForbiddenPanel,
@@ -122,6 +123,8 @@ export default function VelvarrApp() {
 
   useEffect(() => {
     const on401 = () => {
+      // One account's cached reads must not reach the next sign-in.
+      clearApiCache();
       setAccount(null);
       setProviders(null);
       setPhase("login");
@@ -143,6 +146,8 @@ export default function VelvarrApp() {
     setAccount(null);
     setProviders(null);
     setPhase("login");
+    // Same reason as on401: drop this account's cached GET responses.
+    clearApiCache();
     window.history.replaceState(null, "", window.location.pathname);
   }, []);
 

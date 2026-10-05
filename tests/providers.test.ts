@@ -1070,7 +1070,33 @@ test("artwork fetch: enforces content type, byte cap, and never sends credential
   }
 });
 
-// --- performer traversal (filmography) and stashdb INCLUDES ---
+test("artwork fetch: same URL twice hits upstream once; resetMetaCache clears the cache", async () => {
+  let upstreamCount = 0;
+  const fixture = await startFixture((req, res) => {
+    if (req.url === "/cached.png") {
+      upstreamCount++;
+      sendBytes(res, 200, PNG_BYTES, "image/png");
+      return;
+    }
+    sendBytes(res, 404, "nope", "text/plain");
+  });
+  try {
+    const url = `${fixture.origin}/cached.png`;
+    const first = await fetchProviderArtwork(url);
+    const second = await fetchProviderArtwork(url);
+    assert.equal(upstreamCount, 1);
+    assert.deepEqual([...second.bytes], [...first.bytes]);
+    assert.equal(second.contentType, first.contentType);
+
+    // beforeEach-style reset seam: the next fetch must go upstream again.
+    resetMetaCache();
+    const third = await fetchProviderArtwork(url);
+    assert.equal(upstreamCount, 2);
+    assert.deepEqual([...third.bytes], [...first.bytes]);
+  } finally {
+    await fixture.close();
+  }
+});
 
 test("tpdb filmography pages the canonical performer route and rejects mixed filters", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
