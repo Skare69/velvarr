@@ -496,6 +496,19 @@ export function DetailSections({
     d.sourceUrl && !d.links.some((l) => l.url === d.sourceUrl)
       ? d.sourceUrl
       : null;
+  // The + Filter jump waits for the counterpart resolution before it
+  // navigates. A response that lands after the user went anywhere else
+  // (closed the detail, switched view, opened another record) is stale: it
+  // must not yank them into the titles view. While a credit's resolution is
+  // in flight its button reads busy.
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+  const [pendingFilter, setPendingFilter] = useState<string | null>(null);
   // Remember studio/tag names so browse chips can label the ids the URL
   // carries — details are where names are known.
   useEffect(() => {
@@ -576,11 +589,9 @@ export function DetailSections({
                     c.reference.provider === "stashdb"
                       ? "performerStashdb"
                       : "performerTpdb";
+                  const key = `${c.reference.provider}:${c.reference.id}`;
                   return (
-                    <div
-                      key={`${c.reference.provider}:${c.reference.id}`}
-                      className="cat-person"
-                    >
+                    <div key={key} className="cat-person">
                       <button
                         type="button"
                         className="cat-person-main"
@@ -598,16 +609,34 @@ export function DetailSections({
                         className="btn btn-accent cat-person-filter"
                         title={`Filter by ${c.name}`}
                         aria-label={`Filter by ${c.name}`}
+                        disabled={pendingFilter === key}
+                        aria-busy={pendingFilter === key || undefined}
                         onClick={() => {
-                          void performerCounterpart(c.reference).then(
-                            (counterpart) =>
+                          const hrefAtClick = window.location.href;
+                          setPendingFilter(key);
+                          void performerCounterpart(c.reference)
+                            .then((counterpart) => {
+                              // A response is stale once the user went
+                              // anywhere else since the click: navigating
+                              // now would pull them out of where they are.
+                              if (
+                                !aliveRef.current ||
+                                window.location.href !== hrefAtClick
+                              )
+                                return;
                               onBrowse({
                                 param,
                                 provider: c.reference.provider,
                                 id: c.reference.id,
                                 ...(counterpart ? { counterpart } : {}),
-                              }),
-                          );
+                              });
+                            })
+                            .finally(() => {
+                              // Clears only this credit's flag: a newer
+                              // click's pending state survives.
+                              if (aliveRef.current)
+                                setPendingFilter((k) => (k === key ? null : k));
+                            });
                         }}
                       >
                         <Icon name="plus" /> Filter
