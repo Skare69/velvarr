@@ -1060,9 +1060,13 @@ export function TitlesView() {
     },
     [setP, sortRaw, dirRaw],
   );
+  // Typed fields refine mid-edit (SearchBox debounces, the date input fires
+  // per keystroke): push only when the value appears or disappears, replace
+  // while it is refined — same rule as the omnibox — so Back never walks
+  // through typing prefixes or partial dates.
   const onQ = useCallback(
-    (v: string) => setP({ q: v || null }, { push: true }),
-    [setP],
+    (v: string) => setP({ q: v || null }, { push: q === "" || v === "" }),
+    [q, setP],
   );
   const onInclude = useCallback(
     (tags: CatalogTagSelection[]) =>
@@ -1155,8 +1159,11 @@ export function TitlesView() {
   // Both halves commit together — one without the other is a 400.
   const onDate = useCallback(
     (d: string | null, op: string | null) =>
-      setP({ date: d, date_operation: op, year: null }, { push: true }),
-    [setP],
+      setP(
+        { date: d, date_operation: op, year: null },
+        { push: date === "" || d === null },
+      ),
+    [date, setP],
   );
   const onSort = useCallback(
     (v: string) =>
