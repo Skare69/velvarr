@@ -55,13 +55,9 @@ let knobs = {
   failFindAfterAdd: false,
   failFindOnce: 0,
   holdAdd: null as Promise<void> | null,
-  added: null as string | null,
-  mutateStatus: 200,
-  holdDelete: null as Promise<void> | null,
   pathOverride: null as string | null,
 };
 let onAdd: (() => void) | null = null;
-let onDelete: (() => void) | null = null;
 let storedItems = new Map<string, number>();
 let nextId = 1;
 let calls: { method: string; path: string }[] = [];
@@ -76,7 +72,6 @@ function dtoFor(ext: string, id: number) {
     path: knobs.pathOverride ?? `/data/whisparr/${ext.slice(0, 8)}`,
     foreignId: `tpdbId:${ext}`,
     sizeOnDisk: 0,
-    ...(knobs.added ? { added: knobs.added } : {}),
     tpdbId: ext,
   };
 }
@@ -129,24 +124,6 @@ async function handle(
       knobs.addStatus < 400 ? dtoFor(ext, wid) : { message: "rejected" },
     );
     return;
-  }
-  if (
-    (req.method === "DELETE" || req.method === "PUT") &&
-    /^\/api\/v3\/movie\/\d+/.test(path)
-  ) {
-    if (knobs.mutateStatus !== 200) {
-      return json(knobs.mutateStatus, { message: "mutate rejected" });
-    }
-    const wid = Number(/\/api\/v3\/movie\/(\d+)/.exec(path)?.[1]);
-    if (knobs.holdDelete) await knobs.holdDelete;
-    if (req.method === "DELETE") {
-      for (const [ext, id] of storedItems) {
-        if (id === wid) storedItems.delete(ext);
-      }
-    }
-    onDelete?.();
-    onDelete = null;
-    return json(200, {});
   }
   json(404, { message: "not found" });
 }
@@ -202,15 +179,11 @@ function freshDb(): void {
     failFindOnce: 0,
     pathOverride: null,
     holdAdd: null,
-    added: null,
-    holdDelete: null,
-    mutateStatus: 200,
   };
   storedItems = new Map();
   nextId = 1;
   calls = [];
   onAdd = null;
-  onDelete = null;
 }
 
 function config(delivery: boolean): IntegrationConfig {
@@ -731,6 +704,58 @@ test("cancellation suppresses only undispatched work; sent and in-flight work su
   assert.equal(summary.delivered, 1);
   assert.equal(postCount(), before + 1, "fresh work POSTs after suppression");
   assert.equal(probe(freshId).state, "monitoring");
+});
+
+test("changed facts persist; a proven absence is authoritative while an outage is not", async () => {
+  const owner = boot();
+  approve(owner.id, MOVIE_A);
+  const id = workId(MOVIE_A);
+  await acquisition.runDueWork();
+
+  // Upstream path changed: the next observation must persist the new facts.
+  knobs.pathOverride = "/data/whisparr/moved";
+  let summary = await acquisition.runDueWork(later());
+  assert.equal(summary.observed, 1);
+  let rec = probe(id);
+  assert.equal(
+    rec.whisparrPath,
+    "/data/whisparr/moved",
+    "a changed path is persisted, never kept stale",
+  );
+
+  // Outage: an unknown check keeps facts and the last observation intact.
+  const observedAt = rec.lastObservedAt;
+  knobs.downAll = true;
+  summary = await acquisition.runDueWork(later());
+  assert.equal(summary.unavailable, 1);
+  rec = probe(id);
+  assert.equal(rec.whisparrPath, "/data/whisparr/moved");
+  assert.equal(rec.lastObservedAt, observedAt);
+  assert.equal(
+    storage.hasAuthoritativeAbsence(rec),
+    false,
+    "an outage is never an authoritative absence",
+  );
+
+  // Proven absence: a successful lookup says the identity is gone.
+  knobs.downAll = false;
+  storedItems.delete(EXT_A);
+  summary = await acquisition.runDueWork(later());
+  assert.equal(summary.absent, 1);
+  rec = probe(id);
+  assert.equal(
+    storage.hasAuthoritativeAbsence(rec),
+    true,
+    "a proven absence is authoritative",
+  );
+  assert.equal(rec.whisparrPath, null);
+  assert.equal(rec.whisparrId, null);
+  assert.equal(rec.state, "monitoring", "absence keeps state and history");
+  assert.equal(
+    rec.lastObservedAt,
+    observedAt,
+    "absence never overwrites the last real observation",
+  );
 });
 
 // --- shutdown ---------------------------------------------------------
