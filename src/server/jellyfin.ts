@@ -36,7 +36,6 @@ interface UserPolicy {
   IsDisabled?: boolean;
   EnableRemoteAccess?: boolean;
   EnableMediaPlayback?: boolean;
-  EnableContentDeletion?: boolean;
 }
 
 interface UserDto {
@@ -349,27 +348,22 @@ function effectiveLibraries(
 
 // Single home of the library-membership guarantee: some ancestor of the
 // item must be one of this account's granted (configured-intersected)
-// library folders. Every compared id goes through normalizeItemId. Returns
-// the granted library folder (id + server name) so callers can audit WHERE
-// the item lived; undefined means no grant.
-function grantedAncestorOf(
+// library folders. Every compared id goes through normalizeItemId.
+function hasGrantedAncestor(
   config: IntegrationConfig,
   account: Account,
   ancestors: unknown,
-): { id: string; name: string } | undefined {
-  if (!Array.isArray(ancestors)) return undefined;
+): boolean {
   const grantedLibraries = new Set(effectiveLibraries(config, account));
-  for (const a of ancestors) {
-    try {
-      const id = normalizeItemId(a?.Id);
-      if (grantedLibraries.has(id)) {
-        return { id, name: String(a?.Name ?? "").slice(0, 500) };
-      }
-    } catch {
-      // A malformed ancestor id simply is not a grant.
-    }
-  }
-  return undefined;
+  return Array.isArray(ancestors)
+    ? ancestors.some((a) => {
+        try {
+          return grantedLibraries.has(normalizeItemId(a?.Id));
+        } catch {
+          return false;
+        }
+      })
+    : false;
 }
 
 // Credential-free browser link against the external web base, preserving any
@@ -752,7 +746,7 @@ async function findGrantedItem(
   user: ExternalUser,
   account: Account,
   itemId: string,
-): Promise<{ dto: BaseItemDto; library: { id: string; name: string } }> {
+): Promise<BaseItemDto> {
   const { items } = await fetchItems(config, userToken, user.id, {
     ids: itemId,
     startIndex: 0,
@@ -775,15 +769,14 @@ async function findGrantedItem(
     userToken,
     { service: "jellyfin" },
   );
-  const library = grantedAncestorOf(config, account, ancestors);
-  if (!library) {
+  if (!hasGrantedAncestor(config, account, ancestors)) {
     throw new AppError(
       404,
       "item_not_found",
       "That item is not available to this account.",
     );
   }
-  return { dto, library };
+  return dto;
 }
 
 export async function getLibraryItem(
@@ -803,13 +796,7 @@ export async function getLibraryItem(
     );
   }
   const user = await getCurrentUser(config, userToken);
-  const { dto } = await findGrantedItem(
-    config,
-    userToken,
-    user,
-    account,
-    itemId,
-  );
+  const dto = await findGrantedItem(config, userToken, user, account, itemId);
   // PlaybackInfo is the server's real, user-scoped source verdict; a failure
   // here propagates instead of degrading into a fake "not playable".
   const playback = await requestJson<PlaybackInfoResponse>(
@@ -848,13 +835,7 @@ export async function getLibraryImage(
   }
   const user = await getCurrentUser(config, userToken);
   // Reauthorize item and library membership on EVERY image request.
-  const { dto } = await findGrantedItem(
-    config,
-    userToken,
-    user,
-    account,
-    itemId,
-  );
+  const dto = await findGrantedItem(config, userToken, user, account, itemId);
   if (!dto?.ImageTags?.Primary) {
     throw new AppError(
       404,
@@ -1177,7 +1158,7 @@ async function verdictForItem(
   }
   // Grant proof by ancestry — the only exact folder-membership proof on the
   // lab Jellyfin 12.0.0 (parentId is ignored alongside ids there); shares
-  // grantedAncestorOf with findGrantedItem.
+  // hasGrantedAncestor with findGrantedItem.
   let ancestors: BaseItemDto[];
   try {
     ancestors = await requestJson<BaseItemDto[]>(
@@ -1196,7 +1177,7 @@ async function verdictForItem(
     }
     throw err; // the outer catch maps non-auth failures to 'unavailable'
   }
-  if (!grantedAncestorOf(config, account, ancestors)) {
+  if (!hasGrantedAncestor(config, account, ancestors)) {
     return {
       outcome: "denied",
       reason: "The matched item is outside this account's granted libraries.",

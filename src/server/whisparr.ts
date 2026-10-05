@@ -181,10 +181,7 @@ interface MovieResourceDto {
   hasFile?: unknown;
   movieFileId?: unknown;
   movieFile?: unknown;
-  sizeOnDisk?: unknown;
   path?: unknown;
-  /** ISO-8601 stored `added` timestamp. */
-  added?: unknown;
   foreignId?: unknown;
   tmdbId?: unknown;
   tpdbId?: unknown;
@@ -194,7 +191,6 @@ interface MovieResourceDto {
   isExcluded?: unknown;
   statistics?: {
     movieFileCount?: unknown;
-    sizeOnDisk?: unknown;
   } & Record<string, unknown>;
 }
 
@@ -477,13 +473,6 @@ export interface WhisparrItem {
   /** Stored library path; Jellyfin matching maps this through pathMappings. */
   path: string;
   hasFile: boolean;
-  sizeOnDisk?: number;
-  /** Present only when the API reveals import exclusion. */
-  importExcluded?: boolean;
-  /** File count from stored statistics; 0 when none is reported. */
-  fileCount?: number;
-  /** Stored ISO-8601 `added` timestamp; absent when the build omits it. */
-  added?: string;
 }
 
 function mapStoredItem(dto: MovieResourceDto): WhisparrItem {
@@ -502,27 +491,12 @@ function mapStoredItem(dto: MovieResourceDto): WhisparrItem {
       "Whisparr returned an unusable stored item.",
     );
   }
-  const statsSize =
-    typeof dto.statistics?.sizeOnDisk === "number"
-      ? dto.statistics.sizeOnDisk
-      : undefined;
-  const sizeOnDisk =
-    typeof dto.sizeOnDisk === "number" ? dto.sizeOnDisk : statsSize;
   const imported =
     dto.hasFile === true ||
     (typeof dto.movieFileId === "number" && dto.movieFileId > 0) ||
     dto.movieFile != null ||
     (typeof dto.statistics?.movieFileCount === "number" &&
       dto.statistics.movieFileCount > 0);
-  const rawCount = dto.statistics?.movieFileCount;
-  const fileCount =
-    typeof rawCount === "number" && Number.isInteger(rawCount)
-      ? rawCount
-      : // No statistics on an imported item: at least one file must exist.
-        imported
-        ? 1
-        : 0;
-  const added = asString(dto.added);
   return {
     whisparrId: id as number,
     itemType: routed.itemType,
@@ -531,20 +505,16 @@ function mapStoredItem(dto: MovieResourceDto): WhisparrItem {
     monitored: dto.monitored === true,
     path,
     hasFile: imported,
-    fileCount,
-    ...(added !== undefined ? { added } : {}),
-    ...(sizeOnDisk !== undefined ? { sizeOnDisk } : {}),
-    ...(dto.isExcluded === true ? { importExcluded: true } : {}),
   };
 }
 
 /** Exact-identity stored-resource lookup: GET /api/v3/movie?tpdbId=|stashId=.
- * Returns the raw stored resource (unmapped), or null when the identity is
- * provably absent. Conflicting matches are a hard error. */
-async function findStoredMovieDto(
+ * Returns the stored item, or null when the identity is provably absent.
+ * Conflicting matches are a hard error. */
+export async function findWhisparrItem(
   config: IntegrationConfig,
   ref: MediaReference,
-): Promise<MovieResourceDto | null> {
+): Promise<WhisparrItem | null> {
   const whisparr = requireWhisparr(config);
   const { kind, id } = requireMediaReference(ref);
   const field = kind === "movie" ? "tpdbId" : "stashId";
@@ -577,17 +547,7 @@ async function findStoredMovieDto(
     );
   }
   const [match] = matches;
-  return match ?? null;
-}
-
-/** Exact-identity adoption lookup: GET /api/v3/movie?tpdbId=|stashId=.
- * Returns the stored item, or null when the identity is provably absent. */
-export async function findWhisparrItem(
-  config: IntegrationConfig,
-  ref: MediaReference,
-): Promise<WhisparrItem | null> {
-  const dto = await findStoredMovieDto(config, ref);
-  return dto === null ? null : mapStoredItem(dto);
+  return match === undefined ? null : mapStoredItem(match);
 }
 
 // --- observation ---

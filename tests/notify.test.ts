@@ -19,7 +19,7 @@ import { notifyRequestEvent } from "../src/server/notify.ts";
 const TOKEN = "fixture-token-segment-9f8e7d6c";
 const TITLE = "Private Scene Title";
 const EVENT = {
-  kind: "approved" as const,
+  kind: "acquired" as const,
   media: {
     provider: "tpdb",
     kind: "scene",
@@ -119,7 +119,7 @@ test("configured webhook posts once, identity-only, without the title", async ()
     assert.ok(first, "fixture received one request");
     assert.equal(first.method, "POST");
     const content = String(first.body.content ?? "");
-    for (const part of ["approved", "scene", "tpdb", EVENT.media.id])
+    for (const part of ["acquired", "scene", "tpdb", EVENT.media.id])
       assert.ok(content.includes(part), `content missing ${part}: ${content}`);
     assert.equal(first.body.embeds, undefined);
     assert.ok(!JSON.stringify(first.body).includes(TITLE));

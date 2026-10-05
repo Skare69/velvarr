@@ -71,7 +71,7 @@ function dtoFor(ext: string, id: number) {
     hasFile: knobs.hasFile && ext === EXT_A,
     path: knobs.pathOverride ?? `/data/whisparr/${ext.slice(0, 8)}`,
     foreignId: `tpdbId:${ext}`,
-    sizeOnDisk: 0,
+
     tpdbId: ext,
   };
 }

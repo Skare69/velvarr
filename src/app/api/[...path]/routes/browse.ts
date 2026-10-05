@@ -19,7 +19,7 @@ import {
 } from "../../../../server/providers.ts";
 import { searchVisibleCatalog } from "../../../../server/browse.ts";
 
-export async function performerHint(
+async function performerHint(
   media: MediaReference,
 ): Promise<{ performer: string } | Record<string, never>> {
   try {

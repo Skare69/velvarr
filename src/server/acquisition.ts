@@ -128,38 +128,6 @@ function itemFacts(item: WhisparrItem): {
   };
 }
 
-/** The claim protocol both engines share: CAS-claim, treat another worker's
- * 409 as ordinary contention for this pass, and release the claim in a
- * finally so a thrown error never strands it (a stale token no-ops). The
- * gates before the claim and the outcome lattices after it stay with their
- * own engines; only this band is common. */
-async function withClaim<T extends { id: string }>(
-  claim: () => { record: T; claimToken: string },
-  release: (id: string, claimToken: string) => void,
-  summary: WorkSummary,
-  work: (record: T, claimToken: string) => Promise<void>,
-): Promise<void> {
-  let held: { record: T; claimToken: string };
-  try {
-    held = claim();
-  } catch (e) {
-    if (e instanceof AppError && e.status === 409) {
-      // Normal concurrency: another worker holds the claim. Skip it for
-      // this pass; never retry it here.
-      summary.contention++;
-      return;
-    }
-    throw e;
-  }
-  const { record, claimToken } = held;
-  try {
-    await work(record, claimToken);
-  } finally {
-    // A thrown error must never strand the claim; a stale token no-ops.
-    release(record.id, claimToken);
-  }
-}
-
 /** One delivery attempt. The attempt row is persisted BEFORE any network
  * submission, so a crash leaves recoverable evidence (state submitting,
  * recovered to uncertain at the next boot) instead of a blind retry. */
@@ -389,24 +357,35 @@ async function processOne(
     summary.blocked++;
     return;
   }
-  await withClaim(
-    () => storage.claimAcquisition(item.id),
-    storage.releaseAcquisitionClaim,
-    summary,
-    async (record, claimToken) => {
-      switch (record.state) {
-        case "uncertain":
-          await reconcileUncertain(record, config, claimToken, summary);
-          break;
-        case "unsent":
-          await dispatch(record, config, claimToken, summary);
-          break;
-        default:
-          await observe(record, config, claimToken, summary);
-          break;
-      }
-    },
-  );
+  // CAS-claim the record; another worker's 409 is ordinary contention for
+  // this pass, never a retry. A thrown error must never strand the claim,
+  // so release it in a finally (a stale token no-ops).
+  let held: { record: AcquisitionRecord; claimToken: string };
+  try {
+    held = storage.claimAcquisition(item.id);
+  } catch (e) {
+    if (e instanceof AppError && e.status === 409) {
+      summary.contention++;
+      return;
+    }
+    throw e;
+  }
+  const { record, claimToken } = held;
+  try {
+    switch (record.state) {
+      case "uncertain":
+        await reconcileUncertain(record, config, claimToken, summary);
+        break;
+      case "unsent":
+        await dispatch(record, config, claimToken, summary);
+        break;
+      default:
+        await observe(record, config, claimToken, summary);
+        break;
+    }
+  } finally {
+    storage.releaseAcquisitionClaim(record.id, claimToken);
+  }
 }
 
 /** Process one bounded batch of due work. Non-overlapping: a call made while
