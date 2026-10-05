@@ -228,3 +228,30 @@ test("sort: recent orders by creation, modified by last activity", () => {
     [500, 3000, 1000],
   );
 });
+
+test("sort: modified ignores the acquisition worker's recheck stamps", () => {
+  // Every worker pass rewrites acquisition.updatedAt (claim, observation,
+  // absence, release) even when nothing changed, so a still-waiting row's
+  // stamp is its poll schedule, not a change. A recheck stamp newer than
+  // every other fact must not lift the row above a later decision.
+  const rows = [
+    row({
+      createdAt: 1000,
+      decision: "approved",
+      decidedAt: 2000,
+      acquisition: {
+        state: "monitoring",
+        lastError: null,
+        updatedAt: 900_000, // newer than everything: a worker recheck stamp
+        observationStale: false,
+        monitored: true,
+        progress: null,
+      },
+    }),
+    row({ createdAt: 3000 }),
+  ];
+  const order = filterRequestRows(rows, "all", "all", "modified").map(
+    (x) => x.createdAt,
+  );
+  assert.deepEqual(order, [3000, 1000]);
+});

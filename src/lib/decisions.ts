@@ -107,10 +107,14 @@ export function filterRequestRows(
         );
     }
   });
-  // "recent" sorts by creation; "modified" by the last time anything about
-  // the row moved — creation, the decision, or the attached acquisition.
-  const at = (r: RequestListItem) =>
-    Math.max(r.createdAt, r.decidedAt ?? 0, r.acquisition?.updatedAt ?? 0);
+  // "recent" sorts by creation; "modified" by facts that mark a real change
+  // to the request — its creation or its decision. The acquisition's
+  // updatedAt is a poll stamp: every worker pass rewrites it (claim,
+  // observation, absence, release) even when nothing changed, so counting
+  // it orders waiting rows by the recheck schedule and reshuffles on every
+  // reload. If acquisition state changes must count later, stamp real
+  // transitions in storage and expose that column instead.
+  const at = (r: RequestListItem) => Math.max(r.createdAt, r.decidedAt ?? 0);
   return matching.toSorted(
     sort === "recent"
       ? (a, b) => b.createdAt - a.createdAt
