@@ -81,11 +81,18 @@ const body = [
 ].join("\n");
 
 try {
-  writeFileSync(target, body, { flag: "wx" }); // exclusive: also fails if it appeared meanwhile
+  // Exclusive: also fails if it appeared meanwhile. 0600 at creation: no
+  // window where other local users can read the key before chmod lands.
+  writeFileSync(target, body, { flag: "wx", mode: 0o600 });
   try {
-    chmodSync(target, 0o600); // best-effort owner-only perms (no-op restriction on Windows)
-  } catch {
+    chmodSync(target, 0o600); // no-op restriction on Windows
+  } catch (error) {
     // Windows filesystems may not support POSIX modes; file is still user-profile protected.
+    if (process.platform !== "win32") {
+      console.warn(
+        `Warning: could not restrict ${target} to owner-only permissions (${error.message}). Check that other users cannot read it.`,
+      );
+    }
   }
 } catch (error) {
   console.error(`Could not write ${target}: ${error.message}`);
