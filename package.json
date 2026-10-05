@@ -12,7 +12,7 @@
     "build": "next build",
     "start": "next start --hostname 127.0.0.1 --port 6699",
     "check": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test --test-concurrency=4 tests/*.test.ts",
+    "test": "node --experimental-strip-types --import ./tests/setup.ts --test --test-concurrency=4 tests/*.test.ts",
     "test:mutation": "stryker run",
     "setup": "node scripts/setup.mjs",
     "backup": "node scripts/backup.mjs",
