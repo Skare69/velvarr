@@ -608,12 +608,15 @@ export function FileFacts({ item }: { item: LibraryItem }) {
 /* ---------- Card Badges (Seerr-style pill + status) ---------- */
 
 export function CardTypeBadge({ kind }: { kind: "movie" | "scene" | string }) {
-  const isScene = kind.toLowerCase() === "scene";
+  const k = kind.toLowerCase();
+  const isScene = k === "scene";
+  // Library kinds beyond movie/scene (episode, musicvideo, video) name
+  // themselves: a MOVIE pill over an episode would lie.
   return (
     <span
       className={`media-type-badge ${isScene ? "media-type-scene" : "media-type-movie"}`}
     >
-      {isScene ? "SCENE" : "MOVIE"}
+      {isScene ? "SCENE" : k === "movie" ? "MOVIE" : k.toUpperCase()}
     </span>
   );
 }

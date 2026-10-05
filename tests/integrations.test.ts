@@ -2771,6 +2771,43 @@ test("listRecentlyAddedItems orders by the server's recently-added ordering", as
   });
 });
 
+test("listRecentlyAddedItems includes Episode items — scenes filed under a TV library", async () => {
+  const items = [
+    datedItem(0x371, "Feature", "2026-09-03T10:00:00.000Z"),
+    {
+      Id: dashed(hexId(0x372)),
+      Name: "Studio Scene",
+      SortName: "studio scene",
+      Type: "Episode",
+      LocationType: "FileSystem",
+      DateCreated: "2026-09-02T10:00:00.000Z",
+    },
+  ];
+  await withFixture(itemsByParentHandler({ [LIB_A]: items }), async (fx) => {
+    const result = await listRecentlyAddedItems(
+      jellyfinConfig(fx.origin, [LIB_A]),
+      TOKEN,
+      account([LIB_A]),
+      5,
+    );
+    assert.deepEqual(
+      result.map((item) => [item.name, item.kind]),
+      [
+        ["Feature", "movie"],
+        ["Studio Scene", "episode"],
+      ],
+    );
+    const itemsCalls = fx.log.filter(
+      (r) => r.method === "GET" && pathOf(r.url) === `/users/${ME_ID}/items`,
+    );
+    assert.equal(itemsCalls.length, 1);
+    assert.equal(
+      queryOf(itemsCalls[0]?.url ?? "").get("includeItemTypes"),
+      "Movie,Video,MusicVideo,Episode",
+    );
+  });
+});
+
 test("listRecentlyAddedItems restricts results to granted libraries", async () => {
   const byParent: Record<string, unknown[]> = {
     [LIB_A]: [datedItem(0x341, "Old A", "2026-09-01T10:00:00.000Z")],

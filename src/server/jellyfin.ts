@@ -484,7 +484,10 @@ async function fetchItems(
   },
 ): Promise<{ items: BaseItemDto[]; total: number }> {
   const params: Record<string, string> = {
-    includeItemTypes: "Movie,Video,MusicVideo",
+    // Episode: scenes Whisparr filed under a TV-Shows library are Episode
+    // items; without it they vanish from browse, search, item lookup and the
+    // recently-added shelf alike.
+    includeItemTypes: "Movie,Video,MusicVideo,Episode",
     fields:
       "PrimaryImageAspectRatio,Overview,ProductionYear,RuntimeTicks,MediaSources,LocationType,SortName" +
       (opts.extraFields ? `,${opts.extraFields}` : ""),
