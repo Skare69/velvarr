@@ -26,4 +26,9 @@ test("prerelease, empty and garbage tags never claim an update", () => {
   assert.equal(isNewerVersion("0.36.0-beta.1", "0.35.0"), false);
   assert.equal(isNewerVersion("", "0.35.0"), false);
   assert.equal(isNewerVersion("next", "0.35.0"), false);
+  // Number() would parse these as integers; only a strict numeric shape
+  // keeps the "unparsable compares false" contract true.
+  assert.equal(isNewerVersion("1.", "0.35.0"), false);
+  assert.equal(isNewerVersion("0x1", "0.35.0"), false);
+  assert.equal(isNewerVersion(" 1", "0.35.0"), false);
 });

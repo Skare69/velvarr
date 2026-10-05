@@ -1164,7 +1164,7 @@ test("public surface: health, status, unknown routes", async () => {
   assert.notEqual(traversal.status, 200);
 });
 
-test("update chip: newer release surfaces, github failure degrades to null", async () => {
+test("update chip: surfaces once per check, untrusted urls and failure degrade to null", async () => {
   const realFetch = globalThis.fetch;
   try {
     globalThis.fetch = (async () =>
@@ -1181,6 +1181,43 @@ test("update chip: newer release surfaces, github failure degrades to null", asy
         url: "https://github.com/Skare69/velvarr/releases/tag/v9.9.9",
       },
     });
+
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return Response.json({
+        tag_name: "v9.9.9",
+        html_url: "https://github.com/Skare69/velvarr/releases/tag/v9.9.9",
+      });
+    }) as typeof fetch;
+    resetUpdateCache();
+    // The route needs no auth: a burst of parallel hits on a cold or expired
+    // cache must fan out to one github fetch, not one per caller (the client
+    // dedupes the same way with updatePromise ??=).
+    const shared = await Promise.all(
+      Array.from({ length: 5 }, () => call("GET", "/api/update")),
+    );
+    assert.equal(calls, 1);
+    for (const res of shared) {
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), {
+        update: {
+          version: "9.9.9",
+          url: "https://github.com/Skare69/velvarr/releases/tag/v9.9.9",
+        },
+      });
+    }
+
+    // html_url becomes the chip href; a payload pointing anywhere but this
+    // repo's release pages is unexpected, not a link to render.
+    globalThis.fetch = (async () =>
+      Response.json({
+        tag_name: "v9.9.9",
+        html_url: "https://evil.example/releases/v9.9.9",
+      })) as typeof fetch;
+    resetUpdateCache();
+    const untrusted = await call("GET", "/api/update");
+    assert.deepEqual(await untrusted.json(), { update: null });
 
     globalThis.fetch = (async () =>
       new Response("rate limited", { status: 403 })) as typeof fetch;

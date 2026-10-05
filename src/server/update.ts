@@ -11,17 +11,29 @@ const FRESH_MS = 60 * 60 * 1000;
 const FAILED_MS = 10 * 60 * 1000;
 
 let cache: { at: number; ok: boolean; update: UpdateInfo | null } | null = null;
+let inflight: Promise<UpdateInfo | null> | null = null;
 
 /** The newest published GitHub release when it is newer than this build,
  * null when current, unreachable or shaped wrong — one wire shape for both
  * "up to date" and "cannot tell", because the chip renders absence the same
  * honest way. A successful check is trusted for an hour, a failed one
- * retries after ten minutes. VELVARR_UPDATE_CHECK=0 skips the call entirely
- * — no request leaves the server, and the chip renders nothing. */
+ * retries after ten minutes, and parallel callers share the in-flight check
+ * instead of each starting their own github call. VELVARR_UPDATE_CHECK=0
+ * skips the call entirely — no request leaves the server, and the chip
+ * renders nothing. */
 export async function availableUpdate(): Promise<UpdateInfo | null> {
   if (process.env.VELVARR_UPDATE_CHECK === "0") return null;
   if (cache && Date.now() - cache.at < (cache.ok ? FRESH_MS : FAILED_MS))
     return cache.update;
+  // The route needs no auth, so a burst on a cold or expired cache must
+  // fan out to one fetch — same shape as the client's updatePromise ??=.
+  inflight ??= checkRelease().finally(() => {
+    inflight = null;
+  });
+  return inflight;
+}
+
+async function checkRelease(): Promise<UpdateInfo | null> {
   try {
     const res = await fetch(RELEASES_URL, {
       headers: { accept: "application/vnd.github+json" },
@@ -32,7 +44,12 @@ export async function availableUpdate(): Promise<UpdateInfo | null> {
       tag_name?: unknown;
       html_url?: unknown;
     };
-    if (typeof body.tag_name !== "string" || typeof body.html_url !== "string")
+    if (
+      typeof body.tag_name !== "string" ||
+      typeof body.html_url !== "string" ||
+      // html_url becomes the chip href; only this repo's release pages pass.
+      !body.html_url.startsWith("https://github.com/Skare69/velvarr/releases/")
+    )
       throw new Error("unexpected github payload");
     const latest = body.tag_name.replace(/^v/, "");
     cache = {
@@ -51,4 +68,5 @@ export async function availableUpdate(): Promise<UpdateInfo | null> {
 /** Test seam: drop the module cache so a stubbed fetch is actually hit. */
 export function resetUpdateCache(): void {
   cache = null;
+  inflight = null;
 }
