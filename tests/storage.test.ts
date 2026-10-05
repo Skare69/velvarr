@@ -761,18 +761,194 @@ test("v1 database migrates in place preserving config, accounts, sessions, and g
   const version = (
     raw.prepare("PRAGMA user_version").get() as { user_version: number }
   ).user_version;
-  const removalTables = raw
-    .prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'removal_%'",
-    )
-    .all();
-  assert.deepEqual(
-    removalTables,
-    [],
-    "removal tables must be dropped by the migration",
-  );
   raw.close();
   assert.equal(version, 11, "v1 database must migrate to schema 11");
+  // A v1 database never contained the removal tables (current migration 5
+  // creates none), so nothing here can assert about them; the schema-10 test
+  // below owns the claim that migration 11 drops them.
+});
+
+test("a schema-10 database migrates to 11: every removal object is dropped, rows are kept", () => {
+  const dir = freshDir();
+  storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  const request = storage.createRequest(ownerUser().id, MOVIE);
+
+  // Rewind a real database to the exact schema-10 shape a v0.35.0 install
+  // has: the removal tables, indexes and triggers that old migration 5
+  // created (26785c3b), one row in each, and user_version 10. Everything
+  // else HEAD's migrations built already matches schema 10, because the
+  // current migration 11 only drops objects. With the objects present, an
+  // empty migration 11 fails the assertions below — which is the point.
+  const now = Date.now();
+  const raw = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  raw.exec("UPDATE accounts SET can_remove = 1");
+  raw.exec(`
+    CREATE TABLE removal_executions (
+      id TEXT PRIMARY KEY,
+      instance_id TEXT NOT NULL,
+      provider TEXT NOT NULL CHECK (provider IN ('tpdb', 'stashdb')),
+      kind TEXT NOT NULL CHECK (kind IN ('movie', 'scene')),
+      external_id TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (
+        state IN (
+          'unsent', 'executing', 'uncertain', 'done', 'failed', 'blocked'
+        )
+      ),
+      level TEXT NOT NULL CHECK (
+        level IN (
+          'unmonitor', 'drop', 'exclude', 'delete_files', 'delete_jellyfin_item'
+        )
+      ),
+      claim_token TEXT,
+      claimed_at INTEGER,
+      attempt_token TEXT,
+      attempt_at INTEGER,
+      due_at INTEGER,
+      whisparr_item_id INTEGER,
+      whisparr_path TEXT,
+      whisparr_file_count INTEGER,
+      whisparr_size INTEGER,
+      whisparr_added TEXT,
+      requester_id TEXT NOT NULL,
+      approver_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE removal_requests (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
+      provider TEXT NOT NULL CHECK (provider IN ('tpdb', 'stashdb')),
+      kind TEXT NOT NULL CHECK (kind IN ('movie', 'scene')),
+      external_id TEXT NOT NULL,
+      reason TEXT NOT NULL CHECK (length(reason) <= 2000),
+      decision TEXT NOT NULL
+        CHECK (decision IN ('pending', 'approved', 'declined', 'cancelled')),
+      level TEXT CHECK (
+        level IN (
+          'unmonitor', 'drop', 'exclude', 'delete_files', 'delete_jellyfin_item'
+        )
+      ),
+      created_at INTEGER NOT NULL,
+      decided_at INTEGER,
+      CHECK (
+        (decision = 'approved' AND level IS NOT NULL)
+        OR (decision != 'approved' AND level IS NULL)
+      )
+    );
+    CREATE UNIQUE INDEX removal_requests_active_intent
+      ON removal_requests (account_id, provider, kind, external_id)
+      WHERE decision IN ('pending', 'approved');
+    CREATE UNIQUE INDEX removal_executions_identity
+      ON removal_executions (instance_id, provider, kind, external_id);
+    CREATE INDEX removal_executions_due ON removal_executions (due_at);
+    CREATE TABLE removal_audit (
+      id TEXT PRIMARY KEY,
+      execution_id TEXT NOT NULL,
+      requester_id TEXT NOT NULL,
+      approver_id TEXT NOT NULL,
+      provider TEXT NOT NULL CHECK (provider IN ('tpdb', 'stashdb')),
+      kind TEXT NOT NULL CHECK (kind IN ('movie', 'scene')),
+      external_id TEXT NOT NULL,
+      level TEXT NOT NULL CHECK (
+        level IN (
+          'unmonitor', 'drop', 'exclude', 'delete_files', 'delete_jellyfin_item'
+        )
+      ),
+      attempt_token TEXT,
+      outcome TEXT NOT NULL CHECK (outcome IN ('done', 'failed', 'uncertain')),
+      detail TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TRIGGER removal_audit_immutable_update
+      BEFORE UPDATE ON removal_audit BEGIN
+      SELECT RAISE(ABORT, 'removal_audit is append-only');
+    END;
+    CREATE TRIGGER removal_audit_immutable_delete
+      BEFORE DELETE ON removal_audit BEGIN
+      SELECT RAISE(ABORT, 'removal_audit is append-only');
+    END;
+    CREATE TRIGGER removal_executions_need_approval
+      BEFORE INSERT ON removal_executions BEGIN
+      SELECT RAISE(
+        ABORT,
+        'removal execution requires an approved removal request'
+      )
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM removal_requests r
+        WHERE r.provider = NEW.provider
+          AND r.kind = NEW.kind
+          AND r.external_id = NEW.external_id
+          AND r.decision = 'approved'
+      );
+    END;
+  `);
+  raw
+    .prepare(
+      "INSERT INTO removal_requests (id, account_id, provider, kind, external_id, reason, decision, level, created_at, decided_at) VALUES ('rr1', ?, 'tpdb', 'movie', ?, 'gone', 'approved', 'drop', ?, ?)",
+    )
+    .run(ownerUser().id, MOVIE.id, now, now);
+  raw
+    .prepare(
+      "INSERT INTO removal_executions (id, instance_id, provider, kind, external_id, state, level, requester_id, approver_id, created_at, updated_at) VALUES ('re1', 'inst', 'tpdb', 'movie', ?, 'unsent', 'drop', ?, ?, ?, ?)",
+    )
+    .run(MOVIE.id, ownerUser().id, ownerUser().id, now, now);
+  raw
+    .prepare(
+      "INSERT INTO removal_audit (id, execution_id, requester_id, approver_id, provider, kind, external_id, level, attempt_token, outcome, created_at) VALUES ('ra1', 're1', ?, ?, 'tpdb', 'movie', ?, 'drop', 'att1', 'done', ?)",
+    )
+    .run(ownerUser().id, ownerUser().id, MOVIE.id, now);
+  raw.exec("PRAGMA user_version = 10");
+  raw.close();
+  storage.closeStorage();
+
+  // Reopening runs migration 11 in place.
+  assert.equal(storage.isInitialized(), true);
+  const owner = storage.getAccount(ownerUser().id);
+  assert.ok(owner, "the account row survives the upgrade");
+  assert.equal(owner.role, "admin");
+  assert.equal(
+    storage.getRequest(request.id, owner).decision,
+    "pending",
+    "the request row survives the upgrade",
+  );
+
+  const check = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  const leftovers = check
+    .prepare("SELECT name FROM sqlite_master WHERE name LIKE 'removal_%'")
+    .all();
+  const versionRow = check.prepare("PRAGMA user_version").get();
+  const grantRow = check
+    .prepare("SELECT can_remove FROM accounts WHERE id = ?")
+    .get(ownerUser().id);
+  check.close();
+
+  // node:sqlite rows are null-prototype objects: narrow, then read the field.
+  assert.ok(
+    versionRow !== null &&
+      typeof versionRow === "object" &&
+      "user_version" in versionRow,
+  );
+  assert.equal(
+    versionRow.user_version,
+    11,
+    "schema 10 database must migrate to schema 11",
+  );
+  assert.ok(
+    grantRow !== null &&
+      typeof grantRow === "object" &&
+      "can_remove" in grantRow,
+  );
+  assert.equal(
+    grantRow.can_remove,
+    1,
+    "accounts.can_remove keeps its grant across the upgrade",
+  );
+  assert.deepEqual(
+    leftovers,
+    [],
+    "every removal table, index and trigger must be dropped by migration 11",
+  );
 });
 
 test("catalog records carry an application-owned id distinct from the external UUID", () => {
