@@ -254,27 +254,24 @@
 .cat-person:hover {
   border-color: var(--color-accent);
 }
-/* Hover-revealed filter button: jumps to browse with this performer set.
-   Same bar as the watch/request overlay button (.media-quick-action .btn):
-   full width, same height, padding, gap and font, pinned 12px inside the
-   poster like the overlay's padding. It anchors at the poster top because
-   the name sits under the poster and a bottom anchor would cover it. The
-   hide stays two-class so it wins over .btn's display regardless of
-   stylesheet order. */
+/* Filter button at the card's foot: a normal in-flow button like every
+   other action button in Velvarr — visible without hover, so a first tap
+   on touch fires the filter instead of the card's navigation. Same compact
+   bar the old poster overlay used; margins mirror .cat-person-name's
+   padding so name and button share the card's inset. */
 .cat-person .cat-person-filter {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  left: 12px;
+  align-self: stretch;
   min-height: 36px;
+  margin: 0 0.5rem 0.5rem;
   padding: 7px 5px;
   gap: 5px;
   font-size: 0.75rem;
-  display: none;
 }
-.cat-person:hover .cat-person-filter,
-.cat-person:focus-within .cat-person-filter {
-  display: inline-flex;
+@media (hover: none), (pointer: coarse) {
+  /* Same touch tap-target bump the quick-action overlay buttons get. */
+  .cat-person .cat-person-filter {
+    min-height: 44px;
+  }
 }
 .cat-person-img {
   width: 100%;
