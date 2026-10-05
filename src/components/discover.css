@@ -412,42 +412,7 @@
   object-fit: cover;
 }
 
-.discovery-shade {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  gap: 0.3rem;
-  padding: 0.5rem 0.625rem;
-  background: linear-gradient(
-    to top,
-    color-mix(in srgb, var(--color-canvas) 88%, transparent),
-    transparent 62%
-  );
-}
-
-.discovery-art-title {
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--color-ink);
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 1;
-  -webkit-box-orient: vertical;
-}
-
-.discovery-art-meta {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  font-size: 0.72rem;
-  color: var(--color-muted);
-}
-
-/* Artwork card: the request variant is a button (whole art opens details);
-   the library variant is a plain div, so the cursor stays honest. */
+/* Artwork card is a plain div; the tile's own button opens the details. */
 .discovery-art-card {
   position: relative;
   display: block;
@@ -463,9 +428,6 @@
     border-color 160ms,
     box-shadow 160ms;
 }
-button.discovery-art-card {
-  cursor: pointer;
-}
 /* Hover is zoom + depth only, like every other rail: the accent ring read
    as a red outline on the library shelf. Keyboard focus keeps :focus-visible. */
 .discovery-art-card:focus-visible {
@@ -473,29 +435,9 @@ button.discovery-art-card {
   outline-offset: 2px;
 }
 
-/* Library tile footer: honest availability, authorized watch link only. */
-.discovery-library-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0.5rem 0.625rem 0.625rem;
-}
 .discovery-library-note {
   font-size: 0.75rem;
   color: var(--color-muted);
-}
-/* Icon inside text buttons needs a beat of air. A 2:3 tile is 160px wide, so
- * the watch button also has to stay on one line. */
-.discovery-library-foot .btn {
-  gap: 0.35rem;
-}
-.discovery-library-foot .btn {
-  flex: 1;
-  justify-content: center;
-  padding: 0.3rem 0.4rem;
-  font-size: 0.78rem;
-  white-space: nowrap;
 }
 
 .discovery-shelf-body.panel {
@@ -531,12 +473,6 @@ button.discovery-art-card {
   }
   .discovery-facet-name {
     font-size: 0.85rem;
-  }
-  .discovery-art-title {
-    font-size: 0.8rem;
-  }
-  .discovery-library-foot {
-    padding: 0.4rem 0.5rem 0.5rem;
   }
 }
 
