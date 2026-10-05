@@ -39,6 +39,7 @@ import {
   listUsers,
 } from "../../../../server/jellyfin.ts";
 import { getProviderStatus } from "../../../../server/providers.ts";
+import { availableUpdate } from "../../../../server/update.ts";
 
 export function setupReady(): boolean {
   return (
@@ -279,6 +280,12 @@ export const routes: RouteDef[] = [
     auth: "open",
     run: async () =>
       json({ initialized: isInitialized(), setupReady: setupReady() }),
+  },
+  {
+    method: "GET",
+    segments: ["update"],
+    auth: "open",
+    run: async () => json({ update: await availableUpdate() }),
   },
   {
     method: "GET",

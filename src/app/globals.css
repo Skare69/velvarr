@@ -252,6 +252,8 @@ body:has(.auth-page) {
 }
 .credit {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   align-items: baseline;
   gap: 0.45rem;
   font-size: 0.75rem;
@@ -263,6 +265,19 @@ body:has(.auth-page) {
 }
 .credit a:hover {
   color: var(--color-accent-text);
+}
+/* The update chip: its own centered line just above the version. */
+.credit .chip {
+  flex-basis: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+.credit .chip .icon {
+  width: 0.85rem;
+  height: 0.85rem;
 }
 
 .chip {

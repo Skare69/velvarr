@@ -15,6 +15,7 @@ import { Buffer } from "node:buffer";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resetMetaCache } from "../src/server/providers.ts";
 import { resetSweepCache } from "../src/server/jellyfin.ts";
+import { resetUpdateCache } from "../src/server/update.ts";
 import { countPendingApprovals } from "../src/lib/approvals.ts";
 import type { RouteDef } from "../src/app/api/[...path]/admission.ts";
 import { routes as authRoutes } from "../src/app/api/[...path]/routes/auth.ts";
@@ -64,9 +65,12 @@ test("route tables never shadow: every request shape matches at most one def", (
     .filter((r) => r.auth === "open")
     .map((r) => `${r.method} /${r.segments.join("/")}`)
     .sort();
+  // GET /update joined the pre-session surface: the login screen's credit
+  // needs the release chip before any account exists.
   assert.deepEqual(open, [
     "GET /health",
     "GET /status",
+    "GET /update",
     "POST /login",
     "POST /logout",
     "POST /setup",
@@ -1158,6 +1162,35 @@ test("public surface: health, status, unknown routes", async () => {
 
   const traversal = await call("GET", "/api/library/../../status");
   assert.notEqual(traversal.status, 200);
+});
+
+test("update chip: newer release surfaces, github failure degrades to null", async () => {
+  const realFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () =>
+      Response.json({
+        tag_name: "v9.9.9",
+        html_url: "https://github.com/Skare69/velvarr/releases/tag/v9.9.9",
+      })) as typeof fetch;
+    resetUpdateCache();
+    const newer = await call("GET", "/api/update");
+    assert.equal(newer.status, 200);
+    assert.deepEqual(await newer.json(), {
+      update: {
+        version: "9.9.9",
+        url: "https://github.com/Skare69/velvarr/releases/tag/v9.9.9",
+      },
+    });
+
+    globalThis.fetch = (async () =>
+      new Response("rate limited", { status: 403 })) as typeof fetch;
+    resetUpdateCache();
+    const degraded = await call("GET", "/api/update");
+    assert.deepEqual(await degraded.json(), { update: null });
+  } finally {
+    globalThis.fetch = realFetch;
+    resetUpdateCache();
+  }
 });
 
 test("mutations are origin protected (CSRF)", async () => {

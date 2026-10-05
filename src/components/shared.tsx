@@ -25,7 +25,9 @@ import type {
   RequestRecord,
 } from "../lib/contracts.ts";
 import { REQUESTS_CHANGED } from "../lib/approvals.ts";
-import { version } from "../../package.json";
+import packageJson from "../../package.json" with { type: "json" };
+
+const { version } = packageJson;
 
 /* ---------- API helper ---------- */
 
@@ -520,8 +522,35 @@ export function Icon({
 
 /** The credit, a user-specified layout: bold "Velvarr" links to the repo, the
  *  version to its GitHub release. The shell shows it in the sidebar and the
- *  More sheet; the root layout shows it as a fixed bar on screens without one. */
+ *  More sheet; the root layout shows it as a fixed bar on screens without one.
+ *  When the server reports a newer release, a chip links to it just above the
+ *  version. */
+type ReleaseUpdate = { version: string; url: string };
+
+let updatePromise: Promise<ReleaseUpdate | null> | null = null;
+
+/** One shared fetch for every Credit on the page. A failed or empty check
+ * degrades to no chip, never to a guessed update. */
+function useUpdate(): ReleaseUpdate | null {
+  const [update, setUpdate] = useState<ReleaseUpdate | null>(null);
+  useEffect(() => {
+    updatePromise ??= api<{ update: ReleaseUpdate | null }>("/api/update").then(
+      (r) => r.update,
+      () => null,
+    );
+    let alive = true;
+    void updatePromise.then((u) => {
+      if (alive) setUpdate(u);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return update;
+}
+
 export function Credit() {
+  const update = useUpdate();
   return (
     <p className="credit">
       <a
@@ -531,6 +560,18 @@ export function Credit() {
       >
         Velvarr
       </a>
+      {update && (
+        <a
+          className="chip chip-accent"
+          href={update.url}
+          target="_blank"
+          rel="noreferrer noopener"
+          aria-label={`Update available: version ${update.version}`}
+          title={`Velvarr v${update.version} is available`}
+        >
+          <Icon name="download" /> v{update.version}
+        </a>
+      )}
       <a
         href={`https://github.com/Skare69/velvarr/releases/tag/v${version}`}
         target="_blank"
