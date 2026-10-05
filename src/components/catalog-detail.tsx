@@ -32,6 +32,7 @@ import type {
   RequestDecision,
   RequestRecord,
 } from "../lib/contracts";
+import { acquisitionText } from "../lib/status";
 import { REQUESTS_CHANGED } from "../lib/approvals";
 // Detail-seeded names: studio/tag chips label the ids the URL carries —
 // details are where names are known.
@@ -173,42 +174,6 @@ const DECISION_TEXT: Record<RequestDecision, string> = {
   declined: "Request declined",
   cancelled: "Request cancelled",
 };
-
-export function acquisitionText(a: {
-  state: AcquisitionState;
-  lastError: string | null;
-  monitored?: boolean | null;
-  progress?: { percent: number | null; timeleft: string | null } | null;
-}): string {
-  // Unmonitored outranks every state but imported — Whisparr will never deliver it.
-  if (a.monitored === false && a.state !== "imported")
-    return "Paused — Whisparr is not monitoring this item";
-  switch (a.state) {
-    case "unsent":
-      return "Queued — not submitted yet";
-    case "submitting":
-      return "Queued — being submitted";
-    case "monitoring":
-      return "Watching for a release (this is not a failure)";
-    case "downloading": {
-      if (typeof a.progress?.percent !== "number") return "Downloading";
-      const left = a.progress.timeleft;
-      return left
-        ? `Downloading — ${a.progress.percent}% (${left} left)`
-        : `Downloading — ${a.progress.percent}%`;
-    }
-    case "imported":
-      return "Imported — in your library";
-    case "uncertain":
-      return a.lastError
-        ? `Being reconciled — last check: ${a.lastError}`
-        : "Being reconciled — the last check was inconclusive";
-    case "failed":
-      return a.lastError ? `Failed — ${a.lastError}` : "Failed";
-    case "blocked":
-      return "Blocked — delivery is turned off";
-  }
-}
 
 /** Availability of the media target; null while loading or on error — a
  * failed check renders nothing, no claim either way. No request for

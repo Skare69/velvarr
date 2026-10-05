@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { statusOf } from "../src/lib/status.ts";
+import { acquisitionPhase, statusOf } from "../src/lib/status.ts";
 
 const avail = { outcome: "available" };
 const acq = (state: string, monitored = true) => ({ state, monitored });
@@ -20,11 +20,43 @@ test("playable beats everything, everywhere", () => {
   );
 });
 
-test("downloading beats unmonitored (the card rule, now everywhere)", () => {
+test("unmonitored beats downloading (the card rule, now everywhere)", () => {
+  // The card reads "Paused" for an unmonitored download — Whisparr will
+  // never deliver it — so the ladder agrees; fe54360c pinned the opposite
+  // here, which let the requests filter list that row under Processing.
+  assert.equal(statusOf({ acquisition: acq("downloading", false) }), "paused");
+});
+
+test("acquisitionPhase: one precedence for pill, line, ladder and filters", () => {
   assert.equal(
-    statusOf({ acquisition: acq("downloading", false) }),
+    acquisitionPhase({ state: "imported", monitored: false }),
+    "library",
+  );
+  assert.equal(
+    acquisitionPhase({ state: "imported", monitored: true }),
+    "library",
+  );
+  assert.equal(
+    acquisitionPhase({ state: "downloading", monitored: false }),
+    "paused",
+  );
+  assert.equal(
+    acquisitionPhase({ state: "failed", monitored: false }),
+    "paused",
+  );
+  assert.equal(
+    acquisitionPhase({ state: "downloading", monitored: true }),
     "processing",
   );
+  assert.equal(
+    acquisitionPhase({ state: "failed", monitored: true }),
+    "failed",
+  );
+  assert.equal(
+    acquisitionPhase({ state: "monitoring", monitored: true }),
+    null,
+  );
+  assert.equal(acquisitionPhase({ state: "blocked", monitored: true }), null);
 });
 
 test("imported-but-unscanned is never Paused: it reads as its decision", () => {

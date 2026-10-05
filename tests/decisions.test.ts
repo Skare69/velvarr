@@ -148,6 +148,31 @@ test("acquisition statuses follow the facts the card displays", () => {
       progress: null,
     },
   });
+  // Unmonitored while downloading or failed: the card still reads "Paused"
+  // (Whisparr is not monitoring the item), so Processing and Failed must
+  // not claim these rows — the one precedence lives in lib/status.
+  const pausedDownloading = row({
+    decision: "approved",
+    acquisition: {
+      state: "downloading",
+      lastError: null,
+      updatedAt: 2000,
+      observationStale: false,
+      monitored: false,
+      progress: null,
+    },
+  });
+  const pausedFailed = row({
+    decision: "approved",
+    acquisition: {
+      state: "failed",
+      lastError: "boom",
+      updatedAt: 2000,
+      observationStale: false,
+      monitored: false,
+      progress: null,
+    },
+  });
   // Imported-but-unmonitored is a done title, never "Paused" (status.ts rule).
   const importedUnmonitored = row({
     decision: "approved",
@@ -165,6 +190,8 @@ test("acquisition statuses follow the facts the card displays", () => {
     failed,
     imported,
     paused,
+    pausedDownloading,
+    pausedFailed,
     importedUnmonitored,
     row({ decision: "pending" }),
   ];
@@ -173,7 +200,11 @@ test("acquisition statuses follow the facts the card displays", () => {
   assert.deepEqual(only("processing"), [downloading.id]);
   assert.deepEqual(only("failed"), [failed.id]);
   assert.deepEqual(only("library"), [imported.id, importedUnmonitored.id]);
-  assert.deepEqual(only("paused"), [paused.id]);
+  assert.deepEqual(only("paused"), [
+    paused.id,
+    pausedDownloading.id,
+    pausedFailed.id,
+  ]);
 });
 
 test("sort: recent orders by creation, modified by last activity", () => {

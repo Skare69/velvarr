@@ -1,8 +1,11 @@
-// Decision vocabulary for the intent lists (requests): the
-// shared four-state lifecycle and the per-endpoint PATCH error wording.
-// Pure data — no React, no component imports — so either side can read it.
+// Decision vocabulary for the intent lists (requests): the shared
+// four-state lifecycle and the per-endpoint PATCH error wording. The
+// acquisition status cases derive from lib/status's acquisitionPhase — the
+// one precedence the cards display — so a filter can never disagree with
+// the card it mirrors. No React, no component imports.
 
 import type { RequestDecision, RequestListItem } from "./contracts";
+import { acquisitionPhase } from "./status.ts";
 
 /** Both intent kinds share the same four-state lifecycle. */
 export type DecisionKind = RequestDecision;
@@ -86,16 +89,21 @@ export function filterRequestRows(
       case "cancelled":
         return r.decision === status;
       case "processing":
-        return r.acquisition?.state === "downloading";
-      case "failed":
-        return r.acquisition?.state === "failed";
-      case "library":
-        return r.acquisition?.state === "imported";
-      case "paused":
         return (
           r.acquisition != null &&
-          r.acquisition.monitored === false &&
-          r.acquisition.state !== "imported"
+          acquisitionPhase(r.acquisition) === "processing"
+        );
+      case "failed":
+        return (
+          r.acquisition != null && acquisitionPhase(r.acquisition) === "failed"
+        );
+      case "library":
+        return (
+          r.acquisition != null && acquisitionPhase(r.acquisition) === "library"
+        );
+      case "paused":
+        return (
+          r.acquisition != null && acquisitionPhase(r.acquisition) === "paused"
         );
     }
   });

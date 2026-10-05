@@ -16,7 +16,7 @@ import {
   useParamsSetter,
   useSession,
 } from "./shared";
-import { acquisitionText } from "./catalog-detail";
+import { acquisitionPhase, acquisitionText } from "../lib/status";
 import "./views.css";
 import type {
   MediaReference,
@@ -118,19 +118,19 @@ function RequestCard({
 }) {
   const summary = useCatalogSummary(r.media, providers);
   const acquisition = r.acquisition ?? null;
-  const pill = acquisition
-    ? acquisition.monitored === false && acquisition.state !== "imported"
-      ? { label: "Paused", tone: "paused" }
-      : acquisition.state === "downloading"
-        ? {
-            label:
-              typeof acquisition.progress?.percent === "number"
-                ? `Processing ${acquisition.progress.percent}%`
-                : "Processing",
-            tone: "processing",
-          }
-        : null
-    : null;
+  const phase = acquisition ? acquisitionPhase(acquisition) : null;
+  let pill: { label: string; tone: string } | null = null;
+  if (acquisition) {
+    if (phase === "paused") pill = { label: "Paused", tone: "paused" };
+    else if (phase === "processing")
+      pill = {
+        label:
+          typeof acquisition.progress?.percent === "number"
+            ? `Processing ${acquisition.progress.percent}%`
+            : "Processing",
+        tone: "processing",
+      };
+  }
   const year = summary?.releaseDate?.slice(0, 4);
   const meta = [r.media.provider, r.media.kind, summary?.studio]
     .filter(Boolean)
