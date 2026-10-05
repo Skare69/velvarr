@@ -381,6 +381,32 @@
   opacity: 0.75;
 }
 
+/* Performer group head: the label and the starred-mode toggle share one row.
+   The label keeps its block margins elsewhere, so they stop here. */
+.cat-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.cat-picker-head .label {
+  margin-bottom: 0;
+}
+
+/* Starred-mode toggle: the performer page's follow-star accent
+   (.follow-toggle.is-following) sized for the label row. Two-class so it
+   wins over .btn's metrics regardless of stylesheet order. */
+.btn.filter-star {
+  min-height: 32px;
+  gap: 0.3rem;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.75rem;
+}
+.filter-star .icon {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
 /* Picker result lists (performer/tag search inside the drawer). */
 .cat-picker {
   list-style: none;

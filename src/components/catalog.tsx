@@ -382,9 +382,12 @@ function YearBox({
 function FilterChip({
   label,
   onRemove,
+  icon,
 }: {
   label: string;
   onRemove: () => void;
+  /** Leading glyph for filters that are a mode, not a value. */
+  icon?: "star";
 }) {
   return (
     <button
@@ -393,6 +396,7 @@ function FilterChip({
       onClick={onRemove}
       aria-label={`Remove filter: ${label}`}
     >
+      {icon && <Icon name={icon} filled />}
       {label} <span aria-hidden="true">×</span>
     </button>
   );
@@ -530,17 +534,37 @@ function usePerformerOptions(term: string): {
 function PerformerPicker({
   id,
   onPick,
+  starred,
+  onStarred,
 }: {
   id: string;
   onPick: (side: CatalogProvider, performerId: string, name: string) => void;
+  starred: boolean;
+  onStarred: (on: boolean) => void;
 }) {
   const [term, setTerm] = useState("");
   const { items, error, loading } = usePerformerOptions(term);
   return (
     <div>
-      <label className="label" htmlFor={id}>
-        Performer
-      </label>
+      <div className="cat-picker-head">
+        <label className="label" htmlFor={id}>
+          Performer
+        </label>
+        {/* Starred is a mode of this one filter: the server refuses a
+            starred filter beside a picked performer, so the star toggle and
+            the search are two states of one criterion. The accent idiom is
+            the performer page's follow star. */}
+        <button
+          type="button"
+          className={`btn filter-star follow-toggle${starred ? " is-following" : ""}`}
+          aria-pressed={starred}
+          aria-label="My starred performers"
+          onClick={() => onStarred(!starred)}
+        >
+          <Icon name="star" filled={starred} />
+          Starred
+        </button>
+      </div>
       <input
         id={id}
         type="search"
@@ -551,9 +575,9 @@ function PerformerPicker({
         onChange={(e) => setTerm(e.target.value)}
       />
       <p className="cat-note">
-        One field, both sources: a TPDB performer opens their whole filmography
-        (movies) and replaces the other filters until removed; a StashDB
-        performer filters scenes. StashDB caps results at about ten rows.
+        {starred
+          ? "Scenes featuring any performer you follow. Picking a specific performer replaces this filter; performers known only to TPDB cannot match."
+          : "One field, both sources: a TPDB performer opens their whole filmography (movies) and replaces the other filters until removed; a StashDB performer filters scenes. StashDB caps results at about ten rows."}
       </p>
       {error ? (
         <p className="cat-note" role="alert">
@@ -1067,6 +1091,7 @@ export function TitlesView() {
       setP(
         {
           performerTpdb: id,
+          performerStarred: null,
           q: null,
           include: null,
           exclude: null,
@@ -1085,13 +1110,39 @@ export function TitlesView() {
   );
   // StashDB composes a performer with everything else — no other key moves.
   const onPerformerStashdb = useCallback(
-    (id: string) => setP({ performerStashdb: id }, { push: true }),
+    // Starred and a picked performer refuse each other on the server; the
+    // pick replaces the starred filter instead of letting the browse 400.
+    (id: string) =>
+      setP({ performerStashdb: id, performerStarred: null }, { push: true }),
     [setP],
   );
   const onStarred = useCallback(
-    (on: boolean) =>
-      setP({ performerStarred: on ? "1" : null }, { push: true }),
-    [setP],
+    (on: boolean) => {
+      if (!on) {
+        setP({ performerStarred: null }, { push: true });
+        return;
+      }
+      // Turning starred on drops a picked performer (the server refuses the
+      // pair) and cannot run on the movies tab — it drops to the combined
+      // browse, the same visible clamp onType applies in reverse.
+      const keepSort = (sortsFor("all") as readonly string[]).includes(sortRaw);
+      setP(
+        {
+          performerStarred: "1",
+          performerTpdb: null,
+          performerStashdb: null,
+          ...(type === "movie"
+            ? {
+                type: null,
+                sort: keepSort ? sortRaw : null,
+                direction: keepSort ? dirRaw : null,
+              }
+            : {}),
+        },
+        { push: true },
+      );
+    },
+    [setP, type, sortRaw, dirRaw],
   );
   const onYear = useCallback(
     (v: string) =>
@@ -1241,7 +1292,8 @@ export function TitlesView() {
     chips.push(
       <FilterChip
         key="performerStarred"
-        label="Performer: my starred performers"
+        icon="star"
+        label="Performer: starred"
         onRemove={() => setP({ performerStarred: null }, { push: true })}
       />,
     );
@@ -1495,31 +1547,14 @@ export function TitlesView() {
         />
         <PerformerPicker
           id="titles-performer"
+          starred={performerStarred}
+          onStarred={onStarred}
           onPick={(side, performerId) =>
             side === "tpdb"
               ? onPerformerTpdb(performerId)
               : onPerformerStashdb(performerId)
           }
         />
-        <div>
-          <label
-            className="label flex items-center gap-2"
-            htmlFor="titles-starred"
-          >
-            <input
-              id="titles-starred"
-              type="checkbox"
-              className="check"
-              checked={performerStarred}
-              onChange={(e) => onStarred(e.target.checked)}
-            />
-            My starred performers
-          </label>
-          <p className="cat-note">
-            Scenes featuring any performer you follow. Performers known only to
-            TPDB cannot match this filter.
-          </p>
-        </div>
         <YearBox
           id="titles-year"
           value={year}

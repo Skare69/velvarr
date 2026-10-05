@@ -275,13 +275,15 @@ body:has(.auth-page) {
   gap: 0.3rem;
   white-space: nowrap;
 }
-.credit .chip .icon {
+.chip .icon {
   width: 0.85rem;
   height: 0.85rem;
 }
 
 .chip {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
   padding: 0.15rem 0.55rem;
   border-radius: 5px;
   border: 1px solid var(--color-edge);
