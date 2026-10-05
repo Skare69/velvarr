@@ -1,4 +1,3 @@
-// Moved verbatim from route.ts (v0.24.1) — pure move, no logic edits.
 import {
   readJson,
   fieldUrl,
@@ -422,8 +421,6 @@ export async function adminJellyfin(ctx: AuthContext): Promise<Response> {
   }
 }
 
-// --- catalog, requests, availability ---
-
 export async function adminProviders(_ctx: AuthContext): Promise<Response> {
   const [tpdb, stashdb] = await Promise.all([
     getProviderStatus("tpdb"),
@@ -432,11 +429,6 @@ export async function adminProviders(_ctx: AuthContext): Promise<Response> {
   return json({ providers: [tpdb, stashdb] });
 }
 
-// --- discover shelves + global search ---
-
-// Wire shapes for the phase-3 UI. Response contracts only; contracts.ts stays
-// domain records. Every shelf/category fails independently: one provider
-// outage or storage error fills its own error field and never fails the page.
 import type { RouteDef } from "../admission.ts";
 
 export const routes: RouteDef[] = [

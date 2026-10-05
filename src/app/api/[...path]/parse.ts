@@ -1,4 +1,3 @@
-// Moved verbatim from route.ts (v0.24.1) — pure move, no logic edits.
 import type {
   CatalogKind,
   CatalogProvider,
@@ -132,8 +131,6 @@ export function queryInt(
   return value;
 }
 
-// --- environment-derived status ---
-
 export const PROVIDER_UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -249,6 +246,9 @@ export function mediaFromBody(body: Record<string, unknown>): MediaReference {
   return ref;
 }
 
+/** Server-validated performer reference from a request body. Mirrors
+ * mediaFromBody but for the catalog-only performer kind: a movie/scene
+ * reference must never land in a follow list. */
 export function performerFromBody(
   body: Record<string, unknown>,
 ): CatalogReference {

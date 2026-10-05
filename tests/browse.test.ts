@@ -23,12 +23,12 @@ import { AppError } from "../src/server/http.ts";
 import { resetMetaCache } from "../src/server/providers.ts";
 import {
   browseTitles,
-  isHiddenTitle,
   parseBrowseQuery,
   planBrowseSides,
   searchBrowseTags,
   searchVisibleCatalog,
 } from "../src/server/browse.ts";
+import { isHiddenTitle } from "../src/server/catalog-visibility.ts";
 import type { BrowseQuery } from "../src/server/browse.ts";
 import type { CatalogTagSelection } from "../src/lib/contracts.ts";
 

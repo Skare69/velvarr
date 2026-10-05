@@ -1,4 +1,3 @@
-// Moved verbatim from route.ts (v0.24.1) — pure move, no logic edits.
 import {
   readJson,
   fieldText,
@@ -135,8 +134,6 @@ export async function mergeFollowsRoute(
   const follow = mergePerformerFollows(ctx.account.id, performer, counterpart);
   return json({ follow }, 200);
 }
-
-// --- bulk requests: everything a performer has ---
 
 import type { RouteDef } from "../admission.ts";
 

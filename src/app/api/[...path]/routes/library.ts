@@ -1,4 +1,3 @@
-// Moved verbatim from route.ts (v0.24.1) — pure move, no logic edits.
 import { requireId, queryInt } from "../parse.ts";
 import { createHash } from "node:crypto";
 import { type AuthContext, json } from "../admission.ts";
@@ -128,8 +127,6 @@ export async function libraryImage(
   );
   return imageResponse(image, request, 86400);
 }
-
-// --- admin routes ---
 
 import type { RouteDef } from "../admission.ts";
 

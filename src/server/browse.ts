@@ -45,10 +45,6 @@ import type {
   CatalogTagSelection,
 } from "../lib/contracts.ts";
 
-// Policy moved to ./catalog-visibility.ts; re-exported so the tests (kept
-// unchanged per the card) and existing importers still resolve it here.
-export { isHiddenTitle };
-
 const MAX_SCAN_PAGES = 40;
 
 // --- pinned public shapes ---

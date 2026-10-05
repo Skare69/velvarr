@@ -1,4 +1,3 @@
-// Moved verbatim from route.ts (v0.24.1) — pure move, no logic edits.
 import {
   readJson,
   requireId,
@@ -107,11 +106,6 @@ export async function decideRequestRoute(
   );
 }
 
-// --- follows: per-account performer follows ---
-
-// Server-validated performer reference from a request body. Mirrors
-// mediaFromBody but for the catalog-only performer kind: a movie/scene
-// reference must never land in a follow list.
 export const BULK_REQUEST_CAP = 100;
 // A provider page, not the cap: TPDB rejects (oversized response) a
 // filmography page of 100 rows. 24 is what the browse surfaces request.

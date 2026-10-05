@@ -1,4 +1,3 @@
-// Moved verbatim from route.ts (v0.24.1) — pure move, no logic edits.
 import { type AuthContext, json } from "../admission.ts";
 import { parseMediaReference } from "../parse.ts";
 import type {
