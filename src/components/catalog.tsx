@@ -46,6 +46,18 @@ import { CatalogDetailView, detailTarget } from "./catalog-detail.tsx";
 // Endless scroll appends pages through this dedupe-append (lib stays
 // React-free so node --test can exercise it directly).
 import { mergePageItems } from "../lib/browse-items.ts";
+// Browse URL policy (per-type sorts, filter resets, count) lives in
+// browse-url.ts — a pure React-free module pinned by tests.
+import {
+  clearBrowseKeys,
+  countActiveFilters,
+  performerStashdbPatch,
+  performerTpdbPatch,
+  sortsFor,
+  starredPatch,
+  typePatch,
+  type SortKey,
+} from "../lib/browse-url";
 
 type CatalogSearchPage = {
   provider: CatalogProvider;
@@ -64,22 +76,6 @@ const POSTER_GRID = "poster-grid";
 
 /* ---------- Browse-context helpers ---------- */
 
-/** Sorts each provider+kind genuinely supports, mirroring the route's
- * SORT_SUPPORT: TPDB movie has relevance|recency|duration, StashDB
- * scene has title|date|duration|trending|popularity|created|updated.
- * Unsupported options are never offered, and trending/popularity are
- * labeled as StashDB's own ordering — recency is never called trending. */
-type SortKey =
-  | "relevance"
-  | "recency"
-  | "duration"
-  | "title"
-  | "date"
-  | "trending"
-  | "popularity"
-  | "created"
-  | "updated";
-
 const SORT_LABELS: Record<SortKey, string> = {
   relevance: "Best match",
   recency: "Release recency",
@@ -91,23 +87,6 @@ const SORT_LABELS: Record<SortKey, string> = {
   created: "Recently added (StashDB)",
   updated: "Last updated (StashDB)",
 };
-
-function sortsFor(type: "all" | "movie" | "scene"): readonly SortKey[] {
-  // type=all merges both sources, so only sorts both genuinely support are
-  // offered; per-source sorts appear only on their own type.
-  if (type === "movie") return ["relevance", "recency", "duration"];
-  if (type === "scene")
-    return [
-      "title",
-      "date",
-      "duration",
-      "trending",
-      "popularity",
-      "created",
-      "updated",
-    ];
-  return ["date", "duration"];
-}
 
 /* ---------- Filter drawer (native <dialog>) ---------- */
 
@@ -763,31 +742,17 @@ export function useBrowseTo(): (filter: BrowseFilter) => void {
   const setP = useParamsSetter();
   return useCallback(
     (filter: BrowseFilter) => {
-      // Any view may host an entry point (performer pages live on the
-      // following view), so the jump always lands on the titles view and
-      // drops that view's own keys (provider, per-view paging).
       const patch: Record<string, string | null> = {
+        // Any view may host an entry point (performer pages live on the
+        // following view), so the jump always lands on the titles view and
+        // drops that view's own keys (provider, per-view paging).
+        ...clearBrowseKeys(),
         view: "titles",
         type:
           filter.param === "year" || filter.provider === "tpdb"
             ? "movie"
             : "scene",
-        q: null,
-        include: null,
-        exclude: null,
-        year: null,
-        date: null,
-        date_operation: null,
-        performerTpdb: null,
-        performerStashdb: null,
-        performerStarred: null,
-        studioTpdb: null,
-        studioStashdb: null,
-        studioMode: null,
-        sort: null,
-        direction: null,
         provider: null,
-        perPage: null,
         moviePage: null,
         scenePage: null,
         kind: null,
@@ -1044,19 +1009,9 @@ export function TitlesView() {
 
   const onType = useCallback(
     (t: "all" | "movie" | "scene") => {
-      // Sorts are per-type: one the new type does not support is dropped.
-      // Filters never drop here: a source-scoped filter on the wrong tab
-      // yields an honest empty page (the server runs no side), so the chips
-      // and the URL stay truthful while the tab shows no results.
-      const keepSort = (sortsFor(t) as readonly string[]).includes(sortRaw);
-      setP(
-        {
-          type: t === "all" ? null : t,
-          sort: keepSort ? sortRaw : null,
-          direction: keepSort ? dirRaw : null,
-        },
-        { push: true },
-      );
+      // Sorts are per-type — see typePatch; filters never drop on a tab
+      // switch.
+      setP(typePatch(t, sortRaw, dirRaw), { push: true });
     },
     [setP, sortRaw, dirRaw],
   );
@@ -1088,33 +1043,10 @@ export function TitlesView() {
       ),
     [setP],
   );
-  // TPDB's performer filter is the filmography route: everything else goes,
-  // including sort (the route rejects all of it).
+  // TPDB's performer filter is the filmography route — everything else
+  // goes, see performerTpdbPatch.
   const onPerformerTpdb = useCallback(
-    (id: string) =>
-      setP(
-        {
-          performerTpdb: id,
-          performerStarred: null,
-          q: null,
-          include: null,
-          exclude: null,
-          year: null,
-          date: null,
-          date_operation: null,
-          studioTpdb: null,
-          studioStashdb: null,
-          studioMode: null,
-          sort: null,
-          direction: null,
-          // A TPDB performer cannot constrain the scenes side: on that tab
-          // no side would qualify and the grid would show an empty page
-          // that names the wrong cause — drop to the combined browse, the
-          // same clamp onStarred applies in the other direction.
-          ...(type === "scene" ? { type: null } : {}),
-        },
-        { push: true },
-      ),
+    (id: string) => setP(performerTpdbPatch(id, type), { push: true }),
     [setP, type],
   );
   // StashDB composes a performer with everything else — no other key moves.
@@ -1125,50 +1057,13 @@ export function TitlesView() {
     // side would qualify and the grid would show an empty page that names
     // the wrong cause — drop to the combined browse, keeping the sort only
     // where the all tab supports it (the clamp onStarred applies).
-    (id: string) => {
-      const keepSort = (sortsFor("all") as readonly string[]).includes(sortRaw);
-      setP(
-        {
-          performerStashdb: id,
-          performerStarred: null,
-          ...(type === "movie"
-            ? {
-                type: null,
-                sort: keepSort ? sortRaw : null,
-                direction: keepSort ? dirRaw : null,
-              }
-            : {}),
-        },
-        { push: true },
-      );
-    },
+    (id: string) =>
+      setP(performerStashdbPatch(id, type, sortRaw, dirRaw), { push: true }),
     [setP, type, sortRaw, dirRaw],
   );
   const onStarred = useCallback(
     (on: boolean) => {
-      if (!on) {
-        setP({ performerStarred: null }, { push: true });
-        return;
-      }
-      // Turning starred on drops a picked performer (the server refuses the
-      // pair) and cannot run on the movies tab — it drops to the combined
-      // browse, the same visible clamp onType applies in reverse.
-      const keepSort = (sortsFor("all") as readonly string[]).includes(sortRaw);
-      setP(
-        {
-          performerStarred: "1",
-          performerTpdb: null,
-          performerStashdb: null,
-          ...(type === "movie"
-            ? {
-                type: null,
-                sort: keepSort ? sortRaw : null,
-                direction: keepSort ? dirRaw : null,
-              }
-            : {}),
-        },
-        { push: true },
-      );
+      setP(starredPatch(on, type, sortRaw, dirRaw), { push: true });
     },
     [setP, type, sortRaw, dirRaw],
   );
@@ -1218,42 +1113,26 @@ export function TitlesView() {
     [setP],
   );
   const clearFilters = useCallback(() => {
-    setP(
-      {
-        q: null,
-        include: null,
-        exclude: null,
-        year: null,
-        date: null,
-        date_operation: null,
-        performerTpdb: null,
-        performerStashdb: null,
-        performerStarred: null,
-        studioTpdb: null,
-        studioStashdb: null,
-        studioMode: null,
-        sort: null,
-        direction: null,
-      },
-      { push: true },
-    );
+    // The tab and paging survive a clear — every constraint goes.
+    setP(clearBrowseKeys(["type", "perPage"]), { push: true });
   }, [setP]);
 
   // An active studio/tag id without a captured name stays an id — never a
   // fake label (see filterName).
-  const filterCount =
-    (q ? 1 : 0) +
-    (year ? 1 : 0) +
-    (date ? 1 : 0) +
-    (performerTpdb ? 1 : 0) +
-    (performerStashdb ? 1 : 0) +
-    (performerStarred ? 1 : 0) +
-    (studioTpdb ? 1 : 0) +
-    (studioStashdb ? 1 : 0) +
-    (studioMode ? 1 : 0) +
-    include.length +
-    exclude.length +
-    (sort ? 1 : 0);
+  const filterCount = countActiveFilters({
+    q,
+    year,
+    date,
+    performerTpdb,
+    performerStashdb,
+    performerStarred,
+    studioTpdb,
+    studioStashdb,
+    studioMode,
+    sort,
+    include,
+    exclude,
+  });
 
   // `name` is display-only (never queried) — a forged label can misname the
   // heading but never change results.

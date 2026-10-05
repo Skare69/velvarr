@@ -8,6 +8,7 @@ import type {
   CatalogProvider,
   CatalogReference,
 } from "../lib/contracts.ts";
+import { clearBrowseKeys } from "../lib/browse-url.ts";
 import {
   detailParams,
   ErrorPanel,
@@ -174,40 +175,25 @@ export function SearchView() {
     [q, ready],
   );
 
-  // Leaving the results clears every browse key — the canonical ones and the
-  // legacy facet keys an old bookmark may still carry — so nothing leaks into
-  // the destination surface.
-  const clear: Record<string, null> = Object.fromEntries(
-    [
-      "q",
-      "type",
-      "include",
-      "exclude",
-      "studioTpdb",
-      "studioStashdb",
-      "performerTpdb",
-      "performerStashdb",
-      "studioMode",
-      "year",
-      "date",
-      "date_operation",
-      "sort",
-      "direction",
-      "page",
-      "perPage",
-      "name",
-      "facet",
-      "provider",
-      "kind",
-      "id",
-      "tab",
-      "tags",
-      "tagsAll",
-      "tagsExclude",
-      "performer",
-      "studio",
-    ].map((k) => [k, null]),
-  );
+  // Leaving the results clears every browse key — the canonical ones come
+  // from one module so a new key cannot leak into the destination surface —
+  // plus the detail keys and the legacy facet keys an old bookmark may still
+  // carry.
+  const clear: Record<string, null> = {
+    ...clearBrowseKeys(),
+    page: null,
+    name: null,
+    facet: null,
+    provider: null,
+    kind: null,
+    id: null,
+    tab: null,
+    tags: null,
+    tagsAll: null,
+    tagsExclude: null,
+    performer: null,
+    studio: null,
+  };
   const open = useCallback(
     (r: CatalogReference) => {
       // The reset must come first: spreading it last silently overwrote every

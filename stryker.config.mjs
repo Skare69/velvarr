@@ -21,7 +21,7 @@ const config = {
   // (measured: 5–27 flaky failures at default fan-out, green at ≤4 suites).
   commandRunner: {
     command:
-      "node --experimental-strip-types --test --test-concurrency=1 tests/status.test.ts tests/tags.test.ts tests/related.test.ts tests/browse.test.ts tests/browse-items.test.ts tests/providers.test.ts tests/api.test.ts tests/approvals.test.ts tests/decisions.test.ts tests/names.test.ts tests/update.test.ts",
+      "node --experimental-strip-types --test --test-concurrency=1 tests/status.test.ts tests/tags.test.ts tests/related.test.ts tests/browse.test.ts tests/browse-items.test.ts tests/providers.test.ts tests/api.test.ts tests/approvals.test.ts tests/decisions.test.ts tests/names.test.ts tests/update.test.ts tests/browse-url.test.ts",
   },
   // The command runner only reports an exit code, so per-test coverage is
   // impossible; Stryker runs every mutant against the whole scoped command.
