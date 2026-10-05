@@ -234,9 +234,20 @@ function Listing({
   const kindLabel = kind === "movie" ? "movies" : "scenes";
   return (
     <div>
-      <h3 className="font-semibold">
-        {performerName}&rsquo;s {kindLabel}
-      </h3>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <h3 className="font-semibold">
+          {performerName}&rsquo;s {kindLabel}
+        </h3>
+        {data && data.items.length > 0 && (
+          <BulkRequest
+            key={performerId}
+            provider={provider}
+            kind={kind}
+            performerId={performerId}
+            performerName={performerName}
+          />
+        )}
+      </div>
       {error ? (
         <ErrorPanel
           title={`${providerLabel(provider)} unavailable`}
@@ -255,13 +266,6 @@ function Listing({
         </div>
       ) : (
         <>
-          <BulkRequest
-            key={performerId}
-            provider={provider}
-            kind={kind}
-            performerId={performerId}
-            performerName={performerName}
-          />
           <div className="poster-grid">
             {data.items.map((it) =>
               kind === "movie" ? (
@@ -353,10 +357,10 @@ function BulkRequest({
     : [];
 
   return (
-    <div className="mb-4">
+    <div className="mb-4 min-w-0 text-right">
       <button
         type="button"
-        className="btn"
+        className="btn btn-accent"
         disabled={busy}
         onClick={() => {
           setError(null);
