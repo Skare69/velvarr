@@ -350,6 +350,109 @@ test("stashdb scene detail maps performers, clamps duration, drops absurd values
   }
 });
 
+// --- StashDB performer detail biography mapping ---
+
+test("stashdb performer detail maps the biography facts the provider published", async () => {
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  const fixture = await startFixture((_req, res, body) => {
+    const parsed = JSON.parse(body) as {
+      query: string;
+      variables: { id?: string };
+    };
+    assert.ok(parsed.query.includes("findPerformer"));
+    if (parsed.variables.id === STASH_PERFORMER_ID) {
+      sendJson(res, 200, {
+        data: {
+          findPerformer: {
+            id: STASH_PERFORMER_ID,
+            name: "Rossa",
+            deleted: false,
+            aliases: ["Rossa A"],
+            urls: [],
+            images: [],
+            gender: "FEMALE",
+            birthdate: { date: "1990-03-01", accuracy: "MONTH" },
+            ethnicity: "ASIAN",
+            country: "Japan",
+            eye_color: "BROWN",
+            hair_color: "BLACK",
+            height: 158,
+            cup_size: "D",
+            band_size: 86,
+            waist_size: 61,
+            hip_size: 88,
+            breast_type: "FAKE",
+            career_start_year: 2012,
+            career_end_year: null,
+            tattoos: [{ location: "Left wrist", description: "Script" }],
+            piercings: [{ location: "Navel", description: null }],
+          },
+        },
+      });
+      return;
+    }
+    // Absurd numbers, wrong-typed numbers, unknown date accuracy: all
+    // dropped; nothing else published -> no person block at all.
+    sendJson(res, 200, {
+      data: {
+        findPerformer: {
+          id: CANON_PERFORMER_ID,
+          name: "Bare",
+          deleted: false,
+          aliases: [],
+          urls: [],
+          images: [],
+          gender: "NA",
+          birthdate: { date: "1990-03-01" },
+          height: 99_999,
+          cup_size: 7,
+          career_start_year: 5,
+          tattoos: [],
+        },
+      },
+    });
+  });
+  try {
+    process.env.STASHDB_BASE_URL = fixture.origin;
+    const detail = await getCatalogDetail({
+      provider: "stashdb",
+      kind: "performer",
+      id: STASH_PERFORMER_ID,
+    });
+    assert.ok(detail !== null);
+    // Enums humanised, accuracy honoured, career end absent -> omitted.
+    assert.deepEqual(detail.person, {
+      gender: "Female",
+      birthDate: "1990-03-01",
+      birthDateAccuracy: "month",
+      country: "Japan",
+      ethnicity: "Asian",
+      eyeColor: "Brown",
+      hairColor: "Black",
+      heightCm: 158,
+      cupSize: "D",
+      bandCm: 86,
+      waistCm: 61,
+      hipCm: 88,
+      breastType: "Fake",
+      careerStartYear: 2012,
+      tattoos: ["Left wrist: Script"],
+      piercings: ["Navel"],
+    });
+    const bare = await getCatalogDetail({
+      provider: "stashdb",
+      kind: "performer",
+      id: CANON_PERFORMER_ID,
+    });
+    assert.ok(bare !== null);
+    assert.equal(bare.title, "Bare");
+    assert.equal(bare.person, undefined);
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
 // --- fake total suppression + real pagination continuation ---
 
 test("tpdb unfiltered totals are suppressed; filtered totals and continuation are real", async () => {
@@ -735,6 +838,8 @@ test("stashdb data-null is authoritative absence; schema failure is an outage", 
       id: CANON_PERFORMER_ID,
     });
     assert.equal(performer?.title, "Anna");
+    // The row publishes no biography fields, so no person block is emitted.
+    assert.equal(performer?.person, undefined);
     await assert.rejects(
       searchCatalog({ provider: "stashdb", kind: "scene" }),
       (err: unknown) => {

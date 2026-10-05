@@ -23,6 +23,7 @@ import {
 } from "./shared";
 import type {
   CatalogDetail,
+  CatalogPerson,
   CatalogProvider,
   CatalogReference,
   PerformerFollow,
@@ -925,6 +926,95 @@ function TagsOverview({
   );
 }
 
+/* ---------- Biography facts the provider published ---------- */
+
+const MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+/** Formats per the accuracy the provider vouches for: a padded unknown
+ * day/month is never shown as an exact date. */
+function formatBirthDate(iso: string, accuracy?: "day" | "month" | "year") {
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return iso;
+  if (accuracy === "year") return String(y);
+  if (accuracy === "month") return `${MONTHS[m - 1]} ${y}`;
+  return `${d} ${MONTHS[m - 1]} ${y}`;
+}
+
+/** "D cup · 92-66-94 cm": the numbers render only as the complete
+ * band-waist-hip triple the provider edits together, never as a lone
+ * fragment that reads as a different shape. */
+function measurementsOf(p: CatalogPerson) {
+  const triple =
+    p.bandCm !== undefined && p.waistCm !== undefined && p.hipCm !== undefined
+      ? `${p.bandCm}-${p.waistCm}-${p.hipCm} cm`
+      : undefined;
+  const cup = p.cupSize !== undefined ? `${p.cupSize} cup` : undefined;
+  if (cup === undefined) return triple;
+  if (triple === undefined) return cup;
+  return `${cup} · ${triple}`;
+}
+
+/** Rows only for facts the response contained — an unknown fact is never
+ * shown as a value, and an all-empty person block renders nothing. */
+function PerformerBio({ person }: { person: CatalogPerson }) {
+  const rows: [string, string][] = (
+    [
+      [
+        "Born",
+        person.birthDate !== undefined
+          ? formatBirthDate(person.birthDate, person.birthDateAccuracy)
+          : undefined,
+      ],
+      ["Gender", person.gender],
+      ["Country", person.country],
+      ["Ethnicity", person.ethnicity],
+      ["Eye color", person.eyeColor],
+      ["Hair color", person.hairColor],
+      [
+        "Height",
+        person.heightCm !== undefined ? `${person.heightCm} cm` : undefined,
+      ],
+      ["Measurements", measurementsOf(person)],
+      ["Breasts", person.breastType],
+      [
+        "Career",
+        person.careerStartYear !== undefined
+          ? `${person.careerStartYear}–${person.careerEndYear ?? "present"}`
+          : undefined,
+      ],
+      ["Tattoos", person.tattoos?.join(", ")],
+      ["Piercings", person.piercings?.join(", ")],
+    ] as [string, string | undefined][]
+  ).filter((row): row is [string, string] => row[1] !== undefined);
+  if (rows.length === 0) return null;
+  return (
+    <div className="mt-4">
+      <div className="label">Details</div>
+      <div className="mt-2 grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
+        {rows.map(([k, v]) => (
+          <div key={k} className="flex gap-3">
+            <span className="w-24 shrink-0 text-muted">{k}</span>
+            <span className="min-w-0">{v}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ---------- The performer page ---------- */
 
 export function PerformerView({ reference }: { reference: CatalogReference }) {
@@ -1078,6 +1168,7 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
                     {d.description}
                   </p>
                 )}
+                {d.person && <PerformerBio person={d.person} />}
 
                 {(d.links.length > 0 || sourceUrl) && (
                   <div className="mt-4">

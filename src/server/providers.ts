@@ -55,6 +55,7 @@ import {
 import type { Service } from "./http.ts";
 import type {
   CatalogDetail,
+  CatalogPerson,
   CatalogProvider,
   CatalogReference,
   MediaKind,
@@ -280,6 +281,14 @@ function cleanDuration(v: unknown): number | undefined {
   return s >= 1 && s <= 86_400 ? s : undefined; // absurd durations are dropped
 }
 
+/** Range-checked integer: upstream stats outside the plausible band are
+ * dropped, never normalized into something displayable. */
+function cleanInt(v: unknown, min: number, max: number): number | undefined {
+  return typeof v === "number" && Number.isInteger(v) && v >= min && v <= max
+    ? v
+    : undefined;
+}
+
 function httpsUrl(v: unknown): string | undefined {
   const s = cleanString(v, 2048);
   if (s === undefined) return undefined;
@@ -297,6 +306,7 @@ const MAX = {
   credits: 50,
   tags: 50,
   aliases: 25,
+  mods: 25,
   related: 50,
   links: 30,
   title: 300,
@@ -773,6 +783,7 @@ function stashPerformerDetail(row: unknown): CatalogDetail | undefined {
     .slice(0, MAX.aliases);
   const imageUrl = stashImageUrl(r.images);
   const links = stashLinks(r.urls);
+  const person = stashPerformerPerson(r);
   return {
     reference: { provider: "stashdb", kind: "performer", id },
     title: name,
@@ -782,7 +793,87 @@ function stashPerformerDetail(row: unknown): CatalogDetail | undefined {
     related: [],
     links,
     aliases,
+    ...(person !== undefined ? { person } : {}),
   };
+}
+
+/** Biography facts a stash-box Performer row publishes. Only fields present
+ * in the row are emitted; an all-empty row maps to no person block at all.
+ * `birthdate` (FuzzyDate) is deprecated upstream in favour of `birth_date`,
+ * but it is the field every shipped stash-box release resolves — switch once
+ * prod is guaranteed to run a release that knows `birth_date`. */
+function stashPerformerPerson(
+  r: Record<string, unknown>,
+): CatalogPerson | undefined {
+  const birth = stashFuzzyDate(r.birthdate);
+  const person: CatalogPerson = {
+    gender: stashEnumLabel(r.gender),
+    ...(birth !== undefined
+      ? { birthDate: birth.date, birthDateAccuracy: birth.accuracy }
+      : {}),
+    country: cleanString(r.country, 80),
+    ethnicity: stashEnumLabel(r.ethnicity),
+    eyeColor: stashEnumLabel(r.eye_color),
+    hairColor: stashEnumLabel(r.hair_color),
+    heightCm: cleanInt(r.height, 50, 280),
+    cupSize: cleanString(r.cup_size, 10),
+    bandCm: cleanInt(r.band_size, 40, 160),
+    waistCm: cleanInt(r.waist_size, 30, 160),
+    hipCm: cleanInt(r.hip_size, 40, 200),
+    breastType: stashEnumLabel(r.breast_type),
+    careerStartYear: cleanYear(r.career_start_year),
+    careerEndYear: cleanYear(r.career_end_year),
+    tattoos: stashBodyMods(r.tattoos),
+    piercings: stashBodyMods(r.piercings),
+  };
+  const entries = Object.entries(person).filter(([, v]) => v !== undefined);
+  return entries.length > 0
+    ? (Object.fromEntries(entries) as CatalogPerson)
+    : undefined;
+}
+
+/** Humanises a stash-box enum value ("TRANSGENDER_FEMALE" becomes
+ * "Transgender female"). NA means "not applicable" — dropped, never shown. */
+function stashEnumLabel(v: unknown): string | undefined {
+  if (typeof v !== "string" || v === "NA") return undefined;
+  const s = v.toLowerCase().replaceAll("_", " ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** stash-box FuzzyDate: accuracy names the parts the provider vouches for
+ * (unknown day/month arrive padded). An unknown accuracy maps to absent. */
+function stashFuzzyDate(
+  v: unknown,
+): { date: string; accuracy: "day" | "month" | "year" } | undefined {
+  if (v === null || typeof v !== "object") return undefined;
+  const r = v as { date?: unknown; accuracy?: unknown };
+  if (!isIsoDate(r.date)) return undefined;
+  if (r.accuracy !== "DAY" && r.accuracy !== "MONTH" && r.accuracy !== "YEAR") {
+    return undefined;
+  }
+  return {
+    date: r.date,
+    accuracy: r.accuracy.toLowerCase() as "day" | "month" | "year",
+  };
+}
+
+/** Body modifications: "Left wrist: script A" or bare "Left wrist". */
+function stashBodyMods(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const mods = v
+    .map((m) => {
+      if (m === null || typeof m !== "object") return undefined;
+      const r = m as { location?: unknown; description?: unknown };
+      const location = cleanString(r.location, 120);
+      if (location === undefined) return undefined;
+      const description = cleanString(r.description, 120);
+      return description !== undefined
+        ? `${location}: ${description}`
+        : location;
+    })
+    .filter((m): m is string => m !== undefined)
+    .slice(0, MAX.mods);
+  return mods.length > 0 ? mods : undefined;
 }
 
 /** StashDB Studio: {id, name, deleted, urls, images, parent, child_studios}.
@@ -1899,7 +1990,7 @@ export async function getCatalogDetail(
   }
   if (kind === "performer") {
     const row = await stashQuery(
-      "query($id: ID!) { findPerformer(id: $id) { id name deleted aliases urls { url type } images { url } } }",
+      "query($id: ID!) { findPerformer(id: $id) { id name deleted aliases urls { url type } images { url } gender birthdate { date accuracy } ethnicity country eye_color hair_color height cup_size band_size waist_size hip_size breast_type career_start_year career_end_year tattoos { location description } piercings { location description } } }",
       { id },
       "findPerformer",
     );

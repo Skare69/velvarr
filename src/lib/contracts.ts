@@ -158,6 +158,31 @@ export type CatalogCredit = {
   links?: ExternalLink[];
 };
 
+/** Biography facts a provider publishes about a person (performer detail).
+ * Absent fields are unknown at the source — never faked. Enum labels arrive
+ * humanised ("Transgender female"); ints stay in provider units (cm). */
+export type CatalogPerson = {
+  gender?: string;
+  /** ISO calendar date (YYYY-MM-DD); stash-box pads unknown day/month, so
+   * `birthDateAccuracy` names the parts the provider vouches for. */
+  birthDate?: string;
+  birthDateAccuracy?: "day" | "month" | "year";
+  country?: string;
+  ethnicity?: string;
+  eyeColor?: string;
+  hairColor?: string;
+  heightCm?: number;
+  cupSize?: string;
+  bandCm?: number;
+  waistCm?: number;
+  hipCm?: number;
+  breastType?: string;
+  careerStartYear?: number;
+  careerEndYear?: number;
+  tattoos?: string[];
+  piercings?: string[];
+};
+
 /** Full provider detail for one catalog entity. Ephemerally valuable; only a
  * minimal summary is persisted (see CatalogRecord). */
 export type CatalogDetail = {
@@ -180,6 +205,9 @@ export type CatalogDetail = {
   related: CatalogReference[];
   links: ExternalLink[];
   aliases: string[];
+  /** Person biography facts, when the provider publishes them for this
+   * entity (performers). Absent when it supplies none. */
+  person?: CatalogPerson;
   sourceUrl?: string;
 };
 
