@@ -2934,6 +2934,106 @@ test("a Whisparr outage degrades to library kinds, never sinks the shelf", async
   });
 });
 
+test("two list calls inside the TTL share one /api/v3/movie fetch", async () => {
+  // The per-URL enrichment cache turns the second list call's sweep into a
+  // cache hit; the labels stay true on both calls.
+  const items = [
+    {
+      ...datedItem(0x387, "Shared Sweep Scene", "2026-09-03T10:00:00.000Z"),
+      MediaSources: [{ Path: "/media/scenes/alpha/scene.mkv" }],
+    },
+  ];
+  const whisparrItems = [
+    {
+      id: 1,
+      title: "Alpha",
+      path: "/media/scenes/alpha",
+      stashId: dashed(hexId(0x5a6)),
+    },
+  ];
+  const handler: FixtureHandler = (req, res, body) => {
+    if (pathOf(req.url ?? "") === "/api/v3/movie")
+      return sendJson(res, 200, whisparrItems);
+    itemsByParentHandler({ [LIB_A]: items })(req, res, body);
+  };
+  await withFixture(handler, async (fx) => {
+    const config = {
+      ...jellyfinConfig(fx.origin, [LIB_A]),
+      whisparr: { url: fx.origin, apiKey: WH_KEY },
+    };
+    assert.deepEqual(
+      (await listRecentlyAddedItems(config, TOKEN, account([LIB_A]), 5)).map(
+        (item) => [item.name, item.kind],
+      ),
+      [["Shared Sweep Scene", "scene"]],
+    );
+    assert.deepEqual(
+      (await listRecentlyAddedItems(config, TOKEN, account([LIB_A]), 5)).map(
+        (item) => [item.name, item.kind],
+      ),
+      [["Shared Sweep Scene", "scene"]],
+    );
+    const sweeps = fx.log.filter(
+      (r) => r.method === "GET" && pathOf(r.url) === "/api/v3/movie",
+    );
+    assert.equal(sweeps.length, 1);
+  });
+});
+
+test("a slow /api/v3/movie returns the shelf inside the enrichment ceiling", async () => {
+  const items = [
+    {
+      ...datedItem(0x388, "Slow Sweep Scene", "2026-09-03T10:00:00.000Z"),
+      MediaSources: [{ Path: "/media/scenes/alpha/scene.mkv" }],
+    },
+  ];
+  const whisparrItems = [
+    {
+      id: 1,
+      title: "Alpha",
+      path: "/media/scenes/alpha",
+      stashId: dashed(hexId(0x5a7)),
+    },
+  ];
+  const handler: FixtureHandler = (req, res, body) => {
+    if (pathOf(req.url ?? "") === "/api/v3/movie") {
+      // Real-clock delay by design: the behavior under test is the ceiling
+      // racing a live upstream answer, so both sides must share the platform
+      // clock — fake timers would freeze the production ceiling while its
+      // fetch runs on real I/O. Bounded at 4 s and guarded: the fixture may
+      // be torn down before the write.
+      setTimeout(() => {
+        if (!res.writableEnded && !res.socket?.destroyed)
+          sendJson(res, 200, whisparrItems);
+      }, 4_000);
+      return;
+    }
+    itemsByParentHandler({ [LIB_A]: items })(req, res, body);
+  };
+  await withFixture(handler, async (fx) => {
+    const start = Date.now();
+    const result = await listRecentlyAddedItems(
+      {
+        ...jellyfinConfig(fx.origin, [LIB_A]),
+        whisparr: { url: fx.origin, apiKey: WH_KEY },
+      },
+      TOKEN,
+      account([LIB_A]),
+      5,
+    );
+    const elapsed = Date.now() - start;
+    assert.deepEqual(
+      result.map((item) => [item.name, item.kind]),
+      // Degraded: the honest library kind, not a scene label from a sweep
+      // that had not landed inside the ceiling.
+      [["Slow Sweep Scene", "movie"]],
+    );
+    // Bounded by the enrichment ceiling, not the 15 s request timeout the
+    // delayed handler would otherwise hold the sweep to.
+    assert.ok(elapsed < 6_000, `list took ${elapsed} ms`);
+  });
+});
+
 test("unconfigured Whisparr upgrades nothing and calls nothing", async () => {
   const items = [
     {

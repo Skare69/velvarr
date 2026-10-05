@@ -6,12 +6,16 @@
 
 import {
   AppError,
+  errorReason,
   requestJson,
   requestBytes,
   validateBaseUrl,
 } from "./http.ts";
 import { sameWork } from "./judgment.ts";
-import { resolveIdentitiesByPath } from "./whisparr.ts";
+import {
+  prefetchWhisparrMovieList,
+  resolveIdentitiesByPath,
+} from "./whisparr.ts";
 import {
   looksWindows,
   mappedPrefix,
@@ -473,8 +477,11 @@ function dtoPaths(dto: BaseItemDto): string[] {
  * scenes "Movie" (Radarr-style filing under a movies library). One Whisparr
  * path-correspondence sweep upgrades an item to "scene" only when Whisparr
  * itself declares that identity a scene; everything else keeps the honest
- * library kind. A Whisparr failure degrades to library kinds — the labels
- * stay true and the list never sinks because enrichment failed. */
+ * library kind. A Whisparr failure or a slow answer degrades to library
+ * kinds — the labels stay true, the list never sinks because enrichment
+ * failed, and the degraded case is logged once with the named error. The
+ * movie-list fetch is cached per Whisparr URL (whisparr.ts) and warmed before
+ * the Jellyfin read, so this only ever waits out the tail, never the fetch. */
 async function withSceneIdentity(
   config: IntegrationConfig,
   dtos: BaseItemDto[],
@@ -484,13 +491,36 @@ async function withSceneIdentity(
     .map((item, i) => ({ id: item.id, paths: dtoPaths(dtos[i]!) }))
     .filter((e) => e.paths.length > 0);
   if (entries.length === 0) return items;
+  // Best-effort labeling must not stretch a page: a short ceiling bounds a
+  // slow Whisparr. The loser fetch keeps running and lands in the cache, so
+  // the next page inside the TTL labels instantly.
+  const SCENE_ENRICH_TIMEOUT_MS = 2_000;
+  let enrichTimer: NodeJS.Timeout | undefined;
   let sceneIds: Set<string>;
   try {
-    const resolved = await resolveIdentitiesByPath(config, entries);
+    const resolved = await Promise.race([
+      resolveIdentitiesByPath(config, entries),
+      new Promise<never>((_, reject) => {
+        enrichTimer = setTimeout(
+          () =>
+            reject(
+              new AppError(
+                504,
+                "upstream_timeout",
+                `Whisparr scene enrichment exceeded ${SCENE_ENRICH_TIMEOUT_MS} ms.`,
+              ),
+            ),
+          SCENE_ENRICH_TIMEOUT_MS,
+        );
+      }),
+    ]).finally(() => clearTimeout(enrichTimer));
     sceneIds = new Set(
       [...resolved].filter(([, ref]) => ref.kind === "scene").map(([id]) => id),
     );
-  } catch {
+  } catch (e) {
+    console.error(
+      `[velvarr:library] scene enrichment degraded to library kinds: ${errorReason(e)}`,
+    );
     return items;
   }
   return items.map((item) =>
@@ -708,6 +738,9 @@ export async function listLibraryItems(
     }
   }
 
+  // Warm the Whisparr movie list while Jellyfin answers: the enrichment
+  // below shares this in-flight fetch instead of paying a second one.
+  prefetchWhisparrMovieList(config);
   const user = await getCurrentUser(config, userToken);
 
   if (scopedLibraryId !== undefined) {
@@ -762,6 +795,8 @@ export async function listRecentlyAddedItems(
   }
   const libraryIds = effectiveLibraries(config, account);
   if (libraryIds.length === 0) return [];
+  // Warm the Whisparr movie list while Jellyfin answers, as in listLibraryItems.
+  prefetchWhisparrMovieList(config);
   const user = await getCurrentUser(config, userToken);
   const pages = await Promise.all(
     libraryIds.map((libraryId) =>

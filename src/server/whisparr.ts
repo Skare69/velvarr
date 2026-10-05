@@ -360,12 +360,75 @@ export async function findWhisparrItemByPath(
   return matches[0] ?? null;
 }
 
+// --- movie-list cache for list enrichment ---
+
+// ponytail: in-memory, 30 s TTL, 4-server FIFO cap; a persisted index only
+// if one fetch per window still hurts.
+const MOVIE_LIST_TTL_MS = 30_000;
+const MOVIE_LIST_CACHE_MAX = 4;
+// Keyed by Whisparr base URL. Entries hold the in-flight promise: the
+// prefetch that overlaps the Jellyfin read and the enrichment that follows
+// it share one fetch instead of two.
+const movieListCache = new Map<
+  string,
+  { at: number; dtos: Promise<MovieResourceDto[]> }
+>();
+
+/** Test seam: tests that script a changed movie list reset between phases so
+ * a cached read never masks the scripted change. */
+export function resetWhisparrMovieListCache(): void {
+  movieListCache.clear();
+}
+
+function cachedMovieList(
+  whisparr: NonNullable<IntegrationConfig["whisparr"]>,
+): Promise<MovieResourceDto[]> {
+  const hit = movieListCache.get(whisparr.url);
+  if (hit !== undefined && Date.now() - hit.at < MOVIE_LIST_TTL_MS) {
+    return hit.dtos;
+  }
+  const at = Date.now();
+  const dtos = requestJson<unknown>(
+    whisparr.url,
+    "/api/v3/movie",
+    whisparr.apiKey,
+    { service: "whisparr" },
+  ).then(asMovieResources);
+  movieListCache.delete(whisparr.url);
+  movieListCache.set(whisparr.url, { at, dtos });
+  if (movieListCache.size > MOVIE_LIST_CACHE_MAX) {
+    const oldest = movieListCache.keys().next().value;
+    if (oldest !== undefined) movieListCache.delete(oldest);
+  }
+  // A rejected fetch removes only its own entry — a concurrent replacement
+  // stays — and is never served to a later lookup. The handler also keeps
+  // the rejection handled for callers that never await this promise.
+  void dtos.catch(() => {
+    const current = movieListCache.get(whisparr.url);
+    if (current !== undefined && current.dtos === dtos) {
+      movieListCache.delete(whisparr.url);
+    }
+  });
+  return dtos;
+}
+
+/** Warm the movie-list cache without awaiting it. Library pages and the
+ * Discover shelf call this before their Jellyfin fetch, so the /api/v3/movie
+ * read overlaps Jellyfin instead of trailing it; a slow or down Whisparr is
+ * bounded by the enrichment ceiling in jellyfin.ts, never by this call. */
+export function prefetchWhisparrMovieList(config: IntegrationConfig): void {
+  const whisparr = config?.whisparr;
+  if (!whisparr?.url || !whisparr.apiKey) return;
+  void cachedMovieList(whisparr);
+}
+
 /** One Whisparr sweep for a whole list of Jellyfin items: a single
- * /api/v3/movie fetch resolves every entry's identity via path
- * correspondence. Unconfigured Whisparr or no usable paths → empty map
- * without any upstream call. An entry with zero or several distinct
- * matches is simply absent — the caller keeps its own label, and a single
- * ambiguous entry never sinks the batch. Upstream failures propagate. */
+ * /api/v3/movie fetch (cached per URL, see cachedMovieList) resolves every
+ * entry's identity via path correspondence. Unconfigured Whisparr or no
+ * usable paths → empty map without any upstream call. An entry with zero or
+ * several distinct matches is simply absent — the caller keeps its own
+ * label, and a single ambiguous entry never sinks the batch. Upstream
+ * failures propagate. */
 export async function resolveIdentitiesByPath(
   config: IntegrationConfig,
   entries: { id: string; paths: string[] }[],
@@ -374,11 +437,7 @@ export async function resolveIdentitiesByPath(
   if (!whisparr?.url || !whisparr.apiKey) return new Map();
   const usable = entries.filter((e) => e.paths.length > 0);
   if (usable.length === 0) return new Map();
-  const dtos = asMovieResources(
-    await requestJson<unknown>(whisparr.url, "/api/v3/movie", whisparr.apiKey, {
-      service: "whisparr",
-    }),
-  );
+  const dtos = await cachedMovieList(whisparr);
   const resolved = new Map<string, MediaReference>();
   for (const entry of usable) {
     const matches = matchesByPaths(dtos, whisparr, entry.paths);

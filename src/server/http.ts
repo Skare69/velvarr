@@ -27,6 +27,16 @@ export class AppError extends Error {
 const DEFAULT_TIMEOUT_MS = 15_000;
 const JSON_LIMIT = 2 * 1024 * 1024;
 
+/** Sanitized reason for degraded-mode logs. AppError messages are written for
+ * operators; raw error text from anything else can echo URLs or config, so
+ * only Error messages pass, capped, prefixed with the AppError code so the
+ * failure class is named. */
+export function errorReason(e: unknown): string {
+  const raw = e instanceof Error ? e.message : "";
+  const reason = (raw.trim().slice(0, 2000) || "unknown error").slice(0, 2000);
+  return e instanceof AppError ? `${e.code}: ${reason}` : reason;
+}
+
 export type Service = "jellyfin" | "whisparr" | "tpdb" | "stashdb";
 
 function serviceName(service: Service): string {

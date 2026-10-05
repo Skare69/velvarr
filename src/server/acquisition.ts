@@ -5,7 +5,7 @@
 // scheduling only — all durable state lives in SQLite, so a crash between
 // steps leaves recoverable evidence, never a lost or duplicated add.
 
-import { AppError } from "./http.ts";
+import { AppError, errorReason as reasonOf } from "./http.ts";
 import * as storage from "./storage.ts";
 import {
   deliverToWhisparr,
@@ -74,13 +74,6 @@ const EMPTY_SUMMARY: WorkSummary = {
   errors: 0,
   overlap: false,
 };
-
-function reasonOf(e: unknown): string {
-  const raw =
-    e instanceof Error ? e.message : e instanceof AppError ? e.message : "";
-  // AppError messages are sanitized upstream; never echo URLs or config.
-  return (raw.trim().slice(0, 2000) || "unknown error").slice(0, 2000);
-}
 
 /** Errors that prove this identity can never be delivered, whatever the
  * network does next: a reference Whisparr has no metadata source for
