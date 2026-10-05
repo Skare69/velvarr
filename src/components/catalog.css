@@ -229,7 +229,6 @@
   gap: 0.7rem;
 }
 .cat-person {
-  position: relative;
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
@@ -262,7 +261,9 @@
 .cat-person .cat-person-filter {
   align-self: stretch;
   min-height: 36px;
-  margin: 0 0.5rem 0.5rem;
+  /* auto top margin pins the button to the stretched card's foot, so
+     buttons align across a row regardless of name wrapping. */
+  margin: auto 0.5rem 0.5rem;
   padding: 7px 5px;
   gap: 5px;
   font-size: 0.75rem;
