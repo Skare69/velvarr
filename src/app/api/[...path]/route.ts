@@ -45,12 +45,20 @@ function paramsOf(def: RouteDef, segments: string[]): Record<string, string> {
   return params;
 }
 
+// The only wire 401s: dead Velvarr sessions. The client (shared.tsx api())
+// signs out on any 401, so an upstream credential rejection (requireSuccess,
+// Jellyfin setup/validate) must not travel as 401 — it would sign every user
+// out. Those leave as 502 with code and message unchanged.
+const SESSION_401_CODES: Record<string, true> = {
+  unauthenticated: true,
+  session_revoked: true,
+};
+
 function errorResponse(err: unknown): Response {
   if (err instanceof AppError) {
-    return json(
-      { error: { code: err.code, message: err.message } },
-      err.status,
-    );
+    const status =
+      err.status === 401 && !SESSION_401_CODES[err.code] ? 502 : err.status;
+    return json({ error: { code: err.code, message: err.message } }, status);
   }
   return json(
     { error: { code: "internal", message: "Internal server error." } },

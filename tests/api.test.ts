@@ -2228,7 +2228,10 @@ test("provider credentials: stored config wins over environment, clear falls bac
     source: "stored",
   });
   const rejected = await call("GET", "/api/admin/providers", { cookie: admin });
-  assert.equal(rejected.status, 401);
+  // A rejected provider key is upstream status information, not a dead
+  // Velvarr session: the client signs out on any 401 (shared.tsx api()),
+  // so errorResponse maps upstream 401s to 502 — code and message unchanged.
+  assert.equal(rejected.status, 502);
   const rejectedBody = (await rejected.json()) as { error: { code: string } };
   assert.equal(rejectedBody.error.code, "upstream_auth");
 
@@ -2295,6 +2298,34 @@ test("provider credentials: stored config wins over environment, clear falls bac
     configured: Boolean(process.env.TYPESAFE_API_KEY),
     source: "environment",
   });
+});
+
+test("catalog search with a rejected tpdb key is 502 upstream_auth, not a 401 sign-out", async () => {
+  // The client signs out on any 401 (shared.tsx api()), so an expired
+  // provider key reaching the wire as 401 signs every user out of catalog
+  // search. errorResponse maps upstream 401s to 502; only the session codes
+  // unauthenticated/session_revoked keep 401.
+  const stored = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: { tpdbApiToken: "wrong-stored-token" },
+  });
+  assert.equal(stored.status, 200);
+  resetMetaCache();
+  const search = await call(
+    "GET",
+    "/api/catalog/search?provider=tpdb&kind=movie&q=Fixture",
+    { cookie: member },
+  );
+  assert.equal(search.status, 502);
+  const body = await errorShape(search, 502);
+  assert.equal(body.code, "upstream_auth");
+
+  // Restore the environment-configured baseline for the later suites.
+  const cleared = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: { tpdbApiToken: "" },
+  });
+  assert.equal(cleared.status, 200);
 });
 
 test("catalog detail: validation before upstream, absence vs outage, own request only", async () => {
