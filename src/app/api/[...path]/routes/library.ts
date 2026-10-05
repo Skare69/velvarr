@@ -83,7 +83,13 @@ export async function libraryItem(
         error instanceof AppError ? error.message : "Whisparr lookup failed.";
     }
   }
-  return json({ item, catalog, catalogNote });
+  return json({
+    // Same rule as the grid's withSceneIdentity: a Whisparr-declared scene
+    // upgrades the Jellyfin kind; ambiguous or failed lookups keep it.
+    item: catalog?.kind === "scene" ? { ...item, kind: "scene" } : item,
+    catalog,
+    catalogNote,
+  });
 }
 
 /** Shared image response: strong ETag + If-None-Match revalidation so F5 is a

@@ -294,6 +294,7 @@ function jfItem(item: (typeof fx.items)[number]) {
   return {
     Id: item.Id,
     Name: item.Name,
+    Type: "Movie",
     ProductionYear: 2020,
     Overview: `Overview of ${item.Name}`,
     RunTimeTicks: 6_000_000_000,
@@ -487,7 +488,7 @@ const whisparrMovies: {
   sizeOnDisk: number;
   added: string;
   tmdbId: number;
-  tpdbId: string;
+  tpdbId?: string;
   stashId?: string;
   foreignId: string;
   itemType: string;
@@ -1672,17 +1673,54 @@ test("library detail: catalog enrichment via whisparr path mappings", async () =
     });
     assert.equal(resolved.status, 200);
     const resolvedBody = (await resolved.json()) as {
-      item: { id: string };
+      item: { id: string; kind: string };
       catalog?: { provider: string; kind: string; id: string };
       catalogNote?: string;
     };
     assert.equal(resolvedBody.item.id, ITEM_MOVIE);
+    // A movie identity is no upgrade: the item keeps its Jellyfin kind.
+    assert.equal(resolvedBody.item.kind, "movie");
     assert.deepEqual(resolvedBody.catalog, {
       provider: "tpdb",
       kind: "movie",
       id: TPDB_MOVIE,
     });
     assert.equal(resolvedBody.catalogNote, undefined);
+
+    // Whisparr itself declares the identity a scene: the grid and Recently
+    // added upgrade the item to kind "scene" (withSceneIdentity); the detail
+    // route applies the same rule from the catalog it already resolved.
+    const movieEntry = whisparrMovies[0]!;
+    whisparrMovies[0] = {
+      id: 413,
+      title: "Alpha Scene",
+      monitored: true,
+      path: `/data/whisparr/${ITEM_MOVIE}.mkv`,
+      hasFile: true,
+      movieFileId: 7,
+      sizeOnDisk: 2_000_000_000,
+      added: "2026-09-11T12:00:00Z",
+      tmdbId: 0,
+      stashId: STASH_SCENE,
+      foreignId: STASH_SCENE,
+      itemType: "scene",
+      statistics: { movieFileCount: 1, sizeOnDisk: 2_000_000_000 },
+    };
+    const scene = await call("GET", `/api/library/${ITEM_MOVIE}`, {
+      cookie: owner,
+    });
+    assert.equal(scene.status, 200);
+    const sceneBody = (await scene.json()) as {
+      item: { kind: string };
+      catalog?: { provider: string; kind: string; id: string };
+    };
+    assert.deepEqual(sceneBody.catalog, {
+      provider: "stashdb",
+      kind: "scene",
+      id: STASH_SCENE,
+    });
+    assert.equal(sceneBody.item.kind, "scene");
+    whisparrMovies[0] = movieEntry;
 
     // Two distinct Whisparr identities behind one path is a real
     // misconfiguration: surfaced as catalogNote, never silent.
@@ -1706,11 +1744,14 @@ test("library detail: catalog enrichment via whisparr path mappings", async () =
     });
     assert.equal(ambiguous.status, 200);
     const ambiguousBody = (await ambiguous.json()) as {
+      item: { kind: string };
       catalog?: unknown;
       catalogNote?: string;
     };
     assert.equal(ambiguousBody.catalog, undefined);
     assert.equal(typeof ambiguousBody.catalogNote, "string");
+    // Ambiguous identity: no upgrade, the honest Jellyfin kind stays.
+    assert.equal(ambiguousBody.item.kind, "movie");
     whisparrMovies.pop();
 
     // No whisparr item sits behind this item's path: bare item, no note —
