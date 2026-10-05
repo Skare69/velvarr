@@ -194,7 +194,6 @@ type Statements = {
   getPerformerFollowLinkedTo: StatementSync;
   deletePerformerFollow: StatementSync;
   deletePerformerFollowsLinkedTo: StatementSync;
-  isFollowingPerformer: StatementSync;
   getPreferences: StatementSync;
   updatePreferences: StatementSync;
 };
@@ -621,9 +620,6 @@ function S(): Statements {
       ),
       deletePerformerFollowsLinkedTo: d.prepare(
         "DELETE FROM performer_follows WHERE account_id = ? AND linked_provider = ? AND linked_external_id = ?",
-      ),
-      isFollowingPerformer: d.prepare(
-        "SELECT 1 FROM performer_follows WHERE account_id = ? AND provider = ? AND external_id = ?",
       ),
       getPreferences: d.prepare(
         "SELECT hidden_tags, discover_order FROM accounts WHERE id = ?",
@@ -1601,16 +1597,6 @@ export function unfollowPerformer(
       throw new AppError(404, "follow_not_found", "follow not found");
     }
   });
-}
-
-export function isFollowing(
-  accountId: string,
-  provider: string,
-  externalId: string,
-): boolean {
-  return (
-    S().isFollowingPerformer.get(accountId, provider, externalId) !== undefined
-  );
 }
 
 /** The cross-provider identity for one followed performer, from whatever the

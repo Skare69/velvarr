@@ -2129,17 +2129,9 @@ test("a performer follow round-trips with its snapshot and a second unfollow rep
   assert.ok(follow.createdAt > 0);
 
   assert.deepEqual(storage.listFollows(grant.account.id), [follow]);
-  assert.equal(
-    storage.isFollowing(grant.account.id, "tpdb", FOLLOW_TPDB_A.id),
-    true,
-  );
 
   storage.unfollowPerformer(grant.account.id, "tpdb", FOLLOW_TPDB_A.id);
   assert.deepEqual(storage.listFollows(grant.account.id), []);
-  assert.equal(
-    storage.isFollowing(grant.account.id, "tpdb", FOLLOW_TPDB_A.id),
-    false,
-  );
   assert.throws(
     () => storage.unfollowPerformer(grant.account.id, "tpdb", FOLLOW_TPDB_A.id),
     (e: { code: string }) => e.code === "follow_not_found",
@@ -2178,10 +2170,6 @@ test("following the same performer twice is already_following while two accounts
   );
   assert.notEqual(follow.id, theirs.id);
   assert.deepEqual(storage.listFollows(other.id), [theirs]);
-  assert.equal(
-    storage.isFollowing(other.id, "stashdb", FOLLOW_STASH_A.id),
-    true,
-  );
 });
 
 test("follows are private: another account neither lists nor deletes them", () => {
@@ -2198,7 +2186,6 @@ test("follows are private: another account neither lists nor deletes them", () =
   );
 
   assert.deepEqual(storage.listFollows(other.id), []);
-  assert.equal(storage.isFollowing(other.id, "tpdb", FOLLOW_TPDB_A.id), false);
   // A cross-account delete is the same 404 as a missing row — and the row
   // survives it.
   assert.throws(
@@ -2331,18 +2318,10 @@ test("a linked pair is one entry in the list, both rows for the shelves, and one
       .map((f) => f.reference.id),
     [FOLLOW_STASH_A.id],
   );
-  assert.equal(
-    storage.isFollowing(grant.account.id, "stashdb", FOLLOW_STASH_A.id),
-    true,
-  );
 
   // Unfollowing the counterpart's side drops the pair, not half of it.
   storage.unfollowPerformer(grant.account.id, "stashdb", FOLLOW_STASH_A.id);
   assert.deepEqual(storage.listFollows(grant.account.id), []);
-  assert.equal(
-    storage.isFollowing(grant.account.id, "tpdb", FOLLOW_TPDB_A.id),
-    false,
-  );
 });
 
 test("linkFollows folds two separately-followed rows into one identity and never creates a follow", () => {
@@ -2362,8 +2341,16 @@ test("linkFollows folds two separately-followed rows into one identity and never
 
   // Linking an unfollowed performer writes nothing: this is not a follow.
   storage.linkFollows(grant.account.id, FOLLOW_TPDB_B, FOLLOW_TPDB_C);
+  // listFollows hides the linked counterpart of a pair, but B was never
+  // linked: if the no-op had followed it, it would show here.
   assert.equal(
-    storage.isFollowing(grant.account.id, "tpdb", FOLLOW_TPDB_B.id),
+    storage
+      .listFollows(grant.account.id)
+      .some(
+        (f) =>
+          f.reference.provider === "tpdb" &&
+          f.reference.id === FOLLOW_TPDB_B.id,
+      ),
     false,
   );
   assert.equal(storage.listFollows(grant.account.id).length, 1);

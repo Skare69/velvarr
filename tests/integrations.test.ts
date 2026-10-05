@@ -1968,7 +1968,6 @@ import {
   buildMoviePayload,
   deliverToWhisparr,
   findWhisparrItem,
-  getWhisparrItem,
   observeWhisparrItem,
   resolveWhisparrItem,
 } from "../src/server/whisparr.ts";
@@ -2209,7 +2208,7 @@ test("resolveWhisparrItem surfaces import exclusion only when the API reveals it
 
 // --- adoption reads ---
 
-test("findWhisparrItem and getWhisparrItem read stored items by exact identity", async () => {
+test("findWhisparrItem reads stored items by exact identity", async () => {
   await withFixture(
     (req, res) => {
       const p = pathOf(req.url ?? "");
@@ -2221,8 +2220,6 @@ test("findWhisparrItem and getWhisparrItem read stored items by exact identity",
           return sendJson(res, 200, [storedScene()]);
         return sendJson(res, 200, []);
       }
-      if (p === "/api/v3/movie/2") return sendJson(res, 200, storedMovie());
-      if (p === "/api/v3/movie/3") return sendJson(res, 200, storedScene());
       sendJson(res, 404, {});
     },
     async (fx) => {
@@ -2246,11 +2243,6 @@ test("findWhisparrItem and getWhisparrItem read stored items by exact identity",
         await findWhisparrItem(deliveryConfig(fx.origin, DELIVERY), other),
         null,
       );
-      const byId = await getWhisparrItem(
-        deliveryConfig(fx.origin, DELIVERY),
-        2,
-      );
-      assert.equal(byId?.identity, MOVIE_UUID);
     },
   );
   // Conflicting duplicates are an upstream inconsistency, not a pick.
@@ -2264,32 +2256,6 @@ test("findWhisparrItem and getWhisparrItem read stored items by exact identity",
       await assert.rejects(
         findWhisparrItem(deliveryConfig(fx.origin, DELIVERY), movieRef),
         appError(502, "identity_mismatch"),
-      );
-    },
-  );
-});
-
-test("getWhisparrItem treats a proven 404 as absence and reports outages", async () => {
-  await withFixture(
-    (req, res) => {
-      const p = pathOf(req.url ?? "");
-      if (p === "/api/v3/movie/2") return sendJson(res, 200, storedMovie());
-      if (p === "/api/v3/movie/404") return sendJson(res, 404, {});
-      sendJson(res, 500, {});
-    },
-    async (fx) => {
-      assert.equal(
-        (await getWhisparrItem(deliveryConfig(fx.origin, DELIVERY), 2))
-          ?.whisparrId,
-        2,
-      );
-      assert.equal(
-        await getWhisparrItem(deliveryConfig(fx.origin, DELIVERY), 404),
-        null,
-      );
-      await assert.rejects(
-        getWhisparrItem(deliveryConfig(fx.origin, DELIVERY), 5),
-        appError(502, "upstream_unavailable"),
       );
     },
   );

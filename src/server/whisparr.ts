@@ -590,30 +590,6 @@ export async function findWhisparrItem(
   return dto === null ? null : mapStoredItem(dto);
 }
 
-/** Stored item by Whisparr id. A proven 404 is authoritative absence (null);
- * every other failure propagates as sanitized AppError. */
-export async function getWhisparrItem(
-  config: IntegrationConfig,
-  whisparrId: number,
-): Promise<WhisparrItem | null> {
-  const whisparr = requireWhisparr(config);
-  if (!Number.isInteger(whisparrId) || whisparrId <= 0) {
-    throw new AppError(400, "invalid_id", "Invalid item id.");
-  }
-  try {
-    const dto = await requestJson<unknown>(
-      whisparr.url,
-      `/api/v3/movie/${whisparrId}`,
-      whisparr.apiKey,
-      { service: "whisparr" },
-    );
-    return mapStoredItem(dto as MovieResourceDto);
-  } catch (err) {
-    if (err instanceof AppError && err.upstreamStatus === 404) return null;
-    throw err;
-  }
-}
-
 // --- observation ---
 
 export type WhisparrObservation =
