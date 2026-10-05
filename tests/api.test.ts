@@ -1193,6 +1193,30 @@ test("update chip: newer release surfaces, github failure degrades to null", asy
   }
 });
 
+test("update chip: VELVARR_UPDATE_CHECK=0 opts out with no github call", async () => {
+  const realFetch = globalThis.fetch;
+  const hadEnv = "VELVARR_UPDATE_CHECK" in process.env;
+  const realEnv = process.env.VELVARR_UPDATE_CHECK;
+  let calls = 0;
+  try {
+    process.env.VELVARR_UPDATE_CHECK = "0";
+    globalThis.fetch = (async () => {
+      calls++;
+      return Response.json({ tag_name: "v9.9.9", html_url: "x" });
+    }) as typeof fetch;
+    resetUpdateCache();
+    const optedOut = await call("GET", "/api/update");
+    assert.equal(optedOut.status, 200);
+    assert.deepEqual(await optedOut.json(), { update: null });
+    assert.equal(calls, 0);
+  } finally {
+    if (hadEnv) process.env.VELVARR_UPDATE_CHECK = realEnv;
+    else delete process.env.VELVARR_UPDATE_CHECK;
+    globalThis.fetch = realFetch;
+    resetUpdateCache();
+  }
+});
+
 test("mutations are origin protected (CSRF)", async () => {
   const missing = await call("POST", "/api/setup/inspect", {
     origin: null,

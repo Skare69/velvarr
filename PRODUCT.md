@@ -32,7 +32,7 @@ Self-hosted homelab, always-on. Production: Whisparr `192.168.50.246:6969`, Jell
 ## Brand Commitments
 
 - Name: Velvarr.
-- The credit is user-specified and fixed: bold "Velvarr" linking to the repo, then `v{version}` in normal weight linking to that GitHub release; foot of the desktop sidebar and the mobile More sheet; fixed bar only on screens without the shell.
+- The credit is user-specified and fixed: bold "Velvarr" linking to the repo, then `v{version}` in normal weight linking to that GitHub release; foot of the desktop sidebar and the mobile More sheet; fixed bar only on screens without the shell; when the server reports a newer GitHub release, an accent chip linking to it sits on its own line above the version — no chip when current or unknown.
 - WCAG 2.1 AA is the standing contrast bar; the incumbent CSS measures and documents its pairs.
 
 ## Evidence on Hand

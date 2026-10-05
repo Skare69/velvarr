@@ -16,8 +16,10 @@ let cache: { at: number; ok: boolean; update: UpdateInfo | null } | null = null;
  * null when current, unreachable or shaped wrong — one wire shape for both
  * "up to date" and "cannot tell", because the chip renders absence the same
  * honest way. A successful check is trusted for an hour, a failed one
- * retries after ten minutes. */
+ * retries after ten minutes. VELVARR_UPDATE_CHECK=0 skips the call entirely
+ * — no request leaves the server, and the chip renders nothing. */
 export async function availableUpdate(): Promise<UpdateInfo | null> {
+  if (process.env.VELVARR_UPDATE_CHECK === "0") return null;
   if (cache && Date.now() - cache.at < (cache.ok ? FRESH_MS : FAILED_MS))
     return cache.update;
   try {
