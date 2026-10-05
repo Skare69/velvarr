@@ -33,6 +33,7 @@ export function AdminView() {
   } = useApiGet<{ accounts: AdminAccount[]; libraries: Library[] }>(
     "/api/admin/users",
     [],
+    { fresh: true },
   );
   const accounts = data?.accounts ?? null;
   const libs = data?.libraries ?? [];

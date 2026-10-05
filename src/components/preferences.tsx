@@ -31,7 +31,9 @@ function shelfTitle(id: DiscoverShelfId): string {
 }
 
 export function PreferencesView() {
-  const saved = useApiGet<ContentPreferences>("/api/me/preferences", []);
+  const saved = useApiGet<ContentPreferences>("/api/me/preferences", [], {
+    fresh: true,
+  });
   const [draft, setDraft] = useState<ContentPreferences | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);

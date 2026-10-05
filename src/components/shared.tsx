@@ -106,10 +106,16 @@ export function clearApiCache(): void {
  *
  * `error` is what views render; `err` is for the two views that must tell one
  * failure from another (a 404 "not in the provider catalog" versus an outage),
- * which a flattened string cannot express. */
+ * which a flattened string cannot express.
+ *
+ * `{ fresh: true }` opts a path out of the cache in both directions: no
+ * cached first paint, no cache write — every read is live. One-shot edit
+ * forms (preferences, admin accounts) use it, so a stale tab snapshot is
+ * never seeded into a draft and saved back over a newer server value. */
 export function useApiGet<T>(
   path: string | null,
   deps: DependencyList,
+  opts?: { fresh?: boolean },
 ): {
   data: T | null;
   error: string | null;
@@ -119,15 +125,16 @@ export function useApiGet<T>(
   revalidating: boolean;
   reload: () => void;
 } {
+  const fresh = opts?.fresh === true;
   const [data, setData] = useState<T | null>(() =>
-    path !== null && apiGetCache.has(path)
+    path !== null && !fresh && apiGetCache.has(path)
       ? (apiGetCache.peek(path) as T)
       : null,
   );
   const [error, setError] = useState<string | null>(null);
   const [err, setErr] = useState<ApiError | null>(null);
   const [loading, setLoading] = useState(
-    path !== null && !apiGetCache.has(path),
+    path !== null && (fresh || !apiGetCache.has(path)),
   );
   // A path always starts a fetch (live or cache revalidation), so this is
   // true from the first render: a remount never paints a settled state that
@@ -150,7 +157,7 @@ export function useApiGet<T>(
     const manual = tick !== lastTick.current;
     lastTick.current = tick;
     const cached = apiGetCache.peek(path);
-    const fromCache = !manual && cached !== undefined;
+    const fromCache = !manual && !fresh && cached !== undefined;
     let live = true;
     setError(null);
     setErr(null);
@@ -164,7 +171,13 @@ export function useApiGet<T>(
     setRevalidating(true);
     // api-get.ts owns joining and cache currency; `manual` keeps a reload()
     // from joining a request that may predate the mutation it re-reads.
-    const pending = apiGetCache.get<T>(path, () => api<T>(path), manual);
+    // A fresh read bypasses the cache in both directions: it neither joins
+    // an in-flight entry nor writes one — a written entry would reach the
+    // useState initializer on the next mount and reintroduce the stale
+    // first paint (edit-form drafts seed from it).
+    const pending = fresh
+      ? api<T>(path)
+      : apiGetCache.get<T>(path, () => api<T>(path), manual);
     pending
       .then((d) => {
         if (live) {
