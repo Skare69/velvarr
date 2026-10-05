@@ -553,13 +553,15 @@ async function fetchItems(
     // Sort override; unset keeps itemsPath's SortName/Ascending default.
     sortBy?: string;
     sortOrder?: string;
+    // Item-type filter override. The default keeps Episode: scenes Whisparr
+    // filed under a TV-Shows library are Episode items, and without it they
+    // vanish from browse, search, item lookup and the recently-added shelf
+    // alike. The playback sweep overrides this — see sweepVisibleItems.
+    includeItemTypes?: string;
   },
 ): Promise<{ items: BaseItemDto[]; total: number }> {
   const params: Record<string, string> = {
-    // Episode: scenes Whisparr filed under a TV-Shows library are Episode
-    // items; without it they vanish from browse, search, item lookup and the
-    // recently-added shelf alike.
-    includeItemTypes: "Movie,Video,MusicVideo,Episode",
+    includeItemTypes: opts.includeItemTypes ?? "Movie,Video,MusicVideo,Episode",
     fields:
       "PrimaryImageAspectRatio,Overview,ProductionYear,RuntimeTicks,MediaSources,LocationType,SortName" +
       (opts.extraFields ? `,${opts.extraFields}` : ""),
@@ -1013,6 +1015,11 @@ interface CandidateItem {
 const SWEEP_PAGE = 60;
 const SWEEP_MAX_ITEMS = 12_000;
 
+/** One sweep's candidate pool, plus whether a walk filled its cap: a
+ * truncated pool may be incomplete, so a nothing-found verdict computed
+ * from it is 'unavailable', never 'missing'. */
+type SweepResult = { items: CandidateItem[]; truncated: boolean };
+
 function toCandidate(dto: BaseItemDto): CandidateItem {
   const paths = dtoPaths(dto);
   const providerValues = Object.values(dto.ProviderIds ?? {})
@@ -1124,19 +1131,69 @@ async function sweepVisibleItems(
   config: IntegrationConfig,
   userToken: string,
   userId: string,
-): Promise<CandidateItem[]> {
+  episodeLibraryIds: string[],
+): Promise<SweepResult> {
+  // Movies/videos/musicvideos sweep unscoped: a visible-but-ungranted item
+  // must enter the pool so its verdict is 'denied', never 'missing'.
+  // Episodes sweep only per granted library: scenes Whisparr filed as
+  // Episode items stay matchable, while an ordinary TV library's episodes
+  // can no longer crowd movies out of the shared item cap.
+  const walks = [
+    sweepWalk(config, userToken, userId, {
+      includeItemTypes: "Movie,Video,MusicVideo",
+    }),
+    ...episodeLibraryIds.map((libraryId) =>
+      sweepWalk(config, userToken, userId, {
+        includeItemTypes: "Episode",
+        parentId: libraryId,
+      }),
+    ),
+  ];
+  const pools = await Promise.all(walks);
+  // The pool feeds exact-match counting (two hits read 'ambiguous'), so a
+  // duplicate — an upstream under-honoring includeItemTypes/parentId, as
+  // the lab build does for provider-id filters — must never double-enter.
+  const seen = new Set<string>();
+  return {
+    items: pools
+      .flatMap((pool) => pool.items)
+      .filter((c) => {
+        const id = normalizeItemId(c.dto.Id);
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      }),
+    truncated: pools.some((pool) => pool.truncated),
+  };
+}
+
+// One capped SortName walk. Truncation is flagged when the cap is filled:
+// a walk that stopped on a short page read everything, one that filled the
+// cap may not have.
+async function sweepWalk(
+  config: IntegrationConfig,
+  userToken: string,
+  userId: string,
+  opts: { includeItemTypes: string; parentId?: string },
+): Promise<SweepResult> {
   const out: CandidateItem[] = [];
+  let truncated = true;
   for (let start = 0; start < SWEEP_MAX_ITEMS; start += SWEEP_PAGE) {
     const { items } = await fetchItems(config, userToken, userId, {
+      parentId: opts.parentId,
       startIndex: start,
       limit: SWEEP_PAGE,
       search: "",
       extraFields: "ProviderIds,Path",
+      includeItemTypes: opts.includeItemTypes,
     });
     for (const dto of items) out.push(toCandidate(dto));
-    if (items.length < SWEEP_PAGE) break;
+    if (items.length < SWEEP_PAGE) {
+      truncated = false;
+      break;
+    }
   }
-  return out;
+  return { items: out, truncated };
 }
 
 // ponytail: in-memory, 5-minute TTL, 20-user FIFO cap; a persisted
@@ -1144,11 +1201,12 @@ async function sweepVisibleItems(
 const SWEEP_TTL_MS = 5 * 60_000;
 const SWEEP_CACHE_MAX = 20;
 // Keyed by server URL + the user id taken from the caller's own /Users/Me
-// read, so one Jellyfin user's sweep is never served to another. Entries
-// hold the in-flight promise: concurrent callers share one sweep.
+// read + the granted-library list the episode walks sweep, so one Jellyfin
+// user's sweep — and one account's grant set — is never served to another.
+// Entries hold the in-flight promise: concurrent callers share one sweep.
 const sweepCache = new Map<
   string,
-  { at: number; items: Promise<CandidateItem[]> }
+  { at: number; items: Promise<SweepResult> }
 >();
 
 /** Test seam: the suite reuses one fixture upstream per file; tests reset
@@ -1160,7 +1218,7 @@ export function resetSweepCache(): void {
 function sweepCacheInsert(
   key: string,
   at: number,
-  items: Promise<CandidateItem[]>,
+  items: Promise<SweepResult>,
 ): void {
   // On insert: drop expired entries, then FIFO-evict the oldest at the cap.
   const cutoff = at - SWEEP_TTL_MS;
@@ -1182,13 +1240,16 @@ async function cachedSweep(
   config: IntegrationConfig,
   userToken: string,
   userId: string,
+  episodeLibraryIds: string[],
   notBefore: number,
-): Promise<{ at: number; items: Promise<CandidateItem[]> }> {
-  const key = `${config.jellyfin.url}\u0000${userId}`;
+): Promise<{ at: number; items: Promise<SweepResult> }> {
+  const key =
+    `${config.jellyfin.url}\u0000${userId}` +
+    `\u0000${episodeLibraryIds.join("\u0001")}`;
   const hit = sweepCache.get(key);
   if (hit !== undefined && hit.at >= notBefore) return hit;
   const at = Date.now();
-  const items = sweepVisibleItems(config, userToken, userId);
+  const items = sweepVisibleItems(config, userToken, userId, episodeLibraryIds);
   sweepCacheInsert(key, at, items);
   // A rejected sweep removes only its own entry — a concurrent replacement
   // stays — and is never served to a later lookup. The handler also keeps
@@ -1345,8 +1406,13 @@ async function verdictForItem(
 //    parent/child (ancestor) relationship proves grants, never availability.
 // Auth failures (401, dead user token) propagate; every other upstream
 // failure is 'unavailable', so an outage is never reported as 'missing'.
-// The verdict stays Jellyfin-truthful; the caller composes 'awaiting_scan'
-// from 'missing' plus the acquisition record's own imported state.
+// A sweep walk that filled its item cap truncates the pool the same way:
+// a nothing-found verdict from a truncated pool is 'unavailable' with the
+// cap named, never a plain 'missing', and it stands without the forced
+// fresh retry (the cap is static — a fresh sweep truncates identically).
+// The verdict stays Jellyfin-truthful;
+// the caller composes 'awaiting_scan' from 'missing' plus the acquisition
+// record's own imported state.
 export async function resolvePlaybackAccess(
   config: IntegrationConfig,
   userToken: string,
@@ -1380,6 +1446,11 @@ export async function resolvePlaybackAccess(
     if (
       first.sweepAt !== null &&
       first.sweepAt < started &&
+      // A truncated pool skips the forced fresh retry: the cap is static,
+      // a fresh sweep truncates identically, so the retry only doubles the
+      // walk cost. Any found-item verdict is unaffected — verdictForItem
+      // re-proves every item live regardless of pool truncation.
+      !first.truncated &&
       !cachedSafeVerdict(first.access, hints)
     ) {
       // Forced fresh: notBefore = started rejects the entry this verdict
@@ -1431,17 +1502,23 @@ async function resolveFromSweep(
   account: Account,
   hints: PlaybackHints,
   notBefore: number,
-): Promise<{ access: PlaybackAccess; sweepAt: number | null }> {
+): Promise<{
+  access: PlaybackAccess;
+  sweepAt: number | null;
+  truncated: boolean;
+}> {
   let sweepAt: number | null = null;
   try {
     const { at, items } = await cachedSweep(
       config,
       userToken,
       user.id,
+      effectiveLibraries(config, account),
       notBefore,
     );
     sweepAt = at;
-    const candidates = await items;
+    const pool = await items;
+    const candidates = pool.items;
     const mapped = hints.whisparrPath
       ? mappedPrefix(hints.whisparrPath, config.whisparr?.pathMappings)
       : undefined;
@@ -1457,6 +1534,7 @@ async function resolveFromSweep(
           reason: "Multiple Jellyfin items match this identity.",
         },
         sweepAt: at,
+        truncated: pool.truncated,
       };
     }
     if (exact.length === 1) {
@@ -1469,6 +1547,7 @@ async function resolveFromSweep(
           exact[0]!,
         ),
         sweepAt: at,
+        truncated: pool.truncated,
       };
     }
     if (await candidatesMayMatch(candidates, hints)) {
@@ -1478,15 +1557,30 @@ async function resolveFromSweep(
           reason: "Title/year similarity only; administrator review required.",
         },
         sweepAt: at,
+        truncated: pool.truncated,
       };
     }
-    return { access: { outcome: "missing" }, sweepAt: at };
+    if (pool.truncated) {
+      // Honesty: a truncated pool's nothing-found is a known-incomplete
+      // scan, not a statement about the library — degrade with the cap
+      // named instead of a plain 'missing'.
+      return {
+        access: {
+          outcome: "unavailable",
+          reason: `The Jellyfin visible-item scan hit its ${SWEEP_MAX_ITEMS.toLocaleString("en-US")}-item cap; this verdict may be incomplete.`,
+        },
+        sweepAt: at,
+        truncated: true,
+      };
+    }
+    return { access: { outcome: "missing" }, sweepAt: at, truncated: false };
   } catch (err) {
     if (err instanceof AppError && err.upstreamStatus === 401) throw err;
     if (err instanceof AppError) {
       return {
         access: { outcome: "unavailable", reason: err.message },
         sweepAt,
+        truncated: false,
       };
     }
     throw err;

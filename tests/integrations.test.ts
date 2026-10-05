@@ -1424,6 +1424,7 @@ function avItem(o: {
   id: string;
   name: string;
   year?: number;
+  type?: string;
   providerIds?: Record<string, string>;
   path?: string;
   locationType?: string;
@@ -1432,7 +1433,7 @@ function avItem(o: {
   return {
     Id: dashed(o.id),
     Name: o.name,
-    Type: "Movie",
+    Type: o.type ?? "Movie",
     ...(o.year ? { ProductionYear: o.year } : {}),
     LocationType: o.locationType ?? "FileSystem",
     ProviderIds: o.providerIds ?? {},
@@ -1578,7 +1579,18 @@ function avHandler(opts: {
     }
     if (path === `/users/${ME_ID}/items`) {
       if (opts.sweepStatus) return sendJson(res, opts.sweepStatus, {});
-      const items = opts.entries.map((e) => e.item);
+      // Real Jellyfin filters includeItemTypes server-side; the sweep's
+      // per-type walks rely on it.
+      const allow = new Set(
+        (q.get("includeItemTypes") ?? "Movie,Video,MusicVideo,Episode").split(
+          ",",
+        ),
+      );
+      const items = opts.entries
+        // Real Jellyfin scopes a parentId query to that library.
+        .filter((e) => !q.get("parentId") || e.lib === q.get("parentId"))
+        .map((e) => e.item)
+        .filter((it) => allow.has(String(it.Type)));
       const start = Number(q.get("startIndex") ?? 0);
       const limit = Number(q.get("limit") ?? items.length);
       return sendJson(res, 200, {
@@ -1885,6 +1897,163 @@ test("resolvePlaybackAccess reports absent items as missing", async () => {
       ),
       { outcome: "missing" },
     );
+  });
+});
+
+test("resolvePlaybackAccess finds a movie behind a 12,000-episode wall", async () => {
+  // The regression: one shared cap over one unscoped query let an ordinary
+  // TV library's episodes occupy the sweep's 12,000 rows, so a movie sorted
+  // after them read as missing. The movie pool keeps its own cap; episodes
+  // sweep per granted library.
+  const wall: AvEntry[] = Array.from({ length: 12_010 }, (_, i) => ({
+    lib: LIB_A,
+    item: {
+      Id: dashed(hexId(0x2000 + i)),
+      Name: `Wall Episode ${i}`,
+      Type: "Episode",
+      LocationType: "FileSystem",
+      ProviderIds: {},
+      MediaSources: [],
+    },
+  }));
+  const target: AvEntry = {
+    lib: LIB_A,
+    item: avItem({
+      id: hexId(0x3001),
+      name: "Wall Movie",
+      providerIds: { Tpdb: "tpdb-wall-movie-uuid" },
+      path: "C:\\media\\movies\\Wall Movie\\Wall Movie.mkv",
+    }),
+  };
+  await withFixture(avHandler({ entries: [...wall, target] }), async (fx) => {
+    const verdict = await resolvePlaybackAccess(
+      avConfig(fx.origin, [LIB_A]),
+      TOKEN,
+      account([LIB_A]),
+      { provider: "tpdb", kind: "movie", id: "tpdb-wall-movie-uuid" },
+    );
+    assert.equal(verdict.outcome, "available");
+    assert.equal(avItemId(verdict), hexId(0x3001));
+    // Wire: the movie pool sweeps unscoped without Episode; episodes sweep
+    // only per granted library.
+    const itemReqs = fx.log.filter(
+      (r) => r.method === "GET" && pathOf(r.url) === `/users/${ME_ID}/items`,
+    );
+    assert.ok(
+      itemReqs.some(
+        (r) =>
+          queryOf(r.url).get("includeItemTypes") === "Movie,Video,MusicVideo" &&
+          !queryOf(r.url).has("parentId"),
+      ),
+      "expected an unscoped movie/video walk",
+    );
+    assert.ok(
+      itemReqs.some(
+        (r) =>
+          queryOf(r.url).get("includeItemTypes") === "Episode" &&
+          queryOf(r.url).get("parentId") === LIB_A,
+      ),
+      "expected a per-granted-library episode walk",
+    );
+  });
+});
+
+test("resolvePlaybackAccess still matches scenes stored as Episode items in granted libraries", async () => {
+  // Whisparr files scenes under a TV-Shows library; Jellyfin stores them as
+  // Episode items. The per-granted-library episode sweep keeps them
+  // matchable while ordinary TV episodes stay out of the movie pool.
+  const episode: AvEntry = {
+    lib: LIB_A,
+    item: avItem({
+      id: hexId(0x4001),
+      name: "Studio Session",
+      type: "Episode",
+      providerIds: { Tpdb: "tpdb-episode-scene-uuid" },
+      path: "C:\\media\\tv\\Studio Session\\S01E01.mkv",
+    }),
+  };
+  await withFixture(avHandler({ entries: [episode] }), async (fx) => {
+    const verdict = await resolvePlaybackAccess(
+      avConfig(fx.origin, [LIB_A]),
+      TOKEN,
+      account([LIB_A]),
+      { provider: "tpdb", kind: "scene", id: "tpdb-episode-scene-uuid" },
+    );
+    assert.equal(verdict.outcome, "available");
+    assert.equal(avItemId(verdict), hexId(0x4001));
+  });
+});
+
+test("resolvePlaybackAccess sweeps episodes only from granted libraries", async () => {
+  // The flip that keeps ordinary TV episodes out of the pool: an episode
+  // in a library this account is not granted reads missing, not denied —
+  // the sweep never sees it. Movies keep the unscoped denied-not-missing
+  // semantics.
+  const episode: AvEntry = {
+    lib: LIB_B,
+    item: avItem({
+      id: hexId(0x4002),
+      name: "Other Library Episode",
+      type: "Episode",
+      providerIds: { Tpdb: "tpdb-ungranted-episode-uuid" },
+      path: "D:\\media\\tv\\Other\\E01.mkv",
+    }),
+  };
+  await withFixture(avHandler({ entries: [episode] }), async (fx) => {
+    assert.deepEqual(
+      await resolvePlaybackAccess(
+        avConfig(fx.origin, [LIB_A]),
+        TOKEN,
+        account([LIB_A]),
+        { provider: "tpdb", kind: "scene", id: "tpdb-ungranted-episode-uuid" },
+      ),
+      { outcome: "missing" },
+    );
+  });
+});
+
+test("resolvePlaybackAccess reports a capped sweep as unavailable, never missing", async () => {
+  // A walk that fills its cap may not have seen the whole library; a
+  // nothing-found verdict from it is a named degradation, not a statement
+  // about the library.
+  const wall: AvEntry[] = Array.from({ length: 12_005 }, (_, i) => ({
+    lib: LIB_A,
+    item: avItem({ id: hexId(0x5000 + i), name: `Filler Movie ${i}` }),
+  }));
+  await withFixture(avHandler({ entries: wall }), async (fx) => {
+    const cfg = avConfig(fx.origin, [LIB_A]);
+    const hints = {
+      provider: "tpdb" as const,
+      kind: "movie" as const,
+      id: "tpdb-absent-uuid",
+    };
+    const verdict = await resolvePlaybackAccess(
+      cfg,
+      TOKEN,
+      account([LIB_A]),
+      hints,
+    );
+    assert.equal(verdict.outcome, "unavailable");
+    if (verdict.outcome !== "unavailable") return assert.fail("unreachable");
+    assert.ok(verdict.reason !== undefined);
+    assert.match(verdict.reason, /12,000-item cap/);
+    // A cached truncated verdict stands: the cap is static, a fresh walk
+    // truncates identically — no forced second sweep. The movie walk fills
+    // its 12,000-row cap in 200 full pages (the 5 rows past the cap stay
+    // unfetched — that is the truncation); the granted-library episode walk
+    // adds one empty page.
+    const again = await resolvePlaybackAccess(
+      cfg,
+      TOKEN,
+      account([LIB_A]),
+      hints,
+      { cachedSweep: true },
+    );
+    assert.equal(again.outcome, "unavailable");
+    const itemReqs = fx.log.filter(
+      (r) => r.method === "GET" && pathOf(r.url) === `/users/${ME_ID}/items`,
+    );
+    assert.equal(itemReqs.length, 201);
   });
 });
 
