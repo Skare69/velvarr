@@ -24,7 +24,8 @@ import {
   refreshAccountName,
 } from "../../../../server/storage.ts";
 import {
-  consumeLoginAttempt,
+  assertLoginAllowed,
+  recordLoginFailure,
   readSessionToken,
   sessionCookie,
   isSecureRequest,
@@ -65,6 +66,25 @@ export function setupFields(body: Record<string, unknown>): SetupFields {
     jellyfinExternalUrl: fieldUrl(body, "jellyfinExternalUrl"),
     jellyfinApiKey: fieldText(body, "jellyfinApiKey", 512),
   };
+}
+
+// Login limiter wiring, shared by every route that authenticates a name:
+// the gate is checked read-only before the attempt, and a rejected
+// authentication is what charges the buckets. Jellyfin's credential
+// rejection ("upstream_auth") is the only chargeable outcome — upstream
+// outages and malformed fields never count as guesses.
+async function guardedAuthentication<T>(
+  name: string,
+  attempt: () => Promise<T>,
+): Promise<T> {
+  assertLoginAllowed(name);
+  try {
+    return await attempt();
+  } catch (e) {
+    if (e instanceof AppError && e.code === "upstream_auth")
+      recordLoginFailure(name);
+    throw e;
+  }
 }
 
 // Authenticates the explicitly selected user, proves the admin integration key
@@ -112,8 +132,9 @@ export async function setupInspect(request: Request): Promise<Response> {
   const body = await readJson(request);
   verifySetupSecret(body.setupSecret);
   const fields = setupFields(body);
-  consumeLoginAttempt(fields.username);
-  const selection = await verifySetupSelection(fields);
+  const selection = await guardedAuthentication(fields.username, () =>
+    verifySetupSelection(fields),
+  );
   return json({
     user: { id: selection.user.id, name: selection.user.name },
     libraries: selection.libraries,
@@ -130,7 +151,6 @@ export async function setupCommit(request: Request): Promise<Response> {
   const body = await readJson(request);
   verifySetupSecret(body.setupSecret);
   const fields = setupFields(body);
-  consumeLoginAttempt(fields.username);
   const libraryIds = fieldIds(body, "libraryIds");
   if (libraryIds.length === 0)
     throw new AppError(400, "invalid_field", "Select at least one library.");
@@ -146,7 +166,9 @@ export async function setupCommit(request: Request): Promise<Response> {
       );
     whisparr = { url: validateBaseUrl(whisparrUrl), apiKey: whisparrApiKey };
   }
-  const selection = await verifySetupSelection(fields);
+  const selection = await guardedAuthentication(fields.username, () =>
+    verifySetupSelection(fields),
+  );
   if (
     !libraryIds.every((id) =>
       selection.libraries.some((library) => library.id === id),
@@ -180,14 +202,11 @@ export async function login(request: Request): Promise<Response> {
   const body = await readJson(request);
   const username = fieldText(body, "username", 200);
   const password = fieldText(body, "password", 512);
-  consumeLoginAttempt(username);
   const config = getConfig();
   if (!config)
     throw new AppError(409, "not_initialized", "Setup has not been completed.");
-  const { user, token } = await authenticate(
-    config.jellyfin.url,
-    username,
-    password,
+  const { user, token } = await guardedAuthentication(username, () =>
+    authenticate(config.jellyfin.url, username, password),
   );
   const account = getAccount(user.id);
   if (!account)

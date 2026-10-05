@@ -1894,9 +1894,8 @@ test("identity regressions: foreign identity, upstream invalidation, remote deni
   );
   cookie = await loginAs("member2");
   assert.equal((await call("GET", "/api/me", { cookie })).status, 200);
-  // The rotation proofs above spent four of the five login attempts the
-  // limiter allows for this account; the request and Wave A follow tests
-  // below share this live session instead of logging in again.
+  // The rotation proofs above re-created this account's live session; the
+  // request and Wave A follow tests below reuse it.
   member2 = cookie;
 });
 
@@ -2194,8 +2193,7 @@ test("catalog search refuses the tpdb scene pairing before any upstream call", a
 });
 
 test("provider credentials: stored config wins over environment, clear falls back", async () => {
-  // The owner session from bootstrap is still valid; a fresh login would
-  // burn the shared login rate-limit bucket late in the suite.
+  // The owner session from bootstrap is still valid and is reused.
   const admin = owner;
 
   // Environment-configured baseline: the shape reports the environment.
@@ -2670,7 +2668,7 @@ test("requests: lifecycle, autoApprove, privacy, roles, origin", async () => {
   assert.equal(undeliverableError.code, "invalid_reference");
 
   // member2 (no grant yet): own request stays pending.
-  const m2 = member2; // live session from the identity test above — no fresh login (limiter).
+  const m2 = member2; // live session from the identity test above.
   const m2Created = await call("POST", "/api/requests", {
     cookie: m2,
     body: { media: { provider: "tpdb", kind: "movie", id: TPDB_MOVIE2 } },
@@ -2880,9 +2878,8 @@ test("requests: lifecycle, autoApprove, privacy, roles, origin", async () => {
   );
 
   // autoApprove grant: the request auto-decides approved and enqueues work.
-  // Uses the nogrants account: member2's login bucket is spent, and a grant
-  // change revokes the target's sessions by design, so a fresh login is
-  // part of the flow.
+  // Uses the nogrants account: a grant change revokes the target's sessions
+  // by design, so a fresh login is part of the flow.
   const grant = await call("PATCH", `/api/admin/users/${NOGRANT_ID}`, {
     cookie: owner,
     body: {
@@ -3650,9 +3647,7 @@ test("follows need a session, an accepted origin, and a performer reference", as
     401,
   );
 
-  // member2's live session comes from the identity test above; no fresh
-  // login here — the rotation proofs already spent four of the limiter's
-  // five attempts for this account.
+  // member2's live session comes from the identity test above.
   // Mutations sit behind the same origin guard as every other route.
   await errorShape(
     await call("POST", "/api/follows", {
@@ -4373,7 +4368,7 @@ test("bulk requests stop at the cap, report it, and re-run without duplicating",
 });
 
 test("the autoApprove grant approves bulk requests and attaches the shared acquisition like the single path", async () => {
-  const autoCookie = nogrants; // shared session — no fresh login (limiter).
+  const autoCookie = nogrants; // shared session.
   const bulk = await call("POST", "/api/requests/bulk", {
     cookie: autoCookie,
     body: {
@@ -4952,7 +4947,7 @@ test("warmed library artwork and detail refuse anonymous, library-denied and rev
 
   // Library-denied: admitted but granted no libraries; denied without
   // upstream contact (anti-enumeration 404).
-  const denied = nogrants; // shared session — no fresh login (limiter).
+  const denied = nogrants; // shared session.
   await errorShape(
     await call("GET", `/api/images/${ITEM_MOVIE}`, { cookie: denied }),
   );
@@ -4986,6 +4981,49 @@ test("warmed library artwork and detail refuse anonymous, library-denied and rev
   });
   assert.equal(promoted.status, 200);
   member = await loginAs("member");
+});
+
+// The login limiter exists to stop credential guessing, not to hand any
+// anonymous client a kill switch for the household's login. Charges land on
+// failed authentications only: 30 failed guesses from one attacker must
+// leave everyone else's correct login working, and a user's own successful
+// logins must never consume the budget that guards their account.
+test("30 failed logins from one attacker leave other users able to log in", async () => {
+  // Five wrong passwords are tried against Jellyfin and charged; further
+  // guesses are answered 429 without upstream contact.
+  for (let i = 0; i < 5; i++) {
+    const attempt = await call("POST", "/api/login", {
+      body: { username: "outsider", password: `wrong-${i}` },
+    });
+    const error = await errorShape(attempt, 401);
+    assert.equal(error.code, "upstream_auth");
+  }
+  fx.journal.length = 0;
+  fx.journalOn = true;
+  try {
+    for (let i = 5; i < 30; i++) {
+      const attempt = await call("POST", "/api/login", {
+        body: { username: "outsider", password: `wrong-${i}` },
+      });
+      const error = await errorShape(attempt, 429);
+      assert.equal(error.code, "too_many_attempts");
+    }
+    assert.equal(
+      fx.journal.filter((r) => r.path === "/Users/AuthenticateByName").length,
+      0,
+      "locked account must not reach Jellyfin",
+    );
+  } finally {
+    fx.journalOn = false;
+  }
+
+  // The attacker's 30 failures did not exhaust the global cap: a different
+  // user's correct login still works.
+  await loginAs("nogrants");
+});
+
+test("a user's own successful logins never lock them", async () => {
+  for (let i = 0; i < 6; i++) await loginAs("nogrants");
 });
 
 // The sidebar approval badge counts only work the account may really decide:

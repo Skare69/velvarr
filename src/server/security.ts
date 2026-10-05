@@ -8,7 +8,9 @@ const COOKIE_NAME = "velvarr_session";
 // fixed five-minute windows. ponytail: in-memory only, resets on restart —
 // durable counters only if abuse survives process restarts.
 const WINDOW_MS = 5 * 60_000;
-const GLOBAL_LIMIT = 30;
+// Last-resort spray cap, not the primary defense: far above any household's
+// legitimate login traffic, low enough to stop a username-spraying bot.
+const GLOBAL_LIMIT = 300;
 const ACCOUNT_LIMIT = 5;
 const MAX_BUCKETS = 1024;
 
@@ -116,14 +118,45 @@ export function verifySetupSecret(value: unknown): void {
   }
 }
 
-export function consumeLoginAttempt(name: string): void {
+// Read-only gate: may this name try to authenticate now. Nothing is consumed
+// here — budget is charged on failed authentications only
+// (recordLoginFailure), so a successful login never burns its own account's
+// budget and one spraying client cannot exhaust the buckets for everyone.
+export function assertLoginAllowed(name: string): void {
+  const now = Date.now();
+  const global = buckets.get("global");
+  if (
+    global &&
+    now - global.windowStart < WINDOW_MS &&
+    global.count >= GLOBAL_LIMIT
+  ) {
+    throw new AppError(
+      429,
+      "too_many_attempts",
+      "too many attempts; try again later",
+    );
+  }
+  const account = buckets.get(`account:${name.trim().toLowerCase()}`);
+  if (
+    account &&
+    now - account.windowStart < WINDOW_MS &&
+    account.count >= ACCOUNT_LIMIT
+  ) {
+    throw new AppError(
+      429,
+      "too_many_attempts",
+      "too many attempts; try again later",
+    );
+  }
+}
+
+// Charges one failed authentication: the account bucket carries the
+// brute-force limit, the global bucket is the last-resort spray cap. Global
+// is charged first so an already-locked account's guesses still feed it.
+export function recordLoginFailure(name: string): void {
   const now = Date.now();
   consumeBucket("global", GLOBAL_LIMIT, now);
-  consumeBucket(
-    `account:${typeof name === "string" ? name.trim().toLowerCase() : ""}`,
-    ACCOUNT_LIMIT,
-    now,
-  );
+  consumeBucket(`account:${name.trim().toLowerCase()}`, ACCOUNT_LIMIT, now);
 }
 
 export function sessionCookie(grant?: SessionGrant, secure?: boolean): string {

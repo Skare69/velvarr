@@ -457,17 +457,24 @@ test("setup secret compare is constant-time-correct; login limiter is bounded pe
   let last: unknown;
   for (let i = 0; i < 5; i++) {
     try {
-      security.consumeLoginAttempt("alice");
+      security.recordLoginFailure("alice");
     } catch (e) {
       last = e;
     }
   }
-  assert.equal(last, undefined, "five attempts must pass");
+  assert.equal(last, undefined, "five failures must pass");
   assert.throws(
-    () => security.consumeLoginAttempt("alice"),
+    () => security.recordLoginFailure("alice"),
     (e: { code: string }) => e.code === "too_many_attempts",
   );
-  security.consumeLoginAttempt("bob");
+  // The gate is read-only and account-scoped: alice is locked out, bob is
+  // not, and the gate never consumed anything on bob's behalf.
+  assert.throws(
+    () => security.assertLoginAllowed("alice"),
+    (e: { code: string }) => e.code === "too_many_attempts",
+  );
+  security.assertLoginAllowed("bob");
+  security.recordLoginFailure("bob");
 });
 
 test("session cookie flags follow request transport and clear correctly", () => {
