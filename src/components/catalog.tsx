@@ -1405,12 +1405,14 @@ export function TitlesView() {
                 </button>
               ))}
             </div>
+            {/* TPDB filmography refuses search and order only where the
+                TPDB side runs; the Scenes tab runs her StashDB side. */}
             <SortSelect
               id="titles-sort"
               type={type}
               sort={sort}
               direction={direction}
-              disabled={performerTpdb !== ""}
+              disabled={performerTpdb !== "" && type !== "scene"}
               onSort={onSort}
               onDirection={onDirection}
             />
@@ -1535,7 +1537,7 @@ export function TitlesView() {
           label="Title search"
           value={q}
           onCommit={onQ}
-          disabled={performerTpdb !== ""}
+          disabled={performerTpdb !== "" && type !== "scene"}
         />
         <TagPicker
           id="titles-include"
@@ -1566,13 +1568,13 @@ export function TitlesView() {
           id="titles-year"
           value={year}
           onCommit={onYear}
-          disabled={performerTpdb !== ""}
+          disabled={performerTpdb !== "" && type !== "scene"}
         />
         <DateCutoff
           id="titles-date"
           date={date}
           operation={dateOperation}
-          disabled={performerTpdb !== ""}
+          disabled={performerTpdb !== "" && type !== "scene"}
           onCommit={onDate}
         />
         {/* Year and the date cutoff are TPDB-movie criteria; while either is

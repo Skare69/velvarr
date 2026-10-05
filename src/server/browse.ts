@@ -685,7 +685,11 @@ export function planBrowseSides(query: BrowseQuery): BrowsePlan {
     }
   }
   const filmography = query.performerTpdb !== undefined;
-  if (filmography) {
+  // The filmography route constrains only the TPDB side: a unified
+  // performer pair on the Scenes tab runs the StashDB side alone, which
+  // accepts search, year, date and sort — refuse only where TPDB runs.
+  const tpdbFilmography = filmography && query.type !== "scene";
+  if (tpdbFilmography) {
     // The filmography route is paging-only: query, year, date, studio and
     // every sort are upstream-rejected, so refuse them here before any
     // upstream call rather than mid-merge.
@@ -728,9 +732,9 @@ export function planBrowseSides(query: BrowseQuery): BrowsePlan {
   // Global order: an explicit recency/duration request, or the default
   // release recency (newest first) — but only where every qualifying stream
   // can genuinely carry it. The filmography route cannot sort, so its
-  // queries claim no order at all. Other explicit sorts reach exactly one
-  // stream and pass through natively.
-  const defaultSort: SortOrder | undefined = filmography
+  // queries claim no order at all where it runs. Other explicit sorts reach
+  // exactly one stream and pass through natively.
+  const defaultSort: SortOrder | undefined = tpdbFilmography
     ? undefined
     : { key: "recency", direction: "desc" };
   const explicitSort: SortOrder | undefined =

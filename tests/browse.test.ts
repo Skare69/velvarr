@@ -1608,6 +1608,33 @@ test("planBrowseSides refuses non-mixed sorts on All", () => {
   );
 });
 
+test("planBrowseSides keeps search and sort on the Scenes tab of a unified performer pair", () => {
+  // Search no longer refuses, and the default recency order applies.
+  const searched = planBrowseSides(
+    planQuery({
+      type: "scene",
+      performerTpdb: uuid(4),
+      performerStashdb: uuid(6),
+      q: "term",
+    }),
+  );
+  assert.deepEqual(searched.sides, ["stashdb"]);
+  assert.deepEqual(searched.nativeSort, { key: "recency", direction: "desc" });
+  assert.deepEqual(searched.mergeOrder, { key: "recency", direction: "desc" });
+  // An explicit sort passes through to the one StashDB stream instead of 400.
+  assert.deepEqual(
+    planBrowseSides(
+      planQuery({
+        type: "scene",
+        performerTpdb: uuid(4),
+        performerStashdb: uuid(6),
+        sort: "title",
+      }),
+    ).nativeSort,
+    { key: "title" },
+  );
+});
+
 test("planBrowseSides picks sides: one-sided clauses kill only their own side", () => {
   assert.deepEqual(planBrowseSides(planQuery()).sides, ["tpdb", "stashdb"]);
   assert.deepEqual(planBrowseSides(planQuery({ type: "movie" })).sides, [
