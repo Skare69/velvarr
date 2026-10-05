@@ -5,40 +5,16 @@
 // 400. Adding a browse key is one edit in BROWSE_KEYS; changing an
 // exclusivity rule is one function plus its test.
 
+// Sort capability is the shared SORT_CAPABILITIES table (sorts.ts) — the
+// same source the server's acceptance derives from — so the offers here can
+// never drift from what the server accepts.
+import {
+  browseSortIsDirectional,
+  browseSortsFor,
+  type SortKey,
+} from "./sorts.ts";
+
 export type BrowseType = "all" | "movie" | "scene";
-
-export type SortKey =
-  | "relevance"
-  | "recency"
-  | "duration"
-  | "title"
-  | "date"
-  | "trending"
-  | "popularity"
-  | "created"
-  | "updated";
-
-// type=all merges both sources, so only sorts both genuinely support are
-// offered; per-source sorts appear only on their own type.
-//
-// Known drift, pinned as shipped (do not fix here): the server's MIXED_SORTS
-// (browse.ts) allows recency+duration on All, this list pins date+duration —
-// the All tab offers "date" (which the server refuses) and clamps the legal
-// "recency". Fix belongs to its own card.
-export function sortsFor(type: BrowseType): readonly SortKey[] {
-  if (type === "movie") return ["relevance", "recency", "duration"];
-  if (type === "scene")
-    return [
-      "title",
-      "date",
-      "duration",
-      "trending",
-      "popularity",
-      "created",
-      "updated",
-    ];
-  return ["date", "duration"];
-}
 
 export const BROWSE_KEYS = [
   "type",
@@ -78,8 +54,17 @@ function sortPair(
   sortRaw: string,
   dirRaw: string,
 ): { sort: string | null; direction: string | null } {
-  const keep = (sortsFor(type) as readonly string[]).includes(sortRaw);
-  return { sort: keep ? sortRaw : null, direction: keep ? dirRaw : null };
+  const keep = (browseSortsFor(type) as readonly string[]).includes(sortRaw);
+  // A direction rides only on a kept sort that takes one: a stale direction
+  // next to a non-directional order (TPDB relevance), or a malformed value,
+  // would 400 the search.
+  const direction =
+    keep &&
+    browseSortIsDirectional(type, sortRaw as SortKey) &&
+    (dirRaw === "asc" || dirRaw === "desc")
+      ? dirRaw
+      : null;
+  return { sort: keep ? sortRaw : null, direction };
 }
 
 export function typePatch(

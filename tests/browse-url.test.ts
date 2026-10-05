@@ -6,10 +6,10 @@ import {
   countActiveFilters,
   performerStashdbPatch,
   performerTpdbPatch,
-  sortsFor,
   starredPatch,
   typePatch,
 } from "../src/lib/browse-url.ts";
+import { browseSortsFor } from "../src/lib/sorts.ts";
 import { parseBrowseQuery, planBrowseSides } from "../src/server/browse.ts";
 
 test("BROWSE_KEYS is the 16 canonical browse keys, performerStarred included", () => {
@@ -58,10 +58,17 @@ test("clearBrowseKeys nulls every key; keep spares exactly the named keys", () =
   assert.equal({ ...clearBrowseKeys(), type: "scene" }.type, "scene");
 });
 
-test("sortsFor pins the per-type lists as shipped (server MIXED_SORTS is the authority; known drift on All)", () => {
-  assert.deepEqual(sortsFor("all"), ["date", "duration"]);
-  assert.deepEqual(sortsFor("movie"), ["relevance", "recency", "duration"]);
-  assert.deepEqual(sortsFor("scene"), [
+test("browseSortsFor offers exactly the shared table's per-tab sets", () => {
+  // The offers derive from SORT_CAPABILITIES (lib/sorts.ts): the old All
+  // pin (date+duration, drift against the server's mixed set) is gone —
+  // All offers the merged set recency+duration, which the server accepts.
+  assert.deepEqual(browseSortsFor("all"), ["recency", "duration"]);
+  assert.deepEqual(browseSortsFor("movie"), [
+    "relevance",
+    "recency",
+    "duration",
+  ]);
+  assert.deepEqual(browseSortsFor("scene"), [
     "title",
     "date",
     "duration",
@@ -78,15 +85,28 @@ test("typePatch keeps a supported sort, drops an unsupported one", () => {
     sort: "duration",
     direction: "asc",
   });
+  // recency is a merged All sort: kept, with its direction.
   assert.deepEqual(typePatch("all", "recency", "desc"), {
     type: null,
-    sort: null,
-    direction: null,
+    sort: "recency",
+    direction: "desc",
   });
   assert.deepEqual(typePatch("movie", "recency", "desc"), {
     type: "movie",
     sort: "recency",
     direction: "desc",
+  });
+  // relevance takes no direction: a stale direction is dropped, not sent.
+  assert.deepEqual(typePatch("movie", "relevance", "desc"), {
+    type: "movie",
+    sort: "relevance",
+    direction: null,
+  });
+  // A malformed direction value is dropped rather than sent into a 400.
+  assert.deepEqual(typePatch("movie", "recency", "sideways"), {
+    type: "movie",
+    sort: "recency",
+    direction: null,
   });
 });
 

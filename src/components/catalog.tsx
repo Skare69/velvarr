@@ -47,17 +47,26 @@ import { CatalogDetailView, detailTarget } from "./catalog-detail.tsx";
 // React-free so node --test can exercise it directly).
 import { mergePageItems } from "../lib/browse-items.ts";
 // Browse URL policy (per-type sorts, filter resets, count) lives in
-// browse-url.ts — a pure React-free module pinned by tests.
+// browse-url.ts — a pure React-free module pinned by tests. Its sort policy
+// derives from the shared SORT_CAPABILITIES table (lib/sorts.ts), the same
+// table the server's acceptance comes from.
 import {
   clearBrowseKeys,
   countActiveFilters,
   performerStashdbPatch,
   performerTpdbPatch,
-  sortsFor,
   starredPatch,
   typePatch,
-  type SortKey,
 } from "../lib/browse-url";
+// Sort capability is shared with the server: the options offered per tab,
+// the labels and the direction rule all derive from src/lib/sorts.ts — one
+// table answers what the client offers and what the server accepts.
+import {
+  browseSortIsDirectional,
+  browseSortsFor,
+  SORT_LABELS,
+  type SortKey,
+} from "../lib/sorts";
 
 type CatalogSearchPage = {
   provider: CatalogProvider;
@@ -72,21 +81,9 @@ type CatalogSearchPage = {
 
 /* ---------- Small helpers ---------- */
 
-const POSTER_GRID = "poster-grid";
-
 /* ---------- Browse-context helpers ---------- */
 
-const SORT_LABELS: Record<SortKey, string> = {
-  relevance: "Best match",
-  recency: "Release recency",
-  duration: "Duration",
-  title: "Title",
-  date: "Release date",
-  trending: "Trending (StashDB ordering)",
-  popularity: "Popularity (StashDB ordering)",
-  created: "Recently added (StashDB)",
-  updated: "Last updated (StashDB)",
-};
+const POSTER_GRID = "poster-grid";
 
 /* ---------- Filter drawer (native <dialog>) ---------- */
 
@@ -183,7 +180,9 @@ function FiltersButton({
 }
 
 /** Sort control offering only what the selected type genuinely supports;
- * direction appears only with an explicit sort (the route 400s otherwise). */
+ * direction appears only with an explicit sort that takes one — a
+ * non-directional order (TPDB relevance) sends no direction, which the
+ * server requires. */
 function SortSelect({
   id,
   type,
@@ -203,7 +202,7 @@ function SortSelect({
   onSort: (v: string) => void;
   onDirection: (v: "asc" | "desc") => void;
 }) {
-  const sorts = sortsFor(type);
+  const sorts = browseSortsFor(type);
   if (sorts.length === 0) return null;
   return (
     <div>
@@ -225,7 +224,7 @@ function SortSelect({
             </option>
           ))}
         </select>
-        {sort && (
+        {sort !== "" && browseSortIsDirectional(type, sort as SortKey) && (
           <button
             type="button"
             className="btn shrink-0"
@@ -823,13 +822,19 @@ export function TitlesView() {
   const date = dateRaw !== "" && opRaw !== "" ? dateRaw : "";
   const dateOperation = date !== "" ? opRaw : "";
   // A sort the selected type does not support is clamped to the provider
-  // default — visible in the select, never sent upstream for a 400.
-  const sorts = sortsFor(type);
+  // default — visible in the select, never sent upstream for a 400. A
+  // direction rides only on sorts that take one: a stale direction next to
+  // TPDB relevance would 400 the search.
+  const sorts = browseSortsFor(type);
   const sortRaw = params.get("sort") ?? "";
   const sort = (sorts as readonly string[]).includes(sortRaw) ? sortRaw : "";
   const dirRaw = params.get("direction") ?? "";
   const direction =
-    sort !== "" && (dirRaw === "asc" || dirRaw === "desc") ? dirRaw : "desc";
+    sort !== "" &&
+    browseSortIsDirectional(type, sort as SortKey) &&
+    (dirRaw === "asc" || dirRaw === "desc")
+      ? dirRaw
+      : "";
   const [perPage, setPerPage] = useState(() =>
     Math.min(100, Math.max(1, intOr(params.get("perPage"), 24))),
   );
@@ -1062,9 +1067,7 @@ export function TitlesView() {
     [setP, type, sortRaw, dirRaw],
   );
   const onStarred = useCallback(
-    (on: boolean) => {
-      setP(starredPatch(on, type, sortRaw, dirRaw), { push: true });
-    },
+    (on: boolean) => setP(starredPatch(on, type, sortRaw, dirRaw), { push: true }),
     [setP, type, sortRaw, dirRaw],
   );
   const onYear = useCallback(
@@ -1089,11 +1092,16 @@ export function TitlesView() {
       setP(
         {
           sort: v || null,
-          direction: v ? direction || "desc" : null,
+          // Only sorts that take one carry a direction; picking a
+          // non-directional order removes a stale one instead of 400ing.
+          direction:
+            v && browseSortIsDirectional(type, v as SortKey)
+              ? direction || "desc"
+              : null,
         },
         { push: true },
       ),
-    [setP, direction],
+    [setP, direction, type],
   );
   const onDirection = useCallback(
     (d: "asc" | "desc") => setP({ direction: d }, { push: true }),
@@ -1257,7 +1265,9 @@ export function TitlesView() {
     chips.push(
       <FilterChip
         key="sort"
-        label={`Sort: ${SORT_LABELS[sort as SortKey]} (${direction})`}
+        label={`Sort: ${SORT_LABELS[sort as SortKey]}${
+          direction ? ` (${direction})` : ""
+        }`}
         onRemove={() => setP({ sort: null, direction: null }, { push: true })}
       />,
     );

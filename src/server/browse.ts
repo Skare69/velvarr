@@ -39,6 +39,7 @@ import type {
 } from "./providers.ts";
 import { getConfig, parseTagSelections } from "./storage.ts";
 import { normalizeFacetName } from "../lib/contracts.ts";
+import { BROWSE_MIXED_SORTS, SORT_KEYS } from "../lib/sorts.ts";
 import type {
   BrowseTagsResponse,
   CatalogDetail,
@@ -92,20 +93,6 @@ const UUID_RE =
 const SITE_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/i;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DATE_OPS: readonly ReleaseDateOperation[] = ["<", "<=", "=", ">", ">="];
-const SORT_KEYS: readonly CatalogSortKey[] = [
-  "relevance",
-  "recency",
-  "duration",
-  "title",
-  "date",
-  "created",
-  "updated",
-  "trending",
-  "popularity",
-];
-/** Sorts BOTH sources express natively; everything else is per-source-only
- * and refused for mixed browse rather than silently applied to one side. */
-const MIXED_SORTS: Record<string, true> = { recency: true, duration: true };
 
 function invalidQuery(message: string): AppError {
   return new AppError(400, "invalid_query", message);
@@ -713,7 +700,7 @@ export function planBrowseSides(query: BrowseQuery): BrowsePlan {
   if (
     query.type === "all" &&
     query.sort !== undefined &&
-    !MIXED_SORTS[query.sort]
+    !BROWSE_MIXED_SORTS.includes(query.sort)
   ) {
     refuse(
       `"${query.sort}" order is not available on both sources; browse All supports recency and duration, or pick Movies/Scenes for the rest.`,

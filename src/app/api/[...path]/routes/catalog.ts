@@ -42,6 +42,7 @@ import {
   type ReleaseDateOperation,
 } from "../../../../server/providers.ts";
 import { crossProviderLink } from "../../../../server/identity-links.ts";
+import { SORT_KEYS, sortSpec } from "../../../../lib/sorts.ts";
 import {
   browseTitles,
   parseBrowseQuery,
@@ -58,23 +59,10 @@ export function isTpdbDateOperation(v: string): v is ReleaseDateOperation {
   return ["<", "<=", "=", ">", ">="].includes(v);
 }
 
-// Runtime check, never a cast: the vocabulary mirrors providers'
-// CatalogSortKey so an unknown sort is the route's explicit 400.
+// Runtime check, never a cast: the vocabulary is the shared SORT_KEYS from
+// lib/sorts.ts, so an unknown sort is the route's explicit 400.
 export function isCatalogSortKey(v: string): v is CatalogSortKey {
-  switch (v) {
-    case "relevance":
-    case "recency":
-    case "duration":
-    case "title":
-    case "date":
-    case "created":
-    case "updated":
-    case "trending":
-    case "popularity":
-      return true;
-    default:
-      return false;
-  }
+  return (SORT_KEYS as readonly string[]).includes(v);
 }
 
 // Tag lists arrive repeatable (?tags=a&tags=b) or comma-separated
@@ -99,32 +87,9 @@ export function tagList(
   return [...new Set(ids)];
 }
 
-// Sorts each provider+kind genuinely implements, mirroring resolveSort in
-// providers.ts so an unsupported order is rejected here with the route's
+// Supported orders come from the shared SORT_CAPABILITIES table in
+// lib/sorts.ts, so an unsupported order is rejected here with the route's
 // invalid_query error before any upstream call.
-export const SORT_SUPPORT: Partial<
-  Record<
-    CatalogProvider,
-    Partial<Record<CatalogKind, readonly CatalogSortKey[]>>
-  >
-> = {
-  tpdb: {
-    movie: ["relevance", "recency", "duration"],
-    scene: ["relevance", "recency", "duration"],
-  },
-  stashdb: {
-    scene: [
-      "title",
-      "date",
-      "duration",
-      "trending",
-      "popularity",
-      "created",
-      "updated",
-    ],
-  },
-};
-
 export function supportedSort(
   provider: CatalogProvider,
   kind: CatalogKind,
@@ -141,8 +106,7 @@ export function supportedSort(
     }
     return {};
   }
-  const supported = SORT_SUPPORT[provider]?.[kind];
-  if (supported === undefined || !supported.includes(sort)) {
+  if (sortSpec(provider, kind, sort) === undefined) {
     throw new AppError(
       400,
       "invalid_query",

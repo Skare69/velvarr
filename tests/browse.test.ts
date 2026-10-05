@@ -20,7 +20,13 @@ import {
   type FixtureHandler,
 } from "./fixture.ts";
 import { AppError } from "../src/server/http.ts";
-import { resetMetaCache } from "../src/server/providers.ts";
+import { resetMetaCache, resolveSort } from "../src/server/providers.ts";
+import {
+  browseSortIsDirectional,
+  browseSortsFor,
+  SORT_CAPABILITIES,
+  SORT_LABELS,
+} from "../src/lib/sorts.ts";
 import {
   browseTitles,
   parseBrowseQuery,
@@ -30,7 +36,10 @@ import {
 } from "../src/server/browse.ts";
 import { isHiddenTitle } from "../src/server/catalog-visibility.ts";
 import type { BrowseQuery } from "../src/server/browse.ts";
-import type { CatalogTagSelection } from "../src/lib/contracts.ts";
+import type {
+  CatalogProvider,
+  CatalogTagSelection,
+} from "../src/lib/contracts.ts";
 
 beforeEach(() => {
   resetMetaCache();
@@ -1746,4 +1755,106 @@ test("browseTitles with starred and no StashDB-side follows returns an honest em
     totalCountKnown: true,
     errors: [],
   });
+});
+
+// --- the offered sorts and the accepted sorts are one table (lib/sorts.ts) ---
+
+test("planBrowseSides and resolveSort accept every sort the client offers", () => {
+  for (const type of ["all", "movie", "scene"] as const) {
+    for (const key of browseSortsFor(type)) {
+      for (const direction of browseSortIsDirectional(type, key)
+        ? (["asc", "desc"] as const)
+        : ([undefined] as const)) {
+        // The client's wire form: type rides only on typed tabs, direction
+        // only on sorts that take one.
+        const params = new URLSearchParams({ sort: key });
+        if (type !== "all") params.set("type", type);
+        if (direction !== undefined) params.set("direction", direction);
+        const plan = planBrowseSides(parseBrowseQuery(params));
+        if (type === "all") {
+          assert.deepEqual(plan.mergeOrder, {
+            key: key as "recency" | "duration",
+            direction: direction ?? "desc",
+          });
+        } else {
+          const [provider, kind] =
+            type === "movie"
+              ? (["tpdb", "movie"] as const)
+              : (["stashdb", "scene"] as const);
+          assert.equal(resolveSort(provider, kind, key, direction).key, key);
+        }
+      }
+    }
+  }
+});
+
+test("the drifted offers stay dead: no date on All, no direction on relevance", () => {
+  // Browse All once offered "Release date" (StashDB-only) and 400ed the
+  // merge; the offer now equals the server's mixed set exactly.
+  assert.deepEqual([...browseSortsFor("all")], ["recency", "duration"]);
+  assert.throws(() =>
+    planBrowseSides(parseBrowseQuery(new URLSearchParams("sort=date"))),
+  );
+  // Movies once offered "Best match" with a direction always attached and
+  // 400ed on the single-stream fast path.
+  assert.equal(browseSortIsDirectional("movie", "relevance"), false);
+  assert.throws(() => resolveSort("tpdb", "movie", "relevance", "desc"));
+  // A mixed All sort takes a direction on both sources — recency via
+  // StashDB's date order — so the toggle shows and asc is reachable there.
+  assert.equal(browseSortIsDirectional("all", "recency"), true);
+  assert.equal(browseSortIsDirectional("all", "duration"), true);
+});
+
+test("every sort-table row is observable: membership, direction rule, offers", () => {
+  // The offers per tab are exactly the table rows, in table order.
+  assert.deepEqual(
+    [...browseSortsFor("movie")],
+    ["relevance", "recency", "duration"],
+  );
+  assert.deepEqual(
+    [...browseSortsFor("scene")],
+    [
+      "title",
+      "date",
+      "duration",
+      "trending",
+      "popularity",
+      "created",
+      "updated",
+    ],
+  );
+  // The labels are the rendered option text (the select and the chip).
+  assert.deepEqual(SORT_LABELS, {
+    relevance: "Best match",
+    recency: "Release recency",
+    duration: "Duration",
+    title: "Title",
+    date: "Release date",
+    trending: "Trending (StashDB ordering)",
+    popularity: "Popularity (StashDB ordering)",
+    created: "Recently added (StashDB)",
+    updated: "Last updated (StashDB)",
+  });
+  // Every table row: resolveSort accepts exactly the table membership and
+  // honors the directional flag; the client's direction rule matches the
+  // flag on the typed tab that runs the side.
+  for (const [provider, kinds] of Object.entries(SORT_CAPABILITIES)) {
+    for (const [kind, specs] of Object.entries(kinds)) {
+      for (const spec of specs ?? []) {
+        const applied = resolveSort(
+          provider as CatalogProvider,
+          kind as "movie" | "scene",
+          spec.key,
+          spec.directional ? "asc" : undefined,
+        );
+        assert.equal(applied.key, spec.key);
+        assert.equal(applied.direction, spec.directional ? "asc" : undefined);
+        const tab = provider === "tpdb" ? "movie" : "scene";
+        assert.equal(browseSortIsDirectional(tab, spec.key), spec.directional);
+      }
+    }
+  }
+  // A key the tab's side does not carry reads as non-directional: a stale
+  // relevance on the Scenes tab clamps its direction off, never crashes.
+  assert.equal(browseSortIsDirectional("scene", "relevance"), false);
 });

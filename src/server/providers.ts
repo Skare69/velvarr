@@ -55,6 +55,7 @@ import type {
   MediaKind,
 } from "../lib/contracts.ts";
 import { normalizeFacetName } from "../lib/contracts.ts";
+import { sortSpec, type SortKey } from "../lib/sorts.ts";
 
 // Pure cross-provider identity policy (published links only, no name
 // matching) lives in its own module; this adapter keeps the I/O around it.
@@ -383,17 +384,11 @@ export async function getProviderStatus(
 }
 
 /** Normalized sort vocabulary. Only orders the providers genuinely implement
- * appear here; the page surfaces the exact upstream order that was applied. */
-export type CatalogSortKey =
-  | "relevance"
-  | "recency"
-  | "duration"
-  | "title"
-  | "date"
-  | "created"
-  | "updated"
-  | "trending"
-  | "popularity";
+ * appear here; the page surfaces the exact upstream order that was applied.
+ * The vocabulary and per-provider+kind membership live in the shared
+ * SORT_CAPABILITIES table (lib/sorts.ts) — this alias keeps the historical
+ * export name. */
+export type CatalogSortKey = SortKey;
 
 export type CatalogSortDirection = "asc" | "desc";
 
@@ -406,9 +401,11 @@ interface AppliedSort {
 }
 
 /** Resolves a requested sort for a provider+kind to the exact upstream order.
- * Throws the explicit invalid-query error for any order the provider does not
- * implement — trending and popularity are StashDB scene-only; TPDB has
- * neither. TPDB recency maps to release recency (recently_released /
+ * Which orders exist per provider+kind comes from the shared SORT_CAPABILITIES
+ * table (lib/sorts.ts); the upstream tokens are provider wire facts and stay
+ * here. Throws the explicit invalid-query error for any order the provider
+ * does not implement — trending and popularity are StashDB scene-only; TPDB
+ * has neither. TPDB recency maps to release recency (recently_released /
  * former_released); its created/updated RECORD orders are deliberately not
  * aliased onto release recency. */
 export function resolveSort(
@@ -424,7 +421,15 @@ export function resolveSort(
       "Sorts apply to movie and scene search only.",
     );
   }
+  const spec = sortSpec(provider, kind, sort);
   if (provider === "tpdb") {
+    if (spec === undefined) {
+      throw new AppError(
+        400,
+        "invalid_search",
+        `TPDB implements no ${sort} order; only relevance, recency, and duration exist.`,
+      );
+    }
     if (sort === "relevance") {
       if (direction !== undefined) {
         throw new AppError(
@@ -435,27 +440,19 @@ export function resolveSort(
       }
       return { key: sort, upstream: "most_relevant" };
     }
+    const dir = direction ?? "desc";
     if (sort === "recency") {
-      const dir = direction ?? "desc";
       return {
         key: sort,
         direction: dir,
         upstream: dir === "desc" ? "recently_released" : "former_released",
       };
     }
-    if (sort === "duration") {
-      const dir = direction ?? "desc";
-      return {
-        key: sort,
-        direction: dir,
-        upstream: dir === "desc" ? "duration_desc" : "duration_asc",
-      };
-    }
-    throw new AppError(
-      400,
-      "invalid_search",
-      `TPDB implements no ${sort} order; only relevance, recency, and duration exist.`,
-    );
+    return {
+      key: sort,
+      direction: dir,
+      upstream: dir === "desc" ? "duration_desc" : "duration_asc",
+    };
   }
   if (kind !== "scene") {
     throw new AppError(
@@ -464,34 +461,28 @@ export function resolveSort(
       "StashDB has no movie entity; sorts apply to scene search only.",
     );
   }
-  const stashdbSceneSorts: Record<
-    | "title"
-    | "date"
-    | "duration"
-    | "trending"
-    | "popularity"
-    | "created"
-    | "updated",
-    string
-  > = {
-    title: "TITLE",
-    date: "DATE",
-    duration: "DURATION",
-    trending: "TRENDING",
-    popularity: "POPULARITY",
-    created: "CREATED_AT",
-    updated: "UPDATED_AT",
-  };
-  if (sort === "relevance" || sort === "recency") {
+  if (spec === undefined) {
     throw new AppError(
       400,
       "invalid_search",
       `StashDB implements no ${sort} order for scenes; relevance and recency are TPDB-only.`,
     );
   }
-  const upstream = stashdbSceneSorts[sort];
+  // The spec lookup above guarantees the key.
+  const upstream = STASHDB_SCENE_ORDER[sort]!;
   return { key: sort, direction: direction ?? "desc", upstream };
 }
+
+/** StashDB scene query sort values, keyed by the shared SortKey vocabulary. */
+const STASHDB_SCENE_ORDER: Partial<Record<CatalogSortKey, string>> = {
+  title: "TITLE",
+  date: "DATE",
+  duration: "DURATION",
+  trending: "TRENDING",
+  popularity: "POPULARITY",
+  created: "CREATED_AT",
+  updated: "UPDATED_AT",
+};
 
 /** Paged search query. Filters are explicit per provider+kind; combinations
  * the upstream cannot express are rejected rather than silently ignored.
