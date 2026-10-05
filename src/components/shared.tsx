@@ -25,6 +25,7 @@ import type {
   UpdateInfo,
 } from "../lib/contracts.ts";
 import { REQUESTS_CHANGED } from "../lib/approvals.ts";
+import { ApiGetCache } from "../lib/api-get.ts";
 import packageJson from "../../package.json" with { type: "json" };
 
 const { version } = packageJson;
@@ -79,38 +80,24 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 
 /* ---------- Per-tab GET cache (Seerr/SWR-style) ---------- */
 
-// Cached GET responses shared across every mount in this tab. Keyed by path;
-// FIFO-capped; re-putting a key moves it to the end. Cleared on sign-out and
-// on any 401 so one account's reads never reach the next sign-in.
-const apiCache = new Map<string, unknown>();
-const API_CACHE_CAP = 100;
-
-// Concurrent identical GETs share one `api()` call.
-const apiInFlight = new Map<string, Promise<unknown>>();
-// Bumped by clearApiCache: a response that lands after sign-out belongs to the
-// previous account and must not be cached for the next one.
-let apiGeneration = 0;
+// Cached GET responses shared across every mount in this tab, plus the
+// in-flight dedupe. Cleared on sign-out and on any 401 so one account's
+// reads never reach the next sign-in. The coordination rules (a manual
+// reload never joins a pre-mutation request; a superseded response never
+// lands) live in src/lib/api-get.ts, testable without a React harness.
+const apiGetCache = new ApiGetCache();
 
 export function clearApiCache(): void {
-  apiGeneration++;
-  apiCache.clear();
-  apiInFlight.clear();
-}
-
-function cachePut(path: string, value: unknown): void {
-  apiCache.delete(path); // re-set moves the key to the end (FIFO order)
-  apiCache.set(path, value);
-  if (apiCache.size > API_CACHE_CAP) {
-    const oldest = apiCache.keys().next().value;
-    if (oldest !== undefined) apiCache.delete(oldest);
-  }
+  apiGetCache.clear();
 }
 
 /** One GET of server state, backed by a per-tab cache shared across mounts
  * (Seerr/SWR style): a path fetched before paints its cached data on the
  * first render and is always revalidated in the background; concurrent
  * identical GETs dedupe into one network request. A manual `reload()` always
- * shows the loading state. On revalidation failure the cached snapshot is
+ * shows the loading state and always issues a fresh GET — it never joins an
+ * in-flight request, which may have been sent before the mutation it
+ * re-reads. On revalidation failure the cached snapshot is
  * dropped (`data` becomes null) so a stale snapshot never reads as current;
  * a live first fetch keeps the old "never blanks on retry" behavior.
  *
@@ -128,11 +115,15 @@ export function useApiGet<T>(
   reload: () => void;
 } {
   const [data, setData] = useState<T | null>(() =>
-    path !== null && apiCache.has(path) ? (apiCache.get(path) as T) : null,
+    path !== null && apiGetCache.has(path)
+      ? (apiGetCache.peek(path) as T)
+      : null,
   );
   const [error, setError] = useState<string | null>(null);
   const [err, setErr] = useState<ApiError | null>(null);
-  const [loading, setLoading] = useState(path !== null && !apiCache.has(path));
+  const [loading, setLoading] = useState(
+    path !== null && !apiGetCache.has(path),
+  );
   const [tick, setTick] = useState(0);
   const lastTick = useRef(tick);
   const reload = useCallback(() => setTick((n) => n + 1), []);
@@ -148,9 +139,8 @@ export function useApiGet<T>(
     // state; a mount/path change with a cache hit paints cached data at once.
     const manual = tick !== lastTick.current;
     lastTick.current = tick;
-    const cached = apiCache.get(path);
+    const cached = apiGetCache.peek(path);
     const fromCache = !manual && cached !== undefined;
-    const generation = apiGeneration;
     let live = true;
     setError(null);
     setErr(null);
@@ -160,19 +150,9 @@ export function useApiGet<T>(
     } else {
       setLoading(true);
     }
-    // Keyed by path, so a shared in-flight read resolves to this hook's T.
-    const run = apiInFlight.get(path) as Promise<T> | undefined;
-    const pending: Promise<T> =
-      run ??
-      api<T>(path)
-        .then((d) => {
-          if (generation === apiGeneration) cachePut(path, d);
-          return d;
-        })
-        .finally(() => {
-          if (apiInFlight.get(path) === pending) apiInFlight.delete(path);
-        });
-    apiInFlight.set(path, pending);
+    // api-get.ts owns joining and cache currency; `manual` keeps a reload()
+    // from joining a request that may predate the mutation it re-reads.
+    const pending = apiGetCache.get<T>(path, () => api<T>(path), manual);
     pending
       .then((d) => {
         if (live) {
@@ -181,7 +161,6 @@ export function useApiGet<T>(
         }
       })
       .catch((e: unknown) => {
-        apiCache.delete(path);
         if (live) {
           setError(messageOf(e));
           setErr(e instanceof ApiError ? e : null);
