@@ -27,6 +27,8 @@ import {
   Icon,
   legacyBrowsePatch,
   messageOf,
+  notifyAuthChanged,
+  onAuthChanged,
   SessionCtx,
   setParamsClearing,
   useApiGet,
@@ -90,6 +92,9 @@ export default function VelvarrApp() {
   }, []);
 
   const enterAppSafe = useCallback(() => {
+    // This tab just swapped the cookie (login or setup completion); other
+    // tabs must drop the previous account's reads and re-boot.
+    notifyAuthChanged();
     enterApp().catch((e) => {
       if (e instanceof ApiError && e.status === 401) {
         setPhase("login");
@@ -121,17 +126,33 @@ export default function VelvarrApp() {
     }
   }, [enterApp]);
 
+  const clearSession = () => {
+    // One account's cached reads must not reach the next sign-in: drop the
+    // cache and any rendered account.
+    clearApiCache();
+    setAccount(null);
+    setProviders(null);
+  };
+
   useEffect(() => {
     const on401 = () => {
-      // One account's cached reads must not reach the next sign-in.
-      clearApiCache();
-      setAccount(null);
-      setProviders(null);
+      clearSession();
       setPhase("login");
     };
     window.addEventListener("velvarr:unauthorized", on401);
-    return () => window.removeEventListener("velvarr:unauthorized", on401);
-  }, []);
+    // Another tab signed in or out: the cookie changed under this tab, so
+    // its cached reads and rendered account belong to the previous account.
+    // Re-boot to pick up the session now in the cookie jar (a 401 lands the
+    // tab back on the login screen).
+    const offAuth = onAuthChanged(() => {
+      clearSession();
+      void boot();
+    });
+    return () => {
+      window.removeEventListener("velvarr:unauthorized", on401);
+      offAuth();
+    };
+  }, [boot]);
 
   useEffect(() => {
     void boot();
@@ -143,11 +164,10 @@ export default function VelvarrApp() {
     } catch {
       /* cookie already gone */
     }
-    setAccount(null);
-    setProviders(null);
+    clearSession();
+    // Tell other tabs the cookie jar changed; they drop A's reads and re-boot.
+    notifyAuthChanged();
     setPhase("login");
-    // Same reason as on401: drop this account's cached GET responses.
-    clearApiCache();
     window.history.replaceState(null, "", window.location.pathname);
   }, []);
 

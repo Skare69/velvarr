@@ -91,6 +91,29 @@ export function clearApiCache(): void {
   apiGetCache.clear();
 }
 
+/* ---------- Cross-tab auth changes ---------- */
+
+// Another tab signing in or out swaps the session cookie, so this tab's
+// cached GET responses and rendered account belong to the previous account.
+// BroadcastChannel skips the sending tab and needs no storage writes, so a
+// signing-in tab never re-boots itself. Node (SSR) and modern browsers both
+// define the global; a null channel degrades to today's per-tab behavior.
+const authChannel: BroadcastChannel | null =
+  typeof BroadcastChannel === "undefined"
+    ? null
+    : new BroadcastChannel("velvarr-auth");
+
+export function notifyAuthChanged(): void {
+  authChannel?.postMessage(0);
+}
+
+export function onAuthChanged(fn: () => void): () => void {
+  if (!authChannel) return () => {};
+  const onMessage = () => fn();
+  authChannel.addEventListener("message", onMessage);
+  return () => authChannel.removeEventListener("message", onMessage);
+}
+
 /** One GET of server state, backed by a per-tab cache shared across mounts
  * (Seerr/SWR style): a path fetched before paints its cached data on the
  * first render and is always revalidated in the background; concurrent
