@@ -264,12 +264,6 @@
   flex: none;
   object-fit: cover;
 }
-.discovery-request-card .media-status-badge {
-  position: absolute;
-  top: 0.375rem;
-  right: 0.375rem;
-  z-index: 1;
-}
 
 @media (prefers-reduced-motion: no-preference) {
   .discovery-tile {

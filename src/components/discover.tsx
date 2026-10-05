@@ -355,7 +355,6 @@ function RequestTile({
           src={art ? imgSrc(art.imageUrl) : undefined}
           className="discovery-request-poster"
         />
-        <CardStatusBadge status={statusKind} title={art?.title} />
       </button>
     </div>
   );
