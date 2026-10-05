@@ -1022,117 +1022,144 @@ export function TitlesView() {
     (t: "all" | "movie" | "scene") => {
       // Sorts are per-type: one the new type does not support is dropped.
       const keepSort = (sortsFor(t) as readonly string[]).includes(sortRaw);
-      setP({
-        type: t === "all" ? null : t,
-        sort: keepSort ? sortRaw : null,
-        direction: keepSort ? dirRaw : null,
-        // Both performer chips active would 400 on a single type (the
-        // server refuses both ids with a kind), so the tab visibly drops
-        // the chip that cannot run on the target kind — the same clamp
-        // the sort gets above.
-        ...(t === "movie"
-          ? { performerStashdb: null, performerStarred: null }
-          : {}),
-        ...(t === "scene" ? { performerTpdb: null } : {}),
-      });
+      setP(
+        {
+          type: t === "all" ? null : t,
+          sort: keepSort ? sortRaw : null,
+          direction: keepSort ? dirRaw : null,
+          // Both performer chips active would 400 on a single type (the
+          // server refuses both ids with a kind), so the tab visibly drops
+          // the chip that cannot run on the target kind — the same clamp
+          // the sort gets above.
+          ...(t === "movie"
+            ? { performerStashdb: null, performerStarred: null }
+            : {}),
+          ...(t === "scene" ? { performerTpdb: null } : {}),
+        },
+        { push: true },
+      );
     },
     [setP, sortRaw, dirRaw],
   );
-  const onQ = useCallback((v: string) => setP({ q: v || null }), [setP]);
+  const onQ = useCallback(
+    (v: string) => setP({ q: v || null }, { push: true }),
+    [setP],
+  );
   const onInclude = useCallback(
     (tags: CatalogTagSelection[]) =>
-      setP({
-        include: tags.length > 0 ? JSON.stringify(tags) : null,
-      }),
+      setP(
+        {
+          include: tags.length > 0 ? JSON.stringify(tags) : null,
+        },
+        { push: true },
+      ),
     [setP],
   );
   const onExclude = useCallback(
     (tags: CatalogTagSelection[]) =>
-      setP({
-        exclude: tags.length > 0 ? JSON.stringify(tags) : null,
-      }),
+      setP(
+        {
+          exclude: tags.length > 0 ? JSON.stringify(tags) : null,
+        },
+        { push: true },
+      ),
     [setP],
   );
   // TPDB's performer filter is the filmography route: everything else goes,
   // including sort (the route rejects all of it).
   const onPerformerTpdb = useCallback(
     (id: string) =>
-      setP({
-        performerTpdb: id,
+      setP(
+        {
+          performerTpdb: id,
+          q: null,
+          include: null,
+          exclude: null,
+          year: null,
+          date: null,
+          date_operation: null,
+          studioTpdb: null,
+          studioStashdb: null,
+          studioMode: null,
+          sort: null,
+          direction: null,
+        },
+        { push: true },
+      ),
+    [setP],
+  );
+  // StashDB composes a performer with everything else — no other key moves.
+  const onPerformerStashdb = useCallback(
+    (id: string) => setP({ performerStashdb: id }, { push: true }),
+    [setP],
+  );
+  const onStarred = useCallback(
+    (on: boolean) =>
+      setP({ performerStarred: on ? "1" : null }, { push: true }),
+    [setP],
+  );
+  const onYear = useCallback(
+    (v: string) =>
+      setP(
+        { year: v || null, date: null, date_operation: null },
+        { push: true },
+      ),
+    [setP],
+  );
+  // Both halves commit together — one without the other is a 400.
+  const onDate = useCallback(
+    (d: string | null, op: string | null) =>
+      setP({ date: d, date_operation: op, year: null }, { push: true }),
+    [setP],
+  );
+  const onSort = useCallback(
+    (v: string) =>
+      setP(
+        {
+          sort: v || null,
+          direction: v ? direction || "desc" : null,
+        },
+        { push: true },
+      ),
+    [setP, direction],
+  );
+  const onDirection = useCallback(
+    (d: "asc" | "desc") => setP({ direction: d }, { push: true }),
+    [setP],
+  );
+  const onStudioTpdb = useCallback(
+    (id: string | null) => setP({ studioTpdb: id }, { push: true }),
+    [setP],
+  );
+  const onStudioStashdb = useCallback(
+    (id: string | null) => setP({ studioStashdb: id }, { push: true }),
+    [setP],
+  );
+  const onStudioMode = useCallback(
+    (m: string) =>
+      setP({ studioMode: m === "withChildren" ? m : null }, { push: true }),
+    [setP],
+  );
+  const clearFilters = useCallback(() => {
+    setP(
+      {
         q: null,
         include: null,
         exclude: null,
         year: null,
         date: null,
         date_operation: null,
+        performerTpdb: null,
+        performerStashdb: null,
+        performerStarred: null,
         studioTpdb: null,
         studioStashdb: null,
         studioMode: null,
         sort: null,
         direction: null,
-      }),
-    [setP],
-  );
-  // StashDB composes a performer with everything else — no other key moves.
-  const onPerformerStashdb = useCallback(
-    (id: string) => setP({ performerStashdb: id }),
-    [setP],
-  );
-  const onStarred = useCallback(
-    (on: boolean) => setP({ performerStarred: on ? "1" : null }),
-    [setP],
-  );
-  const onYear = useCallback(
-    (v: string) => setP({ year: v || null, date: null, date_operation: null }),
-    [setP],
-  );
-  // Both halves commit together — one without the other is a 400.
-  const onDate = useCallback(
-    (d: string | null, op: string | null) =>
-      setP({ date: d, date_operation: op, year: null }),
-    [setP],
-  );
-  const onSort = useCallback(
-    (v: string) =>
-      setP({
-        sort: v || null,
-        direction: v ? direction || "desc" : null,
-      }),
-    [setP, direction],
-  );
-  const onDirection = useCallback(
-    (d: "asc" | "desc") => setP({ direction: d }),
-    [setP],
-  );
-  const onStudioTpdb = useCallback(
-    (id: string | null) => setP({ studioTpdb: id }),
-    [setP],
-  );
-  const onStudioStashdb = useCallback(
-    (id: string | null) => setP({ studioStashdb: id }),
-    [setP],
-  );
-  const onStudioMode = useCallback(
-    (m: string) => setP({ studioMode: m === "withChildren" ? m : null }),
-    [setP],
-  );
-  const clearFilters = useCallback(() => {
-    setP({
-      q: null,
-      include: null,
-      exclude: null,
-      year: null,
-      date: null,
-      date_operation: null,
-      performerTpdb: null,
-      performerStashdb: null,
-      performerStarred: null,
-      studioTpdb: null,
-      studioStashdb: null,
-      studioMode: null,
-      sort: null,
-      direction: null,
-    });
+      },
+      { push: true },
+    );
   }, [setP]);
 
   // An active studio/tag id without a captured name stays an id — never a
@@ -1202,7 +1229,7 @@ export function TitlesView() {
         label={`Performer: ${filterName("tpdb", "performer", performerTpdb)} (TPDB)`}
         // Chip removal only drops the constraint — unlike picking a
         // performer, which starts the filmography browse and clears the rest.
-        onRemove={() => setP({ performerTpdb: null })}
+        onRemove={() => setP({ performerTpdb: null }, { push: true })}
       />,
     );
   }
@@ -1211,7 +1238,7 @@ export function TitlesView() {
       <FilterChip
         key="performerStashdb"
         label={`Performer: ${filterName("stashdb", "performer", performerStashdb)} (StashDB)`}
-        onRemove={() => setP({ performerStashdb: null })}
+        onRemove={() => setP({ performerStashdb: null }, { push: true })}
       />,
     );
   }
@@ -1220,7 +1247,7 @@ export function TitlesView() {
       <FilterChip
         key="performerStarred"
         label="Performer: my starred performers"
-        onRemove={() => setP({ performerStarred: null })}
+        onRemove={() => setP({ performerStarred: null }, { push: true })}
       />,
     );
   }
@@ -1274,7 +1301,7 @@ export function TitlesView() {
       <FilterChip
         key="sort"
         label={`Sort: ${SORT_LABELS[sort as SortKey]} (${direction})`}
-        onRemove={() => setP({ sort: null, direction: null })}
+        onRemove={() => setP({ sort: null, direction: null }, { push: true })}
       />,
     );
   }

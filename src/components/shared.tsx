@@ -183,9 +183,11 @@ export function useTapReveal(): void {
  * without the dispatchers. */
 export const PREFERENCES_CHANGED = "velvarr:preferences-changed";
 
-/** URL is the source of truth. Filter tweaks replace the entry so typing does
- * not fill the history stack; a surface change (opting into `push`) leaves an
- * entry so browser Back returns to the previous surface instead of exiting. */
+/** URL is the source of truth. The default replaces the entry so internal
+ * corrections (perPage normalization, legacy normalization) do not fill the
+ * history stack; user-initiated changes — surface navigation and every
+ * browse filter commit — opt into `push` so browser Back walks back through
+ * them instead of skipping filter states. */
 export function useParamsSetter() {
   const router = useRouter();
   return useCallback(
