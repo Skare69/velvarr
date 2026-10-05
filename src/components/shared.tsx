@@ -13,9 +13,8 @@ import { useRouter } from "next/navigation";
 import { isDeliverableMedia } from "../lib/contracts.ts";
 import type {
   Account,
-  AcquisitionProgress,
-  AcquisitionState,
   CatalogDetail,
+  CatalogDetailResponse,
   CatalogProvider,
   CatalogReference,
   LibraryItem,
@@ -23,6 +22,7 @@ import type {
   PlaybackAccess,
   ProviderStatus,
   RequestRecord,
+  UpdateInfo,
 } from "../lib/contracts.ts";
 import { REQUESTS_CHANGED } from "../lib/approvals.ts";
 import packageJson from "../../package.json" with { type: "json" };
@@ -527,16 +527,14 @@ export function Icon({
  *  More sheet; the root layout shows it as a fixed bar on screens without one.
  *  When the server reports a newer release, a chip links to it just above the
  *  version. */
-type ReleaseUpdate = { version: string; url: string };
-
-let updatePromise: Promise<ReleaseUpdate | null> | null = null;
+let updatePromise: Promise<UpdateInfo | null> | null = null;
 
 /** One shared fetch for every Credit on the page. A failed or empty check
  * degrades to no chip, never to a guessed update. */
-function useUpdate(): ReleaseUpdate | null {
-  const [update, setUpdate] = useState<ReleaseUpdate | null>(null);
+function useUpdate(): UpdateInfo | null {
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
   useEffect(() => {
-    updatePromise ??= api<{ update: ReleaseUpdate | null }>("/api/update").then(
+    updatePromise ??= api<{ update: UpdateInfo | null }>("/api/update").then(
       (r) => r.update,
       () => null,
     );
@@ -752,16 +750,9 @@ export function GridSkeleton({
   );
 }
 
-type CardStatus = {
-  detail: CatalogDetail;
-  myRequest: Pick<RequestRecord, "decision"> | null;
-  acquisition: {
-    state: AcquisitionState;
-    monitored: boolean | null;
-    progress: AcquisitionProgress | null;
-  } | null;
-  availability: PlaybackAccess;
-};
+/** The request card's state: the shared catalog detail envelope plus the
+ * card's own availability verdict. */
+type CardStatus = CatalogDetailResponse & { availability: PlaybackAccess };
 
 // ponytail: two background lanes for bounded pages/rails; batch availability
 // server-side if per-card Jellyfin reads become the bottleneck.
@@ -794,7 +785,7 @@ function RequestableCard({
     try {
       const path = `${media.provider}/${media.kind}/${encodeURIComponent(media.id)}`;
       const [detail, availability] = await Promise.all([
-        api<Omit<CardStatus, "availability">>(`/api/catalog/${path}`, {
+        api<CatalogDetailResponse>(`/api/catalog/${path}`, {
           signal: abort.signal,
         }),
         api<PlaybackAccess>(`/api/availability/${path}`, {

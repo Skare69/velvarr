@@ -16,8 +16,10 @@ import "./views.css";
 import type {
   CatalogDetail,
   CatalogReference,
+  FacetItem,
   LibraryItem,
   RequestListItem,
+  Shelf,
 } from "../lib/contracts";
 import {
   CardStatusBadge,
@@ -39,37 +41,6 @@ import {
   useCatalogSummary,
   useSession,
 } from "./shared";
-
-/* Wire shapes mirroring the server's discover response (route.ts Shelf).
- * Kept local: contracts.ts stays domain records; the shelf envelope is a
- * response contract. An errored shelf carries `error` and NO `items` key. */
-interface ShelfError {
-  code: string;
-  message: string;
-}
-
-interface FacetItem {
-  facet: "studio" | "tag";
-  provider: "tpdb" | "stashdb"; // the snapshot side this tile came from
-  id: string;
-  name: string;
-  imageUrl?: string;
-  logoUrl?: string; // studio brand mark only
-  linked?: { provider: "tpdb" | "stashdb"; id: string }; // resolved counterpart, omitted when none
-}
-
-interface Shelf {
-  id: string;
-  title: string;
-  description?: string; // the server's own honest words for the rail
-  source: "tpdb" | "stashdb" | "jellyfin" | "velvarr";
-  browse?: { view: string; params: Record<string, string> };
-  kind: "catalog" | "library" | "requests" | "facets";
-  items?: CatalogDetail[] | LibraryItem[] | RequestListItem[] | FacetItem[];
-  /** Per-source partial failures: items may coexist with these. */
-  errors?: { provider: "tpdb" | "stashdb"; code: string; message: string }[];
-  error?: ShelfError;
-}
 
 interface DiscoverPage {
   shelves: Shelf[];

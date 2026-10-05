@@ -4,6 +4,7 @@ import type {
   CatalogDetail,
   CatalogKind,
   MediaReference,
+  ShelfError,
 } from "../../../../lib/contracts.ts";
 import {
   getAcquisitionByReference,
@@ -201,7 +202,7 @@ export async function globalSearch(
 /** A matched route: what to run, and the admission it needs. The auth level
  * is part of the shape, so a new branch cannot ship without declaring one;
  * the previous table enforced "remember requireSession here" by discipline. */
-import { shelfError, SEARCH_PER_PAGE, type ShelfError } from "./discover.ts";
+import { shelfError, SEARCH_PER_PAGE } from "./discover.ts";
 import { browseRoute, browseTagsRoute } from "./catalog.ts";
 import type { RouteDef } from "../admission.ts";
 

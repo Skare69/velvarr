@@ -19,7 +19,7 @@ import {
   createRequest,
   decideRequest,
   getAcquisitionByReference,
-  isObservationStale,
+  acquisitionView,
   listAccounts,
   listRequests,
 } from "../../../../server/storage.ts";
@@ -68,14 +68,7 @@ export function listRequestItems(ctx: AuthContext): RequestListItem[] {
     const a = getAcquisitionByReference(item.media);
     return {
       ...item,
-      acquisition: a && {
-        state: a.state,
-        lastError: a.lastError,
-        updatedAt: a.updatedAt,
-        observationStale: isObservationStale(a),
-        monitored: a.whisparrMonitored,
-        progress: a.progress,
-      },
+      acquisition: acquisitionView(a),
     };
   });
 }

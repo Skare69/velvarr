@@ -13,12 +13,13 @@ import type {
   CatalogProvider,
   IntegrationConfig,
   MediaReference,
+  CatalogDetailResponse,
 } from "../../../../lib/contracts.ts";
 import {
   getAcquisitionByReference,
+  acquisitionView,
   getContentPreferences,
   getPerformerLink,
-  isObservationStale,
   listFollows,
   listRequests,
   upsertCatalogRecord,
@@ -662,15 +663,8 @@ export async function catalogDetail(
       createdAt: mine.createdAt,
       decidedAt: mine.decidedAt,
     },
-    acquisition: acquisition && {
-      state: acquisition.state,
-      lastError: acquisition.lastError,
-      updatedAt: acquisition.updatedAt,
-      observationStale: isObservationStale(acquisition),
-      monitored: acquisition.whisparrMonitored,
-      progress: acquisition.progress,
-    },
-  });
+    acquisition: acquisitionView(acquisition),
+  } satisfies CatalogDetailResponse);
 }
 
 // Artwork proxy: provider-hosted URLs only, byte-capped pass-through,

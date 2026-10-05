@@ -306,6 +306,93 @@ export type RequestListItem = RequestRecord & {
   acquisition?: RequestAcquisition | null;
 };
 
+/** The cross-provider identity the providers themselves publish — an object
+ * carrying at most one of linked / unlinkedReason (construction sites set
+ * exactly one). Never a name match. */
+export type CrossProviderLink = {
+  linked?: CatalogReference;
+  unlinkedReason?: string;
+};
+
+/** GET /api/catalog/{provider}/{kind}/{id}: the provider detail, the published
+ * cross-provider link, the persisted summary, the viewer's own live request
+ * intent, and the identity's shared acquisition state. One envelope for the
+ * catalog detail page, the performer page and the request cards. */
+export type CatalogDetailResponse = {
+  detail: CatalogDetail & {
+    /** StashDB studio detail only: provider-supplied child-studio count
+     * (omitted when the provider supplies none — never defaulted to 0). */
+    childStudioCount?: number;
+  };
+  link: CrossProviderLink;
+  catalogRecord: CatalogRecord;
+  myRequest: Pick<
+    RequestRecord,
+    "id" | "decision" | "createdAt" | "decidedAt"
+  > | null;
+  acquisition: RequestAcquisition | null;
+};
+
+/** One source's partial failure inside an otherwise successful response. */
+export type SourceError = {
+  provider: CatalogProvider;
+  code: string;
+  message: string;
+};
+
+/** A shelf that could not be built at all: no items key, only the error. */
+export type ShelfError = { code: string; message: string };
+
+/** One tile of a unified Studios/Genres rail. `provider`+`id` are native to
+ * the snapshot side the tile came from — the grid a tile opens queries each
+ * side with its own id, so one rail mixes TPDB movies and StashDB scenes.
+ * `linked` is the counterpart on the other provider, present only when it
+ * genuinely resolved: a studio link the providers themselves published, or
+ * exact normalized-name tag equality (a label matched to a label — the one
+ * documented deterministic pairing, never a name guess). */
+export interface FacetItem {
+  facet: "studio" | "tag";
+  provider: CatalogProvider;
+  id: string;
+  name: string;
+  imageUrl?: string;
+  /** Studio brand mark only — never the poster under another name. */
+  logoUrl?: string;
+  linked?: { provider: CatalogProvider; id: string };
+}
+
+/** One Discover rail: one wire shape for the discover response, the discover
+ * view and every shelf builder. An errored shelf carries `error` and NO
+ * `items` key. */
+export interface Shelf {
+  id: string;
+  title: string;
+  source: "tpdb" | "stashdb" | "jellyfin" | "velvarr";
+  /** Honest one-line provenance, e.g. trending is a StashDB-only signal. */
+  description?: string;
+  browse?: { view: string; params: Record<string, string> };
+  kind: "catalog" | "library" | "requests" | "facets";
+  items?: CatalogDetail[] | LibraryItem[] | RequestListItem[] | FacetItem[];
+  /** Per-source partial-failure evidence; items may coexist with it. */
+  errors?: SourceError[];
+  error?: ShelfError;
+}
+
+export type ShelfItems =
+  CatalogDetail[] | LibraryItem[] | RequestListItem[] | FacetItem[];
+
+/** GET /api/browse/tags: both providers searched at once; judged suggestions
+ * are folded into `tags` server-side, so there is no separate suggestions
+ * field. Missing sources and partial failures come back as `errors`. */
+export type BrowseTagsResponse = {
+  tags: CatalogTagSelection[];
+  errors: SourceError[];
+};
+
+/** GET /api/update payload: the newest release when it is newer than this
+ * build, null when current, unreachable or shaped wrong. */
+export type UpdateInfo = { version: string; url: string };
+
 export type AcquisitionState =
   | "unsent"
   | "submitting"

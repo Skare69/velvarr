@@ -4,7 +4,7 @@
 // never from name matching. Scenes are never linked across providers. Policy
 // edits land here without touching the TPDB/StashDB HTTP adapter.
 
-import type { CatalogDetail, CatalogReference } from "../lib/contracts.ts";
+import type { CatalogDetail, CrossProviderLink } from "../lib/contracts.ts";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -96,10 +96,7 @@ export function identityLinkKey(url: string): string | undefined {
  * AND studio-level, both from published URLs only; never fuzzy-name matching,
  * and scenes are never linked across providers. Returns exactly one of
  * linked / unlinkedReason. */
-export function crossProviderLink(detail: CatalogDetail): {
-  linked?: CatalogReference;
-  unlinkedReason?: string;
-} {
+export function crossProviderLink(detail: CatalogDetail): CrossProviderLink {
   const kind = detail.reference.kind;
   const fromTpdb = detail.reference.provider === "tpdb";
   if (kind === "performer") {

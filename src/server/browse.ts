@@ -40,9 +40,11 @@ import type {
 import { getConfig, parseTagSelections } from "./storage.ts";
 import { normalizeFacetName } from "../lib/contracts.ts";
 import type {
+  BrowseTagsResponse,
   CatalogDetail,
   CatalogProvider,
   CatalogTagSelection,
+  SourceError,
 } from "../lib/contracts.ts";
 
 const MAX_SCAN_PAGES = 40;
@@ -69,13 +71,6 @@ export type BrowseQuery = {
   direction?: CatalogSortDirection;
   page: number;
   perPage: number;
-};
-
-/** One source's partial failure inside an otherwise successful page. */
-export type SourceError = {
-  provider: CatalogProvider;
-  code: string;
-  message: string;
 };
 
 export type BrowsePage = {
@@ -981,7 +976,7 @@ export async function searchVisibleCatalog(
  * suggestion path proposes real provider tags (never invented ones). */
 export async function searchBrowseTags(
   term: string,
-): Promise<{ tags: CatalogTagSelection[]; errors: SourceError[] }> {
+): Promise<BrowseTagsResponse> {
   const q = term.trim();
   if (q.length < 2) {
     throw new AppError(

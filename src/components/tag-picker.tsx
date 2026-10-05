@@ -12,6 +12,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
   normalizeFacetName,
+  type BrowseTagsResponse,
   type CatalogTagSelection,
 } from "../lib/contracts.ts";
 import { useApiGet } from "./shared.tsx";
@@ -44,15 +45,6 @@ function sources(t: CatalogTagSelection): string {
     .filter((s): s is string => typeof s === "string")
     .join(", ");
 }
-
-type TagSearchResponse = {
-  tags?: CatalogTagSelection[];
-  /** Optional second chance (e.g. Jev suggestions) shown only when the
-   * direct search found nothing; offered tags are accepted as-is. */
-  suggestions?: CatalogTagSelection[];
-  /** Per-source failures that still let the other source answer. */
-  errors?: { provider: string; message: string }[];
-};
 
 export function TagPicker({
   id,
@@ -94,7 +86,7 @@ export function TagPicker({
   const capped = selected.length >= TAG_CAP;
   // useApiGet owns the stale-response guard: only the latest query's
   // response is ever applied.
-  const { data, error, loading } = useApiGet<TagSearchResponse>(
+  const { data, error, loading } = useApiGet<BrowseTagsResponse>(
     disabled || capped || committed === null
       ? null
       : `/api/browse/tags?q=${encodeURIComponent(committed)}`,
@@ -110,11 +102,7 @@ export function TagPicker({
   // the returned tags and says so below.
   const current = committed === t && !loading;
   const listed = current && error === null ? take(data?.tags) : [];
-  const suggested =
-    current && error === null && listed.length === 0
-      ? take(data?.suggestions)
-      : [];
-  const options = listed.length > 0 ? listed : suggested;
+  const options = listed;
   // The typed term itself, when it matches no offered tag: a real selection
   // with no provider ids, workable only where matching runs locally.
   const freeText: CatalogTagSelection | null =
@@ -217,15 +205,12 @@ export function TagPicker({
                 .join("; ")}
             </p>
           )}
-          {showList && listed.length === 0 && suggested.length > 0 && (
-            <p className="cat-note">Did you mean:</p>
-          )}
           {showList && (
             <ul
               className="cat-picker"
               role="listbox"
               id={`${id}-listbox`}
-              aria-label={`${label} suggestions`}
+              aria-label={`${label} matches`}
             >
               {choices.map((tag, i) => (
                 <li key={normalizeFacetName(tag.name)} role="presentation">

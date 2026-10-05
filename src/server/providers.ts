@@ -51,6 +51,7 @@ import type {
   CatalogDetail,
   CatalogProvider,
   CatalogReference,
+  CrossProviderLink,
   MediaKind,
 } from "../lib/contracts.ts";
 import { normalizeFacetName } from "../lib/contracts.ts";
@@ -1530,10 +1531,7 @@ export async function listCatalogTags(
  * reads for a verdict that only changes when a provider republishes links,
  * so every reference is computed once per process. Cleared by
  * resetMetaCache so tests start cold. */
-const counterpartMemo = new Map<
-  string,
-  { linked?: CatalogReference; unlinkedReason?: string } | null
->();
+const counterpartMemo = new Map<string, CrossProviderLink | null>();
 
 /** The other provider's performer record for one performer detail. The
  * explicit cross-provider URL on the record wins outright; otherwise a name
@@ -1546,10 +1544,7 @@ const counterpartMemo = new Map<
  * unchanged; this never throws. */
 export async function linkedPerformerCounterpart(
   detail: CatalogDetail,
-): Promise<{
-  linked?: CatalogReference;
-  unlinkedReason?: string;
-}> {
+): Promise<CrossProviderLink> {
   if (detail.reference.kind !== "performer") return crossProviderLink(detail);
   const explicit = crossProviderLink(detail);
   if (explicit.linked !== undefined) return explicit; // a direct pointer outranks link equality
@@ -1602,7 +1597,7 @@ export async function linkedPerformerCounterpart(
         matches.push(candidate);
       }
     }
-    const result: { linked?: CatalogReference; unlinkedReason?: string } =
+    const result: CrossProviderLink =
       matches.length === 1
         ? { linked: matches[0]!.reference }
         : matches.length === 0

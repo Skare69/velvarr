@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import type {
+  CatalogDetailResponse,
   Library,
   LibraryItem,
   LibraryPage,
@@ -22,11 +23,7 @@ import {
   useApiGet,
   useParamsSetter,
 } from "./shared.tsx";
-import {
-  DetailSections,
-  type DetailPayload,
-  type DetailTarget,
-} from "./catalog-detail.tsx";
+import { DetailSections, type DetailTarget } from "./catalog-detail.tsx";
 import { useBrowseTo } from "./catalog.tsx";
 
 const runtime = (ticks?: number) =>
@@ -276,7 +273,7 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
     error: catError,
     err: catErr,
     reload: reloadCat,
-  } = useApiGet<DetailPayload>(
+  } = useApiGet<CatalogDetailResponse>(
     catalog
       ? `/api/catalog/${catalog.provider}/${catalog.kind}/${encodeURIComponent(catalog.id)}`
       : null,

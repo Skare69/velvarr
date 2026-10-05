@@ -5,8 +5,11 @@ import type {
   CatalogProvider,
   CatalogReference,
   CatalogTagSelection,
-  LibraryItem,
-  RequestRecord,
+  FacetItem,
+  Shelf,
+  ShelfError,
+  ShelfItems,
+  SourceError,
 } from "../../../../lib/contracts.ts";
 import { normalizeFacetName } from "../../../../lib/contracts.ts";
 import {
@@ -27,46 +30,8 @@ import {
   parseBrowseQuery,
   searchVisibleCatalog,
   type BrowsePage,
-  type SourceError,
 } from "../../../../server/browse.ts";
 import { isHiddenTitle } from "../../../../server/catalog-visibility.ts";
-
-export interface ShelfError {
-  code: string;
-  message: string;
-}
-
-// One tile of a unified Studios/Genres rail. `provider`+`id` are native to
-// the snapshot side the tile came from — the grid a tile opens queries each
-// side with its own id, so one rail mixes TPDB movies and StashDB scenes.
-// `linked` is the counterpart on the other provider, present only when it
-// genuinely resolved: a studio link the providers themselves published, or
-// exact normalized-name tag equality (a label matched to a label — the one
-// documented deterministic pairing, never a name guess).
-export interface FacetItem {
-  facet: "studio" | "tag";
-  provider: CatalogProvider;
-  id: string;
-  name: string;
-  imageUrl?: string;
-  /** Studio brand mark only — never the poster under another name. */
-  logoUrl?: string;
-  linked?: { provider: CatalogProvider; id: string };
-}
-
-export interface Shelf {
-  id: string;
-  title: string;
-  source: "tpdb" | "stashdb" | "jellyfin" | "velvarr";
-  /** Honest one-line provenance, e.g. trending is a StashDB-only signal. */
-  description?: string;
-  browse?: { view: string; params: Record<string, string> };
-  kind: "catalog" | "library" | "requests" | "facets";
-  items?: CatalogDetail[] | LibraryItem[] | RequestRecord[] | FacetItem[];
-  /** Per-source partial-failure evidence; items may coexist with it. */
-  errors?: SourceError[];
-  error?: ShelfError;
-}
 
 export function shelfError(err: unknown): ShelfError {
   if (err instanceof AppError) return { code: err.code, message: err.message };
@@ -206,9 +171,6 @@ export function dedupeTitles(items: CatalogDetail[]): CatalogDetail[] {
     return true;
   });
 }
-
-export type ShelfItems =
-  CatalogDetail[] | LibraryItem[] | RequestRecord[] | FacetItem[];
 
 export function shelfOf(
   base: Omit<Shelf, "items" | "error">,

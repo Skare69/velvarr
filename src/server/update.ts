@@ -1,9 +1,8 @@
 import packageJson from "../../package.json" with { type: "json" };
 import { isNewerVersion } from "../lib/update.ts";
+import type { UpdateInfo } from "../lib/contracts.ts";
 
 const { version } = packageJson;
-
-export type UpdateInfo = { version: string; url: string };
 
 const RELEASES_URL =
   "https://api.github.com/repos/Skare69/velvarr/releases/latest";

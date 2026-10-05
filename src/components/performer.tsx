@@ -23,6 +23,7 @@ import {
 } from "./shared";
 import type {
   CatalogDetail,
+  CatalogDetailResponse,
   CatalogPerson,
   CatalogProvider,
   CatalogReference,
@@ -36,11 +37,6 @@ import { REQUESTS_CHANGED } from "../lib/approvals";
 import "./views.css";
 
 /* ---------- Local shapes ---------- */
-
-type DetailPayload = {
-  detail: CatalogDetail;
-  link: { linked?: CatalogReference } | { unlinkedReason?: string };
-};
 
 type SearchPage = {
   page: number;
@@ -70,8 +66,12 @@ function usePerformerDetail(
   id: string,
   enabled: boolean,
   reload: number,
-): { payload: DetailPayload | null; err: ApiError | null; loading: boolean } {
-  const { data, error, err, loading } = useApiGet<DetailPayload>(
+): {
+  payload: CatalogDetailResponse | null;
+  err: ApiError | null;
+  loading: boolean;
+} {
+  const { data, error, err, loading } = useApiGet<CatalogDetailResponse>(
     enabled
       ? `/api/catalog/${provider}/performer/${encodeURIComponent(id)}`
       : null,

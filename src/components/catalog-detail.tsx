@@ -22,11 +22,12 @@ import {
 } from "./shared";
 import { isDeliverableMedia } from "../lib/contracts";
 import type {
-  AcquisitionState,
   CatalogDetail,
+  CatalogDetailResponse,
   CatalogKind,
   CatalogProvider,
   CatalogReference,
+  CrossProviderLink,
   MediaKind,
   PlaybackAccess,
   RequestDecision,
@@ -40,28 +41,6 @@ import { seedDetail } from "../lib/names";
 // Type-only on purpose: the erased type crosses, the runtime graph stays
 // one-way (catalog.tsx renders catalog-detail.tsx, never the reverse).
 import type { BrowseFilter } from "./catalog.tsx";
-
-export type DetailPayload = {
-  detail: CatalogDetail & {
-    /** StashDB studio detail only: provider-supplied child-studio count
-     * (omitted when the provider supplies none — never defaulted to 0). */
-    childStudioCount?: number;
-  };
-  link: { linked?: CatalogReference } | { unlinkedReason?: string };
-  myRequest: {
-    id: string;
-    decision: RequestDecision;
-    createdAt: number;
-    decidedAt: number | null;
-  } | null;
-  acquisition: {
-    state: AcquisitionState;
-    lastError: string | null;
-    updatedAt: number;
-    monitored: boolean | null;
-    progress: { percent: number | null; timeleft: string | null } | null;
-  } | null;
-};
 
 export type DetailTarget = {
   provider: CatalogProvider;
@@ -128,9 +107,7 @@ async function performerCounterpart(
   reference: CatalogReference,
 ): Promise<BrowseFilter["counterpart"] | null> {
   try {
-    const payload = await api<{
-      link: { linked?: CatalogReference } | { unlinkedReason?: string };
-    }>(
+    const payload = await api<{ link: CrossProviderLink }>(
       `/api/catalog/${reference.provider}/performer/${encodeURIComponent(reference.id)}`,
     );
     const linked = "linked" in payload.link ? payload.link.linked : undefined;
@@ -201,7 +178,7 @@ function MediaActions({
   onRefetch,
 }: {
   target: { provider: CatalogProvider; kind: MediaKind; id: string };
-  mine: DetailPayload["myRequest"];
+  mine: CatalogDetailResponse["myRequest"];
   availability: PlaybackAccess | null;
   onRefetch: () => void;
 }) {
@@ -305,7 +282,7 @@ function DetailBody({
   onBrowse,
   onRefetch,
 }: {
-  payload: DetailPayload;
+  payload: CatalogDetailResponse;
   target: DetailTarget;
   onNavigate: (r: CatalogReference) => void;
   onBrowse: (filter: BrowseFilter) => void;
@@ -474,7 +451,7 @@ export function DetailSections({
   onNavigate,
   onBrowse,
 }: {
-  payload: DetailPayload;
+  payload: CatalogDetailResponse;
   target: DetailTarget;
   onNavigate: (r: CatalogReference) => void;
   onBrowse: (filter: BrowseFilter) => void;
@@ -879,7 +856,7 @@ export function CatalogDetailView({
   const kind = target?.kind;
   const id = target?.id;
   const refKey = provider && kind && id ? `${provider}:${kind}:${id}` : null;
-  const detail = useApiGet<DetailPayload>(
+  const detail = useApiGet<CatalogDetailResponse>(
     provider && kind && id
       ? `/api/catalog/${provider}/${kind}/${encodeURIComponent(id)}`
       : null,

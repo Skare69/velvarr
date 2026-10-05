@@ -28,6 +28,7 @@ import type {
   MediaKind,
   MediaReference,
   PerformerFollow,
+  RequestAcquisition,
   RequestDecision,
   RequestRecord,
   Role,
@@ -2358,6 +2359,22 @@ export function isObservationStale(
     record.lastErrorAt >= record.lastObservedAt &&
     now - record.lastObservedAt > STALE_OBSERVATION_MS
   );
+}
+
+/** The wire view of one identity's shared acquisition state: the projection
+ * both the requests list and the catalog detail serve. null stays null. */
+export function acquisitionView(
+  record: AcquisitionRecord | null,
+): RequestAcquisition | null {
+  if (record === null) return null;
+  return {
+    state: record.state,
+    lastError: record.lastError,
+    updatedAt: record.updatedAt,
+    observationStale: isObservationStale(record),
+    monitored: record.whisparrMonitored,
+    progress: record.progress,
+  };
 }
 
 /** True only for a proven Whisparr absence recorded after a real

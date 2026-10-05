@@ -14,7 +14,7 @@ import type {
 import { normalizeFacetName } from "../lib/contracts.ts";
 import { rankRelatedTitles, type RankableTitle } from "./judgment.ts";
 import { isHiddenTitle } from "./catalog-visibility.ts";
-import { type SourceError } from "./browse.ts";
+import { type SourceError } from "../lib/contracts.ts";
 import { AppError } from "./http.ts";
 import {
   getCatalogDetail,
