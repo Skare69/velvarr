@@ -953,18 +953,17 @@ function formatBirthDate(iso: string, accuracy?: "day" | "month" | "year") {
   return `${d} ${MONTHS[m - 1]} ${y}`;
 }
 
-/** "D cup · 92-66-94 cm": the numbers render only as the complete
- * band-waist-hip triple the provider edits together, never as a lone
- * fragment that reads as a different shape. */
+/** "34DD-24-36": the band(+cup)-waist-hip triple in the provider's inches,
+ * rendered the way stash-box shows it. The numbers render only as the
+ * complete triple the provider edits together, never as a lone fragment
+ * that reads as a different shape. */
 function measurementsOf(p: CatalogPerson) {
   const triple =
-    p.bandCm !== undefined && p.waistCm !== undefined && p.hipCm !== undefined
-      ? `${p.bandCm}-${p.waistCm}-${p.hipCm} cm`
+    p.bandSize !== undefined && p.waistIn !== undefined && p.hipIn !== undefined
+      ? `${p.bandSize}${p.cupSize ?? ""}-${p.waistIn}-${p.hipIn}`
       : undefined;
-  const cup = p.cupSize !== undefined ? `${p.cupSize} cup` : undefined;
-  if (cup === undefined) return triple;
-  if (triple === undefined) return cup;
-  return `${cup} · ${triple}`;
+  if (triple !== undefined) return triple;
+  return p.cupSize !== undefined ? `${p.cupSize} cup` : undefined;
 }
 
 /** Rows only for facts the response contained — an unknown fact is never

@@ -817,9 +817,12 @@ function stashPerformerPerson(
     hairColor: stashEnumLabel(r.hair_color),
     heightCm: cleanInt(r.height, 50, 280),
     cupSize: cleanString(r.cup_size, 10),
-    bandCm: cleanInt(r.band_size, 40, 160),
-    waistCm: cleanInt(r.waist_size, 30, 160),
-    hipCm: cleanInt(r.hip_size, 40, 200),
+    // Inches, not cm: stash-box stores band/waist/hip in inches and its
+    // PerformerForm validates band 28-56 and waist 15-50. Hip has no
+    // upstream range; 10-100 in is a loose sanity cap.
+    bandSize: cleanInt(r.band_size, 28, 56),
+    waistIn: cleanInt(r.waist_size, 15, 50),
+    hipIn: cleanInt(r.hip_size, 10, 100),
     breastType: stashEnumLabel(r.breast_type),
     careerStartYear: cleanYear(r.career_start_year),
     careerEndYear: cleanYear(r.career_end_year),

@@ -160,7 +160,9 @@ export type CatalogCredit = {
 
 /** Biography facts a provider publishes about a person (performer detail).
  * Absent fields are unknown at the source — never faked. Enum labels arrive
- * humanised ("Transgender female"); ints stay in provider units (cm). */
+ * humanised ("Transgender female"); ints stay in the provider's unit: height
+ * in cm, stash-box band/waist/hip in inches (band is the US bra band
+ * number), rendered as stash-box shows them ("34DD-24-36"). */
 export type CatalogPerson = {
   gender?: string;
   /** ISO calendar date (YYYY-MM-DD); stash-box pads unknown day/month, so
@@ -173,9 +175,10 @@ export type CatalogPerson = {
   hairColor?: string;
   heightCm?: number;
   cupSize?: string;
-  bandCm?: number;
-  waistCm?: number;
-  hipCm?: number;
+  /** StashDB band size in inches (US bra band number, stash-box range 28-56). */
+  bandSize?: number;
+  waistIn?: number;
+  hipIn?: number;
   breastType?: string;
   careerStartYear?: number;
   careerEndYear?: number;

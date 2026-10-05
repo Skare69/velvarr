@@ -377,10 +377,10 @@ test("stashdb performer detail maps the biography facts the provider published",
             eye_color: "BROWN",
             hair_color: "BLACK",
             height: 158,
-            cup_size: "D",
-            band_size: 86,
-            waist_size: 61,
-            hip_size: 88,
+            cup_size: "DD",
+            band_size: 34,
+            waist_size: 24,
+            hip_size: 36,
             breast_type: "FAKE",
             career_start_year: 2012,
             career_end_year: null,
@@ -391,8 +391,9 @@ test("stashdb performer detail maps the biography facts the provider published",
       });
       return;
     }
-    // Absurd numbers, wrong-typed numbers, unknown date accuracy: all
-    // dropped; nothing else published -> no person block at all.
+    // Absurd numbers, inches outside stash-box's own bounds, wrong-typed
+    // numbers, unknown date accuracy: all dropped; nothing else published
+    // -> no person block at all.
     sendJson(res, 200, {
       data: {
         findPerformer: {
@@ -405,6 +406,9 @@ test("stashdb performer detail maps the biography facts the provider published",
           gender: "NA",
           birthdate: { date: "1990-03-01" },
           height: 99_999,
+          band_size: 100,
+          waist_size: 61,
+          hip_size: 120,
           cup_size: 7,
           career_start_year: 5,
           tattoos: [],
@@ -430,10 +434,10 @@ test("stashdb performer detail maps the biography facts the provider published",
       eyeColor: "Brown",
       hairColor: "Black",
       heightCm: 158,
-      cupSize: "D",
-      bandCm: 86,
-      waistCm: 61,
-      hipCm: 88,
+      cupSize: "DD",
+      bandSize: 34,
+      waistIn: 24,
+      hipIn: 36,
       breastType: "Fake",
       careerStartYear: 2012,
       tattoos: ["Left wrist: Script"],
