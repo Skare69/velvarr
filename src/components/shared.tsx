@@ -617,8 +617,8 @@ export function Icon({
 /** The credit, a user-specified layout: bold "Velvarr" links to the repo, the
  *  version to its GitHub release. The shell shows it in the sidebar and the
  *  More sheet; the root layout shows it as a fixed bar on screens without one.
- *  When the server reports a newer release, a chip links to it just above the
- *  version. */
+ *  When the server reports a newer release, a chip links to it on its own
+ *  line above the name and version. */
 let updatePromise: Promise<UpdateInfo | null> | null = null;
 
 /** One shared fetch for every Credit on the page. A failed or empty check
@@ -645,13 +645,6 @@ export function Credit() {
   const update = useUpdate();
   return (
     <p className="credit">
-      <a
-        href="https://github.com/Skare69/velvarr"
-        target="_blank"
-        rel="noreferrer noopener"
-      >
-        Velvarr
-      </a>
       {update && (
         <a
           className="chip chip-accent"
@@ -664,6 +657,14 @@ export function Credit() {
           <Icon name="download" /> v{update.version}
         </a>
       )}
+      <a
+        className="credit-name"
+        href="https://github.com/Skare69/velvarr"
+        target="_blank"
+        rel="noreferrer noopener"
+      >
+        Velvarr
+      </a>
       <a
         href={`https://github.com/Skare69/velvarr/releases/tag/v${version}`}
         target="_blank"

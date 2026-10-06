@@ -259,14 +259,14 @@ body:has(.auth-page) {
   font-size: 0.75rem;
   color: var(--color-muted);
 }
-.credit a:first-child {
+.credit .credit-name {
   font-weight: 700;
   color: var(--color-ink);
 }
 .credit a:hover {
   color: var(--color-accent-text);
 }
-/* The update chip: its own centered line just above the version. */
+/* The update chip: its own centered line above the name and version. */
 .credit .chip {
   flex-basis: 100%;
   display: inline-flex;
