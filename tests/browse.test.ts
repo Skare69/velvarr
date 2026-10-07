@@ -291,7 +291,8 @@ test("parseBrowseQuery round-trips pinned keys and rejects malformed input", () 
     ["studioTpdb=bad%2Fslug", "invalid_query"],
     ["include=not-json", "invalid_query"],
     ["include=%7B%22name%22%3A%22x%22%7D", "invalid_preferences"], // object, not array
-    ["include=" + encodeURIComponent('[{"name":"x"}]'), "invalid_preferences"], // include needs a provider id
+    // A label-only include is a free-text term now, not a 400: it filters
+    // locally as a substring (pinned positively below).
     [
       "include=" + encodeURIComponent('[{"name":"","tpdb":"' + uuid(1) + '"}]'),
       "invalid_preferences",
@@ -312,6 +313,14 @@ test("parseBrowseQuery round-trips pinned keys and rejects malformed input", () 
       query,
     );
   }
+  // A label-only include is a free-text term: it parses and rides to
+  // browseTitles, which applies it locally as a substring.
+  assert.deepEqual(
+    parseBrowseQuery(
+      new URLSearchParams("include=" + encodeURIComponent('[{"name":"xyz"}]')),
+    ).include,
+    [{ name: "xyz", tpdb: undefined, stashdb: undefined }],
+  );
   // SORT_KEYS dedupes across providers: parseEnum joins it into the 400
   // message, so each key must appear exactly once there.
   assert.throws(
@@ -546,6 +555,121 @@ test("an include without a resolvable StashDB id drops the scene source instead 
         ["tpdb"],
       );
       assert.equal(page.totalCountKnown, true);
+    },
+  );
+});
+
+// --- free-text includes: local substring, never a native constraint ---
+
+test("a free-text include filters both sides locally as a substring and runs no native tag criterion", async () => {
+  const TPDB_XYZ = { id: 11, uuid: uuid(101), name: "XYZ Special" };
+  const STASH_XYZ = uuid(201);
+  const movieUrls: string[] = [];
+  const scenesSeen: Record<string, unknown>[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [TPDB_XYZ],
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(uuid(1), "Movie with", "2024-02-01", [TPDB_XYZ]),
+            tpdbRow(uuid(2), "Movie without", "2024-01-01"),
+          ],
+          next: null,
+          total: 2,
+        },
+      ],
+      scenes: {
+        count: 2,
+        rows: [
+          stashRow(uuid(3), "Scene with", "2024-06-01", [
+            { id: STASH_XYZ, name: "XYZ Thing" },
+          ]),
+          stashRow(uuid(4), "Scene without", "2022-01-01"),
+        ],
+      },
+      onMovieRequest: (_page, qs) => movieUrls.push(qs.toString()),
+      onScenesRequest: (input) => scenesSeen.push(input),
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "all",
+          include: [{ name: "xyz" }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // Only titles carrying a tag whose folded name contains "xyz" survive;
+      // both sides ran — the free text never disqualified one.
+      assert.deepEqual(
+        page.items.map((d) => [d.reference.provider, d.reference.id]),
+        [
+          ["stashdb", uuid(3)],
+          ["tpdb", uuid(1)],
+        ],
+      );
+      // Local filtering: totals exact only at true exhaustion.
+      assert.equal(page.hasMore, false);
+      assert.equal(page.totalCountKnown, true);
+      assert.equal(page.total, 2);
+      assert.deepEqual(page.errors, []);
+      // No native tag criterion anywhere: the term is not a provider id.
+      assert.equal(movieUrls[0]!.includes("tag"), false);
+      assert.equal(scenesSeen[0]!.tags, undefined);
+    },
+  );
+});
+
+test("a free-text include rides beside a native one: the term filters locally, the tag travels natively", async () => {
+  const TAG_A = { id: 11, uuid: uuid(101), name: "Tag A" };
+  const TAG_XYZ = { id: 12, uuid: uuid(102), name: "XYZ Special" };
+  const movieUrls: string[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [TAG_A, TAG_XYZ],
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(uuid(1), "Both", "2024-03-01", [TAG_A, TAG_XYZ]),
+            tpdbRow(uuid(2), "Only native", "2024-02-01", [TAG_A]),
+            tpdbRow(uuid(3), "Only free", "2024-01-01", [TAG_XYZ]),
+          ],
+          next: null,
+          total: 3,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: (_page, qs) => movieUrls.push(qs.toString()),
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "movie",
+          include: [{ name: "Tag A", tpdb: TAG_A.uuid }, { name: "xyz" }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // The anchored include is delegated to the provider's native tag
+      // filter (this fixture returns every row regardless), so the local
+      // predicate applies only the free text: the row with no xyz tag drops
+      // even though it carries the native tag.
+      assert.deepEqual(
+        page.items.map((d) => d.reference.id),
+        [uuid(1), uuid(3)],
+      );
+      assert.equal(page.total, 2);
+      assert.equal(page.totalCountKnown, true);
+      // The anchored half still travels natively; the free text stays local.
+      assert.match(movieUrls[0]!, /tag_and=1/);
+      assert.match(movieUrls[0]!, /tags%5B11%5D=1|tags\[11\]=1/);
     },
   );
 });

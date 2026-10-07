@@ -218,9 +218,11 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
   return {
     type: type ?? "all",
     ...(q !== undefined && q !== "" ? { q } : {}),
-    include: parseSelections(params, "include"),
-    // Excludes run the local family matcher, so a label with no provider id
-    // (a free-text tag) is a real exclusion; an include without one is not.
+    include: parseSelections(params, "include", true),
+    // Both lists accept labels with no provider id: an include label is a
+    // free-text term matched locally as a substring, an exclude label runs
+    // the local family matcher. Neither can travel natively, so neither is
+    // rejected here.
     exclude: parseSelections(params, "exclude", true),
     ...omitUndefined({
       studioTpdb: parseId(params, "studioTpdb"),
@@ -245,6 +247,14 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
 
 // --- stream planning ---
 
+/** A selection with no provider id on either side: a free-text chip, which
+ * can only filter locally. One predicate for the whole pipeline — parse,
+ * native resolution and the visible predicate must agree on it, or a
+ * free-text include 400s or disqualifies a side again. */
+function isFreeTextSelection(sel: CatalogTagSelection): boolean {
+  return sel.tpdb === undefined && sel.stashdb === undefined;
+}
+
 function visiblePredicate(
   hiddenTags: CatalogTagSelection[],
   exclude: CatalogTagSelection[],
@@ -258,7 +268,9 @@ function visiblePredicate(
     if (exclude.some((sel) => tagMatches(d, sel, "family"))) return false;
     if (
       include.length > 0 &&
-      !include.every((sel) => tagMatches(d, sel, "exact"))
+      !include.every((sel) =>
+        tagMatches(d, sel, isFreeTextSelection(sel) ? "substring" : "exact"),
+      )
     ) {
       return false;
     }
@@ -272,9 +284,10 @@ function visiblePredicate(
 /** Resolves the native include-id list for one provider side. Every included
  * tag must be matchable on a qualifying source: a selection already carrying
  * the side's UUID uses it; otherwise the counterpart id is resolved through
- * the providers' own published label pairing. An unresolvable tag
- * disqualifies the whole side (undefined) — it is NEVER allowed to run
- * unfiltered. */
+ * the providers' own published label pairing. Free-text selections carry no
+ * native anchor anywhere, so they are skipped here and filter locally
+ * instead. An unresolvable anchored tag disqualifies the whole side
+ * (undefined) — it is NEVER allowed to run unfiltered. */
 async function includeIdsForSide(
   selections: CatalogTagSelection[],
   side: "tpdb" | "stashdb",
@@ -286,6 +299,8 @@ async function includeIdsForSide(
       if (!ids.includes(direct)) ids.push(direct);
       continue;
     }
+    // Free text filters locally below; it never constrains a native query.
+    if (isFreeTextSelection(sel)) continue;
     // A label-only selection has no native anchor to resolve from, so this
     // side genuinely cannot match — disqualify rather than widen.
     if ((side === "tpdb" ? sel.stashdb : sel.tpdb) === undefined) {
@@ -797,6 +812,10 @@ export async function browseTitles(
       : Promise.resolve(undefined),
   ]);
 
+  // Free-text includes carry no native anchor: both sides keep running and
+  // the visible predicate applies the term locally as a substring.
+  const freeIncludes = query.include.filter(isFreeTextSelection);
+
   const plans: {
     provider: CatalogProvider;
     includeIds: string[];
@@ -814,8 +833,9 @@ export async function browseTitles(
       localFiltered:
         hiddenTags.length > 0 ||
         query.exclude.length > 0 ||
+        freeIncludes.length > 0 ||
         (filmography && query.include.length > 0),
-      localInclude: filmography ? query.include : [],
+      localInclude: filmography ? query.include : freeIncludes,
       localYear: undefined,
     });
   }
@@ -834,8 +854,9 @@ export async function browseTitles(
       localFiltered:
         hiddenTags.length > 0 ||
         query.exclude.length > 0 ||
+        freeIncludes.length > 0 ||
         query.year !== undefined,
-      localInclude: [],
+      localInclude: freeIncludes,
       localYear: query.year,
       performerIds:
         query.performerStarred === true ? starredPerformerIds : undefined,

@@ -61,9 +61,10 @@ export function TagPicker({
   onChange: (tags: CatalogTagSelection[]) => void;
   description?: string;
   disabled?: boolean;
-  /** Offer the typed term itself as a label-only selection. Only for
-   * surfaces that filter locally (excludes, hidden tags): a free-text
-   * include cannot travel to a provider that filters on its own tag ids. */
+  /** Offer the typed term itself as a label-only selection. Excludes and
+   * hidden tags match it locally; includes match it as a substring of tag
+   * names — a free-text include can never travel to a provider that filters
+   * on its own tag ids. */
   allowFreeText?: boolean;
 }) {
   const [term, setTerm] = useState("");

@@ -9,7 +9,9 @@ import type { CatalogDetail, CatalogTagSelection } from "../lib/contracts.ts";
 // equality, or "family" whole-word-sequence containment for local filtration) ---
 
 /** `"exact"`: folded-label equality — the include paths, which mirror or
- * must agree with native provider tag ids. `"family"`: the selection's
+ * must agree with native provider tag ids. `"substring"`: the folded term
+ * appears anywhere in a tag's folded name — free-text include chips, which
+ * filter locally after pages arrive. `"family"`: the selection's
  * token sequence appears as a contiguous run of the tag's tokens, so
  * "Anal" matches "Anal Creampie"/"Rough Anal Sex" but never "Analingus",
  * and "Double Penetration" never matches "Double Anal Penetration" — the
@@ -18,7 +20,7 @@ import type { CatalogDetail, CatalogTagSelection } from "../lib/contracts.ts";
 export function tagMatches(
   detail: CatalogDetail,
   sel: CatalogTagSelection,
-  mode: "exact" | "family",
+  mode: "exact" | "family" | "substring",
 ): boolean {
   const nativeId =
     detail.reference.provider === "tpdb" ? sel.tpdb : sel.stashdb;
@@ -30,6 +32,9 @@ export function tagMatches(
   if (label === "") return false;
   if (mode === "exact") {
     return detail.tags.some((t) => normalizeFacetName(t.name) === label);
+  }
+  if (mode === "substring") {
+    return detail.tags.some((t) => normalizeFacetName(t.name).includes(label));
   }
   const selTokens = facetTokens(sel.name);
   if (selTokens.length === 0) return false;
