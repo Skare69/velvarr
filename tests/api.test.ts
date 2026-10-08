@@ -3914,6 +3914,380 @@ test("a user merge folds two standalone follows into one identity", async () => 
   assert.equal(afterIds.includes(STASH_PERFORMER3), false);
 });
 
+test("a merge auto-follows the current performer without partial writes on a provider failure", async () => {
+  const performer = {
+    provider: "tpdb",
+    kind: "performer",
+    id: TPDB_PERFORMER5,
+  };
+  const counterpart = {
+    provider: "stashdb",
+    kind: "performer",
+    id: STASH_PERFORMER3,
+  };
+  const listed = async () => {
+    const res = await call("GET", "/api/follows", { cookie: member2 });
+    assert.equal(res.status, 200);
+    const body: { follows: FollowShape[] } = await res.json();
+    return body.follows;
+  };
+  const baseline = await listed();
+  const followed = await call("POST", "/api/follows", {
+    cookie: member2,
+    body: { performer: counterpart, name: "Saved StashDB snapshot" },
+  });
+  assert.equal(followed.status, 201);
+  const followedBody: { follow: FollowShape } = await followed.json();
+  assert.equal(followedBody.follow.linked, null);
+  const before = await listed();
+
+  try {
+    resetMetaCache();
+    tpdbFx.failPaths = [`/performers/${TPDB_PERFORMER5}`];
+    const failed = await call("POST", "/api/follows/merge", {
+      cookie: member2,
+      body: { performer, counterpart },
+    });
+    assert.equal((await errorShape(failed, 502)).code, "upstream_unavailable");
+    assert.deepEqual(await listed(), before);
+
+    tpdbFx.failPaths = [];
+    resetMetaCache();
+    const merged = await call("POST", "/api/follows/merge", {
+      cookie: member2,
+      body: { performer, counterpart },
+    });
+    assert.equal(merged.status, 200);
+    const mergedBody: { follow: FollowShape } = await merged.json();
+    const follow = mergedBody.follow;
+    assert.deepEqual(follow.reference, performer);
+    assert.equal(follow.name, "User-Merged Fixture Performer");
+    assert.deepEqual(follow.linked, counterpart);
+    assert.deepEqual(
+      (await listed()).filter(
+        (f) =>
+          f.reference.id === TPDB_PERFORMER5 ||
+          f.reference.id === STASH_PERFORMER3,
+      ),
+      [follow],
+    );
+
+    const detail = await call(
+      "GET",
+      `/api/catalog/tpdb/performer/${TPDB_PERFORMER5}`,
+      { cookie: member2 },
+    );
+    assert.equal(detail.status, 200);
+    const detailBody: { link: { linked: unknown } } = await detail.json();
+    assert.deepEqual(detailBody.link.linked, counterpart);
+
+    const dropped = await call(
+      "DELETE",
+      `/api/follows/stashdb/${STASH_PERFORMER3}`,
+      { cookie: member2 },
+    );
+    assert.equal(dropped.status, 204);
+    assert.deepEqual(await listed(), baseline);
+  } finally {
+    tpdbFx.failPaths = [];
+    resetMetaCache();
+    // Remove either standalone row if an assertion stopped before the merge.
+    await call("DELETE", `/api/follows/tpdb/${TPDB_PERFORMER5}`, {
+      cookie: member2,
+    });
+    await call("DELETE", `/api/follows/stashdb/${STASH_PERFORMER3}`, {
+      cookie: member2,
+    });
+  }
+});
+
+test("a merge auto-follows the StashDB side without partial writes on a provider failure", async () => {
+  const performer = {
+    provider: "stashdb",
+    kind: "performer",
+    id: STASH_PERFORMER3,
+  };
+  const counterpart = {
+    provider: "tpdb",
+    kind: "performer",
+    id: TPDB_PERFORMER5,
+  };
+  const listed = async () => {
+    const res = await call("GET", "/api/follows", { cookie: member2 });
+    assert.equal(res.status, 200);
+    const body: { follows: FollowShape[] } = await res.json();
+    return body.follows;
+  };
+  const baseline = await listed();
+  const followed = await call("POST", "/api/follows", {
+    cookie: member2,
+    body: { performer: counterpart, name: "Saved TPDB snapshot" },
+  });
+  assert.equal(followed.status, 201);
+  const before = await listed();
+
+  try {
+    resetMetaCache();
+    stashdbFx.fail = 5;
+    const failed = await call("POST", "/api/follows/merge", {
+      cookie: member2,
+      body: { performer, counterpart },
+    });
+    assert.equal((await errorShape(failed, 502)).code, "upstream_unavailable");
+    assert.deepEqual(await listed(), before);
+
+    stashdbFx.fail = 0;
+    resetMetaCache();
+    const merged = await call("POST", "/api/follows/merge", {
+      cookie: member2,
+      body: { performer, counterpart },
+    });
+    assert.equal(merged.status, 200);
+    const mergedBody: { follow: FollowShape } = await merged.json();
+    const follow = mergedBody.follow;
+    // The StashDB survivor carries the snapshot taken from its own provider
+    // detail, and names the explicitly selected TPDB counterpart.
+    assert.deepEqual(follow.reference, performer);
+    assert.equal(follow.name, "User-Merged Fixture Performer");
+    assert.deepEqual(follow.linked, counterpart);
+    assert.deepEqual(
+      (await listed()).filter(
+        (f) =>
+          f.reference.id === TPDB_PERFORMER5 ||
+          f.reference.id === STASH_PERFORMER3,
+      ),
+      [follow],
+    );
+
+    // The stored merge reads as the pair's link from the StashDB page too.
+    const detail = await call(
+      "GET",
+      `/api/catalog/stashdb/performer/${STASH_PERFORMER3}`,
+      { cookie: member2 },
+    );
+    assert.equal(detail.status, 200);
+    const detailBody: { link: { linked: unknown } } = await detail.json();
+    assert.deepEqual(detailBody.link.linked, counterpart);
+
+    // Unfollowing the TPDB side drops both rows of the pair.
+    const dropped = await call(
+      "DELETE",
+      `/api/follows/tpdb/${TPDB_PERFORMER5}`,
+      { cookie: member2 },
+    );
+    assert.equal(dropped.status, 204);
+    assert.deepEqual(await listed(), baseline);
+  } finally {
+    stashdbFx.fail = 0;
+    resetMetaCache();
+    // Remove either standalone row if an assertion stopped before the merge.
+    await call("DELETE", `/api/follows/tpdb/${TPDB_PERFORMER5}`, {
+      cookie: member2,
+    });
+    await call("DELETE", `/api/follows/stashdb/${STASH_PERFORMER3}`, {
+      cookie: member2,
+    });
+  }
+});
+
+test("an already-followed merge preserves its snapshots during a provider outage", async () => {
+  const listed = async () => {
+    const res = await call("GET", "/api/follows", { cookie: member2 });
+    assert.equal(res.status, 200);
+    const body: { follows: FollowShape[] } = await res.json();
+    return body.follows;
+  };
+  const followedStandalone = async (
+    provider: "tpdb" | "stashdb",
+    id: string,
+    name: string,
+  ) => {
+    const res = await call("POST", "/api/follows", {
+      cookie: member2,
+      body: {
+        performer: { provider, kind: "performer", id },
+        name,
+        imageUrl: "https://cdn.theporndb.net/saved-follow.jpg",
+      },
+    });
+    assert.equal(res.status, 201);
+  };
+  await followedStandalone("tpdb", TPDB_PERFORMER5, "Kept TPDB snapshot");
+  await followedStandalone(
+    "stashdb",
+    STASH_PERFORMER3,
+    "Kept StashDB snapshot",
+  );
+  const before = await listed();
+  const survivor = before.find((f) => f.reference.id === TPDB_PERFORMER5);
+  assert.ok(survivor);
+
+  try {
+    // A provider outage must not block a merge of saved follows.
+    resetMetaCache();
+    tpdbFx.fail = 5;
+    stashdbFx.fail = 5;
+    const merged = await call("POST", "/api/follows/merge", {
+      cookie: member2,
+      body: {
+        performer: {
+          provider: "tpdb",
+          kind: "performer",
+          id: TPDB_PERFORMER5,
+        },
+        counterpart: {
+          provider: "stashdb",
+          kind: "performer",
+          id: STASH_PERFORMER3,
+        },
+      },
+    });
+    assert.equal(merged.status, 200);
+    const mergedBody: { follow: FollowShape } = await merged.json();
+    assert.deepEqual(mergedBody.follow, {
+      ...survivor,
+      linked: {
+        provider: "stashdb",
+        kind: "performer",
+        id: STASH_PERFORMER3,
+      },
+    });
+
+    // The pair folds to one entry carrying the survivor's snapshot; every
+    // other follow is untouched.
+    const after = await listed();
+    const isPair = (f: FollowShape) =>
+      f.reference.id === TPDB_PERFORMER5 || f.reference.id === STASH_PERFORMER3;
+    assert.deepEqual(after.filter(isPair), [mergedBody.follow]);
+    assert.deepEqual(
+      after.filter((f) => !isPair(f)),
+      before.filter((f) => !isPair(f)),
+    );
+
+    // Unfollowing the absorbed side still drops the whole pair.
+    const dropped = await call(
+      "DELETE",
+      `/api/follows/stashdb/${STASH_PERFORMER3}`,
+      { cookie: member2 },
+    );
+    assert.equal(dropped.status, 204);
+    assert.deepEqual((await listed()).filter(isPair), []);
+  } finally {
+    tpdbFx.fail = 0;
+    stashdbFx.fail = 0;
+    resetMetaCache();
+    await call("DELETE", `/api/follows/tpdb/${TPDB_PERFORMER5}`, {
+      cookie: member2,
+    });
+    await call("DELETE", `/api/follows/stashdb/${STASH_PERFORMER3}`, {
+      cookie: member2,
+    });
+  }
+});
+
+test("a merge refusal never leaves the auto-followed survivor behind", async () => {
+  const listedIds = async () => {
+    const res = await call("GET", "/api/follows", { cookie: member2 });
+    assert.equal(res.status, 200);
+    const body: { follows: FollowShape[] } = await res.json();
+    return body.follows.map((f) => f.reference.id);
+  };
+  const baseline = await listedIds();
+
+  // Authoritative provider absence: the unfollowed survivor is not in the
+  // catalog at all, so the merge refuses before storage and follows nothing.
+  const absent = await call("POST", "/api/follows/merge", {
+    cookie: member2,
+    body: {
+      performer: {
+        provider: "tpdb",
+        kind: "performer",
+        id: TPDB_PERFORMER6,
+      },
+      counterpart: {
+        provider: "stashdb",
+        kind: "performer",
+        id: STASH_PERFORMER3,
+      },
+    },
+  });
+  assert.equal(absent.status, 404);
+  assert.equal((await errorShape(absent)).code, "catalog_not_found");
+  assert.deepEqual(await listedIds(), baseline);
+
+  // Conflict rollback: the survivor would be auto-followed, but the
+  // counterpart is already merged with a third entry. The 409 rolls the new
+  // survivor row back inside the merge transaction.
+  const followStandalone = async (
+    provider: "tpdb" | "stashdb",
+    id: string,
+    name: string,
+  ) => {
+    const res = await call("POST", "/api/follows", {
+      cookie: member2,
+      body: { performer: { provider, kind: "performer", id }, name },
+    });
+    assert.equal(res.status, 201);
+  };
+  await followStandalone(
+    "tpdb",
+    TPDB_PERFORMER5,
+    "User-Merged Fixture Performer",
+  );
+  await followStandalone(
+    "stashdb",
+    STASH_PERFORMER3,
+    "User-Merged Fixture Performer",
+  );
+  const paired = await call("POST", "/api/follows/merge", {
+    cookie: member2,
+    body: {
+      performer: { provider: "tpdb", kind: "performer", id: TPDB_PERFORMER5 },
+      counterpart: {
+        provider: "stashdb",
+        kind: "performer",
+        id: STASH_PERFORMER3,
+      },
+    },
+  });
+  assert.equal(paired.status, 200);
+
+  const conflict = await call("POST", "/api/follows/merge", {
+    cookie: member2,
+    body: {
+      performer: {
+        provider: "tpdb",
+        kind: "performer",
+        id: TPDB_PERFORMER3,
+      },
+      counterpart: {
+        provider: "stashdb",
+        kind: "performer",
+        id: STASH_PERFORMER3,
+      },
+    },
+  });
+  assert.equal(conflict.status, 409);
+  assert.equal((await errorShape(conflict)).code, "already_linked");
+  // No partial follow: the auto-followed survivor is rolled back, and the
+  // standing pair still folds to one entry.
+  const after = await listedIds();
+  assert.equal(after.includes(TPDB_PERFORMER3), false);
+  assert.equal(
+    after.filter((id) => id === TPDB_PERFORMER5 || id === STASH_PERFORMER3)
+      .length,
+    1,
+  );
+
+  // Cleanup: every fresh id unfollowed, so later tests see the unchanged
+  // baseline (unfollowing the survivor drops its absorbed pair too).
+  const dropped = await call("DELETE", `/api/follows/tpdb/${TPDB_PERFORMER5}`, {
+    cookie: member2,
+  });
+  assert.equal(dropped.status, 204);
+  assert.deepEqual(await listedIds(), baseline);
+});
+
 test("a merge refuses same-provider, unfollowed, and already-merged entries", async () => {
   assert.equal(
     (
@@ -3977,20 +4351,30 @@ test("a merge refuses same-provider, unfollowed, and already-merged entries", as
   const stash3 = { provider: "stashdb", id: STASH_PERFORMER3 };
 
   await follow("tpdb", TPDB_PERFORMER5, "User-Merged Fixture Performer");
-  // Both sides must already be followed; the 404 names the missing side.
+  // The counterpart must already be followed; the 404 names the missing
+  // side. The survivor is already followed here, so no provider read runs.
   const missingCounterpart = await merge(tpdb5, stash3);
   assert.equal(missingCounterpart.status, 404);
   const missingBody = await errorShape(missingCounterpart);
   assert.equal(missingBody.code, "follow_not_found");
   assert.match(missingBody.message, /StashDB/);
-  // A missing survivor names its own side (the performer ref is checked
-  // first, so the message names TPDB even though both sides are unfollowed).
+  // A missing survivor no longer refuses on its own side: the merge follows
+  // it from the provider snapshot, so the missing side is now the
+  // counterpart — and the auto-followed row is rolled back with the refusal.
   const missingSurvivor = await merge(
     { provider: "tpdb", id: TPDB_PERFORMER3 },
     stash3,
   );
   assert.equal(missingSurvivor.status, 404);
-  assert.match((await errorShape(missingSurvivor)).message, /TPDB/);
+  assert.match((await errorShape(missingSurvivor)).message, /StashDB/);
+  // Neither refusal left a follow behind: the list still holds exactly the
+  // three pre-existing entries.
+  const refusalList = await call("GET", "/api/follows", { cookie: member2 });
+  const refusalBody: { follows: FollowShape[] } = await refusalList.json();
+  assert.deepEqual(
+    refusalBody.follows.map((f) => f.reference.id).sort(),
+    [STASH_PERFORMER, TPDB_PERFORMER, TPDB_PERFORMER5].sort(),
+  );
 
   await follow("stashdb", STASH_PERFORMER3, "User-Merged Fixture Performer");
   assert.equal((await merge(tpdb5, stash3)).status, 200);

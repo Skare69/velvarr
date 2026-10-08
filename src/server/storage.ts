@@ -1441,6 +1441,57 @@ export function createRequest(
 
 // --- performer follows ---
 
+/** Inserts a validated follow row inside the caller's transaction. */
+function insertFollowRow(
+  accountId: string,
+  reference: CatalogReference,
+  name: string,
+  imageUrl: string | null,
+  linked: CatalogReference | null,
+): PerformerFollowRow {
+  const trimmed = name.trim();
+  if (!nonemptyString(trimmed, 500)) {
+    throw new AppError(400, "invalid_field", "performer name is required");
+  }
+  const account = S().getAccount.get(accountId) as AccountRow | undefined;
+  if (!account || account.enabled !== 1) {
+    throw new AppError(
+      403,
+      "account_not_admitted",
+      "only admitted accounts may follow performers",
+    );
+  }
+  const id = randomUUID();
+  try {
+    S().insertPerformerFollow.run(
+      id,
+      accountId,
+      reference.provider,
+      reference.id,
+      trimmed,
+      imageUrl ?? null,
+      Date.now(),
+      linked?.provider ?? null,
+      linked?.id ?? null,
+    );
+  } catch (e) {
+    if (
+      isUniqueConflict(e, [
+        "performer_follows.account_id",
+        "performer_follows.external_id",
+      ])
+    ) {
+      throw new AppError(
+        409,
+        "already_following",
+        "this performer is already followed",
+      );
+    }
+    throw e;
+  }
+  return S().getPerformerFollow.get(id) as PerformerFollowRow;
+}
+
 /** Records one account's performer follow. Admission is read from the current
  * stored account, never from a caller-supplied stale Account. `linked` is the
  * same performer on the other provider, resolved by the caller from published
@@ -1464,47 +1515,11 @@ export function followPerformer(
     throw new AppError(400, "invalid_field", "performer name is required");
   }
   const d = open();
-  return inTransaction(d, () => {
-    const account = S().getAccount.get(accountId) as AccountRow | undefined;
-    if (!account || account.enabled !== 1) {
-      throw new AppError(
-        403,
-        "account_not_admitted",
-        "only admitted accounts may follow performers",
-      );
-    }
-    const id = randomUUID();
-    try {
-      S().insertPerformerFollow.run(
-        id,
-        accountId,
-        reference.provider,
-        reference.id,
-        trimmed,
-        imageUrl ?? null,
-        Date.now(),
-        linked?.provider ?? null,
-        linked?.id ?? null,
-      );
-    } catch (e) {
-      if (
-        isUniqueConflict(e, [
-          "performer_follows.account_id",
-          "performer_follows.external_id",
-        ])
-      ) {
-        throw new AppError(
-          409,
-          "already_following",
-          "this performer is already followed",
-        );
-      }
-      throw e;
-    }
-    return rowToPerformerFollow(
-      S().getPerformerFollow.get(id) as PerformerFollowRow,
-    );
-  });
+  return inTransaction(d, () =>
+    rowToPerformerFollow(
+      insertFollowRow(accountId, reference, trimmed, imageUrl, linked),
+    ),
+  );
 }
 
 /** Follows are personal: own rows only, newest first. There is deliberately
@@ -1643,16 +1658,21 @@ const PROVIDER_LABELS: Record<CatalogProvider, string> = {
   stashdb: "StashDB",
 };
 
-/** Merges two already-followed performer entries into one identity: the
- * survivor row names the absorbed one, exactly as a provider-published pair
- * would, so the list folds to one entry and unfollowing either side drops
- * both. The merge is the user's assertion that these are the same person —
- * this follows nothing, name-matches nothing, and never touches a pair the
- * providers published. */
+/** Merges two performer entries into one identity: the survivor row names the
+ * absorbed one, exactly as a provider-published pair would, so the list folds
+ * to one entry and unfollowing either side drops both. The merge is the
+ * user's assertion that these are the same person — this name-matches
+ * nothing and never touches a pair the providers published. `autoFollow`
+ * carries the survivor's provider-taken snapshot for the one-click merge
+ * that also follows the survivor: a missing survivor row is then inserted
+ * inside this transaction, so every refusal below rolls it back and leaves
+ * no partial follow. Undefined keeps the both-sides-already-followed
+ * contract. */
 export function mergePerformerFollows(
   accountId: string,
   survivor: CatalogReference,
   absorbed: CatalogReference,
+  autoFollow: { name: string; imageUrl: string | null } | undefined,
 ): PerformerFollow {
   if (
     !validCatalogRef(survivor, ["performer"]) ||
@@ -1662,11 +1682,24 @@ export function mergePerformerFollows(
   }
   const d = open();
   return inTransaction(d, () => {
-    const survivorRow = S().getPerformerFollowByRef.get(
+    let survivorRow = S().getPerformerFollowByRef.get(
       accountId,
       survivor.provider,
       survivor.id,
     ) as PerformerFollowRow | undefined;
+    if (!survivorRow && autoFollow) {
+      // One Merge click also follows the survivor. The insert (with its
+      // admission and unique checks) sits inside this transaction, so a
+      // missing counterpart or an already-linked refusal below rolls the
+      // new row back — errors leave no partial follow.
+      survivorRow = insertFollowRow(
+        accountId,
+        survivor,
+        autoFollow.name,
+        autoFollow.imageUrl,
+        null,
+      );
+    }
     if (!survivorRow) {
       throw new AppError(
         404,

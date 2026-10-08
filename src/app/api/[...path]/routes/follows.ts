@@ -112,10 +112,12 @@ export async function deleteFollowRoute(
   return new Response(null, { status: 204 });
 }
 
-/** Merges two already-followed entries the user asserts are the same person
- * and the providers never linked. Both sides must already be followed and on
- * different providers; the survivor (`performer`) row names the counterpart,
- * exactly as a provider-published pair would. */
+/** Merges two entries the user asserts are the same person and the providers
+ * never linked. The counterpart must already be followed; the survivor
+ * (`performer`) is followed on the spot when it is not yet, its snapshot
+ * taken from the provider detail with the same rules as a Follow press. The
+ * survivor row names the counterpart, exactly as a provider-published pair
+ * would. */
 export async function mergeFollowsRoute(
   request: Request,
   ctx: AuthContext,
@@ -130,8 +132,32 @@ export async function mergeFollowsRoute(
       "a merge pairs a TPDB entry with a StashDB entry",
     );
   }
-  // Same-provider and malformed refs are refused above, before storage runs.
-  const follow = mergePerformerFollows(ctx.account.id, performer, counterpart);
+  // Existing follows keep their snapshots and do not depend on provider reads.
+  const followed = listFollows(ctx.account.id).some(
+    (f) =>
+      (f.reference.provider === performer.provider &&
+        f.reference.id === performer.id) ||
+      (f.linked?.provider === performer.provider &&
+        f.linked?.id === performer.id),
+  );
+  let autoFollow: { name: string; imageUrl: string | null } | undefined;
+  if (!followed) {
+    const detail = await getCatalogDetail(performer);
+    if (!detail) {
+      throw new AppError(
+        404,
+        "catalog_not_found",
+        "This item is not in the provider catalog.",
+      );
+    }
+    autoFollow = { name: detail.title, imageUrl: followImage(detail.imageUrl) };
+  }
+  const follow = mergePerformerFollows(
+    ctx.account.id,
+    performer,
+    counterpart,
+    autoFollow,
+  );
   return json({ follow }, 200);
 }
 

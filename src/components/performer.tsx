@@ -539,11 +539,10 @@ function FollowStar({
 
 /* ---------- Merge a duplicate entry on the other provider ---------- */
 
-/** Two followed entries can be the same person even when the providers never
- * published a link between them. Merging records YOUR assertion that both
- * entries are the same person — Velvarr never matches performers by name, it
- * only stores the pair the human declares. Rendered only while this page's
- * provider link is missing. */
+/** Merging records the user's explicit assertion, never a name match. It
+ * follows the current entry if needed and links the selected standalone
+ * follow on the other provider. Rendered only while this page's provider
+ * link is missing. */
 function MergeControl({
   reference,
   onMerged,
@@ -624,6 +623,11 @@ function MergeControl({
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           />
+          {error !== null && (
+            <p className="mt-2 text-sm text-danger" role="alert">
+              {error}
+            </p>
+          )}
           {follows === null && error === null ? (
             <p className="mt-2 text-sm text-muted" aria-live="polite">
               Loading your follows…
@@ -671,11 +675,6 @@ function MergeControl({
             merge records your assertion; Velvarr never matches by name.
           </p>
         </>
-      )}
-      {error !== null && open && (
-        <p className="bulk-error mt-2 text-xs" role="alert">
-          {error}
-        </p>
       )}
     </div>
   );
@@ -1020,6 +1019,8 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
   const { providers } = useSession();
   const notConfigured = providers?.[reference.provider] === "not_configured";
   const [reload, setReload] = useState(0);
+  const [merged, setMerged] = useState<string | null>(null);
+  useEffect(() => setMerged(null), [reference.provider, reference.id]);
 
   const { payload, err, loading } = usePerformerDetail(
     reference.provider,
@@ -1149,12 +1150,21 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
                 </div>
                 <div className="mt-3">
                   <FollowStar
-                    key={`${reference.provider}:${reference.id}`}
+                    key={`${reference.provider}:${reference.id}:${reload}`}
                     provider={reference.provider}
                     id={reference.id}
                     name={d.title}
                     imageUrl={d.imageUrl ?? null}
                   />
+                  {merged === `${reference.provider}:${reference.id}` && (
+                    <p className="mt-2 text-sm text-ok" role="status">
+                      Followed and merged with{" "}
+                      {providerLabel(
+                        reference.provider === "tpdb" ? "stashdb" : "tpdb",
+                      )}
+                      .
+                    </p>
+                  )}
                 </div>
                 {d.aliases.length > 0 && (
                   <p className="mt-2 text-xs text-muted">
@@ -1228,7 +1238,10 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
                 </p>
                 <MergeControl
                   reference={reference}
-                  onMerged={() => setReload((n) => n + 1)}
+                  onMerged={() => {
+                    setMerged(`${reference.provider}:${reference.id}`);
+                    setReload((n) => n + 1);
+                  }}
                 />
               </div>
             )}

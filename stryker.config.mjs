@@ -47,10 +47,8 @@ const config = {
   // stryker.log (cwd) captures the full run including worker deaths; the
   // console progress lines survive on stdout.
   fileLogLevel: "trace",
-  // break is the measured clean-run score (82.11, 2026-10-06, the first run
-  // with the person and api-get suites in the runner; 82.86 on 2026-10-05
-  // with update added, after the v0.36.0 review run failed at 81.90 with it
-  // omitted), floored; a regression below it fails the run. Accepted
+  // break is the measured clean-run score (83.74, 2026-10-08), floored;
+  // a regression below it fails the run. Accepted
   // survivors: display-copy strings, the REQUESTS_CHANGED event name,
   // empty-array shape defaults asserted nowhere, the fetch-param conditionals
   // and sort comparators in browse.ts/contracts.ts/related.ts that the
@@ -59,7 +57,7 @@ const config = {
   // (guard some-vs-every, loop-bound and comparison rewrites that cannot flip
   // a returned boolean), and api-get.ts's FIFO-cap edges (has/clear/eviction
   // conditionals asserted only loosely by the queue-order tests).
-  thresholds: { high: 85, low: 75, break: 82 },
+  thresholds: { high: 85, low: 75, break: 83 },
 };
 
 export default config;

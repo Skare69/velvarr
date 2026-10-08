@@ -26,6 +26,7 @@
 - **Durable requests** with administrator or moderator approval and an optional per-account auto-approve grant; the Requests list filters by media type and status and sorts by most recent or last modified
 - **Crash-safe acquisition worker** — every attempt is persisted before any network call and reconciled by exact identity after a restart; never a lost or duplicated add
 - **Per-user Jellyfin availability** and credential-free watch links
+- **Performer follows** — Merge follows the current performer if needed and pairs the selected, already-followed entry on the other provider. Failed merges leave follows unchanged.
 - **Personal preferences** — per-account hidden tags and Discover shelf ordering
 - **Similar titles** on movies and scenes (shared published tags) and **Often appears with** on performers (co-appearance)
 - **Update notice** — the sidebar shows a chip linking to a newer GitHub release; the server asks api.github.com at most once an hour (`VELVARR_UPDATE_CHECK=0` disables it)
