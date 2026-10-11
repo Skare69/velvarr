@@ -1246,6 +1246,62 @@ test("searchVisibleCatalog filters hidden rows across page boundaries; passthrou
   );
 });
 
+test("searchVisibleCatalog keeps paging when the exhausted stream leaves a visible surplus", async () => {
+  const TAG_H = uuid(104);
+  // 30 scenes over two 24-row upstream pages, one hidden on page 1: the last
+  // page lifts the visible buffer to 29, past start(0)+perPage(24).
+  const pageOne = Array.from({ length: 24 }, (_, i) =>
+    stashRow(
+      uuid(200 + i),
+      `Scene ${i + 1}`,
+      "2024-06-01",
+      i === 0 ? [{ id: TAG_H, name: "Hidden" }] : [],
+    ),
+  );
+  const pageTwo = Array.from({ length: 6 }, (_, i) =>
+    stashRow(uuid(300 + i), `Tail ${i + 1}`, "2024-05-01"),
+  );
+  const scenes: { count: number; rows: unknown[] } = {
+    count: 30,
+    rows: pageOne,
+  };
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [{ rows: [], next: null, total: 0 }],
+      scenes,
+      onScenesRequest: (input) => {
+        // One Stream per catalog page: every call refetches from upstream
+        // page 1, so the fixture keys rows on the upstream page number.
+        scenes.rows = input.page === 2 ? pageTwo : pageOne;
+      },
+    }),
+    async () => {
+      const first = await searchVisibleCatalog(
+        { provider: "stashdb", kind: "scene", page: 1, perPage: 24 },
+        [{ name: "Hidden", stashdb: TAG_H }],
+      );
+      assert.equal(first.items.length, 24);
+      assert.equal(first.items.at(-1)?.title, "Tail 1"); // filled from surplus
+      assert.equal(first.hasMore, true); // 5 visible rows remain past page 1
+      assert.equal(first.total, 29);
+      assert.equal(first.totalCountKnown, true);
+
+      const second = await searchVisibleCatalog(
+        { provider: "stashdb", kind: "scene", page: 2, perPage: 24 },
+        [{ name: "Hidden", stashdb: TAG_H }],
+      );
+      assert.deepEqual(
+        second.items.map((d) => d.title),
+        ["Tail 2", "Tail 3", "Tail 4", "Tail 5", "Tail 6"],
+      );
+      assert.equal(second.hasMore, false);
+      assert.equal(second.total, 29);
+      assert.equal(second.totalCountKnown, true);
+    },
+  );
+});
+
 // --- searchBrowseTags ---
 
 test("searchBrowseTags merges same labels across providers and reports outages", async () => {

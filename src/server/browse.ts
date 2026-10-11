@@ -967,7 +967,9 @@ export async function searchVisibleCatalog(
     page: requestedPage,
     perPage,
     ...(stream.sort !== undefined ? { sort: stream.sort } : {}),
-    hasMore: !exhausted,
+    // Exhausted but holding rows past this page: the surplus is still
+    // pageable (mergeStreams requires the same empty-buffer proof).
+    hasMore: !exhausted || stream.buffer.length > start + perPage,
     ...(exhausted
       ? { total: stream.buffer.length, totalCountKnown: true }
       : { totalCountKnown: false }),
