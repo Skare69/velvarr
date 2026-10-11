@@ -36,15 +36,51 @@ import {
   useSession,
   useTapReveal,
 } from "./shared.tsx";
-import { TitlesView } from "./catalog.tsx";
-import { PreferencesDialog } from "./preferences.tsx";
+import dynamic from "next/dynamic";
 import { DiscoverShelves, FacetsView, RailSkeleton } from "./discover.tsx";
-import { SearchView } from "./search.tsx";
-import { RequestsView } from "./requests.tsx";
-import { SettingsView } from "./settings.tsx";
-import { AdminView } from "./admin.tsx";
-import { FollowingView } from "./following.tsx";
-import { LibraryView } from "./library.tsx";
+
+function ChunkLoading() {
+  return <div className="skel m-6 h-8 w-48" aria-hidden="true" />;
+}
+
+// Views outside the boot path load on first navigation: only the shell and
+// the default discover view ride the initial bundle. FacetsView stays static:
+// it lives in discover.tsx, which BootSkeleton already pulls in eagerly.
+const TitlesView = dynamic(
+  () => import("./catalog.tsx").then((m) => m.TitlesView),
+  { loading: ChunkLoading },
+);
+const PreferencesDialog = dynamic(() =>
+  import("./preferences.tsx").then((m) => m.PreferencesDialog),
+);
+const SearchView = dynamic(
+  () => import("./search.tsx").then((m) => m.SearchView),
+  {
+    loading: ChunkLoading,
+  },
+);
+const RequestsView = dynamic(
+  () => import("./requests.tsx").then((m) => m.RequestsView),
+  { loading: ChunkLoading },
+);
+const SettingsView = dynamic(
+  () => import("./settings.tsx").then((m) => m.SettingsView),
+  { loading: ChunkLoading },
+);
+const AdminView = dynamic(
+  () => import("./admin.tsx").then((m) => m.AdminView),
+  {
+    loading: ChunkLoading,
+  },
+);
+const FollowingView = dynamic(
+  () => import("./following.tsx").then((m) => m.FollowingView),
+  { loading: ChunkLoading },
+);
+const LibraryView = dynamic(
+  () => import("./library.tsx").then((m) => m.LibraryView),
+  { loading: ChunkLoading },
+);
 
 function BootSkeleton() {
   return (
