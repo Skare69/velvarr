@@ -11,7 +11,6 @@ import {
 import type {
   CatalogKind,
   CatalogProvider,
-  IntegrationConfig,
   MediaReference,
   CatalogDetailResponse,
 } from "../../../../lib/contracts.ts";
@@ -25,7 +24,6 @@ import {
   upsertCatalogRecord,
 } from "../../../../server/storage.ts";
 import { type AuthContext, type RouteDef, json } from "../admission.ts";
-import { suggestTags } from "../../../../server/judgment.ts";
 import { AppError } from "../../../../server/http.ts";
 import { imageResponse } from "./library.ts";
 import {
@@ -33,9 +31,7 @@ import {
   getCatalogDetail,
   isProviderImageUrl,
   linkedPerformerCounterpart,
-  listCatalogTags,
   searchCatalog,
-  searchCatalogTags,
   type CatalogSearchQuery,
   type CatalogSortDirection,
   type CatalogSortKey,
@@ -477,40 +473,6 @@ export async function browseTagsRoute(request: Request): Promise<Response> {
   return json(await searchBrowseTags(q));
 }
 
-// Tag facet lookup for the catalog filter UI: the provider's own ids and
-// ordering come back verbatim — nothing is merged across providers and no
-// counts are invented here. An empty result with a configured TypeSafe key
-// gains judged suggestions: real tags chosen among the provider's own list,
-// never invented ones.
-export async function catalogTagsRoute(
-  request: Request,
-  config: IntegrationConfig,
-): Promise<Response> {
-  const params = new URL(request.url).searchParams;
-  const provider = parseCatalogProvider(params.get("provider"));
-  const q = (params.get("q") ?? "").trim();
-  if (q.length < 2) {
-    throw new AppError(
-      400,
-      "invalid_query",
-      "Enter at least 2 characters to search.",
-    );
-  }
-  const tags = await searchCatalogTags(provider, q);
-  if (tags.length > 0) return json({ tags });
-  const key = config.providers?.typesafeApiKey;
-  if (key === undefined || key.trim() === "") return json({ tags });
-  const suggestions = await suggestTags(
-    q,
-    await listCatalogTags(provider),
-    key,
-  );
-  return json({
-    tags,
-    ...(suggestions.length > 0 ? { suggestions } : {}),
-  });
-}
-
 // Related titles for one media reference, loaded separately from the detail
 // so it never delays playback/request actions. Same reference validation as
 // detail (media only, provider UUID), plus an explicit rank choice; the
@@ -679,12 +641,6 @@ export const routes: RouteDef[] = [
     segments: ["catalog", "image"],
     auth: "session",
     run: async (_ctx, request) => catalogImage(request),
-  },
-  {
-    method: "GET",
-    segments: ["catalog", "tags"],
-    auth: "session",
-    run: async (ctx, request) => catalogTagsRoute(request, ctx.config),
   },
   {
     method: "GET",
