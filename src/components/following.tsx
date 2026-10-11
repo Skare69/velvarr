@@ -27,6 +27,11 @@ export function FollowingView() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
 
+  // The detail id is an effect dep: following, unfollowing or merging happens
+  // on the in-place performer page while this list is not rendered, so the
+  // list refetches when the page closes (the id leaves the URL) and shows
+  // what those actions left behind.
+  const id = params.get("id");
   useEffect(() => {
     let live = true;
     setError(null);
@@ -40,7 +45,7 @@ export function FollowingView() {
     return () => {
       live = false;
     };
-  }, [reload]);
+  }, [reload, id]);
 
   // Opening a performer stays on this view — the same URL carries the
   // performer page below. Push, so Back returns to the list.
@@ -73,7 +78,6 @@ export function FollowingView() {
   // checked, because a movie or scene id here is not a performer — this view
   // used to hand any id to the performer page, which then asked the provider
   // for a performer that never existed.
-  const id = params.get("id");
   const provider = params.get("provider");
   const kind = params.get("kind");
   if (
@@ -83,7 +87,13 @@ export function FollowingView() {
   ) {
     return (
       <section aria-label="Performer">
-        <PerformerView reference={{ provider, kind: "performer", id }} />
+        {/* Keyed by the reference: moving from one performer to another in
+            place remounts the page, so A's merge picker, filter text and
+            follows snapshot never render on B's page. */}
+        <PerformerView
+          key={`${provider}:${id}`}
+          reference={{ provider, kind: "performer", id }}
+        />
       </section>
     );
   }

@@ -563,7 +563,9 @@ function MergeControl({
   const [error, setError] = useState<string | null>(null);
 
   // Same live-flag pattern as FollowStar: a stale in-flight list never wins.
-  useEffect(() => {
+  // check is also the picker's retry: a failed read keeps the list unknown,
+  // and pressing Retry reads it again.
+  const check = useCallback(() => {
     if (!open || follows !== null) return;
     let live = true;
     setError(null);
@@ -578,6 +580,7 @@ function MergeControl({
       live = false;
     };
   }, [open, follows]);
+  useEffect(check, [check]);
 
   const merge = async (f: PerformerFollow) => {
     setBusyId(f.id);
@@ -630,12 +633,24 @@ function MergeControl({
           {error !== null && (
             <p className="mt-2 text-sm text-danger" role="alert">
               {error}
+              {/* Retry belongs to the failed read only: a merge failure keeps
+                  the list, and the Merge button itself is the retry. */}
+              {follows === null && (
+                <>
+                  {" "}
+                  <button type="button" className="btn" onClick={check}>
+                    Retry
+                  </button>
+                </>
+              )}
             </p>
           )}
-          {follows === null && error === null ? (
-            <p className="mt-2 text-sm text-muted" aria-live="polite">
-              Loading your follows…
-            </p>
+          {follows === null ? (
+            error === null ? (
+              <p className="mt-2 text-sm text-muted" aria-live="polite">
+                Loading your follows…
+              </p>
+            ) : null
           ) : candidates.length === 0 ? (
             <p className="mt-2 text-sm text-muted">
               No standalone {providerLabel(other)} entry to merge. Follow her on{" "}
