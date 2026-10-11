@@ -53,7 +53,7 @@
     },
     "shadows": [
       { "name": "poster-lift", "value": "0 6px 20px -4px rgb(0 0 0 / 0.5)", "purpose": "Hover pop under media cards; the only resting-to-hover shadow." },
-      { "name": "overlay-veil", "value": "rgb(0 0 0 / 0.66)", "purpose": "Dialog/sheet ::backdrop scrim." }
+      { "name": "overlay-veil", "value": "rgb(0 0 0 / 0.66)", "purpose": "Dialog/sheet ::backdrop scrim (More sheet, preferences dialog); the catalog drawer and bulk/user dialogs use a canvas-toned scrim, color-mix(in srgb, var(--color-canvas) 72%, transparent)." }
     ],
     "motion": [
       { "name": "state-fade", "value": "160ms ease", "purpose": "Background, border, color, box-shadow state transitions." },
@@ -126,12 +126,12 @@
     ],
     "dos": [
       "Do separate with tone distance + 1px edge (color-mix for blends)",
-      "Do keep focus rings 2px accent at 4px offset, :focus-visible only",
+      "Do keep focus rings 2px accent at 4px offset, :focus-visible only; Discover's dense grids pull the offset to 3px (browse icon) and 2px (tiles, scroll buttons, shelf cards) in src/components/discover.css",
       "Do respect prefers-reduced-motion"
     ],
     "donts": [
       "Don't fake data or status — honesty is the product",
-      "Don't add a second accent hue, gradient text, or decorative glass",
+      "Don't add a second accent hue, gradient text, or decorative glass; the fixed topbar (blur(12px)) and footer bar (8px) blur scrolling artwork for legibility — functional chrome, not decoration",
       "Don't float resting surfaces with ambient shadows",
       "Don't alter the credit or the mobile More-sheet navigation without a card"
     ]

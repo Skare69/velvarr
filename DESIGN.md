@@ -91,11 +91,11 @@ App shell: fixed sidebar (`--sidebar-width: 232px`), topbar (`--topbar-height: 7
 
 ## Elevation & Depth
 
-**Earned Depth Rule:** flat by default, shadow on touch. Panels and cards separate by tone + 1px edge; shadows appear only on interaction (poster-card hover pop `0 6px 20px -4px rgb(0 0 0 / 0.5)`) or on true overlays (sheets/modals: `rgb(0 0 0 / 0.66)` backdrop, 8px blur on the fixed footer bar). Nothing floats unbidden; depth is earned by touch. `::backdrop` + native dialog semantics carry the modal layer.
+**Earned Depth Rule:** flat by default, shadow on touch. Panels and cards separate by tone + 1px edge; shadows appear only on interaction (poster-card hover pop `0 6px 20px -4px rgb(0 0 0 / 0.5)`) or on true overlays (sheets/modals: `rgb(0 0 0 / 0.66)` backdrop on the More sheet and the preferences dialog, while the catalog drawer and the bulk/user dialogs use a canvas-toned scrim, `color-mix(in srgb, var(--color-canvas) 72%, transparent)`; 8px blur on the fixed footer bar). Nothing floats unbidden; depth is earned by touch. `::backdrop` + native dialog semantics carry the modal layer.
 
 ## Shapes
 
-Quietly rounded, never pill-exuberant: chips 5px, buttons/inputs 7px, panels/cards 10px, skeleton 9px, icon buttons 8px. Form language is hairline borders on filled surfaces; focus is a 2px accent outline at 4px offset (`:focus-visible` only). Radius scale is small by design — the posters carry the drama, corners stay calm.
+Quietly rounded, never pill-exuberant: chips 5px, buttons/inputs 7px, panels/cards 10px, skeleton 9px, icon buttons 8px. Form language is hairline borders on filled surfaces; focus is a 2px accent outline at 4px offset (`:focus-visible` only). Known exception: Discover's dense grids pull the offset in — 3px on the browse icon, 2px on tiles, scroll buttons, and shelf cards (`src/components/discover.css`) — so the outline survives the clipped tiles. Radius scale is small by design — the posters carry the drama, corners stay calm.
 
 ## Components
 
@@ -123,4 +123,4 @@ Quietly rounded, never pill-exuberant: chips 5px, buttons/inputs 7px, panels/car
 - Don't introduce a second accent hue or gradient text.
 - Don't add ambient shadows under resting surfaces; depth is earned by touch.
 - Don't replace the credit (bold Velvarr → repo, version → release) or the More-sheet mobile navigation.
-- Don't use colored left/right borders above 1px, glass blur as decoration, or emoji as icons.
+- Don't use colored left/right borders above 1px, glass blur as decoration, or emoji as icons. The two blur exceptions are functional chrome, not decoration: the fixed topbar (`backdrop-filter: blur(12px)`) and the fixed footer bar (8px) blur scrolling artwork so their text stays legible.
