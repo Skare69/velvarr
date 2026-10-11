@@ -1508,8 +1508,9 @@ test("studio links resolve both published TPDB URL forms; uuid form wins; absenc
   });
   assert.equal(byUuid.unlinkedReason, undefined);
 
-  // Published form two: theporndb.net/sites/<slug>. The slug rides verbatim;
-  // the TPDB site read canonicalizes it to the uuid downstream.
+  // Published form two: theporndb.net/sites/<slug>. The slug rides verbatim
+  // out of crossProviderLink; studioCounterpart canonicalizes it to the
+  // site uuid through the cached TPDB /sites/<slug> read.
   const bySlug = crossProviderLink(
     stashStudioDetail(["https://theporndb.net/sites/tushy"]),
   );
@@ -1549,6 +1550,9 @@ test("studioCounterpart resolves one stashdb studio per exact url and degrades t
   // the metadata cache cannot serve an earlier phase's answer.
   const TPDB_SITESLUG_ID = "2b3c4d5e-6f70-4a81-9c2d-3e4f5a6b7c8d";
   const STASH_SLUG_STUDIO_ID = "3c4d5e6f-7081-4b92-ad3e-4f5a6b7c8d9e";
+  // Publishes a slug no /sites/ row answers: canonicalization must degrade
+  // to absent, never publish the slug as an id.
+  const STASH_SLUG_MISSING_STUDIO_ID = "4d5e6f70-8192-4a03-be4f-5a6b7c8d9e0f";
   // TPDB side: the reference first reads /sites/<id>; that row's uuid and
   // short_name are what build the two candidate URLs.
   const siteRows: Record<string, Record<string, unknown>> = {
@@ -1558,6 +1562,13 @@ test("studioCounterpart resolves one stashdb studio per exact url and degrades t
       short_name: "tushy",
     },
     [TPDB_SITESLUG_ID]: {
+      uuid: TPDB_SITESLUG_ID,
+      name: "Tushy Raw",
+      short_name: "TushyRaw",
+    },
+    // The slug-form alias of the same site row, answered for the stashdb
+    // direction's canonicalization read.
+    tushyraw: {
       uuid: TPDB_SITESLUG_ID,
       name: "Tushy Raw",
       short_name: "TushyRaw",
@@ -1629,6 +1640,35 @@ test("studioCounterpart resolves one stashdb studio per exact url and degrades t
       query: string;
       variables?: { url?: string; input?: { url?: string } };
     };
+    // The stashdb direction reads studio details (findStudio) and must never
+    // run queryStudios candidates; the exact-shape asserts below hold only
+    // for queryStudios.
+    if (parsed.query.includes("findStudio")) {
+      const wanted = (parsed.variables as { id?: string } | undefined)?.id;
+      const record =
+        wanted === STASH_SLUG_STUDIO_ID
+          ? {
+              id: STASH_SLUG_STUDIO_ID,
+              name: "Tushy Raw",
+              deleted: false,
+              urls: [{ url: "https://theporndb.net/sites/tushyraw" }],
+              images: [],
+              parent: null,
+              child_studios: [],
+            }
+          : wanted === STASH_SLUG_MISSING_STUDIO_ID
+            ? {
+                id: STASH_SLUG_MISSING_STUDIO_ID,
+                name: "Missing Slug Studio",
+                deleted: false,
+                urls: [{ url: "https://theporndb.net/sites/no-such-slug" }],
+                images: [],
+                parent: null,
+                child_studios: [],
+              }
+            : null;
+      return sendJson(res, 200, { data: { findStudio: record } });
+    }
     assert.ok(parsed.query.includes("queryStudios"));
     assert.ok(parsed.query.includes("per_page: 5"));
     const url = parsed.variables?.url ?? parsed.variables?.input?.url ?? "";
@@ -1706,6 +1746,28 @@ test("studioCounterpart resolves one stashdb studio per exact url and degrades t
         provider: "tpdb",
         kind: "studio",
         id: TPDB_STUDIO_MALFORMED,
+      }),
+      undefined,
+    );
+
+    // StashDB → TPDB: a record publishing only the /sites/<slug> form has
+    // its slug id canonicalized to the site uuid through the cached site
+    // row — the shape every tile id and comparison speaks. No queryStudios
+    // candidate runs for this direction (the queried pin below proves it),
+    // and a slug no site row answers degrades to absent, never to the slug.
+    assert.deepEqual(
+      await studioCounterpart({
+        provider: "stashdb",
+        kind: "studio",
+        id: STASH_SLUG_STUDIO_ID,
+      }),
+      { provider: "tpdb", kind: "studio", id: TPDB_SITESLUG_ID },
+    );
+    assert.equal(
+      await studioCounterpart({
+        provider: "stashdb",
+        kind: "studio",
+        id: STASH_SLUG_MISSING_STUDIO_ID,
       }),
       undefined,
     );

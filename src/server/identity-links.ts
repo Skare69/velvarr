@@ -146,9 +146,10 @@ export function crossProviderLink(detail: CatalogDetail): CrossProviderLink {
     if (!fromTpdb) {
       // StashDB publishes its TPDB counterpart in `urls` in two observed
       // forms: a canonical /studios/<uuid> and a /sites/<slug>. The slug
-      // stays a slug here because getCatalogDetail canonicalizes it through
-      // TPDB /sites/<slug>. A uuid form outranks a slug form when a record
-      // publishes both.
+      // stays a slug here: studioCounterpart canonicalizes it to the site
+      // uuid through the cached TPDB /sites/<slug> row before anything
+      // compares or resolves it. A uuid form outranks a slug form when a
+      // record publishes both.
       let slug: string | undefined;
       for (const link of detail.links) {
         const uuid = TPDB_STUDIO_UUID_LINK_RE.exec(link.url)?.[1];

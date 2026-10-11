@@ -3837,6 +3837,186 @@ test("the studios directory lists every studio past the shelf cap on both sides"
   }
 });
 
+// Isolated pair for the slug-form identity: the shared snapshot only carries
+// uuid-form links, so a slug-publishing StashDB studio gets its own
+// providers, pointed at per test and restored after.
+const SLUG_TPDB_STUDIO = "7d8e9f0a-1b2c-4d3e-8f90-a1b2c3d4e5f6";
+const SLUG_STASH_STUDIO = "8e9f0a1b-2c3d-4e4f-9a01-b2c3d4e5f6a7";
+const SLUG_STASH_ABSENT = "8e9f0a1b-2c3d-4e4f-9a01-b2c3d4e5f6a8";
+const SLUG_MOVIE = "9f0a1b2c-3d4e-4f50-ab12-c3d4e5f6a7b8";
+const SLUG_SCENE = "0a1b2c3d-4e5f-4a61-bc23-d4e5f6a7b8c9";
+
+function slugTpdbHandler(req: IncomingMessage, res: ServerResponse): void {
+  const p = new URL(req.url ?? "/", "http://fixture").pathname;
+  if (p === "/movies") {
+    return json(res, 200, {
+      data: [
+        {
+          ...tpdbMovieRow(SLUG_MOVIE),
+          site: { name: "Slug Studio", uuid: SLUG_TPDB_STUDIO },
+        },
+      ],
+      meta: { total: 1 },
+      links: {},
+    });
+  }
+  if (p === "/scenes") {
+    return json(res, 200, { data: [], meta: { total: 0 }, links: {} });
+  }
+  // uuid form (facet enrichment) and slug form (slug canonicalization) read
+  // the same site row.
+  if (p === `/sites/${SLUG_TPDB_STUDIO}` || p === "/sites/slug-studio") {
+    return json(res, 200, {
+      data: {
+        uuid: SLUG_TPDB_STUDIO,
+        name: "Slug Studio",
+        short_name: "slug-studio",
+      },
+    });
+  }
+  json(res, 404, {});
+}
+
+async function slugStashHandler(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  const body = await readBody(req);
+  const query = typeof body.query === "string" ? body.query : "";
+  if (query.includes("queryScenes")) {
+    return json(res, 200, {
+      data: {
+        queryScenes: {
+          count: 2,
+          scenes: [
+            {
+              id: SLUG_SCENE,
+              title: "Slug Scene",
+              date: "2024-05-06",
+              duration: 600,
+              urls: [],
+              images: [{ url: STASH_IMAGE }],
+              studio: { id: SLUG_STASH_STUDIO, name: "Slug Studio" },
+              tags: [],
+              performers: [],
+            },
+            {
+              id: `${SLUG_SCENE.slice(0, -1)}0`,
+              title: "Ghost Slug Scene",
+              date: "2024-05-06",
+              duration: 600,
+              urls: [],
+              images: [{ url: STASH_IMAGE }],
+              studio: { id: SLUG_STASH_ABSENT, name: "Ghost Slug Studio" },
+              tags: [],
+              performers: [],
+            },
+          ],
+        },
+      },
+    });
+  }
+  if (query.includes("findStudio")) {
+    const wanted = (body.variables as { id?: unknown } | undefined)?.id;
+    // The linked studio publishes ONLY the /sites/<slug> TPDB URL form; the
+    // unlinked one publishes a slug no site row answers.
+    return json(res, 200, {
+      data:
+        wanted === SLUG_STASH_STUDIO
+          ? {
+              findStudio: {
+                id: SLUG_STASH_STUDIO,
+                name: "Slug Studio",
+                deleted: false,
+                urls: [
+                  {
+                    url: "https://theporndb.net/sites/slug-studio",
+                    type: "STUDIO",
+                  },
+                ],
+                images: [],
+                parent: null,
+                child_studios: [],
+              },
+            }
+          : wanted === SLUG_STASH_ABSENT
+            ? {
+                findStudio: {
+                  id: SLUG_STASH_ABSENT,
+                  name: "Ghost Slug Studio",
+                  deleted: false,
+                  urls: [
+                    {
+                      url: "https://theporndb.net/sites/no-such-slug",
+                      type: "STUDIO",
+                    },
+                  ],
+                  images: [],
+                  parent: null,
+                  child_studios: [],
+                },
+              }
+            : null,
+    });
+  }
+  json(res, 200, { data: null });
+}
+
+test("discover: a studio linked only by TPDB site slug dedupes to one tile", async () => {
+  const tpdbFixture = await listen(slugTpdbHandler);
+  const stashFixture = await listen(slugStashHandler);
+  const prevTpdb = process.env.TPDB_BASE_URL;
+  const prevStash = process.env.STASHDB_BASE_URL;
+  process.env.TPDB_BASE_URL = tpdbFixture.url;
+  process.env.STASHDB_BASE_URL = stashFixture.url;
+  // The suite's member session: like the neighboring discover tests, this
+  // test runs after the setup/admin phases established it.
+  try {
+    const res = await call("GET", "/api/discovery/facets?kind=studios", {
+      cookie: member,
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      tiles: {
+        facet: string;
+        provider: string;
+        id: string;
+        name: string;
+        linked?: { provider: string; id: string };
+      }[];
+      errors: unknown[];
+    };
+    // The slug-publishing StashDB studio survives as the one tile and its
+    // linked carries the canonical site uuid, not the slug; the TPDB uuid
+    // tile is deduped away. A studio whose slug resolves to nothing stays
+    // unlinked rather than publishing the slug as an id.
+    assert.deepEqual(body.tiles, [
+      {
+        facet: "studio",
+        provider: "stashdb",
+        id: SLUG_STASH_ABSENT,
+        name: "Ghost Slug Studio",
+      },
+      {
+        facet: "studio",
+        provider: "stashdb",
+        id: SLUG_STASH_STUDIO,
+        name: "Slug Studio",
+        linked: { provider: "tpdb", id: SLUG_TPDB_STUDIO },
+      },
+    ]);
+    assert.deepEqual(body.errors, []);
+  } finally {
+    process.env.TPDB_BASE_URL = prevTpdb;
+    process.env.STASHDB_BASE_URL = prevStash;
+    // keep-alive sockets would hold server.close() open otherwise.
+    tpdbFixture.server.closeAllConnections?.();
+    tpdbFixture.server.close();
+    stashFixture.server.closeAllConnections?.();
+    stashFixture.server.close();
+  }
+});
+
 // --- Wave A: follows, tag facet, bulk requests ---
 
 // json() arrives untyped and no schema validator exists in this suite; these

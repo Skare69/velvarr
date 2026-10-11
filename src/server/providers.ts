@@ -1693,7 +1693,9 @@ export async function linkedPerformerCounterpart(
 
 /** The other provider's studio row for one studio reference, resolved only
  * through provider-published cross-provider URLs — never name similarity.
- * StashDB → TPDB is a pure URL read off the cached studio detail. TPDB →
+ * StashDB → TPDB is a pure URL read off the cached studio detail, with a
+ * /sites/<slug> id canonicalized to the site uuid through the cached site
+ * row. TPDB →
  * StashDB has no published reverse pointer (TPDB site rows carry no external
  * ids), so the raw site row's own uuid/short_name build candidate
  * `theporndb.net` URLs and StashDB's exact-URL studio search arbitrates: a
@@ -1708,7 +1710,25 @@ export async function studioCounterpart(
   try {
     if (reference.provider === "stashdb") {
       const detail = await getCatalogDetail(reference);
-      return detail === null ? undefined : crossProviderLink(detail).linked;
+      if (detail === null) return undefined;
+      const linked = crossProviderLink(detail).linked;
+      if (
+        linked?.provider === "tpdb" &&
+        linked.kind === "studio" &&
+        !isUuid(linked.id)
+      ) {
+        // The /sites/<slug> URL form publishes the site slug as the id;
+        // every comparison, read, and wire reference speaks site uuids, so
+        // canonicalize once through the cached site row. An unusable row
+        // degrades to absent, never to the slug.
+        const body = await tpdbGet<{ data?: { uuid?: unknown } | null }>(
+          `/sites/${linked.id}`,
+        );
+        const uuid = (body?.data ?? null)?.uuid;
+        if (!isUuid(uuid)) return undefined;
+        return { provider: "tpdb", kind: "studio", id: uuid.toLowerCase() };
+      }
+      return linked;
     }
     // uuid and slug are the only id shapes the TPDB /sites/ path accepts;
     // anything else is a forged reference, not a lookup failure.
