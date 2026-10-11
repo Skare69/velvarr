@@ -456,6 +456,45 @@ test("guardMutation enforces exact configured origin and safe transport", () => 
   );
   process.env.VELVARR_ALLOW_HTTP = "1";
   security.guardMutation(req("http://192.168.1.10:5577"));
+  // The flag unlocks private addresses only, never a public HTTP origin.
+  process.env.VELVARR_ORIGIN = "http://velvarr.example.com";
+  assert.throws(
+    () => security.guardMutation(req("http://velvarr.example.com")),
+    (e: { code: string }) => e.code === "unsafe_origin",
+  );
+
+  // Unpinned: the fetch-metadata and content-type gates still run.
+  delete process.env.VELVARR_ORIGIN;
+  const unguarded = (headers: Record<string, string>) =>
+    new Request("http://127.0.0.1:5577/api/login", {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+  assert.throws(
+    () =>
+      security.guardMutation(
+        unguarded({
+          "sec-fetch-site": "same-site",
+          "content-type": "application/json",
+        }),
+      ),
+    (e: { code: string }) => e.code === "cross_site_request",
+  );
+  assert.throws(
+    () => security.guardMutation(unguarded({ "content-type": "text/plain" })),
+    (e: { code: string }) => e.code === "bad_content_type",
+  );
+  security.guardMutation(
+    unguarded({
+      "sec-fetch-site": "same-origin",
+      "content-type": "application/json",
+    }),
+  );
+  // No fetch metadata and no content type (bodyless POST) also passes.
+  security.guardMutation(
+    new Request("http://127.0.0.1:5577/api/login", { method: "POST" }),
+  );
   delete process.env.VELVARR_ALLOW_HTTP;
   process.env.VELVARR_ORIGIN = "http://127.0.0.1:5577";
 });
@@ -593,9 +632,14 @@ test("session cookie flags follow request transport and clear correctly", () => 
 });
 
 test("origin pin is optional: unset VELVARR_ORIGIN skips origin enforcement", () => {
+  // content-type is pinned because guardMutation now also refuses non-JSON
+  // bodies on mutations (the form-CSRF gate); this test is about the pin.
   const req = new Request("http://192.168.1.50:5577/api/login", {
     method: "POST",
-    headers: { origin: "http://other-host:5577" },
+    headers: {
+      origin: "http://other-host:5577",
+      "content-type": "application/json",
+    },
     body: "{}",
   });
   const previous = process.env.VELVARR_ORIGIN;

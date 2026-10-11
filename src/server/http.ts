@@ -63,7 +63,7 @@ export function isLoopbackHost(hostname: string): boolean {
   return isIP(h) === 4 && Number(h.split(".")[0]) === 127;
 }
 
-function isPrivateHost(hostname: string): boolean {
+export function isPrivateHost(hostname: string): boolean {
   if (isLoopbackHost(hostname)) return true;
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);

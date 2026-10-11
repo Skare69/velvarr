@@ -5758,6 +5758,56 @@ test("foreign origin is rejected on the remaining mutating routes before any mut
   );
 });
 
+test("same-site and form mutations are refused even with VELVARR_ORIGIN unset", async () => {
+  const count = async () => {
+    const res = await call("GET", "/api/requests", { cookie: owner });
+    assert.equal(res.status, 200);
+    const listed = (await res.json()) as { requests: unknown[] };
+    return listed.requests.length;
+  };
+  const before = await count();
+
+  delete process.env.VELVARR_ORIGIN;
+  try {
+    // A sibling app on the same host IP is same-site: its post carries the
+    // victim's cookie and needs no CORS preflight.
+    const sibling = await call("POST", "/api/requests", {
+      origin: "http://192.168.50.246:8096",
+      headers: { "sec-fetch-site": "same-site" },
+      body: { provider: "tpdb", kind: "movie", id: TPDB_MOVIE4 },
+      cookie: owner,
+    });
+    assert.equal(sibling.status, 403);
+    const siblingBody = (await sibling.json()) as { error: { code: string } };
+    assert.equal(siblingBody.error.code, "cross_site_request");
+
+    // Without fetch metadata (old browser, header-stripping proxy) the form
+    // content type refuses the post before any handler runs.
+    const form = await call("POST", "/api/login", {
+      origin: "http://192.168.50.246:8096",
+      headers: { "content-type": "text/plain" },
+      body: { username: "owner", password: "pass-owner" },
+    });
+    assert.equal(form.status, 403);
+    const formBody = (await form.json()) as { error: { code: string } };
+    assert.equal(formBody.error.code, "bad_content_type");
+    assert.equal(form.headers.get("set-cookie"), null);
+
+    assert.equal(await count(), before);
+
+    // The app's own unpinned requests pass the same gates.
+    const own = await call("POST", "/api/login", {
+      origin: "http://192.168.50.246:6699",
+      headers: { "sec-fetch-site": "same-origin" },
+      body: { username: "owner", password: "pass-owner" },
+    });
+    assert.equal(own.status, 200);
+    assert.match(cookieOf(own), /^velvarr_session=/);
+  } finally {
+    process.env.VELVARR_ORIGIN = ORIGIN;
+  }
+});
+
 // --- M4: hazard 2 — warmed artwork/detail stays protected for everyone else ---
 test("warmed library artwork and detail refuse anonymous, library-denied and revoked callers", async () => {
   // An admitted, granted user fetches the bytes first ("warming").

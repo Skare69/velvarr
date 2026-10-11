@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { SessionGrant } from "../lib/contracts.ts";
-import { AppError, isLoopbackHost } from "./http.ts";
+import { AppError, isLoopbackHost, isPrivateHost } from "./http.ts";
 
 const COOKIE_NAME = "velvarr_session";
 
@@ -69,21 +69,53 @@ function enforceOriginConfig(): URL {
       "VELVARR_ORIGIN is not a valid URL",
     );
   }
-  if (
-    url.protocol !== "https:" &&
-    !isLoopbackHost(url.hostname) &&
-    process.env.VELVARR_ALLOW_HTTP !== "1"
-  ) {
-    throw new AppError(
-      500,
-      "unsafe_origin",
-      "non-loopback HTTP origins require explicit VELVARR_ALLOW_HTTP=1",
-    );
+  // Loopback plain HTTP is always fine. The flag unlocks private/Docker
+  // addresses (isPrivateHost) — never a public HTTP origin, which is what
+  // README.md, scripts/setup.mjs and compose.yaml all promise.
+  if (url.protocol !== "https:" && !isLoopbackHost(url.hostname)) {
+    if (
+      !isPrivateHost(url.hostname) ||
+      process.env.VELVARR_ALLOW_HTTP !== "1"
+    ) {
+      throw new AppError(
+        500,
+        "unsafe_origin",
+        "plain-HTTP origins must be loopback, or private-network addresses with VELVARR_ALLOW_HTTP=1",
+      );
+    }
   }
   return url;
 }
 
 export function guardMutation(request: Request): void {
+  // These two gates run even when VELVARR_ORIGIN is unset: SameSite=Strict
+  // keeps the session cookie off cross-SITE requests, but a homelab's apps
+  // share one host IP, so a sibling app is same-site and its posts arrive
+  // with the victim's cookies and no CORS preflight. The browser's
+  // Sec-Fetch-Site is the reliable same-origin signal; HTML forms cannot
+  // send application/json, so any other content type on a mutation is a
+  // form post whatever the browser's age. Header-absent passes: the
+  // client's own bodyless DELETEs, and browsers without fetch metadata
+  // (their form posts still fail the content-type gate).
+  const site = request.headers.get("sec-fetch-site");
+  if (site && site.trim().toLowerCase() !== "same-origin") {
+    throw new AppError(
+      403,
+      "cross_site_request",
+      "mutations must originate from this app's own origin",
+    );
+  }
+  const contentType = request.headers.get("content-type");
+  if (
+    contentType &&
+    contentType.split(";")[0]!.trim().toLowerCase() !== "application/json"
+  ) {
+    throw new AppError(
+      403,
+      "bad_content_type",
+      "mutations must be posted as application/json",
+    );
+  }
   if (!originEnforced()) return;
   const configured = enforceOriginConfig();
   const header = request.headers.get("origin");
