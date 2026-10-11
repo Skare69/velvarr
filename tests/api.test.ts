@@ -247,7 +247,7 @@ const fx = {
   tokens: new Map<string, string>(), // access token -> user id
   impersonate: null as string | null, // force /Users/Me identity for regression testing
 
-  fail: { items: 0, views: 0, me401: 0 },
+  fail: { items: 0, views: 0, me401: 0, info: 0 },
   // Every /Users/{id}/Items hit; the sweep cache test reads the delta.
   sweepHits: 0,
   // Wired only inside tests that must prove which fixture requests fire:
@@ -353,6 +353,12 @@ async function jellyfinHandler(
   if (p === "/System/Info/Public")
     return json(res, 200, { Id: fx.serverId, ServerName: "FixtureJF" });
   if (p === "/System/Info") {
+    // Countdown knob: one armed rejection for the admin status probe, then
+    // honest answers again (same pattern as fail.me401).
+    if (fx.fail.info > 0) {
+      fx.fail.info -= 1;
+      return json(res, 401, {});
+    }
     if (token !== fx.adminKey) return json(res, 401, {});
     return json(res, 200, { ServerName: "FixtureJF", Version: "10.9.0" });
   }
@@ -2063,6 +2069,80 @@ test("integration rotation: no re-auth, pinned server, whisparr add/remove", asy
   assert.equal(jellyfinBody.configured, true);
   assert.equal(jellyfinBody.serverName, "FixtureJF");
   assert.equal(jellyfinBody.version, "10.9.0");
+
+  // A rejected credential is status information, never a dead session: both
+  // probes answer 200 with the upstream error inline, so the client's global
+  // 401 sign-out never fires from a stale or failed integration.
+  const badKey = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: {
+      jellyfinUrl,
+      jellyfinExternalUrl: external,
+      whisparrUrl,
+      whisparrApiKey: "wh-wrong-key",
+    },
+  });
+  assert.equal(badKey.status, 200);
+  const rejectedWhisparr = await call("GET", "/api/admin/whisparr", {
+    cookie: owner,
+  });
+  assert.equal(rejectedWhisparr.status, 200);
+  const rejectedWhisparrBody = (await rejectedWhisparr.json()) as {
+    configured: boolean;
+    error: { code: unknown; message: unknown };
+  };
+  assert.deepEqual(Object.keys(rejectedWhisparrBody).sort(), [
+    "configured",
+    "error",
+  ]);
+  assert.equal(rejectedWhisparrBody.configured, true);
+  assert.deepEqual(Object.keys(rejectedWhisparrBody.error).sort(), [
+    "code",
+    "message",
+  ]);
+  assert.equal(rejectedWhisparrBody.error.code, "upstream_auth");
+  assert.equal(typeof rejectedWhisparrBody.error.message, "string");
+  assert.ok((rejectedWhisparrBody.error.message as string).length > 0);
+
+  // The Jellyfin twin: fixture rejects /System/Info for exactly one probe.
+  fx.fail.info = 1;
+  const rejectedJellyfin = await call("GET", "/api/admin/jellyfin", {
+    cookie: owner,
+  });
+  assert.equal(rejectedJellyfin.status, 200);
+  const rejectedJellyfinBody = (await rejectedJellyfin.json()) as {
+    configured: boolean;
+    error: { code: unknown; message: unknown };
+    serverName?: string;
+    version?: string;
+  };
+  assert.deepEqual(Object.keys(rejectedJellyfinBody).sort(), [
+    "configured",
+    "error",
+  ]);
+  assert.equal(rejectedJellyfinBody.configured, true);
+  assert.equal(rejectedJellyfinBody.error.code, "upstream_auth");
+  assert.equal(typeof rejectedJellyfinBody.error.message, "string");
+  assert.ok((rejectedJellyfinBody.error.message as string).length > 0);
+  // No fake success fields ride along with the error.
+  assert.equal(rejectedJellyfinBody.serverName, undefined);
+  assert.equal(rejectedJellyfinBody.version, undefined);
+
+  // Restore the working key so the later rotation steps keep passing.
+  const restoreKey = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: {
+      jellyfinUrl,
+      jellyfinExternalUrl: external,
+      whisparrUrl,
+      whisparrApiKey: whisparrKey,
+    },
+  });
+  assert.equal(restoreKey.status, 200);
+  assert.equal(
+    (await call("GET", "/api/admin/whisparr", { cookie: owner })).status,
+    200,
+  );
 
   const omit = await call("PATCH", "/api/admin/integrations", {
     cookie: owner,

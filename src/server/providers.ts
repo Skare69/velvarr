@@ -160,6 +160,19 @@ function cachePut(key: string, bytes: Uint8Array): void {
   metaCache.set(key, { at: Date.now(), bytes });
 }
 
+// A credential save/clear must take effect without a restart: the 10-minute
+// TTL must never serve key A's cached payload to key B. The tag is a short
+// FNV-1a digest of the token — non-reversible, and cache keys live only in
+// memory (values are never logged; a hash keeps it that way).
+function tokenTag(token: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < token.length; i++) {
+    hash ^= token.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(36);
+}
+
 // Cache-aware read for TPDB/StashDB. timeoutMs and cacheTtlMs are internal/
 // test knobs; callers use the 15s default and the 10-minute metadata TTL.
 export async function requestJson<T>(
@@ -181,7 +194,7 @@ export async function requestJson<T>(
   // stale-on-error fallback still applies.
   const cacheable = isCacheable(service, method, options.body);
   const key = cacheable
-    ? `${service} ${method} ${baseUrl}${path} ${JSON.stringify(options.body ?? null)}`
+    ? `${service} ${method} ${baseUrl}${path} ${tokenTag(token)} ${JSON.stringify(options.body ?? null)}`
     : "";
   const hit = cacheable ? metaCache.get(key) : undefined;
   if (hit && Date.now() - hit.at < ttl) return parseJson<T>(hit.bytes, service);

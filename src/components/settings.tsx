@@ -31,12 +31,14 @@ interface WhisparrStatus {
   appName?: string;
   rootFolders?: { id: number; path: string }[];
   profiles?: { id: number; name: string }[];
+  error?: { code: string; message: string };
 }
 
 interface JellyfinStatus {
   configured: boolean;
   serverName?: string;
   version?: string;
+  error?: { code: string; message: string };
 }
 interface IntegrationsInfo {
   jellyfin: {
@@ -613,11 +615,13 @@ function WhisparrCard({ onForbidden }: { onForbidden: () => void }) {
           <div className="skel h-5 w-1/2" />
           <div className="skel h-5 w-2/3" />
         </div>
-      ) : error ? (
+      ) : (error ?? status?.error) ? (
         <div className="mt-3">
           <ErrorPanel
             title="Whisparr unavailable"
-            message={error}
+            message={
+              error ?? `${status?.error?.code}: ${status?.error?.message}`
+            }
             onRetry={reload}
           />
         </div>
@@ -714,11 +718,13 @@ function JellyfinCard({ onForbidden }: { onForbidden: () => void }) {
         <div className="mt-3 space-y-2" aria-label="Checking Jellyfin">
           <div className="skel h-5 w-1/2" />
         </div>
-      ) : error ? (
+      ) : (error ?? status?.error) ? (
         <div className="mt-3">
           <ErrorPanel
             title="Jellyfin unavailable"
-            message={error}
+            message={
+              error ?? `${status?.error?.code}: ${status?.error?.message}`
+            }
             onRetry={reload}
           />
         </div>
@@ -773,6 +779,7 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
     stashdb: ProviderConfigRow;
     typesafe: ProviderConfigRow;
   } | null>(null);
+  const [shapeError, setShapeError] = useState<string | null>(null);
   const [tpdbToken, setTpdbToken] = useState("");
   const [stashdbKey, setStashdbKey] = useState("");
   const [typesafeKey, setTypesafeKey] = useState("");
@@ -782,6 +789,7 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
 
   const load = useCallback(() => {
     setError(null);
+    setCheck(null);
     api<{ providers: ProviderCheckRow[] }>("/api/admin/providers")
       .then((d) => setCheck(d.providers))
       .catch((e) => {
@@ -798,8 +806,14 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
         typesafe: ProviderConfigRow;
       };
     }>("/api/admin/integrations")
-      .then((d) => setShape(d.providers))
-      .catch(() => setShape(null));
+      .then((d) => {
+        setShape(d.providers);
+        setShapeError(null);
+      })
+      .catch((e) => {
+        setShape(null);
+        setShapeError(messageOf(e));
+      });
   }, []);
 
   useEffect(load, [load]);
@@ -880,7 +894,11 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
                   <span className="chip">
                     {conf?.configured
                       ? "AI-assisted matching on"
-                      : "Off — no key"}
+                      : conf
+                        ? "Off — no key"
+                        : shapeError || forbidden
+                          ? "Unknown"
+                          : "Checking…"}
                   </span>
                 ) : (
                   <span className="chip">
@@ -900,6 +918,8 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
                   ) : (
                     <span className="chip">Live check: not configured</span>
                   )
+                ) : error ? (
+                  <span className="chip">Live check failed</span>
                 ) : (
                   <span className="chip">Live check pending</span>
                 )}
@@ -994,6 +1014,15 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
             title="Live provider check failed"
             message={error}
             onRetry={load}
+          />
+        </div>
+      ) : null}
+      {forbidden ? null : shapeError ? (
+        <div className="mt-3">
+          <ErrorPanel
+            title="Provider configuration read failed"
+            message={shapeError}
+            onRetry={loadShape}
           />
         </div>
       ) : null}

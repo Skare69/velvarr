@@ -731,6 +731,48 @@ test("requestJson caches metadata reads and serves stale on upstream failure", a
   }
 });
 
+test("cache key is per credential: token B never receives token A's cached payload", async () => {
+  let hits = 0;
+  const TOKEN_A = "a".repeat(32);
+  const TOKEN_B = "b".repeat(32);
+  const fixture = await startFixture((_req, res) => {
+    hits += 1;
+    sendJson(res, 200, { n: hits });
+  });
+  try {
+    const cached = { service: "tpdb" as const, cacheTtlMs: 60_000 };
+    const first = await requestJson<{ n: number }>(
+      fixture.origin,
+      "/d",
+      TOKEN_A,
+      cached,
+    );
+    assert.equal(first.n, 1);
+    // Same token again: a cache hit, zero new upstream calls.
+    const replay = await requestJson<{ n: number }>(
+      fixture.origin,
+      "/d",
+      TOKEN_A,
+      cached,
+    );
+    assert.equal(replay.n, 1);
+    assert.equal(hits, 1);
+    // Rotated credential, same origin+path: the fresh upstream payload, never
+    // the previous credential's cached one (no restart, TTL notwithstanding).
+    const rotated = await requestJson<{ n: number }>(
+      fixture.origin,
+      "/d",
+      TOKEN_B,
+      cached,
+    );
+    assert.equal(rotated.n, 2);
+    assert.notEqual(rotated.n, first.n);
+    assert.equal(hits, 2);
+  } finally {
+    await fixture.close();
+  }
+});
+
 // --- not found vs outage ---
 
 test("tpdb 404 is authoritative absence; 401/500/network failures are distinct outages", async () => {
