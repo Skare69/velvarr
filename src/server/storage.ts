@@ -544,7 +544,8 @@ function S(): Statements {
       ),
       listDueAcquisitions: d.prepare(
         `SELECT * FROM acquisitions
-         WHERE state IN (${SCHEDULABLE_STATES.map(() => "?").join(", ")})
+         WHERE instance_id = ?
+           AND state IN (${SCHEDULABLE_STATES.map(() => "?").join(", ")})
            AND due_at IS NOT NULL AND due_at <= ? AND claim_token IS NULL
          ORDER BY due_at ASC, id ASC LIMIT ?`,
       ),
@@ -564,7 +565,7 @@ function S(): Statements {
         "UPDATE acquisitions SET state = 'failed', attempt_token = NULL, due_at = ?, last_error = ?, last_error_at = ?, updated_at = ? WHERE id = ? AND claim_token = ? AND attempt_token = ?",
       ),
       requeueBlocked: d.prepare(
-        "UPDATE acquisitions SET state = 'unsent', due_at = ?, updated_at = ? WHERE state = 'blocked' AND claim_token IS NULL",
+        "UPDATE acquisitions SET state = 'unsent', due_at = ?, updated_at = ? WHERE instance_id = ? AND state = 'blocked' AND claim_token IS NULL",
       ),
       recordObservation: d.prepare(
         `UPDATE acquisitions SET state = ?, last_observed_at = ?, due_at = ?,
@@ -966,14 +967,40 @@ export function saveConfig(config: IntegrationConfig): void {
     }
     // Enabling delivery must revive work that was approved while it was off:
     // 'blocked' is deliberately not schedulable, so nothing else would ever
-    // pick these rows up again.
-    if (
-      config.whisparr?.delivery?.enabled === true &&
-      current?.whisparr?.delivery?.enabled !== true
-    ) {
-      S().requeueBlocked.run(Date.now(), Date.now());
-    }
+    // pick these rows up again. Scoped to this identity: rows of a retired
+    // identity are never silently reused against the new endpoint.
     const resolved = resolveWhisparrIdentity(current, config);
+    const whisparr = resolved.whisparr;
+    const instanceId = whisparr?.instanceId;
+    if (whisparr && instanceId) {
+      const now = Date.now();
+      if (
+        whisparr.delivery?.enabled === true &&
+        current?.whisparr?.delivery?.enabled !== true
+      ) {
+        S().requeueBlocked.run(now, now, instanceId);
+      }
+      // A newly configured or moved identity enqueues nothing on its own, so
+      // approvals recorded before it existed (first setup, URL change) are
+      // backfilled here — the same INSERT OR IGNORE the boot backfill uses.
+      if (instanceId !== current?.whisparr?.instanceId) {
+        const state = whisparr.delivery?.enabled ? "unsent" : "blocked";
+        for (const row of S().listAllRequests.all() as RequestRow[]) {
+          if (row.decision !== "approved") continue;
+          S().insertAcquisition.run(
+            randomUUID(),
+            instanceId,
+            row.provider,
+            row.kind,
+            row.external_id,
+            state,
+            state === "unsent" ? now : null,
+            now,
+            now,
+          );
+        }
+      }
+    }
     S().updateConfig.run(
       encryptString(loadKey(), JSON.stringify(resolved)),
       Date.now(),
@@ -2188,13 +2215,18 @@ export function getAcquisition(id: string): AcquisitionRecord | null {
   return row ? rowToAcquisition(row) : null;
 }
 
-/** Schedulable work: due, unclaimed acquisitions ordered oldest-due first. */
+/** Schedulable work: due, unclaimed acquisitions of the configured instance,
+ * ordered oldest-due first. Rows of retired identities are never returned: a
+ * moved endpoint must not replay old work against the new one. */
 export function listDueAcquisitions(
   now: number,
   limit = 20,
 ): AcquisitionRecord[] {
+  const instanceId = getConfig()?.whisparr?.instanceId;
+  if (!instanceId) return [];
   return (
     S().listDueAcquisitions.all(
+      instanceId,
       ...SCHEDULABLE_STATES,
       now,
       limit,

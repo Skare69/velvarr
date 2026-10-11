@@ -1517,6 +1517,72 @@ test("an upgraded config without an instance identity is repaired at startup", (
   );
 });
 
+test("configuring Whisparr after approvals backfills the approved work", () => {
+  freshDir();
+  storage.bootstrap(
+    { ...testConfig(), whisparr: undefined },
+    ownerUser(),
+    "jf-owner-token",
+  );
+  const owner = storage.getAccount(ownerUser().id) as Account;
+
+  // Approved before any Whisparr existed: nothing to deliver to, no rows.
+  const request = storage.createRequest(owner.id, MOVIE);
+  storage.decideRequest(owner, request.id, "approved");
+  assert.equal(storage.getAcquisitionByReference(MOVIE), null);
+  assert.equal(storage.listDueAcquisitions(Date.now() + 60_000).length, 0);
+
+  // First-time configuration enqueues the existing approvals in the same
+  // save, without waiting for a restart.
+  storage.saveConfig(deliveryConfig(true));
+  const due = storage.listDueAcquisitions(Date.now() + 60_000);
+  assert.equal(due.length, 1, "existing approvals are enqueued on setup");
+  assert.equal(due[0]?.state, "unsent");
+  assert.equal(due[0]?.media.id, MOVIE.id);
+});
+
+test("a Whisparr URL change re-enqueues work on the new identity and retires the old rows", () => {
+  freshDir();
+  storage.bootstrap(deliveryConfig(true), ownerUser(), "jf-owner-token");
+  const owner = storage.getAccount(ownerUser().id) as Account;
+  const before = storage.getConfig()?.whisparr?.instanceId;
+
+  const request = storage.createRequest(owner.id, MOVIE);
+  storage.decideRequest(owner, request.id, "approved");
+  assert.equal(storage.listDueAcquisitions(Date.now() + 60_000).length, 1);
+
+  const moved = deliveryConfig(true);
+  moved.whisparr = { ...moved.whisparr!, url: "http://127.0.0.1:6970" };
+  storage.saveConfig(moved);
+  assert.notEqual(
+    storage.getConfig()?.whisparr?.instanceId,
+    before,
+    "a moved endpoint mints a new identity",
+  );
+
+  // The save itself enqueues the approval for the new identity; no restart.
+  // Rows of the retired identity are never schedulable again.
+  const due = storage.listDueAcquisitions(Date.now() + 60_000);
+  assert.equal(due.length, 1, "old and new rows never run in one cycle");
+  assert.equal(due[0]?.media.id, MOVIE.id);
+  assert.equal(
+    due[0]?.id,
+    storage.getAcquisitionByReference(MOVIE)?.id,
+    "the due row belongs to the current instance, not the retired one",
+  );
+
+  // A restart backfills again for the same identity: no duplicates.
+  storage.closeStorage();
+  storage.initializeStorage();
+  assert.equal(
+    storage
+      .listDueAcquisitions(Date.now() + 60_000)
+      .filter((a) => a.media.id === MOVIE.id).length,
+    1,
+    "restarting does not duplicate the enqueued work",
+  );
+});
+
 test("the last withdrawal suppresses only undispatched work; sent work survives", () => {
   freshDir();
   storage.bootstrap(deliveryConfig(true), ownerUser(), "jf-owner-token");

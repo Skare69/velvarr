@@ -606,11 +606,14 @@ test("no configuration at all performs zero external calls, state untouched", as
 
   const before = probe(id);
   const summary = await acquisition.runDueWork();
-  assert.equal(summary.blocked, 1);
+  // Due work is scoped to the configured instance; with no configured
+  // instance there is no scope to list for and the worker considers nothing.
+  // (Pre-scoping it enumerated rows of any identity and blocked each one.)
+  assert.equal(summary.considered, 0);
+  assert.equal(summary.blocked, 0);
   assert.equal(calls.length, 0, "unconfigured pass never touches Whisparr");
   const afterRow = probe(id);
   assert.equal(afterRow.state, before.state, "state untouched");
-  assert.equal(afterRow.lastError?.includes("unconfigured"), true);
 });
 
 test("claim contention skips the item instead of double-sending", async () => {
