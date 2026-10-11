@@ -894,7 +894,10 @@ export function CatalogDetailView({
     if (!open) return;
     prevFocus.current = document.activeElement as HTMLElement | null;
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") close();
+      // A modal <dialog> (Preferences, More sheet) owns Escape while open;
+      // that Escape must close the dialog, not the detail underneath it.
+      if (ev.key === "Escape" && !document.querySelector("dialog[open]"))
+        close();
     };
     window.addEventListener("keydown", onKey);
     return () => {

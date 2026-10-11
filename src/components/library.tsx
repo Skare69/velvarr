@@ -293,6 +293,9 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
     const onKey = (event: KeyboardEvent) => {
       if (
         event.key === "Escape" &&
+        // Escape inside an open modal dialog closes the dialog, not this
+        // detail page under it.
+        !document.querySelector("dialog[open]") &&
         !(
           event.target instanceof HTMLElement &&
           event.target.matches("input, textarea, select")

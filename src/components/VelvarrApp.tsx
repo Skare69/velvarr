@@ -1124,7 +1124,16 @@ function Shell() {
           <Credit />
         </div>
       </dialog>
-      <PreferencesDialog open={prefsOpen} onClose={() => setPrefsOpen(false)} />
+      <PreferencesDialog
+        open={prefsOpen}
+        onClose={() => {
+          setPrefsOpen(false);
+          // The Preferences button hid with the account menu before
+          // showModal, so the browser has no live element to return focus
+          // to; put it back on the menu's visible opener.
+          accountMenu.current?.querySelector("summary")?.focus();
+        }}
+      />
     </div>
   );
 }

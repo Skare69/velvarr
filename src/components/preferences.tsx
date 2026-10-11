@@ -320,7 +320,20 @@ export function PreferencesDialog({
       aria-label="Your preferences"
       onClose={onClose}
       onClick={(event) => {
-        if (event.target === ref.current) onClose();
+        // A backdrop tap is the only click that may close. Clicks on the
+        // dialog's own padding and the heading-to-form gap also target the
+        // dialog, so they are only a close when the point is outside the
+        // box; clicks on children (and keyboard or synthetic activation of
+        // them, which reports 0,0) never close.
+        if (event.target !== ref.current) return;
+        const rect = ref.current.getBoundingClientRect();
+        if (
+          event.clientX < rect.left ||
+          event.clientX > rect.right ||
+          event.clientY < rect.top ||
+          event.clientY > rect.bottom
+        )
+          onClose();
       }}
     >
       <div className="dialog-heading">
