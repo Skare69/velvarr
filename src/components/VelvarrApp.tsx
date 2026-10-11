@@ -720,8 +720,18 @@ function GlobalSearchForm() {
   const urlQ = params.get("view") === "search" ? (params.get("q") ?? "") : "";
   const [input, setInput] = useState(urlQ);
   const inputRef = useRef<HTMLInputElement>(null);
+  // The debounced write below echoes back through urlQ after the navigation
+  // commits. Rewriting the box from that echo eats characters typed while it
+  // was in flight (the trimmed trailing space in "jane "), so the echo is
+  // recognized by the q this component just wrote and ignored. Any other q —
+  // Back/Forward, a link from another surface — still resets the box.
+  const ownQRef = useRef<string | null>(null);
 
-  useEffect(() => setInput(urlQ), [urlQ]);
+  useEffect(() => {
+    if (urlQ === ownQRef.current) return;
+    ownQRef.current = null;
+    setInput(urlQ);
+  }, [urlQ]);
   useEffect(() => {
     const focusSearch = (event: KeyboardEvent) => {
       const target = event.target;
@@ -766,6 +776,7 @@ function GlobalSearchForm() {
     const t = setTimeout(() => {
       const q = input.trim();
       if (q === urlQ) return;
+      ownQRef.current = q;
       setParamsClearing(
         setP,
         { view: "search", q: q || null },
