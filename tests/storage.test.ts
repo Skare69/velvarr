@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 import { createCipheriv, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { rmTempDir } from "./setup.ts";
 import { AppError } from "../src/server/http.ts";
 import type {
   Account,
@@ -39,17 +40,17 @@ const { DatabaseSync } = await import("node:sqlite");
 let currentDir = "";
 function freshDir(): string {
   storage.closeStorage();
-  if (currentDir)
-    rmSync(currentDir, {
-      recursive: true,
-      force: true,
-      maxRetries: 10,
-      retryDelay: 50,
-    });
+  rmTempDir(currentDir);
   currentDir = mkdtempSync(join(tmpdir(), "velvarr-storage-"));
   process.env.VELVARR_DATA_DIR = currentDir;
   return currentDir;
 }
+
+after(() => {
+  storage.closeStorage();
+  rmTempDir(currentDir);
+  currentDir = "";
+});
 
 function ownerUser(): ExternalUser {
   return {

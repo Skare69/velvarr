@@ -8,12 +8,14 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { rmTempDir } from "./setup.ts";
 
 test(
   "setup.mjs creates .env.local with owner-only permissions",
   { skip: process.platform === "win32" && "POSIX modes only" },
-  () => {
+  (t) => {
     const root = mkdtempSync(path.join(tmpdir(), "velvarr-setup-"));
+    t.after(() => rmTempDir(root));
     mkdirSync(path.join(root, "scripts"));
     copyFileSync(
       path.resolve("scripts/setup.mjs"),

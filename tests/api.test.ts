@@ -11,6 +11,7 @@ import {
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { rmTempDir } from "./setup.ts";
 import { Buffer } from "node:buffer";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resetMetaCache } from "../src/server/providers.ts";
@@ -81,7 +82,8 @@ test("route tables never shadow: every request shape matches at most one def", (
 });
 
 // Isolated environment BEFORE importing route/storage modules.
-process.env.VELVARR_DATA_DIR = mkdtempSync(join(tmpdir(), "velvarr-api-test-"));
+const apiDataDir = mkdtempSync(join(tmpdir(), "velvarr-api-test-"));
+process.env.VELVARR_DATA_DIR = apiDataDir;
 process.env.VELVARR_SECRET_KEY = "ab".repeat(32);
 process.env.VELVARR_SETUP_SECRET = "setup-secret-".repeat(4);
 process.env.VELVARR_ORIGIN = "http://127.0.0.1:5577";
@@ -1146,6 +1148,7 @@ after(() => {
     server.close();
   }
   closeStorage();
+  rmTempDir(apiDataDir);
 });
 
 test("public surface: health, status, unknown routes", async () => {
