@@ -5,7 +5,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, statSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { rmTempDir } from "./setup.ts";
@@ -21,9 +27,20 @@ test(
       path.resolve("scripts/setup.mjs"),
       path.join(root, "scripts/setup.mjs"),
     );
+    // Preload: no-op fs.chmodSync, so the asserted mode is the one the file
+    // was CREATED with, not one a later chmod imposed.
+    const preload = path.join(root, "no-chmod.cjs");
+    writeFileSync(
+      preload,
+      [
+        "const fs = require('node:fs');",
+        "fs.chmodSync = () => {};",
+        "require('node:module').syncBuiltinESMExports();",
+      ].join("\n"),
+    );
     const run = spawnSync(
       process.execPath,
-      [path.join(root, "scripts/setup.mjs")],
+      ["--require", preload, path.join(root, "scripts/setup.mjs")],
       { encoding: "utf8" },
     );
     assert.equal(run.status, 0, run.stderr);

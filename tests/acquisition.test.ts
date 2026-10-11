@@ -837,6 +837,7 @@ test("after shutdown the loop schedules no further passes until restarted", asyn
   acquisition.startAcquisitionLoop();
   await t.mock.timers.tick(5);
   await until(() => postCount() === 2);
+  assert.equal(postCount(), 2, "the restarted loop posts again");
   // Settle the pass before mock timers are torn down: its response handling
   // needs real I/O turns, and an unsettled pass wedges passInFlight.
   await until(() => false);

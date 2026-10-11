@@ -8,7 +8,9 @@ import { sameWork, suggestTags } from "../src/server/judgment.ts";
 test("sameWork without TYPESAFE_API_KEY is false without any call", async () => {
   delete process.env.TYPESAFE_API_KEY;
   const realFetch = globalThis.fetch;
+  let calls = 0;
   globalThis.fetch = () => {
+    calls++;
     throw new Error("no network call may happen without a key");
   };
   try {
@@ -16,6 +18,7 @@ test("sameWork without TYPESAFE_API_KEY is false without any call", async () => 
       await sameWork({ title: "Up", year: 2009 }, { title: "Up", year: 2009 }),
       false,
     );
+    assert.equal(calls, 0, "the no-key path must not reach the network");
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -224,7 +227,9 @@ test("an answered pair is asked once; an outage is never remembered", async () =
 test("contradicting years are refused in code, without a call", async () => {
   process.env.TYPESAFE_API_KEY = "test-key";
   const realFetch = globalThis.fetch;
+  let calls = 0;
   globalThis.fetch = () => {
+    calls++;
     throw new Error("no call may be spent on a year mismatch");
   };
   try {
@@ -232,6 +237,7 @@ test("contradicting years are refused in code, without a call", async () => {
       await sameWork({ title: "Up", year: 2009 }, { title: "Up", year: 2021 }),
       false,
     );
+    assert.equal(calls, 0, "contradicting years are refused before any call");
   } finally {
     globalThis.fetch = realFetch;
     delete process.env.TYPESAFE_API_KEY;
@@ -308,7 +314,9 @@ test("suggestTags offers the top three real tags and drops none and junk", async
 test("suggestTags without a key or with an empty list offers nothing", async () => {
   delete process.env.TYPESAFE_API_KEY;
   const realFetch = globalThis.fetch;
+  let calls = 0;
   globalThis.fetch = () => {
+    calls++;
     throw new Error("no call may happen without a key");
   };
   try {
@@ -317,6 +325,7 @@ test("suggestTags without a key or with an empty list offers nothing", async () 
       [],
     );
     assert.deepEqual(await suggestTags("threesome", [], "ts_key"), []);
+    assert.equal(calls, 0, "neither the no-key nor the empty-list path calls");
   } finally {
     globalThis.fetch = realFetch;
   }

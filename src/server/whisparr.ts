@@ -374,12 +374,6 @@ const movieListCache = new Map<
   { at: number; dtos: Promise<MovieResourceDto[]> }
 >();
 
-/** Test seam: tests that script a changed movie list reset between phases so
- * a cached read never masks the scripted change. */
-export function resetWhisparrMovieListCache(): void {
-  movieListCache.clear();
-}
-
 function cachedMovieList(
   whisparr: NonNullable<IntegrationConfig["whisparr"]>,
 ): Promise<MovieResourceDto[]> {

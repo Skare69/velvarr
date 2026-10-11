@@ -321,10 +321,18 @@ test("requestJson distinguishes auth, forbidden, missing, outage, and timeout", 
         requestJson(fx.origin, "/slow", TOKEN, { timeoutMs: 100 }),
         appError(504, "upstream_timeout"),
       );
-      // Sanitized errors never echo upstream URLs or bodies.
-      for (const recorded of fx.log) {
-        assert.ok(!recorded.url.includes("evil.example"));
-      }
+      // Sanitized error messages: the upstream body and the redirect target
+      // never surface, whatever the recorded request log holds.
+      const boomMessage = await requestJson(fx.origin, "/boom", TOKEN).then(
+        () => "",
+        (err: unknown) => String(err),
+      );
+      const hopMessage = await requestJson(fx.origin, "/hop", TOKEN).then(
+        () => "",
+        (err: unknown) => String(err),
+      );
+      assert.ok(!boomMessage.includes("internal"), boomMessage);
+      assert.ok(!hopMessage.includes("evil.example"), hopMessage);
     },
   );
 });
