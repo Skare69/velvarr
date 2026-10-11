@@ -343,7 +343,11 @@ async function jellyfinHandler(
   res: ServerResponse,
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://fixture");
-  const p = url.pathname;
+  // "/jf" stands in for a reverse-proxy path prefix: same origin, different
+  // path, so a same-origin integration URL move is exercisable end to end.
+  const p = url.pathname.startsWith("/jf/")
+    ? url.pathname.slice(3)
+    : url.pathname;
   const token = /Token="([^"]*)"/.exec(
     String(req.headers.authorization ?? ""),
   )?.[1];
@@ -524,17 +528,20 @@ async function whisparrHandler(
   res: ServerResponse,
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://fixture");
+  // "/wh" stands in for a reverse-proxy path prefix, mirroring "/jf" above.
+  const p = url.pathname.startsWith("/wh/")
+    ? url.pathname.slice(3)
+    : url.pathname;
   if (req.headers["x-api-key"] !== whisparrKey) return json(res, 401, {});
-  if (url.pathname === "/api/v3/system/status")
+  if (p === "/api/v3/system/status")
     return json(res, 200, { version: "3.4.0.1387", appName: "Whisparr" });
-  if (url.pathname === "/api/v3/rootfolder")
+  if (p === "/api/v3/rootfolder")
     return json(res, 200, [{ id: 1, path: "/movies" }]);
-  if (url.pathname === "/api/v3/qualityprofile")
+  if (p === "/api/v3/qualityprofile")
     return json(res, 200, [{ id: 1, name: "HD" }]);
-  if (fx.journalOn)
-    fx.journal.push({ method: req.method ?? "", path: url.pathname });
+  if (fx.journalOn) fx.journal.push({ method: req.method ?? "", path: p });
   // Exact-identity stored-item read (GET).
-  if (url.pathname === "/api/v3/movie") {
+  if (p === "/api/v3/movie") {
     const tpdbId = url.searchParams.get("tpdbId");
     const stashId = url.searchParams.get("stashId");
     // Unfiltered list: the library-detail enrichment resolves identity by
@@ -2192,6 +2199,126 @@ test("integration rotation: no re-auth, pinned server, whisparr add/remove", asy
     ((await gone.json()) as { configured: boolean }).configured,
     false,
   );
+});
+
+test("integration URL move to a new origin requires the key again", async () => {
+  const external = `${jellyfinUrl}/media`;
+  // Whisparr present, so both moves below start from a stored connection.
+  const reAdd = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: {
+      jellyfinUrl,
+      jellyfinExternalUrl: external,
+      whisparrUrl,
+      whisparrApiKey: whisparrKey,
+    },
+  });
+  assert.equal(reAdd.status, 200);
+
+  // A new-origin Jellyfin URL without a key is refused before any upstream
+  // call: had getServer run against the new host, its public info (a
+  // different server id) would have produced server_mismatch, not
+  // invalid_field, and the journal would show the attempt.
+  fx.journal.length = 0;
+  fx.journalOn = true;
+  const jellyfinMove = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: {
+      jellyfinUrl: otherServerUrl,
+      jellyfinExternalUrl: otherServerUrl,
+    },
+  });
+  assert.equal((await errorShape(jellyfinMove, 400)).code, "invalid_field");
+  assert.deepEqual(
+    fx.journal.filter((r) => r.path !== "/Users/Me"),
+    [],
+    "nothing but the admin session check may reach Jellyfin",
+  );
+  fx.journalOn = false;
+
+  // Same rule for Whisparr: the stored key must not follow the URL to
+  // another origin, and the saved connection stays untouched.
+  fx.journal.length = 0;
+  fx.journalOn = true;
+  const whisparrMove = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: {
+      jellyfinUrl,
+      jellyfinExternalUrl: external,
+      whisparrUrl: otherServerUrl,
+    },
+  });
+  assert.equal((await errorShape(whisparrMove, 400)).code, "invalid_field");
+  assert.deepEqual(
+    fx.journal.filter((r) => r.path.startsWith("/api/v3/")),
+    [],
+    "no Whisparr call may happen on a refused move",
+  );
+  fx.journalOn = false;
+  const untouched = await call("GET", "/api/admin/whisparr", { cookie: owner });
+  const untouchedBody: { configured: boolean } = await untouched.json();
+  assert.equal(untouchedBody.configured, true);
+
+  // A same-origin path change keeps the stored key: the fixture 401s any
+  // wrong token, so the /Users hit proves the stored key was reused.
+  fx.journal.length = 0;
+  fx.journalOn = true;
+  const pathMove = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: {
+      jellyfinUrl: `${jellyfinUrl}/jf`,
+      jellyfinExternalUrl: external,
+    },
+  });
+  fx.journalOn = false;
+  assert.equal(pathMove.status, 200);
+  assert.ok(
+    fx.journal.some((r) => r.path === "/Users"),
+    "listUsers must have authenticated with the stored key on the new path",
+  );
+
+  // Whisparr twin: same origin, new path, key omitted — the status probe
+  // authenticates with the reused stored key (wrong keys get 401).
+  const whPathMove = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: {
+      jellyfinUrl,
+      jellyfinExternalUrl: external,
+      whisparrUrl: `${whisparrUrl}/wh`,
+    },
+  });
+  assert.equal(whPathMove.status, 200);
+  const probed = await call("GET", "/api/admin/whisparr", { cookie: owner });
+  assert.equal(probed.status, 200);
+  const probedBody: { version?: string } = await probed.json();
+  assert.equal(
+    probedBody.version,
+    "3.4.0.1387",
+    "the probe must authenticate with the reused stored key",
+  );
+
+  // Leave the state the rotation test ended with: plain URLs, no Whisparr.
+  const restore = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: {
+      jellyfinUrl,
+      jellyfinExternalUrl: external,
+      whisparrUrl,
+    },
+  });
+  assert.equal(restore.status, 200);
+  const remove = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: {
+      jellyfinUrl,
+      jellyfinExternalUrl: external,
+      whisparrUrl: "",
+    },
+  });
+  assert.equal(remove.status, 200);
+  const gone = await call("GET", "/api/admin/whisparr", { cookie: owner });
+  const goneBody: { configured: boolean } = await gone.json();
+  assert.equal(goneBody.configured, false);
 });
 
 test("login admission: outsider denied, logout revokes immediately", async () => {

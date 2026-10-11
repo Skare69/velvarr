@@ -213,7 +213,11 @@ export function nextProviderCredentials(
  * requireAdmin re-validates the caller upstream on every request (identity,
  * disabled, remote access) and guardMutation rejects foreign origins. No
  * password re-auth: it would re-authenticate under the shared DeviceId,
- * invalidating the caller's own Jellyfin token and logging the admin out. */
+ * invalidating the caller's own Jellyfin token and logging the admin out.
+ * A stored key follows the URL only within one origin: a cross-origin move
+ * must present the key again, and the check runs before any upstream call
+ * so nothing — not even /System/Info/Public — reaches the new host. Both
+ * URLs are validateBaseUrl outputs, so they always parse. */
 export async function nextJellyfin(
   current: IntegrationConfig["jellyfin"],
   body: Record<string, unknown>,
@@ -221,8 +225,18 @@ export async function nextJellyfin(
   const url = fieldUrl(body, "jellyfinUrl");
   const externalUrl = fieldUrl(body, "jellyfinExternalUrl");
   const supplied = optionalText(body, "jellyfinApiKey", 512);
-  const apiKey =
-    supplied !== undefined && supplied !== "" ? supplied : current.apiKey;
+  let apiKey: string;
+  if (supplied !== undefined && supplied !== "") {
+    apiKey = supplied;
+  } else if (new URL(url).origin === new URL(current.url).origin) {
+    apiKey = current.apiKey;
+  } else {
+    throw new AppError(
+      400,
+      "invalid_field",
+      "jellyfinApiKey is required when jellyfinUrl moves to a different origin.",
+    );
+  }
   const server = await getServer(url);
   if (server.id !== current.serverId) {
     throw new AppError(
@@ -304,7 +318,8 @@ export function parsePathMappings(
 }
 
 /** Whisparr patch: a blank URL removes the connection, delivery settings are
- * stored only with one. Omitted keys preserve what is already configured. */
+ * stored only with one. Omitted keys preserve what is already configured,
+ * but a stored key follows the URL only within one origin. */
 export function nextWhisparr(
   current: IntegrationConfig["whisparr"],
   body: Record<string, unknown>,
@@ -321,14 +336,26 @@ export function nextWhisparr(
     whisparr = undefined;
   } else if (url !== undefined) {
     const supplied = optionalText(body, "whisparrApiKey", 512);
-    const apiKey =
-      supplied !== undefined && supplied !== "" ? supplied : whisparr?.apiKey;
-    if (!apiKey)
+    // Same origin rule as Jellyfin: a stored key follows its URL only
+    // within one origin; a move to a new host must present the key again.
+    // Both URLs are validateBaseUrl outputs, so they always parse.
+    let apiKey: string;
+    if (supplied !== undefined && supplied !== "") {
+      apiKey = supplied;
+    } else if (
+      whisparr !== undefined &&
+      new URL(url).origin === new URL(whisparr.url).origin
+    ) {
+      apiKey = whisparr.apiKey;
+    } else {
       throw new AppError(
         400,
         "invalid_field",
-        "Whisparr API key is required with a Whisparr URL.",
+        whisparr === undefined
+          ? "Whisparr API key is required with a Whisparr URL."
+          : "Whisparr API key is required when the Whisparr URL moves to a different origin.",
       );
+    }
     whisparr = { url: validateBaseUrl(url), apiKey };
   }
   const delivery = parseDelivery(body.delivery) ?? whisparr?.delivery;
