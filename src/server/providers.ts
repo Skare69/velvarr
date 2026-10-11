@@ -1532,7 +1532,7 @@ export async function searchCatalogTags(
         "TPDB returned an unusable tag listing.",
       );
     }
-    return tpdbTags(body.data);
+    return tpdbTags(body.data, recordTagPair);
   }
   const res = await stashQuery(
     "query($t: String!) { searchTag(term: $t, limit: 50) { id name } }",
@@ -1576,7 +1576,7 @@ export async function listCatalogTags(
         "TPDB returned an unusable tag listing.",
       );
     }
-    return tpdbTags(body.data);
+    return tpdbTags(body.data, recordTagPair);
   }
   const res = await stashQuery(
     'query { searchTag(term: "", limit: 50) { id name } }',

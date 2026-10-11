@@ -2319,6 +2319,49 @@ test("studio and tag filters select provider matches, including TPDB cold UUID b
   }
 });
 
+test("a tag picked from a search response browses without a /tags scan", async () => {
+  const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
+  let tagScans = 0;
+  const fixture = await startFixture((req, res) => {
+    const url = new URL(req.url ?? "/", "http://fixture.test");
+    if (url.pathname === "/tags") {
+      if (url.searchParams.has("page")) tagScans++;
+      return sendJson(res, 200, {
+        data: [{ id: 194, uuid: TPDB_TAG_B, name: "Rare Tag" }],
+      });
+    }
+    if (url.pathname === "/movies") {
+      const data = url.searchParams.has("tags[194]") ? [tpdbMovieRow()] : [];
+      return sendJson(res, 200, {
+        data,
+        links: { next: null },
+        meta: { total: data.length },
+      });
+    }
+    sendJson(res, 404, {});
+  });
+  try {
+    process.env.TPDB_BASE_URL = fixture.origin;
+    const found = await searchCatalogTags("tpdb", "rare");
+    assert.deepEqual(found, [{ id: TPDB_TAG_B, name: "Rare Tag" }]);
+    // The numeric key must come from the rows above; a cold scan would page
+    // /tags?page=N until the id is known.
+    const page = await searchCatalog({
+      provider: "tpdb",
+      kind: "movie",
+      tags: [TPDB_TAG_B],
+    });
+    assert.deepEqual(
+      page.items.map((item) => item.reference.id),
+      [MOVIE_ID],
+    );
+    assert.equal(tagScans, 0);
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
 // --- unsupported combinations are rejected explicitly ---
 
 test("unsupported filter and sort combinations are rejected explicitly", async () => {
