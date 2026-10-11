@@ -512,6 +512,69 @@ test("a revoked requester blocks dispatch; an eligible one proceeds", async () =
   assert.equal(postCount(), 2);
 });
 
+test("an uncertain row whose last requester withdraws never re-POSTs", async () => {
+  boot();
+  const request = storage.createRequest(FRIEND_ID, MOVIE_A);
+  storage.decideRequest(
+    storage.getAccount(OWNER.id) as Account,
+    request.id,
+    "approved",
+  );
+  const id = workId(MOVIE_A);
+
+  // Outage before the POST: the row goes uncertain with nothing sent.
+  knobs.downAll = true;
+  const first = await acquisition.runDueWork();
+  assert.equal(first.uncertain, 1);
+  assert.equal(postCount(), 0);
+  assert.equal(probe(id).state, "uncertain");
+
+  // The last requester withdraws during the outage. Uncertain work is not
+  // undispatched, so the shared row survives the cancellation.
+  storage.cancelRequest(storage.getAccount(FRIEND_ID) as Account, request.id);
+  assert.ok(probe(id), "uncertain work survives a cancellation");
+
+  // Whisparr recovers: with no eligible requester left, reconciliation must
+  // stay read-only — a fresh add would deliver media nobody asked for.
+  knobs.downAll = false;
+  const healed = await acquisition.runDueWork(later());
+  assert.equal(healed.blocked, 1);
+  assert.equal(postCount(), 0, "no POST after the last requester withdrew");
+  const blocked = probe(id);
+  assert.equal(blocked.state, "uncertain");
+  assert.ok(blocked.lastError?.includes("eligible requester"));
+
+  // A later approval for the identity re-arms the row: delivery resumes.
+  approve(FRIEND_ID, MOVIE_A);
+  const resumed = await acquisition.runDueWork(later());
+  assert.equal(resumed.delivered, 1);
+  assert.equal(postCount(), 1);
+  assert.equal(probe(id).state, "monitoring");
+});
+
+test("a 401 from a rotated key stays uncertain; the fixed key delivers", async () => {
+  const owner = boot();
+  approve(owner.id, MOVIE_B);
+  const id = workId(MOVIE_B);
+
+  const good = config(true);
+  storage.saveConfig({
+    ...good,
+    whisparr: { ...good.whisparr!, apiKey: "rotated-key" },
+  });
+  const first = await acquisition.runDueWork();
+  assert.equal(first.failed, 0, "an auth fault is not a terminal failure");
+  assert.equal(first.uncertain, 1);
+  assert.equal(postCount(), 0);
+  assert.equal(probe(id).state, "uncertain");
+
+  storage.saveConfig(config(true));
+  const healed = await acquisition.runDueWork(later());
+  assert.equal(healed.delivered, 1, "the fixed key delivers the held work");
+  assert.equal(postCount(), 1);
+  assert.equal(probe(id).state, "monitoring");
+});
+
 test("delivery disabled stays honestly blocked, then resumes when enabled", async () => {
   const owner = boot();
   approve(owner.id, MOVIE_A);

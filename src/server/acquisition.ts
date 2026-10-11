@@ -137,9 +137,17 @@ async function dispatch(
   } catch (e) {
     const permanent = permanentFailure(e);
     const proven = e instanceof AppError ? e.upstreamStatus : undefined;
+    // A 401/403 here comes from the lookups before the POST (the POST's own
+    // 4xx is resolved inside deliverToWhisparr): a rotated or mistyped key is
+    // a configuration fault, not proof this identity can never be delivered.
+    // Hold it like an outage so reconciliation retries once the key works.
     if (
       permanent !== null ||
-      (proven !== undefined && proven >= 400 && proven < 500)
+      (proven !== undefined &&
+        proven >= 400 &&
+        proven < 500 &&
+        proven !== 401 &&
+        proven !== 403)
     ) {
       // Definitive client-side rejection before any add was accepted. A
       // generic 400 is a failure, never "already exists".
@@ -152,8 +160,9 @@ async function dispatch(
       );
       summary.failed++;
     } else {
-      // Timeout/5xx/network: unknown whether Whisparr stored anything. Stay
-      // uncertain; the next pass reconciles by exact identity.
+      // Timeout/5xx/network, and 401/403 auth faults: unknown whether
+      // Whisparr stored anything. Stay uncertain; the next pass reconciles
+      // by exact identity.
       storage.completeSubmission(
         record.id,
         claimToken,
@@ -266,6 +275,22 @@ async function reconcileUncertain(
       media: record.media,
       ...(existing.title !== undefined ? { title: existing.title } : {}),
     });
+    return;
+  }
+  // The outage may have outlived the request: while this row sat uncertain,
+  // the last requester withdrew or was disabled, and withdrawUndispatched
+  // only removes unsent/blocked rows. A fresh add would deliver media nobody
+  // asked for any more — record it blocked instead of dispatching.
+  if (!storage.hasEligibleRequester(record.media)) {
+    storage.recordAcquisitionObservation(
+      record.id,
+      {
+        unavailable: true,
+        reason: "no eligible requester remains for this acquisition",
+      },
+      claimToken,
+    );
+    summary.blocked++;
     return;
   }
   await dispatch(record, config, claimToken, summary);
