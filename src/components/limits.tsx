@@ -94,10 +94,21 @@ export function LimitsPanel() {
       <h4 className="mt-5 text-sm font-semibold">Provider usage terms</h4>
       <p className="mt-1 text-sm text-muted">
         Neither provider publishes usage terms covering third-party apps,
-        artwork re-serving, caching or rate limits. Velvarr therefore caches
-        nothing. This is an open question for the operator, not an approval:
-        running Velvarr against these providers is not cleared by either
-        provider in writing.
+        artwork re-serving, caching or rate limits. This is an open question for
+        the operator, not an approval: running Velvarr against these providers
+        is not cleared by either provider in writing.
+      </p>
+      <h4 className="mt-5 text-sm font-semibold">Caching</h4>
+      <p className="mt-1 text-sm text-muted">
+        Velvarr caches, in three scopes. Provider metadata is held in server
+        memory for 10 minutes (capped at 500 entries, oldest evicted); when the
+        upstream is unavailable or times out, the last good copy is served
+        rather than failing a shelf. Artwork is held in server memory for 24
+        hours under a 64 MB budget. Catalog identities (provider, kind, external
+        id, title) are persisted in the SQLite database. The two server caches
+        reset when the process restarts. In the browser, each tab keeps its GET
+        responses in memory and revalidates them in the background; they are
+        cleared on sign-out.
       </p>
     </div>
   );
@@ -126,12 +137,6 @@ export function ReleaseStatusPanel() {
       state: "CI only",
       detail:
         "Verified in CI, including a container smoke test, because the development workstation has no container runtime.",
-    },
-    {
-      area: "Licence",
-      state: "Undecided",
-      detail:
-        "The repository has no LICENSE file; the licence choice remains the operator's.",
     },
   ];
   return (
