@@ -1821,6 +1821,55 @@ test("resolvePlaybackAccess reports ambiguity instead of guessing", async () => 
   });
 });
 
+test("resolvePlaybackAccess near-miss uses the stored TypeSafe key with no environment key", async () => {
+  // A key saved in Settings is reported as configured, yet the sweep's
+  // default ask called sameWork without it: the judgment then read only
+  // TYPESAFE_API_KEY, and every near-miss degraded to 'missing' while
+  // Settings showed "AI-assisted matching on".
+  const priorEnvKey = process.env.TYPESAFE_API_KEY;
+  delete process.env.TYPESAFE_API_KEY;
+  const realFetch = globalThis.fetch;
+  let judged = 0;
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url).includes("api.typesafe.ai")) {
+      judged++;
+      return new Response(
+        JSON.stringify({ answers: { sameWork: { type: "noul", noul: 0.93 } } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return realFetch(url, init);
+  }) as typeof fetch;
+  try {
+    await withFixture(avHandler({ entries: avEntries() }), async (fx) => {
+      const cfg = {
+        ...avConfig(fx.origin, [LIB_A]),
+        providers: { typesafeApiKey: "ts_availability_stored" },
+      };
+      // Not the item's exact title, so only the same-work judgment can
+      // lift the verdict above 'missing'.
+      assert.deepEqual(
+        await resolvePlaybackAccess(cfg, TOKEN, account([LIB_A]), {
+          provider: "tpdb",
+          kind: "movie",
+          id: "tpdb-unjudged-uuid",
+          title: "Similar Title Director's Cut",
+          year: 2021,
+        }),
+        {
+          outcome: "ambiguous",
+          reason: "Title/year similarity only; administrator review required.",
+        },
+      );
+      assert.equal(judged, 1);
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+    if (priorEnvKey === undefined) delete process.env.TYPESAFE_API_KEY;
+    else process.env.TYPESAFE_API_KEY = priorEnvKey;
+  }
+});
+
 test("resolvePlaybackAccess denies playback for policy, empty, and placeholder items", async () => {
   await withFixture(
     avHandler({

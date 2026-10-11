@@ -1550,7 +1550,11 @@ async function resolveFromSweep(
         truncated: pool.truncated,
       };
     }
-    if (await candidatesMayMatch(candidates, hints)) {
+    if (
+      await candidatesMayMatch(candidates, hints, (a, b) =>
+        sameWork(a, b, config.providers?.typesafeApiKey),
+      )
+    ) {
       return {
         access: {
           outcome: "ambiguous",
