@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
-import { createCipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   copyFileSync,
@@ -236,7 +236,7 @@ test("sessions survive restart encrypted; wrong key refuses without data loss; r
 });
 
 test("revocation is immediate: explicit revoke, expiry path, and grant change kill sessions", () => {
-  freshDir();
+  const dir = freshDir();
   storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
   const [acct] = storage.importAccounts([otherUser()]);
   assert.ok(acct, "imported account must exist");
@@ -251,6 +251,22 @@ test("revocation is immediate: explicit revoke, expiry path, and grant change ki
   assert.equal(storage.getSession(grant.token), null);
   // Revoking again is a no-op.
   storage.revokeSession(grant.token);
+
+  // Expiry path: a session whose expires_at is already past must read as
+  // no session AND delete the row — not merely hide it.
+  const expired = storage.createSession(acct.id, "jf-token-expired");
+  const rawExpired = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  rawExpired
+    .prepare("UPDATE sessions SET expires_at = ? WHERE token_hash = ?")
+    .run(Date.now() - 1000, tokenHash(expired.token));
+  rawExpired.close();
+  assert.equal(storage.getSession(expired.token), null);
+  const rawAfter = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  const left = rawAfter
+    .prepare("SELECT count(*) AS n FROM sessions WHERE token_hash = ?")
+    .get(tokenHash(expired.token)) as { n: number };
+  rawAfter.close();
+  assert.equal(left.n, 0, "expired session row must be deleted on read");
 
   const grant2 = storage.createSession(acct.id, "jf-token-2");
   storage.updateAccount(acct.id, {
@@ -476,6 +492,28 @@ test("setup secret compare is constant-time-correct; login limiter is bounded pe
   );
   security.assertLoginAllowed("bob");
   security.recordLoginFailure("bob");
+
+  // The global spray cap: many distinct names, each far under its own
+  // account limit, must still trip the process-global bucket. Reaching it
+  // here is what makes this test fail if the global charge ever disappears.
+  let tripped: unknown;
+  for (let i = 0; i < 300 && tripped === undefined; i++) {
+    try {
+      security.recordLoginFailure(`spray-${i}`);
+    } catch (e) {
+      tripped = e;
+    }
+  }
+  assert.ok(tripped, "global cap must trip within 300 distinct names");
+  assert.ok(
+    tripped instanceof AppError && tripped.code === "too_many_attempts",
+    "the global cap must be what trips, not an account cap",
+  );
+  // A name that never failed locally is now blocked by the global bucket.
+  assert.throws(
+    () => security.assertLoginAllowed("never-seen-before"),
+    (e: { code: string }) => e.code === "too_many_attempts",
+  );
 });
 
 test("session cookie flags follow request transport and clear correctly", () => {
@@ -492,10 +530,12 @@ test("session cookie flags follow request transport and clear correctly", () => 
       secureSet.includes("Path=/") &&
       secureSet.includes("Secure"),
   );
+  // Parse the real number: substring matching accepts a cookie 1000x too
+  // long ("Max-Age=60000" contains "Max-Age=6").
+  const maxAge = /Max-Age=(\d+)/.exec(secureSet)?.[1];
   assert.ok(
-    secureSet.includes("Max-Age=6") ||
-      secureSet.includes("Max-Age=5") ||
-      secureSet.includes("Max-Age=60"),
+    maxAge !== undefined && Number(maxAge) >= 59 && Number(maxAge) <= 60,
+    `Max-Age must be the real ~60s TTL, got ${maxAge ?? "none"}`,
   );
 
   const plain = security.sessionCookie(grant);
@@ -557,6 +597,11 @@ function encryptForTest(plaintext: string): Buffer {
   const cipher = createCipheriv("aes-256-gcm", Buffer.from(KEY_A, "hex"), iv);
   const ct = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   return Buffer.concat([iv, cipher.getAuthTag(), ct]);
+}
+
+/** Mirrors storage's hashToken, to fabricate and inspect session rows. */
+function tokenHash(raw: string): string {
+  return createHash("sha256").update(raw, "utf8").digest("hex");
 }
 
 function movieDetail(overrides?: Partial<CatalogDetail>): CatalogDetail {
@@ -741,6 +786,15 @@ test("v1 database migrates in place preserving config, accounts, sessions, and g
     encryptForTest(JSON.stringify(testConfig())),
     Date.now(),
   );
+  v1.prepare(
+    "INSERT INTO sessions (token_hash, account_id, jellyfin_token, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+  ).run(
+    tokenHash("v1-session-token"),
+    ownerUser().id,
+    encryptForTest("jf-v1-token"),
+    Date.now(),
+    Date.now() + 60_000,
+  );
   v1.close();
 
   assert.equal(storage.isInitialized(), true);
@@ -762,6 +816,14 @@ test("v1 database migrates in place preserving config, accounts, sessions, and g
     storage.getConfig()?.jellyfin.libraryIds,
     testConfig().jellyfin.libraryIds,
   );
+  const migratedSession = storage.getSession("v1-session-token");
+  assert.ok(
+    migratedSession,
+    "seeded v1 session row must survive the migration",
+  );
+  assert.equal(migratedSession.account.id, ownerUser().id);
+  assert.equal(migratedSession.jellyfinToken, "jf-v1-token");
+
   const grant = storage.createSession(owner.id, "jf-owner-token");
   assert.equal(storage.getSession(grant.token)?.account.id, owner.id);
 

@@ -576,6 +576,7 @@ const tpdbFx = {
   failPaths: [] as string[],
   calls: 0,
   imageAuth: "unset",
+  lastQuery: "",
 };
 
 function tpdbMovieRow(id: string) {
@@ -646,6 +647,7 @@ async function tpdbHandler(
   const url = new URL(req.url ?? "/", "http://fixture");
   const p = url.pathname;
   tpdbFx.calls += 1;
+  tpdbFx.lastQuery = url.search;
   const auth = String(req.headers.authorization ?? "");
   // Artwork pass-through: no credential may ever arrive here.
   if (p.endsWith(".svg")) {
@@ -812,6 +814,8 @@ async function tpdbHandler(
     });
   if (p === `/movies/${TPDB_MOVIE}`)
     return json(res, 200, { data: tpdbMovieRow(TPDB_MOVIE) });
+  if (p === `/movies/${TPDB_MOVIE4}`)
+    return json(res, 200, { data: tpdbMovieRow(TPDB_MOVIE4) });
   json(res, 404, {});
 }
 
@@ -2187,12 +2191,18 @@ test("catalog search: auth, filter combos, honest totals, outage honesty", async
 test("catalog search refuses the tpdb scene pairing before any upstream call", async () => {
   // One metadata source per kind: scenes list from StashDB only, so the
   // pairing itself is the error — not a filter, not an empty page.
+  const before = tpdbFx.calls;
   const refused = await call(
     "GET",
     "/api/catalog/search?provider=tpdb&kind=scene",
     { cookie: member },
   );
   assert.equal((await errorShape(refused)).code, "invalid_search");
+  assert.equal(
+    tpdbFx.calls,
+    before,
+    "the pairing refusal must not touch the upstream",
+  );
 });
 
 test("provider credentials: stored config wins over environment, clear falls back", async () => {
@@ -3174,12 +3184,16 @@ test("studio search per provider; studio references refused as media; unsupporte
     { cookie: member },
   );
   assert.equal(tagged.status, 200);
+  // Both tag filters must reach the TPDB wire as resolved numeric
+  // deep-object keys, not just the first one.
+  assert.deepEqual(tagKeys(tpdbFx.lastQuery), ["194", "70"]);
   const commaed = await call(
     "GET",
     `/api/catalog/search?provider=tpdb&kind=movie&tags=${TAG_A},${TAG_B}`,
     { cookie: member },
   );
   assert.equal(commaed.status, 200);
+  assert.deepEqual(tagKeys(tpdbFx.lastQuery), ["194", "70"]);
 });
 
 // --- M3 phase B: discover shelves + global multi-category search ---
@@ -5056,6 +5070,17 @@ async function outcomeOf(res: Response): Promise<OutcomeBody> {
   return (await res.json()) as OutcomeBody;
 }
 
+/** Collects the numeric TPDB tag-filter keys (tags[70]=1 style) from a query string. */
+function tagKeys(query: string): string[] {
+  const out: string[] = [];
+  for (const key of new URLSearchParams(query).keys()) {
+    const m = /^tags\[(\d+)\]$/.exec(key);
+    const id = m?.[1];
+    if (id) out.push(id);
+  }
+  return out.sort();
+}
+
 // --- M4: scan lag (hazard 9) — awaiting_scan is distinct from missing ---
 test("scan lag: imported-but-unscanned is awaiting_scan; outage and denial stay truthful", async () => {
   // An identity that was never acquired stays missing.
@@ -5103,12 +5128,14 @@ test("scan lag: imported-but-unscanned is awaiting_scan; outage and denial stay 
   assert.equal(lagBody.outcome, "awaiting_scan");
   assert.equal(lagBody.observationStale, false);
 
-  // Catalog detail surfaces the shared state with honest freshness labeling.
-  const detail = await call("GET", `/api/catalog/tpdb/movie/${TPDB_MOVIE}`, {
+  // Catalog detail surfaces THIS test's own record: imported with honest
+  // freshness labeling. TPDB_MOVIE's monitoring state belongs to another
+  // test and must not leak in here.
+  const detail = await call("GET", `/api/catalog/tpdb/movie/${TPDB_MOVIE4}`, {
     cookie: member,
   });
   const detailBody = (await detail.json()) as AcquisitionDetailBody;
-  assert.equal(detailBody.acquisition?.state, "monitoring");
+  assert.equal(detailBody.acquisition?.state, "imported");
   assert.equal(detailBody.acquisition?.observationStale, false);
 
   // A Jellyfin outage during scan lag stays unavailable, never awaiting_scan.

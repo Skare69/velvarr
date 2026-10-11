@@ -341,11 +341,18 @@ test("parseBrowseQuery round-trips pinned keys and rejects malformed input", () 
 // --- combination policy: refuse, never ignore ---
 
 test("browseTitles refuses unsupported combinations before any upstream call", async () => {
+  let upstreamCalls = 0;
   await runBrowse(
     scriptedUpstream({
       tagRows: [],
       moviePages: [],
       scenes: { count: 0, rows: [] },
+      onMovieRequest: () => {
+        upstreamCalls += 1;
+      },
+      onScenesRequest: () => {
+        upstreamCalls += 1;
+      },
     }),
     async () => {
       const refusals: [string, Partial<BrowseQuery>][] = [
@@ -402,6 +409,7 @@ test("browseTitles refuses unsupported combinations before any upstream call", a
           label,
         );
       }
+      assert.equal(upstreamCalls, 0, "refusals must not touch either upstream");
     },
   );
 });
