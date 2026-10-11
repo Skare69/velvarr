@@ -66,6 +66,9 @@ export function SettingsView() {
   const { providers } = useSession();
   const [forbidden, setForbidden] = useState(false);
   const [section, setSection] = useState("connections");
+  // Stable identity: IntegrationsForm's load useCallback depends on this, so a
+  // fresh arrow on every render would refetch and wipe unsaved draft edits.
+  const forbid = useCallback(() => setForbidden(true), []);
   if (forbidden) return <ForbiddenPanel />;
 
   return (
@@ -97,10 +100,10 @@ export function SettingsView() {
       <div hidden={section !== "connections"}>
         <div className="settings-content">
           <div className="connection-status-grid">
-            <JellyfinCard onForbidden={() => setForbidden(true)} />
-            <WhisparrCard onForbidden={() => setForbidden(true)} />
+            <JellyfinCard onForbidden={forbid} />
+            <WhisparrCard onForbidden={forbid} />
           </div>
-          <IntegrationsForm onForbidden={() => setForbidden(true)} />
+          <IntegrationsForm onForbidden={forbid} />
         </div>
       </div>
       <div hidden={section !== "metadata"}>
