@@ -69,19 +69,25 @@ export function acquisitionText(a: {
 }): string {
   if (acquisitionPhase(a) === "paused")
     return "Paused — Whisparr is not monitoring this item";
+  // A non-null lastError is a real failed check: surface it even for states
+  // that are still in flight.
+  const lastCheck = a.lastError ? ` — last check: ${a.lastError}` : "";
   switch (a.state) {
     case "unsent":
-      return "Queued — not submitted yet";
+      return `Queued — not submitted yet${lastCheck}`;
     case "submitting":
       return "Queued — being submitted";
     case "monitoring":
-      return "Watching for a release (this is not a failure)";
+      return lastCheck
+        ? `Watching for a release${lastCheck}`
+        : "Watching for a release (this is not a failure)";
     case "downloading": {
-      if (typeof a.progress?.percent !== "number") return "Downloading";
+      if (typeof a.progress?.percent !== "number")
+        return `Downloading${lastCheck}`;
       const left = a.progress.timeleft;
       return left
-        ? `Downloading — ${a.progress.percent}% (${left} left)`
-        : `Downloading — ${a.progress.percent}%`;
+        ? `Downloading — ${a.progress.percent}% (${left} left)${lastCheck}`
+        : `Downloading — ${a.progress.percent}%${lastCheck}`;
     }
     case "imported":
       return "Imported — in your library";

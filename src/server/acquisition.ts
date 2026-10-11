@@ -185,16 +185,22 @@ async function dispatch(
       );
       // Persist the stored item's facts now: playback path matching depends
       // on whisparrPath, and the next observation is a full interval away.
+      // An adopted item that already has a file is terminal: imported rows
+      // get due_at null, so the later recheck cannot fire a second
+      // "available" notification.
       storage.recordAcquisitionObservation(
         record.id,
-        { state: "monitoring", item: itemFacts(result.item) },
+        {
+          state: result.item.hasFile ? "imported" : "monitoring",
+          item: itemFacts(result.item),
+        },
         claimToken,
       );
       // Durable transition recorded (unsent/uncertain → accepted): tell the
       // household the add landed. Adoption (Whisparr already had the
       // identity) is the same durable transition, so it notifies too.
       notifyTransition({
-        kind: "acquired",
+        kind: result.item.hasFile ? "available" : "acquired",
         media: record.media,
         ...(result.item.title !== undefined
           ? { title: result.item.title }

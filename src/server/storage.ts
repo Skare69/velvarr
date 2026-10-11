@@ -581,8 +581,12 @@ function S(): Statements {
         "UPDATE acquisitions SET last_error = ?, last_error_at = ?, due_at = ?, updated_at = ? WHERE id = ? AND (? IS NULL OR claim_token = ?)",
       ),
       recordAbsence: d.prepare(
-        `UPDATE acquisitions SET last_error = ?, last_error_at = ?, due_at = ?,
+        `UPDATE acquisitions SET
+           last_error = CASE WHEN state = 'failed' THEN last_error ELSE ? END,
+           last_error_at = CASE WHEN state = 'failed' THEN last_error_at ELSE ? END,
+           due_at = ?,
            whisparr_id = NULL, whisparr_path = NULL, whisparr_title = NULL,
+           whisparr_monitored = NULL,
            whisparr_progress = NULL, whisparr_timeleft = NULL, updated_at = ?
          WHERE id = ? AND (? IS NULL OR claim_token = ?)`,
       ),

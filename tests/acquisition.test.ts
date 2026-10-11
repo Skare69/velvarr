@@ -394,6 +394,7 @@ test("a rejected add is failed once and never blind-retried", async () => {
   assert.equal(first.failed, 1);
   assert.equal(postCount(), 1);
   assert.equal(probe(id).state, "failed");
+  const reason = probe(id).lastError;
 
   // A later pass observes; it does not re-POST the rejected add.
   const second = await acquisition.runDueWork(later());
@@ -401,6 +402,11 @@ test("a rejected add is failed once and never blind-retried", async () => {
   assert.equal(second.absent, 1);
   assert.equal(postCount(), 1, "no blind retry of a failed add");
   assert.equal(probe(id).state, "failed");
+  assert.equal(
+    probe(id).lastError,
+    reason,
+    "the absence recheck does not clobber the dispatch reason",
+  );
 });
 
 test("an identity the lookup cannot resolve fails with a reason instead of looping as uncertain", async () => {
@@ -427,6 +433,92 @@ test("an identity the lookup cannot resolve fails with a reason instead of loopi
   assert.equal(second.absent, 1);
   assert.equal(postCount(), 0);
   assert.equal(probe(id).state, "failed");
+  assert.equal(
+    probe(id).lastError,
+    failed.lastError,
+    "the absence recheck does not clobber the dispatch reason",
+  );
+});
+
+test("a proven absence clears the monitored flag", async () => {
+  const owner = boot();
+  approve(owner.id, MOVIE_A);
+  const id = workId(MOVIE_A);
+
+  const first = await acquisition.runDueWork();
+  assert.equal(first.delivered, 1);
+
+  // First recheck: Whisparr still has the identity, monitored is recorded.
+  const observed = await acquisition.runDueWork(later());
+  assert.equal(observed.observed, 1);
+  assert.equal(probe(id).state, "monitoring");
+  assert.equal(probe(id).whisparrMonitored, true);
+
+  // The identity disappears: the next pass records a proven absence, which
+  // clears the recorded facts (including monitored) but keeps the state.
+  storedItems.delete(EXT_A);
+  const absent = await acquisition.runDueWork(later());
+  assert.equal(absent.absent, 1);
+  const rec = probe(id);
+  assert.equal(rec.whisparrMonitored, null);
+  assert.equal(rec.state, "monitoring");
+  assert.equal(rec.lastError, "whisparr no longer has this identity");
+});
+
+test("an adopted item that already has a file is imported at once", async () => {
+  const owner = boot();
+  storedItems.set(EXT_A, 1);
+  knobs.hasFile = true;
+  approve(owner.id, MOVIE_A);
+  const id = workId(MOVIE_A);
+
+  const summary = await acquisition.runDueWork();
+  assert.equal(summary.adopted, 1);
+  assert.equal(probe(id).state, "imported");
+
+  // Imported is terminal: the later pass schedules nothing for it.
+  const laterPass = await acquisition.runDueWork(later());
+  assert.equal(laterPass.considered, 0);
+});
+
+test("an adopted-with-file item notifies available exactly once", async () => {
+  const owner = boot();
+  const webhookBodies: string[] = [];
+  const webhook = createServer((req, res) => {
+    let raw = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk: string) => {
+      raw += chunk;
+    });
+    req.on("end", () => {
+      webhookBodies.push(raw);
+      res.writeHead(200);
+      res.end();
+    });
+  });
+  const listening = Promise.withResolvers<void>();
+  webhook.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  process.env.VELVARR_DISCORD_WEBHOOK_URL = `http://127.0.0.1:${
+    (webhook.address() as AddressInfo).port
+  }/api/webhooks/1/fixture-token`;
+  try {
+    storedItems.set(EXT_A, 1);
+    knobs.hasFile = true;
+    approve(owner.id, MOVIE_A);
+    await acquisition.runDueWork();
+    await eventually(() => webhookBodies.length >= 1);
+    assert.equal(webhookBodies.length, 1);
+    assert.ok(webhookBodies[0]!.includes("available"));
+
+    await acquisition.runDueWork(later());
+    await eventually(() => false); // drain any wrongful straggler
+    assert.equal(webhookBodies.length, 1, "no second available notification");
+  } finally {
+    delete process.env.VELVARR_DISCORD_WEBHOOK_URL;
+    webhook.closeAllConnections();
+    webhook.close();
+  }
 });
 
 test("observations track monitoring, downloading, and imported", async () => {

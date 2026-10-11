@@ -11,7 +11,10 @@ import {
 } from "../src/lib/status.ts";
 
 const avail = { outcome: "available" };
-const acq = (state: string, monitored = true) => ({ state, monitored });
+const acq = (state: string, monitored: boolean | null = true) => ({
+  state,
+  monitored,
+});
 
 test("playable beats everything, everywhere", () => {
   assert.equal(
@@ -82,6 +85,25 @@ test("imported-but-unscanned is never Paused: it reads as its decision", () => {
 
 test("unmonitored, not yet imported, reads Paused", () => {
   assert.equal(statusOf({ acquisition: acq("monitoring", false) }), "paused");
+});
+
+test("monitored-null absence row is not Paused: it reads as its decision", () => {
+  // A proven absence clears whisparr_monitored to null; that is not the same
+  // as recorded-unmonitored, so the paused phase must not trigger. A live
+  // acquisition still drives the badge (approved), even while the decision
+  // is pending — the pinned precedence in the test below.
+  assert.equal(
+    acquisitionPhase({ state: "monitoring", monitored: null }),
+    null,
+  );
+  assert.equal(statusOf({ acquisition: acq("monitoring", null) }), "approved");
+  assert.equal(
+    statusOf({
+      acquisition: acq("monitoring", null),
+      myRequest: { decision: "pending" },
+    }),
+    "approved",
+  );
 });
 
 test("an acquisition makes the row approved unless the decision says otherwise", () => {
@@ -168,6 +190,20 @@ test("acquisitionText: one line per state, on cards and catalog detail", () => {
     "Watching for a release (this is not a failure)",
   );
   assert.equal(
+    acquisitionText({
+      state: "monitoring",
+      lastError: "HTTP 502 from Whisparr",
+    }),
+    "Watching for a release — last check: HTTP 502 from Whisparr",
+  );
+  assert.equal(
+    acquisitionText({
+      state: "unsent",
+      lastError: "whisparr delivery is disabled or unconfigured",
+    }),
+    "Queued — not submitted yet — last check: whisparr delivery is disabled or unconfigured",
+  );
+  assert.equal(
     acquisitionText({ state: "imported", lastError: null }),
     "Imported — in your library",
   );
@@ -221,5 +257,21 @@ test("acquisitionText: the downloading line carries only real progress", () => {
       progress: { percent: 42, timeleft: "00:12:34" },
     }),
     "Downloading — 42% (00:12:34 left)",
+  );
+  assert.equal(
+    acquisitionText({
+      state: "downloading",
+      lastError: "HTTP 502 from Whisparr",
+      progress: { percent: 45, timeleft: null },
+    }),
+    "Downloading — 45% — last check: HTTP 502 from Whisparr",
+  );
+  assert.equal(
+    acquisitionText({
+      state: "downloading",
+      lastError: "HTTP 502 from Whisparr",
+      progress: { percent: 45, timeleft: "00:12:34" },
+    }),
+    "Downloading — 45% (00:12:34 left) — last check: HTTP 502 from Whisparr",
   );
 });
