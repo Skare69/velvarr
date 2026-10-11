@@ -640,6 +640,23 @@ function tpdbSiteRow(id: string) {
   };
 }
 
+// Rows the uncapped-directory test injects into the unfiltered /movies
+// snapshot; empty outside it, so every other pin keeps its exact fixture.
+interface InjectedMovieRow {
+  id: string;
+  title: string;
+  date: string;
+  description: string;
+  url: string;
+  site: { name: string; uuid: string };
+  posters: { full: string };
+  performers: never[];
+  tags: { id: number; uuid: string; name: string }[];
+  scenes: never[];
+}
+
+let extraTpdbMovies: InjectedMovieRow[] = [];
+
 async function tpdbHandler(
   req: IncomingMessage,
   res: ServerResponse,
@@ -697,6 +714,7 @@ async function tpdbHandler(
           site: { name: "Second Studio", uuid: TPDB_STUDIO2 },
           tags: [{ id: 71, uuid: TAG_C, name: "Fixture Tag C" }],
         },
+        ...extraTpdbMovies,
       ],
       meta: { total: realTotal ? 1 : 10000 },
       links: {},
@@ -824,6 +842,22 @@ async function tpdbHandler(
 const stashdbKey = "stash-fixture-key";
 const stashdbFx = { fail: 0, calls: 0, lastQuery: "", lastVars: "" };
 
+// Scenes the uncapped-directory test injects into the queryScenes snapshot;
+// empty outside it, so every other pin keeps its exact fixture.
+interface InjectedSceneRow {
+  id: string;
+  title: string;
+  date: string;
+  duration: number;
+  urls: never[];
+  images: never[];
+  studio: { id: string; name: string };
+  tags: never[];
+  performers: never[];
+}
+
+let extraStashScenes: InjectedSceneRow[] = [];
+
 async function stashdbHandler(
   req: IncomingMessage,
   res: ServerResponse,
@@ -868,7 +902,7 @@ async function stashdbHandler(
     return json(res, 200, {
       data: {
         queryScenes: {
-          count: 1,
+          count: 1 + extraStashScenes.length,
           scenes: [
             {
               id: STASH_SCENE,
@@ -881,6 +915,7 @@ async function stashdbHandler(
               tags: [{ id: TAG_B, name: "Fixture Stash Tag" }],
               performers: [],
             },
+            ...extraStashScenes,
           ],
         },
       },
@@ -3604,6 +3639,9 @@ test("the facet directory validates kind, lists both providers' genres, and deri
     errors: unknown[];
   };
   assert.equal(studiosBody.kind, "studios");
+  // A healthy read reports no source errors — and, once a side fails, the
+  // failing-provider test below proves the page's own errors ride through.
+  assert.deepEqual(studiosBody.errors, []);
   // Derived from the new-releases page: every studio renders, but the TPDB
   // twin whose counterpart a StashDB tile published is deduped away — the
   // same published-link rule as the discover shelf, uncapped.
@@ -3622,6 +3660,101 @@ test("the facet directory validates kind, lists both providers' genres, and deri
     cookie: member,
   });
   assert.equal(again.status, 200);
+});
+
+test("the studios directory reports a failed side instead of dropping it silently", async () => {
+  // Forget the healthy directory read the previous test cached, so the
+  // outage actually reaches the fixtures.
+  resetMetaCache();
+  stashdbFx.fail = 5;
+  try {
+    const failed = await call("GET", "/api/discovery/facets?kind=studios", {
+      cookie: member,
+    });
+    assert.equal(failed.status, 200, "one dead side must not fail the page");
+    const body = (await failed.json()) as {
+      kind: string;
+      tiles: { facet: string; provider: string; id: string }[];
+      errors: { provider: string; code: string; message: string }[];
+    };
+    assert.equal(body.kind, "studios");
+    // The browse page's own SourceError rides through: the dead side is
+    // named, never folded into a tiles-only 200.
+    assert.equal(body.errors.length, 1);
+    assert.equal(body.errors[0]?.provider, "stashdb");
+    assert.equal(body.errors[0]?.code, "upstream_unavailable");
+    assert.equal(body.errors[0]!.message.length > 0, true);
+    // The healthy side still lists — a partial outage is not an empty page.
+    assert.equal(
+      body.tiles.every((t) => t.provider === "tpdb"),
+      true,
+    );
+    const ids = new Set(body.tiles.map((t) => t.id));
+    assert.equal(ids.has(TPDB_STUDIO), true);
+    assert.equal(ids.has(TPDB_STUDIO2), true);
+  } finally {
+    stashdbFx.fail = 0;
+  }
+});
+
+test("the studios directory lists every studio past the shelf cap on both sides", async () => {
+  // Fresh reads: the provider cache must not serve the previous test's
+  // two-row snapshots over these injected ones.
+  resetMetaCache();
+  const extraId = (prefix: string, n: number) =>
+    `${prefix}-0000-0000-0000-${String(n).padStart(12, "0")}`;
+  extraTpdbMovies = Array.from({ length: 13 }, (_, i) => ({
+    ...tpdbMovieRow(extraId("2a2b3c4d", 300 + i)),
+    site: {
+      name: `Extra TPDB Studio ${String(i).padStart(2, "0")}`,
+      uuid: extraId("2a2b3c4d", 400 + i),
+    },
+  }));
+  extraStashScenes = Array.from({ length: 13 }, (_, i) => ({
+    id: extraId("3b3c4d5e", 500 + i),
+    title: `Fixture Scene ${i}`,
+    date: "2024-05-06",
+    duration: 600,
+    urls: [],
+    images: [],
+    studio: {
+      id: extraId("3b3c4d5e", 600 + i),
+      name: `Extra Stash Studio ${String(i).padStart(2, "0")}`,
+    },
+    tags: [],
+    performers: [],
+  }));
+  try {
+    const studios = await call("GET", "/api/discovery/facets?kind=studios", {
+      cookie: member,
+    });
+    assert.equal(studios.status, 200);
+    const body = (await studios.json()) as {
+      tiles: { provider: string; id: string }[];
+      errors: unknown[];
+    };
+    assert.deepEqual(body.errors, []);
+    // The directory is uncapped: more than the 12-item shelf cap per
+    // provider, every injected studio present.
+    assert.ok(body.tiles.filter((t) => t.provider === "tpdb").length > 12);
+    assert.ok(body.tiles.filter((t) => t.provider === "stashdb").length > 12);
+    const ids = new Set(body.tiles.map((t) => `${t.provider}:${t.id}`));
+    for (let i = 0; i < 13; i++) {
+      assert.equal(
+        ids.has(`tpdb:${extraId("2a2b3c4d", 400 + i)}`),
+        true,
+        `tpdb studio ${i} must be listed`,
+      );
+      assert.equal(
+        ids.has(`stashdb:${extraId("3b3c4d5e", 600 + i)}`),
+        true,
+        `stashdb studio ${i} must be listed`,
+      );
+    }
+  } finally {
+    extraTpdbMovies = [];
+    extraStashScenes = [];
+  }
 });
 
 // --- Wave A: follows, tag facet, bulk requests ---

@@ -253,6 +253,8 @@ export function genreFacets(
 export function studioFacets(
   provider: CatalogProvider,
   items: CatalogDetail[],
+  // The shelf caps; the directory passes Infinity and lists every studio.
+  cap: number = SHELF_ITEMS,
 ): Promise<CatalogDetail[]> {
   const known = new Map<
     string,
@@ -283,7 +285,7 @@ export function studioFacets(
     aliases: [],
   });
   return Promise.all(
-    [...known.values()].slice(0, SHELF_ITEMS).map(({ reference, name }) =>
+    [...known.values()].slice(0, cap).map(({ reference, name }) =>
       getCatalogDetail(reference).then(
         (detail) => detail ?? nameOnly(reference, name),
         // Detail read failed: the name/reference survived the snapshot, the
@@ -481,7 +483,8 @@ export async function resolveLinked(tiles: FacetItem[]): Promise<void> {
 // surfaces as that side's error, never a fabricated list. Studios: no
 // provider publishes a studio directory, so the overview derives from the
 // same new-releases page the discover shelf reads, uncapped — the page
-// reports its own breadth instead of claiming "all studios ever".
+// reports its own breadth and a failed side's error instead of claiming
+// "all studios ever".
 export async function discoveryFacets(
   request: Request,
   ctx: AuthContext,
@@ -541,19 +544,23 @@ export async function discoveryFacets(
   const perSource = await Promise.all(
     sources.map(async ({ provider, items }) => ({
       provider,
-      tiles: (await studioFacets(provider, items)).map((detail): FacetItem => ({
-        facet: "studio",
-        provider,
-        id: detail.reference.id,
-        name: detail.title,
-        ...(detail.logoUrl !== undefined ? { logoUrl: detail.logoUrl } : {}),
-        ...(detail.imageUrl !== undefined ? { imageUrl: detail.imageUrl } : {}),
-      })),
+      tiles: (await studioFacets(provider, items, Infinity)).map(
+        (detail): FacetItem => ({
+          facet: "studio",
+          provider,
+          id: detail.reference.id,
+          name: detail.title,
+          ...(detail.logoUrl !== undefined ? { logoUrl: detail.logoUrl } : {}),
+          ...(detail.imageUrl !== undefined
+            ? { imageUrl: detail.imageUrl }
+            : {}),
+        }),
+      ),
     })),
   );
   const tiles = await dedupePublishedStudios(perSource.flatMap((s) => s.tiles));
   tiles.sort((a, b) => a.name.localeCompare(b.name));
-  return json({ kind, tiles, errors: [] });
+  return json({ kind, tiles, errors: page.errors });
 }
 
 export async function discover(ctx: AuthContext): Promise<Response> {
