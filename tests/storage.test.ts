@@ -516,6 +516,48 @@ test("setup secret compare is constant-time-correct; login limiter is bounded pe
   );
 });
 
+test("login limiter: the spray cap binds strangers, admitted names ride past it", () => {
+  // The per-account bucket still binds an admitted name even with admitted
+  // set: brute force on a real account stays throttled.
+  for (let i = 0; i < 5; i++) security.recordLoginFailure("locked-owner");
+  assert.throws(
+    () => security.assertLoginAllowed("locked-owner", true),
+    (e: { code: string }) => e.code === "too_many_attempts",
+  );
+  // Fill the global bucket with rotating unknown names, whatever earlier
+  // tests left in it.
+  let sprayed = 0;
+  for (;;) {
+    try {
+      security.recordLoginFailure(`spray-${sprayed}`);
+      sprayed += 1;
+    } catch (e) {
+      assert.ok(
+        typeof e === "object" &&
+          e !== null &&
+          "code" in e &&
+          e.code === "too_many_attempts",
+        "spray fill must end in too_many_attempts",
+      );
+      break;
+    }
+  }
+  // A stranger with an untouched account bucket is still refused: the spray
+  // cap binds names without an admitted account.
+  assert.throws(
+    () => security.assertLoginAllowed("never-seen"),
+    (e: { code: string }) => e.code === "too_many_attempts",
+  );
+  // The default caller (setup paths) stays capped...
+  assert.throws(
+    () => security.assertLoginAllowed("fresh-admitted"),
+    (e: { code: string }) => e.code === "too_many_attempts",
+  );
+  // ...while an admitted name rides past the spray cap: the owner can sign
+  // in while a sprayer hammers the box.
+  security.assertLoginAllowed("fresh-admitted", true);
+});
+
 test("session cookie flags follow request transport and clear correctly", () => {
   const grant = {
     token: "tok123",

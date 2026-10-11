@@ -152,6 +152,7 @@ type Statements = {
   updateAccountGrants: StatementSync;
   getAccount: StatementSync;
   listAccounts: StatementSync;
+  listAccountNames: StatementSync;
   insertSession: StatementSync;
   getSession: StatementSync;
   deleteSession: StatementSync;
@@ -486,6 +487,7 @@ function S(): Statements {
       listAccounts: d.prepare(
         "SELECT * FROM accounts ORDER BY created_at ASC, id ASC",
       ),
+      listAccountNames: d.prepare("SELECT name FROM accounts"),
       insertSession: d.prepare(
         "INSERT INTO sessions (token_hash, account_id, jellyfin_token, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
       ),
@@ -1101,6 +1103,16 @@ export function getAccount(id: string): Account | null {
  *  the next sign-in instead of waiting for an admin import. */
 export function refreshAccountName(id: string, name: string): void {
   S().updateAccountName.run(name, id);
+}
+
+/** Login-gate admission test: is this sign-in name an admitted Velvarr
+ *  account? Compares case- and trim-insensitively in JS — the same
+ *  normalization as the limiter's account keys, and exact for non-ASCII
+ *  names where SQLite lower() is not. */
+export function hasAccountNamed(name: string): boolean {
+  const needle = name.trim().toLowerCase();
+  const rows = S().listAccountNames.all() as { name: string }[];
+  return rows.some((row) => row.name.trim().toLowerCase() === needle);
 }
 
 export function updateAccount(

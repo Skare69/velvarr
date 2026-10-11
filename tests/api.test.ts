@@ -6920,3 +6920,35 @@ test("hidden tag families: a whole-word label hides longer-tagged titles on ever
     "an include never invents rows tagged only with a family child",
   );
 });
+
+test("login spray cap: rotating strangers fill it, the admitted owner still signs in", async () => {
+  // Rotate unknown names with wrong passwords; every credential rejection
+  // charges the global spray bucket until the gate refuses pre-auth.
+  for (let i = 0; ; i++) {
+    const res = await call("POST", "/api/login", {
+      body: { username: `spray-${i}`, password: "wrong" },
+    });
+    if (res.status === 429) break;
+    // Wrong passwords leave as 502 upstream_auth: wire 401s are reserved for
+    // dead sessions (route.ts), and this rejection is what charges the cap.
+    assert.equal(res.status, 502);
+    assert.ok(i < 400, "spray cap must trip within its window");
+  }
+  // With the cap full, unknown names are refused before upstream auth...
+  const stranger = await call("POST", "/api/login", {
+    body: { username: "never-admitted", password: "wrong" },
+  });
+  assert.equal(stranger.status, 429);
+  // ...but the admitted owner still signs in: the spray cap no longer locks
+  // the household out of new sign-ins.
+  const ownerLogin = await call("POST", "/api/login", {
+    body: { username: "owner", password: "pass-owner" },
+  });
+  assert.equal(ownerLogin.status, 200);
+  assert.match(cookieOf(ownerLogin), /^velvarr_session=/);
+  // A failed guess against the admitted name never gets a free pass.
+  const guess = await call("POST", "/api/login", {
+    body: { username: "owner", password: "pass-member" },
+  });
+  assert.notEqual(guess.status, 200);
+});

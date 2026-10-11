@@ -9,7 +9,9 @@ const COOKIE_NAME = "velvarr_session";
 // durable counters only if abuse survives process restarts.
 const WINDOW_MS = 5 * 60_000;
 // Last-resort spray cap, not the primary defense: far above any household's
-// legitimate login traffic, low enough to stop a username-spraying bot.
+// legitimate login traffic, low enough to stop a username-spraying bot from
+// hammering unknown names. Admitted names are exempt from this cap and
+// bounded by ACCOUNT_LIMIT instead.
 const GLOBAL_LIMIT = 300;
 const ACCOUNT_LIMIT = 5;
 const MAX_BUCKETS = 1024;
@@ -121,11 +123,15 @@ export function verifySetupSecret(value: unknown): void {
 // Read-only gate: may this name try to authenticate now. Nothing is consumed
 // here — budget is charged on failed authentications only
 // (recordLoginFailure), so a successful login never burns its own account's
-// budget and one spraying client cannot exhaust the buckets for everyone.
-export function assertLoginAllowed(name: string): void {
+// budget. The spray cap binds only names without an admitted Velvarr
+// account: admitted names skip it (their brute force is bounded by the
+// per-account bucket), so a rotating-name sprayer can fill the global
+// bucket without locking the household out of sign-in.
+export function assertLoginAllowed(name: string, admitted = false): void {
   const now = Date.now();
   const global = buckets.get("global");
   if (
+    !admitted &&
     global &&
     now - global.windowStart < WINDOW_MS &&
     global.count >= GLOBAL_LIMIT
@@ -153,6 +159,10 @@ export function assertLoginAllowed(name: string): void {
 // Charges one failed authentication: the account bucket carries the
 // brute-force limit, the global bucket is the last-resort spray cap. Global
 // is charged first so an already-locked account's guesses still feed it.
+// ponytail: with the global bucket full, an admitted name's failure throws
+// on the global charge before its account bucket fills; if upstream
+// round-trips during an active spray ever matter, charge admitted names
+// account-first.
 export function recordLoginFailure(name: string): void {
   const now = Date.now();
   consumeBucket("global", GLOBAL_LIMIT, now);

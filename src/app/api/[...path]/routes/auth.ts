@@ -17,6 +17,7 @@ import {
   createSession,
   getAccount,
   getConfig,
+  hasAccountNamed,
   getContentPreferences,
   isInitialized,
   revokeSession,
@@ -72,12 +73,17 @@ export function setupFields(body: Record<string, unknown>): SetupFields {
 // the gate is checked read-only before the attempt, and a rejected
 // authentication is what charges the buckets. Jellyfin's credential
 // rejection ("upstream_auth") is the only chargeable outcome — upstream
-// outages and malformed fields never count as guesses.
+// outages and malformed fields never count as guesses. Callers that
+// authenticate an admitted Velvarr account pass admitted=true so a
+// rotating-name sprayer filling the global bucket cannot lock the
+// household out; setup paths keep the cap fully (no accounts exist before
+// initialization).
 async function guardedAuthentication<T>(
   name: string,
   attempt: () => Promise<T>,
+  admitted = false,
 ): Promise<T> {
-  assertLoginAllowed(name);
+  assertLoginAllowed(name, admitted);
   try {
     return await attempt();
   } catch (e) {
@@ -205,8 +211,10 @@ export async function login(request: Request): Promise<Response> {
   const config = getConfig();
   if (!config)
     throw new AppError(409, "not_initialized", "Setup has not been completed.");
-  const { user, token } = await guardedAuthentication(username, () =>
-    authenticate(config.jellyfin.url, username, password),
+  const { user, token } = await guardedAuthentication(
+    username,
+    () => authenticate(config.jellyfin.url, username, password),
+    hasAccountNamed(username),
   );
   const account = getAccount(user.id);
   if (!account)
