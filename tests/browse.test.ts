@@ -320,6 +320,10 @@ test("parseBrowseQuery round-trips pinned keys and rejects malformed input", () 
     ["date=2026-01-31", "invalid_query"], // operation missing
     ["date_operation=%3C", "invalid_query"], // date missing
     ["date=yesterday&date_operation=%3C", "invalid_query"],
+    // Regex-shaped but impossible calendar dates: refused locally, never
+    // shipped upstream as a provider-shaped 400/502.
+    ["date=2025-02-30&date_operation=%3D", "invalid_query"],
+    ["date=2025-13-01&date_operation=%3D", "invalid_query"],
     ["year=1800", "invalid_query"],
     ["page=0", "invalid_query"],
     ["perPage=101", "invalid_query"],
@@ -1966,6 +1970,39 @@ test("planBrowseSides refuses non-mixed sorts on All", () => {
   );
 });
 
+test("planBrowseSides refuses orders the qualifying side cannot carry", () => {
+  // Movies runs TPDB only: a StashDB-native order dies upstream as
+  // invalid_search, which a locally filtered stream buried as a 502.
+  assert.throws(
+    () => planBrowseSides(planQuery({ type: "movie", sort: "trending" })),
+    appError(400, "invalid_search"),
+    "trending on Movies",
+  );
+  // The mirror: relevance is TPDB-only.
+  assert.throws(
+    () => planBrowseSides(planQuery({ type: "scene", sort: "relevance" })),
+    appError(400, "invalid_search"),
+    "relevance on Scenes",
+  );
+  // TPDB relevance takes no upstream direction.
+  assert.throws(
+    () =>
+      planBrowseSides(
+        planQuery({ type: "movie", sort: "relevance", direction: "asc" }),
+      ),
+    /takes no direction/,
+    "relevance with direction",
+  );
+  // The recency vocabulary still maps onto the StashDB DATE order, so an
+  // All query filtered down to the StashDB side alone keeps its order.
+  assert.deepEqual(
+    planBrowseSides(planQuery({ studioStashdb: uuid(2), sort: "recency" }))
+      .sides,
+    ["stashdb"],
+    "recency survives on a StashDB-only All plan",
+  );
+});
+
 test("planBrowseSides keeps search and sort on the Scenes tab of a unified performer pair", () => {
   // Search no longer refuses, and the default recency order applies.
   const searched = planBrowseSides(
@@ -2055,10 +2092,18 @@ test("planBrowseSides derives order: filmography claims none, defaults are relea
   assert.deepEqual(explicit.mergeOrder, { key: "duration", direction: "asc" });
 
   // A single-side explicit sort that the provider owns passes natively and
-  // claims no merge order.
-  const native = planBrowseSides(planQuery({ type: "movie", sort: "title" }));
-  assert.deepEqual(native.nativeSort, { key: "title" });
+  // claims no merge order. Contract move (fix(browse)): a sort the side
+  // lacks — title on TPDB movies — now refuses at plan time instead of
+  // dying upstream, where a hidden-tag stream buried it as a 502.
+  const native = planBrowseSides(
+    planQuery({ type: "movie", sort: "relevance" }),
+  );
+  assert.deepEqual(native.nativeSort, { key: "relevance" });
   assert.equal(native.mergeOrder, undefined);
+  assert.throws(
+    () => planBrowseSides(planQuery({ type: "movie", sort: "title" })),
+    /not available on TPDB movies\./,
+  );
 });
 
 test("planBrowseSides routes the starred-performer filter: stashdb scenes only, empty page on movies, refuse performer combos", () => {

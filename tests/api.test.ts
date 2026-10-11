@@ -6319,6 +6319,65 @@ test("free-text terms that can never match are refused with no upstream call", a
   );
 });
 
+test("impossible dates and foreign per-tab sorts refuse as 400 before upstream, hidden tags or not", async () => {
+  const inputs: [string, string][] = [
+    [
+      "/api/browse?type=all&date=2025-02-30&date_operation=%3D",
+      "invalid_query",
+    ],
+    [
+      "/api/browse?type=movie&date=2025-02-30&date_operation=%3D",
+      "invalid_query",
+    ],
+    ["/api/browse?type=movie&sort=trending", "invalid_search"],
+    ["/api/browse?type=movie&sort=relevance&direction=asc", "invalid_search"],
+    [
+      // The release-review measurement: a non-UUID performer is refused
+      // locally (invalid_reference); a hidden-tag stream buried it as a 502.
+      "/api/catalog/search?provider=stashdb&kind=scene&performer=x",
+      "invalid_reference",
+    ],
+    [
+      // Same class on the date carrier: the route regex passes an impossible
+      // calendar date; the provider pre-flight refuses it.
+      "/api/catalog/search?provider=tpdb&kind=movie&date=2025-02-30&date_operation=%3D",
+      "invalid_search",
+    ],
+  ];
+  const hiddenStates: { name: string; tpdb: string }[][] = [
+    [],
+    [{ name: "Fixture Tag A", tpdb: TAG_A }],
+  ];
+  const upstreamCalls = () => tpdbFx.calls + stashdbFx.calls;
+  try {
+    for (const hiddenTags of hiddenStates) {
+      const saved = await call("PATCH", "/api/me/preferences", {
+        cookie: member,
+        body: { hiddenTags },
+      });
+      assert.equal(saved.status, 200);
+      const before = upstreamCalls();
+      for (const [path, code] of inputs) {
+        const body = await errorShape(
+          await call("GET", path, { cookie: member }),
+        );
+        assert.equal(body.code, code, path);
+      }
+      assert.equal(
+        upstreamCalls(),
+        before,
+        `no upstream call with ${hiddenTags.length} hidden tag(s)`,
+      );
+    }
+  } finally {
+    const restored = await call("PATCH", "/api/me/preferences", {
+      cookie: member,
+      body: { hiddenTags: [] },
+    });
+    assert.equal(restored.status, 200);
+  }
+});
+
 test("related titles: admission, reference validation before upstream, rank vocabulary", async () => {
   assert.equal(
     (await call("GET", `/api/catalog/tpdb/movie/${TPDB_MOVIE}/related`)).status,

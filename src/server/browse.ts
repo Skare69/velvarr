@@ -38,8 +38,9 @@ import type {
   ReleaseDateOperation,
 } from "./providers.ts";
 import { getConfig, parseTagSelections } from "./storage.ts";
+import { isIsoDate } from "./provider-rows.ts";
 import { normalizeFacetName } from "../lib/contracts.ts";
-import { BROWSE_MIXED_SORTS, SORT_KEYS } from "../lib/sorts.ts";
+import { BROWSE_MIXED_SORTS, SORT_KEYS, sortSpec } from "../lib/sorts.ts";
 import type {
   BrowseTagsResponse,
   CatalogDetail,
@@ -91,7 +92,6 @@ const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** TPDB site slug: the `/sites/<slug>` token (path-safe by construction). */
 const SITE_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/i;
-const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DATE_OPS: readonly ReleaseDateOperation[] = ["<", "<=", "=", ">", ">="];
 
 function invalidQuery(message: string): AppError {
@@ -181,8 +181,8 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
     DATE_OPS,
     "date_operation",
   );
-  if (date !== "" && !ISO_DATE_RE.test(date)) {
-    throw invalidQuery("date must be an ISO calendar date (YYYY-MM-DD).");
+  if (date !== "" && !isIsoDate(date)) {
+    throw invalidQuery("date must be a real calendar date (YYYY-MM-DD).");
   }
   if (date !== "" && dateOperation === undefined) {
     throw invalidQuery("date requires date_operation.");
@@ -429,6 +429,20 @@ class Stream {
       this.sort = result.sort;
       if (!result.hasMore) this.exhausted = true;
     } catch (err) {
+      // The request's own input fault keeps its status: capture would bury
+      // an impossible date or unsupported order (raised before any upstream
+      // contact) under a 502 provider outage. Source faults stay captured —
+      // the 5xx no-upstreamStatus family (upstream_timeout, upstream_
+      // unavailable, upstream_bad_response) and the upstreamStatus-bearing
+      // rejections (upstream_auth, upstream_not_found) are the source's
+      // story, not the request's.
+      if (
+        err instanceof AppError &&
+        err.upstreamStatus === undefined &&
+        err.status < 500
+      ) {
+        throw err;
+      }
       this.exhausted = true;
       this.error = {
         provider: this.base.provider,
@@ -792,6 +806,36 @@ export function planBrowseSides(query: BrowseQuery): BrowsePlan {
   const sides: CatalogProvider[] = [];
   if (movieWanted) sides.push("tpdb");
   if (sceneWanted) sides.push("stashdb");
+  // An explicit order must be one the qualifying sides genuinely carry: the
+  // type=all refusal above covers only the merged vocabulary, while a typed
+  // tab (or an All query filtered down to one side) sends the sort to that
+  // one provider — where an unimplemented order dies upstream as
+  // invalid_search, which a locally filtered stream would bury as a 502.
+  if (query.sort !== undefined) {
+    for (const provider of sides) {
+      // Native key and kind: recency is the browse vocabulary for StashDB's
+      // DATE order (see nativeQuery), and each side runs exactly one kind.
+      const nativeSortKey =
+        provider === "stashdb" && query.sort === "recency"
+          ? ("date" as const)
+          : query.sort;
+      const spec = sortSpec(
+        provider,
+        provider === "tpdb" ? "movie" : "scene",
+        nativeSortKey,
+      );
+      if (spec === undefined) {
+        refuse(
+          `"${query.sort}" order is not available on ${
+            provider === "tpdb" ? "TPDB movies" : "StashDB scenes"
+          }.`,
+        );
+      }
+      if (query.direction !== undefined && spec.directional !== true) {
+        refuse(`"${query.sort}" order takes no direction.`);
+      }
+    }
+  }
   return { sides, filmography, nativeSort, mergeOrder };
 }
 // Stryker disable all
