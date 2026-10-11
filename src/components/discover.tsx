@@ -13,6 +13,7 @@ import { seedFacetTile } from "../lib/names";
 import { statusOf } from "../lib/status";
 import "./discover.css";
 import "./views.css";
+import "./catalog.css";
 import type {
   CatalogDetail,
   CatalogReference,

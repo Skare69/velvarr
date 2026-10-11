@@ -16,6 +16,7 @@ import {
   type CatalogTagSelection,
 } from "../lib/contracts.ts";
 import { useApiGet } from "./shared.tsx";
+import "./catalog.css";
 
 /** The server caps one tag list at 25 — stop offering rather than let the
  * request 400. */

@@ -50,8 +50,12 @@ const TitlesView = dynamic(
   () => import("./catalog.tsx").then((m) => m.TitlesView),
   { loading: ChunkLoading },
 );
-const PreferencesDialog = dynamic(() =>
-  import("./preferences.tsx").then((m) => m.PreferencesDialog),
+// loading gives the lazy dialog its own Suspense boundary: without it the
+// first Shell render suspends past the shell into page.tsx's fallback, and
+// the whole app swaps to the loading skeleton while the chunk is in flight.
+const PreferencesDialog = dynamic(
+  () => import("./preferences.tsx").then((m) => m.PreferencesDialog),
+  { loading: () => null },
 );
 const SearchView = dynamic(
   () => import("./search.tsx").then((m) => m.SearchView),
