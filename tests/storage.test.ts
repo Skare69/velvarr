@@ -2459,6 +2459,7 @@ test("malformed preferences are rejected atomically; unknown accounts are 404", 
         })),
       },
     ],
+    ["unmatchable free-text label", { hiddenTags: [{ name: "日本" }] }],
   ];
   for (const [label, input] of badInputs) {
     assert.throws(
@@ -2508,6 +2509,50 @@ test("malformed preferences are rejected atomically; unknown accounts are 404", 
     () => storage.getContentPreferences("no-such-account"),
     (e: AppError) => e.code === "account_not_found" && e.status === 404,
   );
+});
+
+test("stored hidden tags that can never match are pruned on read and saved back pruned", () => {
+  const { owner } = prefSetup();
+  storage.saveContentPreferences(owner, {
+    hiddenTags: [{ name: "Romance", tpdb: TAG_TPDB }],
+  });
+  // Seed what a save before the unmatchable-label rule could persist:
+  // label-only terms whose folded label is empty (nothing survives
+  // NFKD + [a-z0-9]). They match nothing in any mode — dead rows, never a
+  // wildcard — so reads prune them instead of letting them block every
+  // later preferences save with a 400.
+  const raw = new DatabaseSync(join(currentDir, "velvarr.sqlite"));
+  raw
+    .prepare("UPDATE accounts SET hidden_tags = ? WHERE id = ?")
+    .run(
+      JSON.stringify([
+        { name: "Romance", tpdb: TAG_TPDB },
+        { name: "日本" },
+        { name: "++" },
+      ]),
+      owner,
+    );
+  raw.close();
+
+  // Reads prune the dead rows; the live selection survives untouched.
+  assert.deepEqual(storage.getContentPreferences(owner), {
+    hiddenTags: [{ name: "Romance", tpdb: TAG_TPDB }],
+    discoverOrder: DEFAULT_ORDER,
+  });
+
+  // An order-only save succeeds (the omitted-field fallback re-persists
+  // the pruned list) and cleans the stored column in passing.
+  storage.saveContentPreferences(owner, {
+    discoverOrder: ["genres", "new-releases"],
+  });
+  const after = new DatabaseSync(join(currentDir, "velvarr.sqlite"));
+  // Raw column read: the seeding above is the only writer of this shape.
+  const row = after
+    .prepare("SELECT hidden_tags FROM accounts WHERE id = ?")
+    .get(owner) as { hidden_tags: string };
+  const stored = JSON.parse(row.hidden_tags) as CatalogTagSelection[];
+  after.close();
+  assert.deepEqual(stored, [{ name: "Romance", tpdb: TAG_TPDB }]);
 });
 
 test("discover order persists per account, isolates accounts, and partial saves preserve the other field", () => {

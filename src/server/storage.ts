@@ -1780,7 +1780,12 @@ const IS_DISCOVER_ID = new Set<string>(DISCOVER_IDS);
  * 1..120 characters and no unknown fields. Provider UUIDs are optional only
  * where a label alone can match — hidden tags and excludes run the local
  * family matcher; an include without any provider id is refused (a label
- * cannot travel to a provider that filters on its own tag ids). */
+ * cannot travel to a provider that filters on its own tag ids). A
+ * label-only selection whose label has no letters or digits after
+ * normalization ("日本", "++") can never match anything — tagMatches
+ * returns false for an empty folded label in every mode — so it is refused
+ * here too, at the one boundary every consumer routes through; anchored
+ * selections are unaffected because their UUID matches natively. */
 function validTagSelection(
   s: unknown,
   allowLabelOnly: boolean,
@@ -1795,7 +1800,10 @@ function validTagSelection(
       (typeof t.tpdb === "string" && UUID_RE.test(t.tpdb))) &&
     (t.stashdb === undefined ||
       (typeof t.stashdb === "string" && UUID_RE.test(t.stashdb))) &&
-    (allowLabelOnly || t.tpdb !== undefined || t.stashdb !== undefined)
+    (allowLabelOnly || t.tpdb !== undefined || t.stashdb !== undefined) &&
+    (t.tpdb !== undefined ||
+      t.stashdb !== undefined ||
+      normalizeFacetName(t.name) !== "")
   );
 }
 
@@ -1825,9 +1833,10 @@ function consolidateTagSelections(
 /** Shared trust boundary for picker-supplied tag lists: the browse API's
  * include/exclude arrays and saved hidden tags are the same shape. Pure —
  * no database access, safe before storage is initialized. Any wrong type,
- * unknown field, or — unless `allowLabelOnly` — a missing provider id is
- * invalid_preferences; valid duplicates consolidate and the consolidated
- * list is capped at 25. */
+ * unknown field, a label-only selection whose label normalizes to nothing
+ * (it can never match a tag), or — unless `allowLabelOnly` — a missing
+ * provider id is invalid_preferences; valid duplicates consolidate and the
+ * consolidated list is capped at 25. */
 export function parseTagSelections(
   input: unknown,
   allowLabelOnly = false,
@@ -1842,12 +1851,25 @@ export function parseTagSelections(
   const items: CatalogTagSelection[] = [];
   for (const raw of input) {
     if (!validTagSelection(raw, allowLabelOnly)) {
+      // The unmatchable-label rule gets its own wording: the 400 names the
+      // term so the caller learns which chip to drop.
+      const unmatchable =
+        typeof raw === "object" &&
+        raw !== null &&
+        !Array.isArray(raw) &&
+        "name" in raw &&
+        typeof raw.name === "string" &&
+        raw.tpdb === undefined &&
+        raw.stashdb === undefined &&
+        normalizeFacetName(raw.name) === "";
       throw new AppError(
         400,
         "invalid_preferences",
-        allowLabelOnly
-          ? "each tag selection needs a label of 1..120 characters"
-          : "each tag selection needs a label of 1..120 characters and at least one provider id",
+        unmatchable
+          ? `"${raw.name}" has no letters or digits after normalization, so it can never match a tag`
+          : allowLabelOnly
+            ? "each tag selection needs a label of 1..120 characters"
+            : "each tag selection needs a label of 1..120 characters and at least one provider id",
       );
     }
     // Plain copies: only name/tpdb/stashdb survive the boundary.
@@ -1919,6 +1941,20 @@ function effectiveDiscoverOrder(saved: unknown): DiscoverShelfId[] {
   return [...picked, ...DISCOVER_IDS.filter((id) => !picked.includes(id))];
 }
 
+/** Stored hidden tags whose folded label is empty ("日本", "++") match
+ * nothing in any mode — tagMatches returns false for "" — so reads drop
+ * them instead of handing the UI a chip that would 400 every later save
+ * that echoes its own list back. The column self-heals on the next write;
+ * no migration touches existing rows (decision recorded for b831af4). */
+function parseStoredHiddenTags(json: string): CatalogTagSelection[] {
+  return (JSON.parse(json) as CatalogTagSelection[]).filter(
+    (s) =>
+      s.tpdb !== undefined ||
+      s.stashdb !== undefined ||
+      normalizeFacetName(s.name) !== "",
+  );
+}
+
 /** One account's stored preferences. Personal data: callers pass the id of
  * the session's own account; there is deliberately no list-everyone variant. */
 export function getContentPreferences(accountId: string): ContentPreferences {
@@ -1929,7 +1965,7 @@ export function getContentPreferences(accountId: string): ContentPreferences {
   }
   // Rows only ever come from saveContentPreferences or the migration default.
   return {
-    hiddenTags: JSON.parse(row.hidden_tags) as CatalogTagSelection[],
+    hiddenTags: parseStoredHiddenTags(row.hidden_tags),
     discoverOrder: effectiveDiscoverOrder(JSON.parse(row.discover_order)),
   };
 }
@@ -1970,7 +2006,7 @@ export function saveContentPreferences(
   }
   const hiddenTags = hasTags
     ? parseTagSelections(doc.hiddenTags, true)
-    : (JSON.parse(account.hidden_tags) as CatalogTagSelection[]);
+    : parseStoredHiddenTags(account.hidden_tags);
   const discoverOrder = hasOrder
     ? parseDiscoverOrder(doc.discoverOrder)
     : (JSON.parse(account.discover_order) as DiscoverShelfId[]);

@@ -105,10 +105,15 @@ export function TagPicker({
   const listed = current && error === null ? take(data?.tags) : [];
   const options = listed;
   // The typed term itself, when it matches no offered tag: a real selection
-  // with no provider ids, workable only where matching runs locally.
+  // with no provider ids, workable only where matching runs locally. Terms
+  // the server refuses are never offered: a label with nothing left after
+  // normalization ("日本", "++") can never match a tag, and one over the
+  // server's 120-character cap would 400 the whole save.
   const freeText: CatalogTagSelection | null =
     allowFreeText &&
     t.length >= 2 &&
+    t.length <= 120 &&
+    normalizeFacetName(t) !== "" &&
     !picked.has(normalizeFacetName(t)) &&
     !options.some((o) => normalizeFacetName(o.name) === normalizeFacetName(t))
       ? { name: t }

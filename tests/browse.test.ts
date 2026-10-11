@@ -624,6 +624,47 @@ test("a free-text include filters both sides locally as a substring and runs no 
   );
 });
 
+test("a free-text include matches inside a tag word: substring, not family", async () => {
+  const TPDB_XYZ = { id: 11, uuid: uuid(101), name: "XYZ Special" };
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [TPDB_XYZ],
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(uuid(1), "Inside a word", "2024-02-01", [TPDB_XYZ]),
+            tpdbRow(uuid(2), "Untagged sibling", "2024-01-01"),
+          ],
+          next: null,
+          total: 2,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+    }),
+    async () => {
+      // "yz" sits inside the token "xyz": the substring matcher keeps the
+      // tagged title, while the family matcher (whole-word token runs)
+      // would drop it. This pins the mode for free-text includes.
+      const page = await browseTitles(
+        {
+          type: "movie",
+          include: [{ name: "yz" }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      assert.deepEqual(
+        page.items.map((d) => d.reference.id),
+        [uuid(1)],
+      );
+      assert.equal(page.total, 1);
+    },
+  );
+});
+
 test("a free-text include rides beside a native one: the term filters locally, the tag travels natively", async () => {
   const TAG_A = { id: 11, uuid: uuid(101), name: "Tag A" };
   const TAG_XYZ = { id: 12, uuid: uuid(102), name: "XYZ Special" };

@@ -6043,6 +6043,42 @@ test("browse is the unified visible-catalog surface and counts the caller's hidd
   }
 });
 
+test("free-text terms that can never match are refused with no upstream call", async () => {
+  const tpdbBefore = tpdbFx.calls;
+  const stashBefore = stashdbFx.calls;
+  // A label-only selection whose folded label is empty can never match a
+  // tag, so browse refuses includes and excludes, and preferences refuse
+  // saves — all before contacting a provider.
+  for (const term of ["日本", "++"]) {
+    for (const param of ["include", "exclude"]) {
+      const res = await call(
+        "GET",
+        `/api/browse?${param}=${encodeURIComponent(
+          JSON.stringify([{ name: term }]),
+        )}`,
+        { cookie: member },
+      );
+      assert.equal(res.status, 400, `${param} ${term}`);
+      assert.equal((await errorShape(res)).code, "invalid_preferences");
+    }
+    const saved = await call("PATCH", "/api/me/preferences", {
+      cookie: member,
+      body: { hiddenTags: [{ name: term }] },
+    });
+    assert.equal(saved.status, 400, `hiddenTags ${term}`);
+    assert.equal((await errorShape(saved)).code, "invalid_preferences");
+  }
+  assert.equal(tpdbFx.calls, tpdbBefore, "no upstream call may fire");
+  assert.equal(stashdbFx.calls, stashBefore, "no upstream call may fire");
+  const prefs = await call("GET", "/api/me/preferences", { cookie: member });
+  const prefsBody = (await prefs.json()) as PreferencesBody;
+  assert.deepEqual(
+    prefsBody.hiddenTags,
+    [],
+    "the stored list survives every refused save",
+  );
+});
+
 test("related titles: admission, reference validation before upstream, rank vocabulary", async () => {
   assert.equal(
     (await call("GET", `/api/catalog/tpdb/movie/${TPDB_MOVIE}/related`)).status,
