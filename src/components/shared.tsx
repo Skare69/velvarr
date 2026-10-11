@@ -275,6 +275,12 @@ export function useTapReveal(): void {
  * without the dispatchers. */
 export const PREFERENCES_CHANGED = "velvarr:preferences-changed";
 
+/** Dispatched by browse controls ("N hidden", drawer note) to open the
+ * Preferences modal in place; the shell listens and opens it, so the URL
+ * keeps every filter. Pinned name; do not rename here without the
+ * dispatchers. */
+export const OPEN_PREFERENCES = "velvarr:open-preferences";
+
 /** URL is the source of truth. The default replaces the entry so internal
  * corrections (perPage normalization, legacy normalization) do not fill the
  * history stack; user-initiated changes — surface navigation and every

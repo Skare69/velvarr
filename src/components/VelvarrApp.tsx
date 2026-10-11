@@ -29,6 +29,7 @@ import {
   messageOf,
   notifyAuthChanged,
   onAuthChanged,
+  OPEN_PREFERENCES,
   SessionCtx,
   setParamsClearing,
   useApiGet,
@@ -873,6 +874,13 @@ function Shell() {
   const accountMenu = useRef<HTMLDetailsElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
+  // Browse controls ("N hidden", drawer note) open the modal in place so the
+  // URL keeps every filter — the removed ?view=preferences dropped them.
+  useEffect(() => {
+    const open = () => setPrefsOpen(true);
+    window.addEventListener(OPEN_PREFERENCES, open);
+    return () => window.removeEventListener(OPEN_PREFERENCES, open);
+  }, []);
   // A <details> menu stays open when you click anywhere else; close it on an
   // outside click and on Escape, like every other menu on the page.
   useEffect(() => {

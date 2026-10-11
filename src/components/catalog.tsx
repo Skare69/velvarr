@@ -9,7 +9,6 @@ import {
   type ReactNode,
 } from "react";
 import { useSearchParams } from "next/navigation";
-import Link from "next/link";
 import "./catalog.css";
 import { TagPicker } from "./tag-picker.tsx";
 import {
@@ -23,6 +22,7 @@ import {
   ItemImage,
   messageOf,
   MovieCard,
+  OPEN_PREFERENCES,
   providerLabel,
   SceneCard,
   useApiGet,
@@ -1302,13 +1302,16 @@ export function TitlesView() {
           </div>
           <div className="page-toolbar">
             {hiddenCount > 0 && (
-              <Link
-                href="/?view=preferences"
+              <button
+                type="button"
                 className="btn"
                 aria-label={`${hiddenCount} personal hidden tags active — manage in Preferences`}
+                onClick={() =>
+                  window.dispatchEvent(new Event(OPEN_PREFERENCES))
+                }
               >
                 <Icon name="tag" /> {hiddenCount} hidden
-              </Link>
+              </button>
             )}
             <div role="group" aria-label="Title type" className="flex gap-2">
               {(["all", "movie", "scene"] as const).map((t) => (
@@ -1525,8 +1528,14 @@ export function TitlesView() {
           {hiddenCount > 0
             ? `${hiddenCount} personal hidden tag${hiddenCount === 1 ? "" : "s"} appl${hiddenCount === 1 ? "ies" : "y"} on every browse — `
             : "Personal hidden tags apply on every browse — "}
-          <Link href="/?view=preferences">manage them in Preferences</Link>.
-          Clear filters never removes them.
+          <button
+            type="button"
+            className="btn"
+            onClick={() => window.dispatchEvent(new Event(OPEN_PREFERENCES))}
+          >
+            manage them in Preferences
+          </button>
+          . Clear filters never removes them.
         </p>
       </FilterDrawer>
     </section>
