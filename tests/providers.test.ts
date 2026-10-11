@@ -3218,6 +3218,37 @@ test("identityLinkKey normalizes allowlisted identity URLs; everything else is u
     undefined,
   );
 
+  // Reserved app-route segments: content pages, never an identity page —
+  // no key at all, so two performers publishing such URLs cannot merge.
+  for (const url of [
+    "https://twitter.com/i/user/111",
+    "https://x.com/i/user/222",
+    "https://twitter.com/intent/user?screen_name=handle",
+    "https://x.com/home",
+    "https://twitter.com/search?q=handle",
+    "https://twitter.com/hashtag/tag",
+    "https://twitter.com/share?url=x",
+    "https://www.instagram.com/p/Cpost123/",
+    "https://www.instagram.com/reel/Cpost123/",
+    "https://www.instagram.com/reels/Cpost123/",
+    "https://www.instagram.com/stories/handle/123",
+    "https://www.instagram.com/explore/tags/tag/",
+    "https://onlyfans.com/action/trial/xyz",
+    "https://chaturbate.com/in/?tour=X&room=jane",
+    "https://chaturbate.com/in/?tour=Y&room=mary",
+    "https://chaturbate.com/affiliates/oid/123",
+    "https://www.tiktok.com/video/123",
+    "https://www.tiktok.com/discover/tag",
+  ]) {
+    assert.equal(identityLinkKey(url), undefined, url);
+  }
+  // tiktok keys only on @handles; real profiles on every host still key.
+  assert.equal(identityLinkKey("https://www.tiktok.com/handle"), undefined);
+  assert.equal(
+    identityLinkKey("https://www.tiktok.com/@handle/video/123"),
+    "tiktok.com/handle",
+  );
+
   // Provider URLs, content hosts, non-URLs: never an identity key.
   assert.equal(
     identityLinkKey(`https://stashdb.org/studios/${TPDB_STUDIO_ID}`),
@@ -3329,6 +3360,44 @@ test("linkedPerformerCounterpart refuses to guess when two searched performers s
       /2 searched StashDB performers share profile links/,
     );
     assert.match(result.unlinkedReason ?? "", /refusing to guess/);
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
+test("linkedPerformerCounterpart does not merge on shared non-profile redirect URLs", async () => {
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  // The TPDB record publishes a chaturbate /in affiliate redirect; one
+  // searched StashDB candidate publishes a different /in redirect with
+  // another room. Both redirects are content pages, not identity pages: no
+  // key, no merge — even though the raw paths share the chaturbate host.
+  const fixture = await startStashPerformerFixture({
+    [STASH_NOLINK_ID]: [
+      {
+        url: "https://chaturbate.com/in/?tour=X&room=jane",
+        type: "Chaturbate",
+      },
+    ],
+    [STASH_MATCH_ID]: [
+      { url: "https://twitter.com/other_person", type: "Twitter" },
+    ],
+  });
+  try {
+    process.env.STASHDB_BASE_URL = fixture.origin;
+    // The record also publishes real profile links (IAFD, OnlyFans), so the
+    // name search runs; the /in redirect must contribute no key to it.
+    const detail = tpdbAutoLinkDetail();
+    detail.links.push({
+      url: "https://chaturbate.com/in/?tour=Z&room=rossa",
+      label: "Chaturbate",
+    });
+    const result = await linkedPerformerCounterpart(detail);
+    assert.equal(result.linked, undefined);
+    assert.match(
+      result.unlinkedReason ?? "",
+      /no shared profile link with any searched StashDB performer either/,
+    );
   } finally {
     await fixture.close();
     restore();

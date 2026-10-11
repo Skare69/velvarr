@@ -51,12 +51,30 @@ const IDENTITY_BUCKETS: Record<string, readonly string[]> = {
   "reddit.com": ["user"],
 };
 
+/** Reserved first path segments on plain-handle hosts: app routes that are
+ * never a handle (twitter.com/i/…, instagram.com/p/<post>,
+ * chaturbate.com/in/?…). A URL starting with one is content, not an identity
+ * page, and yields no key at all. Bucketed hosts never consult this list —
+ * their allowlist already refuses every non-profile path. */
+const RESERVED_SEGMENTS: Record<string, readonly string[]> = {
+  "twitter.com": ["i", "intent", "home", "search", "hashtag", "share"],
+  "x.com": ["i", "intent", "home", "search", "hashtag", "share"],
+  "instagram.com": ["p", "reel", "reels", "stories", "explore"],
+  "onlyfans.com": ["action"],
+  "chaturbate.com": ["in", "affiliates"],
+};
+
+/** Hosts that key only on @handles: any bare first word is a content route
+ * (tiktok.com/video/…), so without a leading @ there is no key. */
+const AT_ONLY_HOSTS: Record<string, true> = { "tiktok.com": true };
+
 /** Normalized identity key for a third-party profile URL, undefined when the
  * URL is not an identity-scoped page on an allowlisted host. Keys are
  * host/handle: lowercased host (www. stripped) + handle (kind segments like
- * user/model/pornstar/profiles dropped, one leading @ stripped, query/hash/
- * trailing slash gone), so the same profile published with case, www, and
- * formatting differences collapses to one key. IAFD is special-cased because
+ * user/model/pornstar/profiles dropped, reserved app-route segments refused,
+ * one leading @ stripped, query/hash/trailing slash gone), so the same
+ * profile published with case, www, and formatting differences collapses to
+ * one key. IAFD is special-cased because
  * its identity lives in a perfid= path segment, not a leading one. */
 export function identityLinkKey(url: string): string | undefined {
   let parsed: URL;
@@ -85,6 +103,10 @@ export function identityLinkKey(url: string): string | undefined {
     return undefined; // content path (pornhub /video, reddit /r), not a profile
   }
   if (buckets !== undefined) segments.shift(); // drop the kind segment
+  const first = segments[0]?.toLowerCase();
+  if (first === undefined) return undefined;
+  if (RESERVED_SEGMENTS[host]?.includes(first)) return undefined; // app route, not a handle
+  if (AT_ONLY_HOSTS[host] === true && !first.startsWith("@")) return undefined;
   const handle = segments.shift()?.replace(/^@/, "").toLowerCase();
   return handle !== undefined && handle !== ""
     ? `${host}/${handle}`
