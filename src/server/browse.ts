@@ -287,7 +287,9 @@ function visiblePredicate(
  * the providers' own published label pairing. Free-text selections carry no
  * native anchor anywhere, so they are skipped here and filter locally
  * instead. An unresolvable anchored tag disqualifies the whole side
- * (undefined) — it is NEVER allowed to run unfiltered. */
+ * (undefined) — it is NEVER allowed to run unfiltered. A lookup that fails
+ * throws; browseTitles records the side as a failed source instead of
+ * reading the outage as absence. */
 async function includeIdsForSide(
   selections: CatalogTagSelection[],
   side: "tpdb" | "stashdb",
@@ -452,6 +454,24 @@ function allSourcesFailed(streams: Stream[]): never {
     "provider_unavailable",
     errors.map((s) => `${s.error!.provider}: ${s.error!.message}`).join("; "),
   );
+}
+
+/** A side whose include resolution failed before any query ran: an
+ * already-failed stream, so the merge keeps the named error beside the
+ * survivors, degrades the totals, and 502s when no side survives. A broken
+ * counterpart lookup is an outage, never absence. */
+function unresolvedStream(provider: CatalogProvider, err: unknown): Stream {
+  const stream = new Stream(
+    provider === "tpdb"
+      ? { provider: "tpdb", kind: "movie" }
+      : { provider: "stashdb", kind: "scene" },
+    () => false,
+    1,
+    false,
+  );
+  stream.exhausted = true;
+  stream.error = sourceError(provider, err);
+  return stream;
 }
 
 // Stryker restore all
@@ -803,13 +823,24 @@ export async function browseTitles(
   const mergeOrder = plan.mergeOrder;
   const movieWanted = plan.sides.includes("tpdb");
   const sceneWanted = plan.sides.includes("stashdb");
+  // A side whose include resolution fails enters the merge as an
+  // already-failed stream: its plan is dropped (never run unfiltered) but
+  // the outage stays named, and a browse whose every wanted side dies this
+  // way is a 502 — never an exact empty catalog.
+  const unresolved: Stream[] = [];
+  const resolveIncludes = (
+    wanted: boolean,
+    side: "tpdb" | "stashdb",
+  ): Promise<string[] | undefined> => {
+    if (!wanted) return Promise.resolve(undefined);
+    return includeIdsForSide(query.include, side).catch((err: unknown) => {
+      unresolved.push(unresolvedStream(side, err));
+      return undefined;
+    });
+  };
   const [tpdbIncludes, stashIncludes] = await Promise.all([
-    movieWanted
-      ? includeIdsForSide(query.include, "tpdb")
-      : Promise.resolve(undefined),
-    sceneWanted
-      ? includeIdsForSide(query.include, "stashdb")
-      : Promise.resolve(undefined),
+    resolveIncludes(movieWanted, "tpdb"),
+    resolveIncludes(sceneWanted, "stashdb"),
   ]);
 
   // Free-text includes carry no native anchor: both sides keep running and
@@ -863,6 +894,17 @@ export async function browseTitles(
     });
   }
   if (plans.length === 0) {
+    if (unresolved.length > 0) {
+      // Every wanted side died resolving its includes: an outage, not a
+      // provably empty catalog. mergeStreams turns all-failed streams into
+      // the 502 that names each provider.
+      return mergeStreams(
+        unresolved,
+        mergeOrder,
+        (query.page - 1) * query.perPage,
+        query.perPage,
+      );
+    }
     // Reachable when the query provably matches nothing before any upstream
     // call: conflicting one-sided clauses, a source-scoped filter on a tab
     // of the other kind (no sides survive it), or include tags that resolve
@@ -882,7 +924,11 @@ export async function browseTitles(
   // provider's own totals, continuation, and error semantics — one upstream
   // request for any page depth.
   const single = plans.length === 1 ? plans[0]! : undefined;
-  if (single !== undefined && !single.localFiltered) {
+  if (
+    single !== undefined &&
+    !single.localFiltered &&
+    unresolved.length === 0
+  ) {
     const page = await searchCatalog(
       nativeQuery(
         query,
@@ -904,7 +950,7 @@ export async function browseTitles(
     };
   }
 
-  const streams = plans.map(
+  const streams: Stream[] = plans.map(
     (plan) =>
       new Stream(
         nativeQuery(query, plan, nativeSort, filmography, 1, query.perPage),
@@ -918,6 +964,7 @@ export async function browseTitles(
         plan.localFiltered,
       ),
   );
+  streams.push(...unresolved);
   return mergeStreams(
     streams,
     mergeOrder,

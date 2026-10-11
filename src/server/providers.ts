@@ -1760,7 +1760,9 @@ export type TagReference = { provider: CatalogProvider; id: string };
  * one documented deterministic pairing that needs no published URL. It is
  * deliberately NOT used for studios or performers: those are entities whose
  * identity comes only from provider-published URLs, and equal names there
- * would be a guess. Absence or any upstream failure → undefined. */
+ * would be a guess. A successful search with no exact normalized match →
+ * undefined; an upstream failure throws so callers record the outage
+ * instead of reading it as absence. */
 export async function tagCounterpart(
   from: CatalogProvider,
   name: string,
@@ -1768,13 +1770,9 @@ export async function tagCounterpart(
   const target = normalizeFacetName(name);
   if (target === "") return undefined; // an empty label identifies nothing
   const other: CatalogProvider = from === "tpdb" ? "stashdb" : "tpdb";
-  try {
-    const rows = await searchCatalogTags(other, name);
-    const row = rows.find((r) => normalizeFacetName(r.name) === target);
-    return row === undefined ? undefined : { provider: other, id: row.id };
-  } catch {
-    return undefined; // a failed counterpart lookup degrades to absent
-  }
+  const rows = await searchCatalogTags(other, name);
+  const row = rows.find((r) => normalizeFacetName(r.name) === target);
+  return row === undefined ? undefined : { provider: other, id: row.id };
 }
 
 /** Tag-label normalization lives in lib/contracts.ts (shared with storage

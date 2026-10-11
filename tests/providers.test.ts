@@ -1690,7 +1690,7 @@ test("studioCounterpart resolves one stashdb studio per exact url and degrades t
 
 // --- cross-provider tag pairing (label equality, not identity) ---
 
-test("tagCounterpart pairs only exact normalized names and never throws on upstream failure", async () => {
+test("tagCounterpart pairs only exact normalized names and rejects on upstream failure", async () => {
   // A tag is a label, not an entity: the one documented pairing exception is
   // exact normalized-name equality — case, spacing, and separators fold.
   assert.equal(normalizeFacetName("All Sex"), "allsex");
@@ -1727,7 +1727,13 @@ test("tagCounterpart pairs only exact normalized names and never throws on upstr
     assert.equal(await tagCounterpart("tpdb", "Anal"), undefined);
 
     fail = true;
-    assert.equal(await tagCounterpart("tpdb", "Asian"), undefined);
+    // Deliberate contract flip (fix(browse)): a failed lookup now throws so
+    // callers record the outage instead of reading it as absence; absence
+    // stays "a successful search with no exact normalized match".
+    await assert.rejects(tagCounterpart("tpdb", "Asian"), (err: unknown) => {
+      assertProviderError(err, 502, "upstream_unavailable", 500);
+      return true;
+    });
   } finally {
     await stashFixture.close();
     restore();

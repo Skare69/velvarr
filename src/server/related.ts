@@ -115,14 +115,25 @@ export async function relatedTitles(
   // comes from the shared-tag ranking below. Same source searches with the
   // source's own tag ids; the counterpart source searches with the tags its
   // provider publishes under an exactly-equal normalized name (the existing
-  // deterministic pairing; absent counterparts simply shrink the pool).
-  const counterpartIds = (
-    await Promise.all(
-      seedTags.map((t) => tagCounterpart(reference.provider, t.name)),
-    )
-  )
-    .filter((t) => t !== undefined)
-    .map((t) => t.id);
+  // deterministic pairing; a successful search with no pair simply shrinks
+  // the pool, while a failed search surfaces as that provider's error).
+  const other: CatalogProvider =
+    reference.provider === "tpdb" ? "stashdb" : "tpdb";
+  const errors: SourceError[] = [];
+  const counterpartIds: string[] = [];
+  for (const settled of await Promise.allSettled(
+    seedTags.map((t) => tagCounterpart(reference.provider, t.name)),
+  )) {
+    if (settled.status === "rejected") {
+      // An outage is not absence: name the provider once and keep the rail
+      // partial beside the error evidence.
+      if (!errors.some((e) => e.provider === other)) {
+        errors.push(toSourceError(other, settled.reason));
+      }
+    } else if (settled.value !== undefined) {
+      counterpartIds.push(settled.value.id);
+    }
+  }
   const seedIds = seedTags.map((t) => t.id);
   const queries: CatalogSearchQuery[] = [];
   if (reference.provider === "tpdb") {
@@ -173,7 +184,6 @@ export async function relatedTitles(
   // hidden titles. The source detail's own provider-native `related`
   // references stay out of this list: that is a separate, unranked concept,
   // and its entries only enter here through the same tag searches.
-  const errors: SourceError[] = [];
   const seen = new Set([refKey(reference)]);
   const visible: CatalogDetail[] = [];
   for (const page of settled) {

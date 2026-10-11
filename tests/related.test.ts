@@ -420,6 +420,31 @@ test("a failed counterpart source keeps its error next to the surviving candidat
   });
 });
 
+test("a failed counterpart tag search names the provider and keeps the source-side rail", async () => {
+  await withFx(async (fx) => {
+    // searchTag answers data:null: the counterpart lookup fails, which is
+    // an outage, not absence.
+    searchTagReply = { data: null };
+    const result = await relatedTitles(movieRef(SOURCE_ID), []);
+    // The TPDB side still runs; the stash search is skipped because its ids
+    // never resolved — but the outage stays visible.
+    assert.deepEqual(ids(result.items), [
+      MOVIE_BOOST,
+      MOVIE_TWO,
+      MOVIE_HIDDEN,
+      MOVIE_ONE,
+    ]);
+    assert.ok(
+      !fx.log.some(
+        (r) => pathOf(r.url) === "/graphql" && r.body.includes("queryScenes"),
+      ),
+    );
+    assert.equal(result.errors.length, 1);
+    assert.equal(result.errors[0]!.provider, "stashdb");
+    assert.equal(result.errors[0]!.code, "upstream_bad_response");
+  });
+});
+
 // --- Jev boundary ---
 
 test("rank=jev without a key makes no paid call and keeps the tag order", async () => {

@@ -156,6 +156,10 @@ function scriptedUpstream(options: {
   scenes: { count: number; rows: unknown[] };
   tpdbMoviesStatus?: number;
   stashStatus?: number;
+  /** HTTP status for the TPDB /tags listing (the counterpart tag lookup). */
+  tpdbTagsStatus?: number;
+  /** HTTP status for the StashDB searchTag (the counterpart tag lookup). */
+  searchTagStatus?: number;
   /** TPDB site-key (uuid or slug) -> numeric site id, for /sites/<key>. */
   siteIds?: Record<string, number>;
   onMovieRequest?: (page: number, qs: URLSearchParams, url: string) => void;
@@ -165,6 +169,13 @@ function scriptedUpstream(options: {
   return (req, res, body) => {
     const path = pathOf(req.url ?? "");
     if (path === "/tags") {
+      if (
+        options.tpdbTagsStatus !== undefined &&
+        options.tpdbTagsStatus !== 200
+      ) {
+        sendJson(res, options.tpdbTagsStatus, { message: "upstream down" });
+        return;
+      }
       sendJson(res, 200, { data: options.tagRows, links: { next: null } });
       return;
     }
@@ -229,6 +240,15 @@ function scriptedUpstream(options: {
             },
           },
         });
+        return;
+      }
+      // searchTag is the counterpart tag lookup: empty on success, a
+      // scripted outage when searchTagStatus says so.
+      if (
+        options.searchTagStatus !== undefined &&
+        options.searchTagStatus !== 200
+      ) {
+        sendJson(res, options.searchTagStatus, { message: "upstream down" });
         return;
       }
       sendJson(res, 200, { data: { searchTag: [] } });
@@ -563,6 +583,90 @@ test("an include without a resolvable StashDB id drops the scene source instead 
         ["tpdb"],
       );
       assert.equal(page.totalCountKnown, true);
+    },
+  );
+});
+
+// --- a broken counterpart lookup is an outage, never absence ---
+
+test("a failed StashDB tag search keeps the movie page but names the outage instead of an exact TPDB-only total", async () => {
+  const TPDB_TAG = { id: 11, uuid: uuid(101), name: "Unpaired" };
+  const sceneCalls: number[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [TPDB_TAG],
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(1), "Only Movie", "2024-01-01", [TPDB_TAG])],
+          next: null,
+          total: 1,
+        },
+      ],
+      scenes: {
+        count: 5,
+        rows: [stashRow(uuid(3), "Unqueried", "2024-06-01")],
+      },
+      searchTagStatus: 500,
+      onScenesRequest: () => sceneCalls.push(1),
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "all",
+          include: [{ name: "Unpaired", tpdb: TPDB_TAG.uuid }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // The scene side is dropped (never run unfiltered) and its outage is
+      // named beside the movie results that did survive.
+      assert.equal(sceneCalls.length, 0);
+      assert.deepEqual(
+        page.items.map((d) => d.reference.provider),
+        ["tpdb"],
+      );
+      assert.equal(page.errors.length, 1);
+      assert.equal(page.errors[0]!.provider, "stashdb");
+      assert.equal(page.errors[0]!.code, "upstream_unavailable");
+      // A wanted side is dark: the surviving side's count is not the
+      // catalog total, so it must not read as exact.
+      assert.equal(page.totalCountKnown, false);
+    },
+  );
+});
+
+test("when every wanted side's include lookup fails, browse is a 502 instead of an exact empty catalog", async () => {
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      tpdbTagsStatus: 500,
+      searchTagStatus: 500,
+      moviePages: [{ rows: [], next: null, total: 0 }],
+      scenes: { count: 0, rows: [] },
+    }),
+    async () => {
+      // Each selection anchors only the other side, so both sides need a
+      // counterpart lookup and both lookups are down.
+      await assert.rejects(
+        browseTitles(
+          {
+            type: "all",
+            include: [
+              { name: "Only Stash", stashdb: uuid(201) },
+              { name: "Only Tpdb", tpdb: uuid(101) },
+            ],
+            exclude: [],
+            studioMode: "exact",
+            page: 1,
+            perPage: 10,
+          },
+          [],
+        ),
+        appError(502, "provider_unavailable"),
+      );
     },
   );
 });
