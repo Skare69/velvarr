@@ -77,7 +77,7 @@ const HIDE_COMEDY: CatalogTagSelection[] = [{ name: "Comedy" }];
 
 interface FixtureTag {
   id: number;
-  uuid: string;
+  uuid?: string;
   name: string;
 }
 
@@ -86,6 +86,9 @@ const tpdbTag = (id: number, uuid: string, name: string): FixtureTag => ({
   uuid,
   name,
 });
+
+/** A TPDB tag row whose uuid is missing: tpdbTags falls back to String(id). */
+const numericTag = (id: number, name: string): FixtureTag => ({ id, name });
 
 function movieRow(
   id: string,
@@ -332,6 +335,43 @@ test("ranks by shared tags deterministically; self, duplicates, zero-shared, hid
       value: [STASH_TAG_ID],
       modifier: "INCLUDES",
     });
+  });
+});
+
+test("a numeric-id seed tag stays out of the native query but its name still ranks", async () => {
+  await withFx(async (fx) => {
+    // A TPDB tag row without a uuid surfaces as String(t.id); sending it
+    // native used to 400 the whole same-source candidate search.
+    const legacy = numericTag(305, "Legacy");
+    sourceBody = movieRow(
+      SOURCE_ID,
+      "Source Title",
+      [ROMANCE, legacy],
+      STUDIO_ID,
+    );
+    listing = [
+      movieRow(SOURCE_ID, "Source Title", [ROMANCE, legacy], STUDIO_ID),
+      movieRow(MOVIE_TWO, "Two Shared", [ROMANCE, COMEDY]),
+      movieRow(MOVIE_ONE, "One Shared", [ROMANCE]),
+      movieRow(MOVIE_ZERO, "Named Share", [numericTag(306, "Legacy")]),
+    ];
+    const result = await relatedTitles(movieRef(SOURCE_ID), []);
+    assert.deepEqual(result.errors, []);
+    // The uuid seed drives the native query; the numeric id never travels.
+    const listingReq = fx.log.find((r) => pathOf(r.url) === "/movies");
+    assert.ok(listingReq);
+    const q = queryOf(listingReq.url);
+    assert.equal(q.get("tags[101]"), "1");
+    assert.equal(q.get("tags[305]"), null);
+    // Names still count: MOVIE_ZERO shares only the numeric tag's label.
+    // All four share exactly one tag (the source has no Comedy seed), so
+    // the stable refKey order applies: stashdb sorts before tpdb.
+    assert.deepEqual(ids(result.items), [
+      SCENE_ID,
+      MOVIE_TWO,
+      MOVIE_ONE,
+      MOVIE_ZERO,
+    ]);
   });
 });
 

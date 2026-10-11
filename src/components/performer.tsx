@@ -29,7 +29,11 @@ import type {
   CatalogReference,
   PerformerFollow,
 } from "../lib/contracts";
-import { mergeTagCounts, performerTagJump } from "../lib/contracts";
+import {
+  isBrowseableTagSelection,
+  mergeTagCounts,
+  performerTagJump,
+} from "../lib/contracts";
 import { useBrowseTo } from "./catalog";
 import { seedName } from "../lib/names";
 import { formatCareerRange } from "../lib/person";
@@ -863,41 +867,50 @@ function TagsOverview({
     <section aria-label="Tags overview">
       <h3 className="font-semibold">Tags</h3>
       <div className="mt-2 flex flex-wrap gap-2">
-        {shown.map((t) => (
-          <button
-            key={t.name}
-            type="button"
-            className="chip"
-            onClick={() => {
-              // A union jump rides both of her ids and lands on browse All
-              // (her TPDB movies plus her StashDB scenes). The page
-              // performer's name is seeded so the chip labels her by name;
-              // the linked side stays id-labeled — no known name, never
-              // faked.
-              seedName(
-                {
-                  provider: reference.provider,
-                  kind: "performer",
-                  id: reference.id,
-                },
-                name,
-              );
-              const jump = performerTagJump(reference, linked, t);
-              browseTo({
-                param: jump.param,
-                provider: jump.provider,
-                id: jump.id ?? reference.id,
-                ...(jump.counterpart !== undefined
-                  ? { counterpart: jump.counterpart }
-                  : {}),
-                tag: t,
-              });
-            }}
-          >
-            {t.name}
-            <span className="ml-1.5 text-muted">{t.count}</span>
-          </button>
-        ))}
+        {shown.map((t) =>
+          isBrowseableTagSelection(t) ? (
+            <button
+              key={t.name}
+              type="button"
+              className="chip"
+              onClick={() => {
+                // A union jump rides both of her ids and lands on browse All
+                // (her TPDB movies plus her StashDB scenes). The page
+                // performer's name is seeded so the chip labels her by name;
+                // the linked side stays id-labeled — no known name, never
+                // faked.
+                seedName(
+                  {
+                    provider: reference.provider,
+                    kind: "performer",
+                    id: reference.id,
+                  },
+                  name,
+                );
+                const jump = performerTagJump(reference, linked, t);
+                browseTo({
+                  param: jump.param,
+                  provider: jump.provider,
+                  id: jump.id ?? reference.id,
+                  ...(jump.counterpart !== undefined
+                    ? { counterpart: jump.counterpart }
+                    : {}),
+                  tag: t,
+                });
+              }}
+            >
+              {t.name}
+              <span className="ml-1.5 text-muted">{t.count}</span>
+            </button>
+          ) : (
+            // TPDB sometimes emits numeric-string tag ids the filter layer
+            // rejects with 400 — those stay plain text, as in catalog-detail.
+            <span key={t.name} className="chip">
+              {t.name}
+              <span className="ml-1.5 text-muted">{t.count}</span>
+            </span>
+          ),
+        )}
       </div>
       {merged.length > shown.length && (
         <p className="mt-2 text-xs text-muted">

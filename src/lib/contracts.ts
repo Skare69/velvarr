@@ -114,6 +114,20 @@ export function performerTagJump(
   return { param: "include", provider: other };
 }
 
+/** Whether a tag chip may ride a browse include at all: every provider id it
+ * carries must be a real UUID, mirroring the server's tag-selection
+ * validation. TPDB sometimes emits numeric-string tag ids its filter layer
+ * rejects with 400 — such chips render as plain text, as in catalog-detail. */
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isBrowseableTagSelection(t: CatalogTagSelection): boolean {
+  return (
+    (t.tpdb === undefined || UUID_RE.test(t.tpdb)) &&
+    (t.stashdb === undefined || UUID_RE.test(t.stashdb))
+  );
+}
+
 /** Provider-scoped external identity. `id` is the provider's external UUID,
  * never the application-owned catalog record id. */
 export type CatalogReference = {

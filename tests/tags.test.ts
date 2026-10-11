@@ -6,7 +6,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { CatalogReference } from "../src/lib/contracts.ts";
-import { mergeTagCounts, performerTagJump } from "../src/lib/contracts.ts";
+import {
+  isBrowseableTagSelection,
+  mergeTagCounts,
+  performerTagJump,
+} from "../src/lib/contracts.ts";
 
 test("mergeTagCounts merges by normalized label, sums counts, orders count desc then name", () => {
   const merged = mergeTagCounts([
@@ -175,5 +179,34 @@ test("performerTagJump mirrors from a StashDB page to the linked TPDB performer"
         id: PAGE_TPDB.id,
       },
     },
+  );
+});
+
+test("a tag selection with a non-UUID provider id is not a browse link", () => {
+  // TPDB tag rows without a uuid surface as numeric strings; the server's
+  // include validation refuses them, so such a chip must stay plain text.
+  assert.equal(
+    isBrowseableTagSelection({ name: "Romance", tpdb: "123" }),
+    false,
+  );
+  assert.equal(
+    isBrowseableTagSelection({
+      name: "Romance",
+      tpdb: "123",
+      stashdb: STASH_TAG_ID,
+    }),
+    false,
+  );
+  assert.equal(
+    isBrowseableTagSelection({ name: "Romance", tpdb: TAG_ROMANCE }),
+    true,
+  );
+  assert.equal(
+    isBrowseableTagSelection({
+      name: "Romance",
+      tpdb: TAG_ROMANCE,
+      stashdb: STASH_TAG_ID,
+    }),
+    true,
   );
 });

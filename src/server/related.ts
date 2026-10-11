@@ -23,6 +23,7 @@ import {
   type CatalogSearchPage,
   type CatalogSearchQuery,
 } from "./providers.ts";
+import { isUuid } from "./provider-rows.ts";
 
 /** Related rail for one title. `ranking` names the order actually applied —
  * 'jev' only when the caller explicitly requested Jev and the rerank fully
@@ -130,19 +131,26 @@ export async function relatedTitles(
       if (!errors.some((e) => e.provider === other)) {
         errors.push(toSourceError(other, settled.reason));
       }
-    } else if (settled.value !== undefined) {
+    } else if (settled.value !== undefined && isUuid(settled.value.id)) {
+      // Non-UUID ids (TPDB's numeric String(t.id) fallback) can never travel
+      // native: cleanTagIds would 400 the whole query. Their names still
+      // rank below.
       counterpartIds.push(settled.value.id);
     }
   }
-  const seedIds = seedTags.map((t) => t.id);
+  const seedIds = seedTags.map((t) => t.id).filter(isUuid);
   const queries: CatalogSearchQuery[] = [];
   if (reference.provider === "tpdb") {
-    queries.push({
-      provider: "tpdb",
-      kind: "movie",
-      tags: seedIds,
-      perPage: CANDIDATE_PAGE,
-    });
+    // An empty uuid pool means no honest same-source search: push nothing
+    // rather than an unfiltered popularity page.
+    if (seedIds.length > 0) {
+      queries.push({
+        provider: "tpdb",
+        kind: "movie",
+        tags: seedIds,
+        perPage: CANDIDATE_PAGE,
+      });
+    }
     if (counterpartIds.length > 0) {
       queries.push({
         provider: "stashdb",
@@ -152,12 +160,14 @@ export async function relatedTitles(
       });
     }
   } else {
-    queries.push({
-      provider: "stashdb",
-      kind: "scene",
-      tags: seedIds,
-      perPage: CANDIDATE_PAGE,
-    });
+    if (seedIds.length > 0) {
+      queries.push({
+        provider: "stashdb",
+        kind: "scene",
+        tags: seedIds,
+        perPage: CANDIDATE_PAGE,
+      });
+    }
     if (counterpartIds.length > 0) {
       queries.push({
         provider: "tpdb",
