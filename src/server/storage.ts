@@ -1542,25 +1542,6 @@ export function listFollows(accountId: string): PerformerFollow[] {
   );
 }
 
-/** Records an already-followed counterpart as this follow's other half, so
- * the two rows read as one identity. Used when the counterpart was followed
- * on its own before the pair was known. A missing row is a no-op: this never
- * creates a follow. */
-export function linkFollows(
-  accountId: string,
-  follow: CatalogReference,
-  counterpart: CatalogReference,
-): void {
-  open();
-  S().updatePerformerFollowLink.run(
-    counterpart.provider,
-    counterpart.id,
-    accountId,
-    follow.provider,
-    follow.id,
-  );
-}
-
 export function listFollowsByProvider(
   accountId: string,
   provider: CatalogProvider,

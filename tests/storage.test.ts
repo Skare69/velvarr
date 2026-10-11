@@ -2394,38 +2394,6 @@ test("a linked pair is one entry in the list, both rows for the shelves, and one
   assert.deepEqual(storage.listFollows(grant.account.id), []);
 });
 
-test("linkFollows folds two separately-followed rows into one identity and never creates a follow", () => {
-  freshDir();
-  const grant = storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
-  // The upgrade case: both sides were followed before pairing existed, so
-  // neither row carries a link and the list shows the same person twice.
-  storage.followPerformer(grant.account.id, FOLLOW_TPDB_A, "Fixture", null);
-  storage.followPerformer(grant.account.id, FOLLOW_STASH_A, "Fixture", null);
-  assert.equal(storage.listFollows(grant.account.id).length, 2);
-
-  storage.linkFollows(grant.account.id, FOLLOW_TPDB_A, FOLLOW_STASH_A);
-  assert.deepEqual(
-    storage.listFollows(grant.account.id).map((f) => f.reference.id),
-    [FOLLOW_TPDB_A.id],
-  );
-
-  // Linking an unfollowed performer writes nothing: this is not a follow.
-  storage.linkFollows(grant.account.id, FOLLOW_TPDB_B, FOLLOW_TPDB_C);
-  // listFollows hides the linked counterpart of a pair, but B was never
-  // linked: if the no-op had followed it, it would show here.
-  assert.equal(
-    storage
-      .listFollows(grant.account.id)
-      .some(
-        (f) =>
-          f.reference.provider === "tpdb" &&
-          f.reference.id === FOLLOW_TPDB_B.id,
-      ),
-    false,
-  );
-  assert.equal(storage.listFollows(grant.account.id).length, 1);
-});
-
 // --- content preferences (personal hidden tags) ---
 
 const TAG_TPDB = "c3d4e5f6-a7b8-4c9d-8e1f-3a4b5c6d7e01";

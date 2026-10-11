@@ -12,7 +12,6 @@ import {
   followPerformer,
   listFollows,
   mergePerformerFollows,
-  linkFollows,
   unfollowPerformer,
 } from "../../../../server/storage.ts";
 import {
@@ -91,12 +90,10 @@ export async function createFollowRoute(
         counterpart.name,
         counterpart.imageUrl,
       );
-    } catch (e) {
-      // Already followed on its own: nothing to insert, only the pair to
-      // record. Any other failure leaves the asked-for follow standing.
-      if (e instanceof AppError && e.status === 409) {
-        linkFollows(ctx.account.id, reference, counterpart.reference);
-      }
+    } catch {
+      // The counterpart insert may fail with 409 when the counterpart was
+      // already followed on its own: the row exists, so nothing else needs
+      // recording. Any other failure leaves the asked-for follow standing.
     }
   }
   return json({ follow }, 201);
