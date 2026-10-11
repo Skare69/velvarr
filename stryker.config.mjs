@@ -5,8 +5,9 @@ import { join } from "node:path";
  * Mutation testing over the pure decision logic: the src/lib modules plus the
  * pure parts of src/server (planBrowseSides/mergeStreams in browse.ts via
  * in-file disable markers, related.ts whole). Effect-heavy adapters stay out.
- * The command runner reuses the exact test command from `bun run test`, so a
- * mutant only survives when the real suite cannot catch it.
+ * The command runner runs a hand-picked list of the suites that kill
+ * mutants in the mutate set (not all of `bun run test`), so a mutant only
+ * survives when that list cannot catch it.
  * The sandbox lives outside the repo on purpose: a mutant that wipes cwd or
  * writes into it must never touch a real checkout.
  * @type {import('@stryker-mutator/api/core').StrykerOptions}
@@ -26,9 +27,10 @@ const config = {
   // The command runner only reports an exit code, so per-test coverage is
   // impossible; Stryker runs every mutant against the whole scoped command.
   coverageAnalysis: "off",
-  // One mutant run = the scoped suite (~17 s serial): the default 5 s
-  // per-run timeout kills every run with the clock (counted as detected =
-  // fake 100% score).
+  // One mutant run = the scoped suite (net ~7.4 s on the Linux worker).
+  // Stryker's per-run budget is timeoutFactor × net + timeoutMS (default
+  // factor 1.5: about 1.5 × 7.4 s + 60 s here); timeoutMS is the fixed
+  // slack on top of the measured net time, never the sole kill clock.
   timeoutMS: 60000,
   concurrency: 8,
   mutate: ["src/lib/**/*.ts", "src/server/browse.ts", "src/server/related.ts"],
@@ -42,14 +44,17 @@ const config = {
   // No `incremental` here: with the command runner a stale cache replayed
   // statuses from an older command (one replay reported decisions.ts at 0%
   // that the current suite kills completely). The honest cost is the full
-  // run: ~21 min at 1025 mutants (2026-10-01 measurement).
+  // run: ~26 min at 1365 tested of 2136 instrumented (2026-10-11, Linux
+  // worker, concurrency 8).
   reporters: ["clear-text", "progress"],
   // stryker.log (cwd) captures the full run including worker deaths; the
   // console progress lines survive on stdout.
   fileLogLevel: "trace",
-  // break is the measured clean-run score (83.74, 2026-10-08), floored;
-  // a regression below it fails the run. Accepted
-  // survivors: display-copy strings, the REQUESTS_CHANGED event name,
+  // break is the measured clean-run score (85.27, 2026-10-11), floored;
+  // a regression below it fails the run. status.ts is fully killed: the
+  // badge and acquisition-line tests pin every branch. Accepted
+  // survivors: the error-message copy strings in related.ts, the
+  // REQUESTS_CHANGED event name,
   // empty-array shape defaults asserted nowhere, the fetch-param conditionals
   // and sort comparators in browse.ts/contracts.ts/related.ts that the
   // provider fixtures assert only loosely — vocabulary, shape and ordering,
@@ -57,7 +62,7 @@ const config = {
   // (guard some-vs-every, loop-bound and comparison rewrites that cannot flip
   // a returned boolean), and api-get.ts's FIFO-cap edges (has/clear/eviction
   // conditionals asserted only loosely by the queue-order tests).
-  thresholds: { high: 85, low: 75, break: 83 },
+  thresholds: { high: 85, low: 75, break: 85 },
 };
 
 export default config;

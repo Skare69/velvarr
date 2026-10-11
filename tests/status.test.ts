@@ -4,7 +4,11 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { acquisitionPhase, statusOf } from "../src/lib/status.ts";
+import {
+  acquisitionPhase,
+  acquisitionText,
+  statusOf,
+} from "../src/lib/status.ts";
 
 const avail = { outcome: "available" };
 const acq = (state: string, monitored = true) => ({ state, monitored });
@@ -132,4 +136,90 @@ test("decision-only rows: pending, approved, declined; nothing means no badge", 
   assert.equal(statusOf({ myRequest: { decision: "cancelled" } }), "declined");
   assert.equal(statusOf({}), null);
   assert.equal(statusOf({ availability: { outcome: "unavailable" } }), null);
+});
+
+test("a monitored downloading acquisition reads Processing", () => {
+  // Badge honesty: still being acquired, and Whisparr is watching — the
+  // card must not claim Approved while bytes are in flight.
+  assert.equal(statusOf({ acquisition: acq("downloading") }), "processing");
+});
+
+test("acquisitionText: one line per state, on cards and catalog detail", () => {
+  // The paused line wins before the switch: Whisparr will never deliver an
+  // unmonitored item, whatever its state says.
+  assert.equal(
+    acquisitionText({
+      state: "downloading",
+      lastError: null,
+      monitored: false,
+    }),
+    "Paused — Whisparr is not monitoring this item",
+  );
+  assert.equal(
+    acquisitionText({ state: "unsent", lastError: null }),
+    "Queued — not submitted yet",
+  );
+  assert.equal(
+    acquisitionText({ state: "submitting", lastError: null }),
+    "Queued — being submitted",
+  );
+  assert.equal(
+    acquisitionText({ state: "monitoring", lastError: null }),
+    "Watching for a release (this is not a failure)",
+  );
+  assert.equal(
+    acquisitionText({ state: "imported", lastError: null }),
+    "Imported — in your library",
+  );
+  assert.equal(
+    acquisitionText({
+      state: "uncertain",
+      lastError: "HTTP 502 from Whisparr",
+    }),
+    "Being reconciled — last check: HTTP 502 from Whisparr",
+  );
+  assert.equal(
+    acquisitionText({ state: "uncertain", lastError: null }),
+    "Being reconciled — the last check was inconclusive",
+  );
+  assert.equal(
+    acquisitionText({ state: "failed", lastError: "HTTP 403 from Whisparr" }),
+    "Failed — HTTP 403 from Whisparr",
+  );
+  assert.equal(acquisitionText({ state: "failed", lastError: null }), "Failed");
+  assert.equal(
+    acquisitionText({ state: "blocked", lastError: null }),
+    "Blocked — delivery is turned off",
+  );
+});
+
+test("acquisitionText: the downloading line carries only real progress", () => {
+  assert.equal(
+    acquisitionText({ state: "downloading", lastError: null }),
+    "Downloading",
+  );
+  assert.equal(
+    acquisitionText({
+      state: "downloading",
+      lastError: null,
+      progress: { percent: null, timeleft: "00:12:34" },
+    }),
+    "Downloading",
+  );
+  assert.equal(
+    acquisitionText({
+      state: "downloading",
+      lastError: null,
+      progress: { percent: 42, timeleft: null },
+    }),
+    "Downloading — 42%",
+  );
+  assert.equal(
+    acquisitionText({
+      state: "downloading",
+      lastError: null,
+      progress: { percent: 42, timeleft: "00:12:34" },
+    }),
+    "Downloading — 42% (00:12:34 left)",
+  );
 });
