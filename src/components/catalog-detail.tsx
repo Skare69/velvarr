@@ -525,6 +525,9 @@ export function DetailSections({
               <div className="mt-2 flex flex-wrap gap-1">
                 {[...d.tags]
                   .sort((a, b) => a.name.localeCompare(b.name))
+                  // Display cap only; the detail carries up to 500 tags so
+                  // local filters (hidden/exclude/include) see every one.
+                  .slice(0, 50)
                   .map((t) =>
                     // TPDB sometimes emits numeric-string tag ids that the
                     // filter layer rejects with 400 — those stay plain text.

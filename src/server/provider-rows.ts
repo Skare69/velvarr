@@ -80,7 +80,11 @@ export function httpsUrl(v: unknown): string | undefined {
 
 export const MAX = {
   credits: 50,
+  // Tag-search per_page and the rendered chip cap. Filtering keeps more:
+  // tagFilter, so a hidden/excluded/included tag past position 50 still
+  // decides visibility.
   tags: 50,
+  tagFilter: 500,
   aliases: 25,
   mods: 25,
   related: 50,
@@ -213,7 +217,7 @@ export function tpdbTags(
 ): { id: string; name: string }[] {
   if (!Array.isArray(rows)) return [];
   const out: { id: string; name: string }[] = [];
-  for (const row of rows.slice(0, MAX.tags * 2)) {
+  for (const row of rows.slice(0, MAX.tagFilter * 2)) {
     const t = (row ?? {}) as { id?: unknown; uuid?: unknown; name?: unknown };
     const name = cleanString(t.name, 120);
     const id = isUuid(t.uuid)
@@ -234,7 +238,7 @@ export function tpdbTags(
     }
     out.push({ id, name });
   }
-  return dedupeBy(out, (t) => t.id).slice(0, MAX.tags);
+  return dedupeBy(out, (t) => t.id).slice(0, MAX.tagFilter);
 }
 
 export function tpdbRelated(

@@ -882,6 +882,71 @@ test("exclusions and hidden tags override includes on matching items", async () 
   );
 });
 
+// --- local tag filters see every tag, not only the first 50 kept for display ---
+
+test("a hidden tag past position 50 hides the title; a free-text include matching only that tag finds it", async () => {
+  const LAST = { id: 55, uuid: uuid(55), name: "Last Tag" }; // position 55: past the rendered 50
+  const manyTags = [
+    ...Array.from({ length: 54 }, (_, i) => ({
+      id: 1000 + i,
+      uuid: uuid(1000 + i),
+      name: `Filler ${i + 1}`,
+    })),
+    LAST,
+  ];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: manyTags,
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(uuid(1), "Hidden by a late tag", "2024-01-01", manyTags),
+            tpdbRow(uuid(2), "Found by a late tag", "2023-01-01", manyTags),
+          ],
+          next: null,
+          total: 2,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+    }),
+    async () => {
+      const hidden = await browseTitles(
+        {
+          type: "movie",
+          include: [],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [{ name: LAST.name, tpdb: LAST.uuid }],
+      );
+      assert.deepEqual(
+        hidden.items.map((d) => d.title),
+        [],
+      );
+      assert.equal(hidden.total, 0);
+
+      const found = await browseTitles(
+        {
+          type: "movie",
+          include: [{ name: LAST.name }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // Pre-fix this include matched nothing: LAST sat past the kept 50.
+      assert.deepEqual(
+        found.items.map((d) => d.title),
+        ["Hidden by a late tag", "Found by a late tag"],
+      );
+    },
+  );
+});
+
 // --- page fill past blocked candidates ---
 
 test("a page fills from later upstream pages when earlier candidates are blocked", async () => {
