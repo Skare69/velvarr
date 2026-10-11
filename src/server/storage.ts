@@ -1797,19 +1797,15 @@ const DISCOVER_IDS: readonly DiscoverShelfId[] = DISCOVER_SHELVES.map(
 const IS_DISCOVER_ID = new Set<string>(DISCOVER_IDS);
 
 /** Trust-boundary check for one tag selection: a real published label of
- * 1..120 characters and no unknown fields. Provider UUIDs are optional only
- * where a label alone can match — hidden tags and excludes run the local
- * family matcher; an include without any provider id is refused (a label
- * cannot travel to a provider that filters on its own tag ids). A
+ * 1..120 characters and no unknown fields. Provider UUIDs are optional —
+ * an include label is a free-text term matched locally as a substring,
+ * while excludes and hidden tags run the local family matcher. A
  * label-only selection whose label has no letters or digits after
  * normalization ("日本", "++") can never match anything — tagMatches
  * returns false for an empty folded label in every mode — so it is refused
  * here too, at the one boundary every consumer routes through; anchored
  * selections are unaffected because their UUID matches natively. */
-function validTagSelection(
-  s: unknown,
-  allowLabelOnly: boolean,
-): s is CatalogTagSelection {
+function validTagSelection(s: unknown): s is CatalogTagSelection {
   if (!s || typeof s !== "object" || Array.isArray(s)) return false;
   const t = s as Record<string, unknown>;
   return (
@@ -1820,7 +1816,6 @@ function validTagSelection(
       (typeof t.tpdb === "string" && UUID_RE.test(t.tpdb))) &&
     (t.stashdb === undefined ||
       (typeof t.stashdb === "string" && UUID_RE.test(t.stashdb))) &&
-    (allowLabelOnly || t.tpdb !== undefined || t.stashdb !== undefined) &&
     (t.tpdb !== undefined ||
       t.stashdb !== undefined ||
       normalizeFacetName(t.name) !== "")
@@ -1853,14 +1848,10 @@ function consolidateTagSelections(
 /** Shared trust boundary for picker-supplied tag lists: the browse API's
  * include/exclude arrays and saved hidden tags are the same shape. Pure —
  * no database access, safe before storage is initialized. Any wrong type,
- * unknown field, a label-only selection whose label normalizes to nothing
- * (it can never match a tag), or — unless `allowLabelOnly` — a missing
- * provider id is invalid_preferences; valid duplicates consolidate and the
- * consolidated list is capped at 25. */
-export function parseTagSelections(
-  input: unknown,
-  allowLabelOnly = false,
-): CatalogTagSelection[] {
+ * unknown field, or a label-only selection whose label normalizes to
+ * nothing (it can never match a tag) is invalid_preferences; valid
+ * duplicates consolidate and the consolidated list is capped at 25. */
+export function parseTagSelections(input: unknown): CatalogTagSelection[] {
   if (!Array.isArray(input)) {
     throw new AppError(
       400,
@@ -1870,7 +1861,7 @@ export function parseTagSelections(
   }
   const items: CatalogTagSelection[] = [];
   for (const raw of input) {
-    if (!validTagSelection(raw, allowLabelOnly)) {
+    if (!validTagSelection(raw)) {
       // The unmatchable-label rule gets its own wording: the 400 names the
       // term so the caller learns which chip to drop.
       const unmatchable =
@@ -1887,9 +1878,7 @@ export function parseTagSelections(
         "invalid_preferences",
         unmatchable
           ? `"${raw.name}" has no letters or digits after normalization, so it can never match a tag`
-          : allowLabelOnly
-            ? "each tag selection needs a label of 1..120 characters"
-            : "each tag selection needs a label of 1..120 characters and at least one provider id",
+          : "each tag selection needs a label of 1..120 characters",
       );
     }
     // Plain copies: only name/tpdb/stashdb survive the boundary.
@@ -2025,7 +2014,7 @@ export function saveContentPreferences(
     );
   }
   const hiddenTags = hasTags
-    ? parseTagSelections(doc.hiddenTags, true)
+    ? parseTagSelections(doc.hiddenTags)
     : parseStoredHiddenTags(account.hidden_tags);
   const discoverOrder = hasOrder
     ? parseDiscoverOrder(doc.discoverOrder)

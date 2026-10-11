@@ -133,7 +133,6 @@ function parseId(params: URLSearchParams, key: string): string | undefined {
 function parseSelections(
   params: URLSearchParams,
   key: string,
-  allowLabelOnly = false,
 ): CatalogTagSelection[] {
   const raw = params.get(key);
   if (raw === null || raw.trim() === "") return [];
@@ -143,7 +142,7 @@ function parseSelections(
   } catch {
     throw invalidQuery(`${key} must be a JSON array of tag selections.`);
   }
-  return parseTagSelections(parsed, allowLabelOnly);
+  return parseTagSelections(parsed);
 }
 
 /** Optional keys stay absent rather than present-and-undefined: a caller
@@ -218,12 +217,12 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
   return {
     type: type ?? "all",
     ...(q !== undefined && q !== "" ? { q } : {}),
-    include: parseSelections(params, "include", true),
+    include: parseSelections(params, "include"),
     // Both lists accept labels with no provider id: an include label is a
     // free-text term matched locally as a substring, an exclude label runs
     // the local family matcher. Neither can travel natively, so neither is
     // rejected here.
-    exclude: parseSelections(params, "exclude", true),
+    exclude: parseSelections(params, "exclude"),
     ...omitUndefined({
       studioTpdb: parseId(params, "studioTpdb"),
       studioStashdb: parseId(params, "studioStashdb"),
@@ -303,11 +302,6 @@ async function includeIdsForSide(
     }
     // Free text filters locally below; it never constrains a native query.
     if (isFreeTextSelection(sel)) continue;
-    // A label-only selection has no native anchor to resolve from, so this
-    // side genuinely cannot match — disqualify rather than widen.
-    if ((side === "tpdb" ? sel.stashdb : sel.tpdb) === undefined) {
-      return undefined;
-    }
     // tagCounterpart searches the OTHER provider by exact normalized label.
     const counterpart = await tagCounterpart(
       side === "tpdb" ? "stashdb" : "tpdb",
