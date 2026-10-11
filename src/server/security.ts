@@ -156,6 +156,12 @@ export function assertLoginAllowed(name: string, admitted = false): void {
   }
 }
 
+// Test hook: the buckets are module-global, so a test that drives any cap
+// would otherwise leak state into every limiter test after it.
+export function resetLoginBuckets(): void {
+  buckets.clear();
+}
+
 // Charges one failed authentication: the account bucket carries the
 // brute-force limit, the global bucket is the last-resort spray cap. Global
 // is charged first so an already-locked account's guesses still feed it.

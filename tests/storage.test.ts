@@ -517,6 +517,9 @@ test("setup secret compare is constant-time-correct; login limiter is bounded pe
 });
 
 test("login limiter: the spray cap binds strangers, admitted names ride past it", () => {
+  // The limiter test above deliberately ends with the global bucket full;
+  // start from a known-empty state so the charge sequence below is exact.
+  security.resetLoginBuckets();
   // The per-account bucket still binds an admitted name even with admitted
   // set: brute force on a real account stays throttled.
   for (let i = 0; i < 5; i++) security.recordLoginFailure("locked-owner");
