@@ -87,163 +87,167 @@ export function LibraryView() {
     ? pageData.start + pageData.items.length < pageData.total
     : false;
 
-  // Keyed per item: the hook keeps its last read, so an id change without a
-  // remount would show the previous item's details until the fetch lands.
-  if (itemId)
-    return <ItemDetail key={itemId} id={itemId} onClose={closeItem} />;
-
   return (
     <section aria-label="Library">
-      <div className="page-heading">
-        <div>
-          <h1 className="page-title">Your library</h1>
-          <p className="page-description">
-            Browse your collection. Play directly in Jellyfin.
-          </p>
+      {/* The grid stays mounted, hidden, while the detail is open — the card
+          button that opened the item must still exist when ItemDetail's
+          cleanup restores focus to it (same shape as the browse grid). */}
+      <div hidden={itemId !== null}>
+        <div className="page-heading">
+          <div>
+            <h1 className="page-title">Your library</h1>
+            <p className="page-description">
+              Browse your collection. Play directly in Jellyfin.
+            </p>
+          </div>
+          <span className="chip">Jellyfin</span>
         </div>
-        <span className="chip">Jellyfin</span>
-      </div>
-      <div className="page-toolbar">
-        <div className="sm:max-w-xs sm:flex-1">
-          <label className="label" htmlFor="lib-search">
-            Search your library
-          </label>
-          <input
-            id="lib-search"
-            type="search"
-            className="input"
-            placeholder="Search titles…"
-            maxLength={200}
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter")
-                setP({ search: searchInput || null, start: null });
-            }}
-          />
-        </div>
-        <div className="sm:w-64">
-          <label className="label" htmlFor="lib-filter">
-            Library
-          </label>
-          {libsError ? (
-            <ErrorPanel message={libsError} onRetry={reloadLibs} />
-          ) : (
-            <select
-              id="lib-filter"
+        <div className="page-toolbar">
+          <div className="sm:max-w-xs sm:flex-1">
+            <label className="label" htmlFor="lib-search">
+              Search your library
+            </label>
+            <input
+              id="lib-search"
+              type="search"
               className="input"
-              value={libraryId}
-              onChange={(e) =>
-                setP({ libraryId: e.target.value || null, start: null })
-              }
-            >
-              <option value="">All libraries</option>
-              {(libs ?? []).map((l) => (
-                <option key={l.id} value={l.id}>
-                  {l.name}
-                </option>
-              ))}
-            </select>
-          )}
+              placeholder="Search titles…"
+              maxLength={200}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter")
+                  setP({ search: searchInput || null, start: null });
+              }}
+            />
+          </div>
+          <div className="sm:w-64">
+            <label className="label" htmlFor="lib-filter">
+              Library
+            </label>
+            {libsError ? (
+              <ErrorPanel message={libsError} onRetry={reloadLibs} />
+            ) : (
+              <select
+                id="lib-filter"
+                className="input"
+                value={libraryId}
+                onChange={(e) =>
+                  setP({ libraryId: e.target.value || null, start: null })
+                }
+              >
+                <option value="">All libraries</option>
+                {(libs ?? []).map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
         </div>
-      </div>
 
-      {gridError ? (
-        <ErrorPanel
-          title="Library unavailable"
-          message={gridError}
-          onRetry={reload}
-        />
-      ) : loading ? (
-        <div className="poster-grid" aria-label="Loading library">
-          {Array.from({ length: 8 }, (_, i) => (
-            <div key={i} className="skel aspect-[2/3]" />
-          ))}
-        </div>
-      ) : libs && libs.length === 0 ? (
-        <div className="panel p-8 text-center text-sm text-muted">
-          Your account has no library access yet. Ask an administrator to grant
-          you libraries.
-        </div>
-      ) : items.length === 0 ? (
-        <div className="panel p-8 text-center text-sm text-muted">
-          {search || libraryId
-            ? "No items match your search or filter."
-            : "This library has no items yet."}
-        </div>
-      ) : (
-        <>
-          {/* ponytail: grid is uniformly 2:3 by operator choice, so a 16:9
+        {gridError ? (
+          <ErrorPanel
+            title="Library unavailable"
+            message={gridError}
+            onRetry={reload}
+          />
+        ) : loading ? (
+          <div className="poster-grid" aria-label="Loading library">
+            {Array.from({ length: 8 }, (_, i) => (
+              <div key={i} className="skel aspect-[2/3]" />
+            ))}
+          </div>
+        ) : libs && libs.length === 0 ? (
+          <div className="panel p-8 text-center text-sm text-muted">
+            Your account has no library access yet. Ask an administrator to
+            grant you libraries.
+          </div>
+        ) : items.length === 0 ? (
+          <div className="panel p-8 text-center text-sm text-muted">
+            {search || libraryId
+              ? "No items match your search or filter."
+              : "This library has no items yet."}
+          </div>
+        ) : (
+          <>
+            {/* ponytail: grid is uniformly 2:3 by operator choice, so a 16:9
               Jellyfin still is centre-cropped to about the middle third of
               its width by object-fit: cover. Upgrade path: per-item aspect
               detection from the Jellyfin image tags. */}
-          <div className="poster-grid">
-            {items.map((it) => (
-              <button
-                key={it.id}
-                type="button"
-                className="media-card"
-                onClick={() => setP({ item: it.id }, { push: true })}
-              >
-                <div className="media-art aspect-[2/3]">
-                  <ItemImage
-                    name={it.name}
-                    src={it.image}
-                    className="absolute inset-0 h-full w-full object-cover"
-                  />
-                  <CardTypeBadge kind={it.kind} />
-                  {it.canPlay && (
-                    <CardStatusBadge status="available" title={it.name} />
-                  )}
-                  <div className="media-quick-overlay">
-                    <div className="media-quick-summary" aria-hidden="true">
-                      {it.year && <span>{it.year}</span>}
-                      <strong>{it.name}</strong>
+            <div className="poster-grid">
+              {items.map((it) => (
+                <button
+                  key={it.id}
+                  type="button"
+                  className="media-card"
+                  onClick={() => setP({ item: it.id }, { push: true })}
+                >
+                  <div className="media-art aspect-[2/3]">
+                    <ItemImage
+                      name={it.name}
+                      src={it.image}
+                      className="absolute inset-0 h-full w-full object-cover"
+                    />
+                    <CardTypeBadge kind={it.kind} />
+                    {it.canPlay && (
+                      <CardStatusBadge status="available" title={it.name} />
+                    )}
+                    <div className="media-quick-overlay">
+                      <div className="media-quick-summary" aria-hidden="true">
+                        {it.year && <span>{it.year}</span>}
+                        <strong>{it.name}</strong>
+                      </div>
                     </div>
                   </div>
-                </div>
-                <div className="media-meta">
-                  <div className="media-title">{it.name}</div>
-                  <div className="media-subtitle">
-                    {[it.year, it.kind].filter(Boolean).join(" · ")}
+                  <div className="media-meta">
+                    <div className="media-title">{it.name}</div>
+                    <div className="media-subtitle">
+                      {[it.year, it.kind].filter(Boolean).join(" · ")}
+                    </div>
                   </div>
-                </div>
-              </button>
-            ))}
-          </div>
-          <div className="mt-6 flex items-center justify-between gap-3">
-            <div className="text-sm text-muted">
-              {pageData && pageData.total > 0
-                ? `Items ${pageData.start + 1}–${end} of ${pageData.total}`
-                : "No items"}
+                </button>
+              ))}
             </div>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                className="btn"
-                disabled={start === 0}
-                onClick={() => {
-                  setP({ start: String(Math.max(0, start - limit)) });
-                  window.scrollTo({ top: 0 });
-                }}
-              >
-                Previous
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={!hasNext}
-                onClick={() => {
-                  setP({ start: String(start + limit) });
-                  window.scrollTo({ top: 0 });
-                }}
-              >
-                Next
-              </button>
+            <div className="mt-6 flex items-center justify-between gap-3">
+              <div className="text-sm text-muted">
+                {pageData && pageData.total > 0
+                  ? `Items ${pageData.start + 1}–${end} of ${pageData.total}`
+                  : "No items"}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={start === 0}
+                  onClick={() => {
+                    setP({ start: String(Math.max(0, start - limit)) });
+                    window.scrollTo({ top: 0 });
+                  }}
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!hasNext}
+                  onClick={() => {
+                    setP({ start: String(start + limit) });
+                    window.scrollTo({ top: 0 });
+                  }}
+                >
+                  Next
+                </button>
+              </div>
             </div>
-          </div>
-        </>
-      )}
+          </>
+        )}
+      </div>
+      {/* Keyed per item: the hook keeps its last read, so an id change
+          without a remount would show the previous item's details until the
+          fetch lands. */}
+      {itemId && <ItemDetail key={itemId} id={itemId} onClose={closeItem} />}
     </section>
   );
 }
@@ -251,6 +255,7 @@ export function LibraryView() {
 /* ---------- Library detail page ---------- */
 function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const prevFocus = useRef<HTMLElement | null>(null);
   const setP = useParamsSetter();
 
   const { data, error, reload } = useApiGet<{
@@ -281,6 +286,7 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
   );
 
   useEffect(() => {
+    prevFocus.current = document.activeElement as HTMLElement | null;
     const scrollY = window.scrollY;
     panelRef.current?.focus({ preventScroll: true });
     window.scrollTo({ top: 0 });
@@ -297,6 +303,9 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
+      // The grid is hidden, not unmounted, so the card that opened the
+      // detail still exists and takes focus back (catalog-detail pattern).
+      prevFocus.current?.focus();
       requestAnimationFrame(() => {
         // Restore only on return to this library, not when global search or navigation leaves it.
         const params = new URLSearchParams(window.location.search);
