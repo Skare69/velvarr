@@ -258,6 +258,14 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const prevFocus = useRef<HTMLElement | null>(null);
   const setP = useParamsSetter();
 
+  // Captured at first render, before the panel takes focus. The null guard
+  // is load-bearing: StrictMode's dev-only effect rerun (mount → cleanup →
+  // mount) would otherwise recapture the already-focused panel after the
+  // first cleanup ran, and the real close would try to refocus a detached
+  // node — focus falls to <body> in every dev-server browser proof.
+  if (prevFocus.current === null)
+    prevFocus.current = document.activeElement as HTMLElement | null;
+
   const { data, error, reload } = useApiGet<{
     item: LibraryItem;
     catalog?: MediaReference;
@@ -286,7 +294,6 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
   );
 
   useEffect(() => {
-    prevFocus.current = document.activeElement as HTMLElement | null;
     const scrollY = window.scrollY;
     panelRef.current?.focus({ preventScroll: true });
     window.scrollTo({ top: 0 });
