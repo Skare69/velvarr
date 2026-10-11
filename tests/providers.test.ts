@@ -750,8 +750,13 @@ test("tpdb 404 is authoritative absence; 401/500/network failures are distinct o
     }
     sendJson(res, 500, {});
   });
-  const dead = await startFixture(() => {});
-  await dead.close(); // connection-refused outage target
+  // Deterministically unreachable: the server keeps the port bound for the
+  // whole test (no parallel fixture can steal it) and destroys every socket,
+  // so the client always sees a connection failure. The old close-then-reuse
+  // raced under load: another fixture bound the freed port and answered 500.
+  const dead = await startFixture((_req, res) => {
+    res.socket?.destroy();
+  });
   try {
     process.env.TPDB_BASE_URL = fixture.origin;
     assert.equal(
@@ -794,6 +799,7 @@ test("tpdb 404 is authoritative absence; 401/500/network failures are distinct o
     );
   } finally {
     await fixture.close();
+    await dead.close();
     restore();
   }
 });
