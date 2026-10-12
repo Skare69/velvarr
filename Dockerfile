@@ -29,10 +29,15 @@ RUN groupadd --system --gid 10001 velvarr \
  && mkdir -p /data \
  && chown velvarr:velvarr /data
 # Code stays root-owned and world-readable so app-level code execution cannot
-# rewrite it; the runtime user may write only /data.
+# rewrite it; the runtime user may write only /data. The chown/chmod layer is
+# the guarantee: CI run 38302845703 found 1125 writable paths under
+# /app/node_modules in the built image (next/dist, sharp, react, ...) even
+# though every Dockerfile hop models out to root-owned 644/755, so ownership
+# and write bits are forced here instead of trusted from the build stage.
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/public ./public
+RUN chown -R root:root /app && chmod -R go-w /app
 USER velvarr
 EXPOSE 6699
 VOLUME /data
