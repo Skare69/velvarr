@@ -110,7 +110,11 @@ jobs:
     name: GHCR publication (release tags + opt-in)
     runs-on: ubuntu-latest
     needs: [gates, container]
-    if: (github.event_name == 'workflow_dispatch' && inputs.publish == true) || startsWith(github.ref, 'refs/tags/v')
+    # Publish only on a v* tag push (the path release.mjs waits for) or an
+    # opted-in dispatch from a branch ref. A dispatch on a tag ref never
+    # publishes: a rebuild would push a new digest over the release's recorded
+    # vX.Y.Z / latest tags (release.mjs reads the GHCR digest back).
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.publish == true && !startsWith(github.ref, 'refs/tags/v'))
     permissions:
       contents: read
       packages: write
