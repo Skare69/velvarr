@@ -185,6 +185,7 @@ export async function requestJson<T>(
     service?: Service;
     timeoutMs?: number;
     cacheTtlMs?: number;
+    validate?: (parsed: unknown) => void;
   } = {},
 ): Promise<T> {
   const service = options.service ?? "jellyfin";
@@ -206,6 +207,13 @@ export async function requestJson<T>(
         method,
         body: options.body,
         timeoutMs: options.timeoutMs,
+      }).then((bytes) => {
+        // A body that fails to parse — or a service's semantic check, e.g.
+        // StashDB GraphQL errors — must never become the fresh shared cache
+        // entry: the previous good payload stays the stale-on-error fallback.
+        const parsed = parseJson<unknown>(bytes, service);
+        options.validate?.(parsed);
+        return bytes;
       });
       if (cacheable) {
         const own = pending;
@@ -265,6 +273,37 @@ function notConfigured(provider: "tpdb" | "stashdb"): AppError {
   );
 }
 
+// gqlgen (stash-box) answers a failed resolver with HTTP 200, partial data
+// and a non-empty errors array: { data: { findScene: null }, errors: [...] }.
+// A null/absent dataKey beside errors is an outage, never an authoritative
+// absence — it is named here, before the body can be cached, so the next
+// read re-requests instead of replaying the error for the whole TTL. A null
+// dataKey WITHOUT errors stays the documented absence signal for find*
+// queries. Errors beside a POPULATED dataKey are failures elsewhere in the
+// document: the requested record resolved, so the partial payload is used.
+function rejectStashGraphQlFailure(parsed: unknown, dataKey: string): void {
+  if (parsed === null || typeof parsed !== "object") return;
+  const body = parsed as {
+    data?: Record<string, unknown> | null;
+    errors?: unknown;
+  };
+  if (body.data === null || body.data === undefined) return;
+  const value = body.data[dataKey];
+  if (value !== null && value !== undefined) return;
+  if (Array.isArray(body.errors) && body.errors.length > 0) {
+    const first = body.errors[0] as { message?: unknown } | undefined;
+    const detail =
+      typeof first?.message === "string" && first.message !== ""
+        ? `: ${first.message}`
+        : "";
+    throw new AppError(
+      502,
+      "upstream_bad_response",
+      `StashDB reported a GraphQL failure${detail}`,
+    );
+  }
+}
+
 async function stashQuery(
   query: string,
   variables: Record<string, unknown>,
@@ -286,10 +325,16 @@ async function stashQuery(
     service: "stashdb",
     method: "POST",
     body: { query, variables },
+    // The GraphQL verdict must land before the body is cached, or an error
+    // body becomes the fresh shared entry for the whole TTL.
+    validate: (parsed) => rejectStashGraphQlFailure(parsed, dataKey),
   });
   // HTTP-level failures (401 auth, 422 schema, 5xx outage) already surfaced
-  // by the transport with upstreamStatus. data:null at HTTP 200 is the
-  // authoritative absence signal for find* queries.
+  // by the transport with upstreamStatus. A null dataKey beside GraphQL
+  // errors already surfaced as upstream_bad_response before caching; what
+  // reaches here is a clean body, partial data whose errors sit beside a
+  // populated dataKey, or a null dataKey with no errors — the documented
+  // authoritative-absence signal for find* queries.
   if (
     body === null ||
     typeof body !== "object" ||

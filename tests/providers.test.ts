@@ -8,7 +8,7 @@
 // the metadata read cache (TTL, stale-on-error, mutation exclusion).
 
 import assert from "node:assert/strict";
-import { test, beforeEach } from "node:test";
+import { test, beforeEach, mock } from "node:test";
 
 import {
   queryOf,
@@ -900,6 +900,155 @@ test("stashdb data-null is authoritative absence; schema failure is an outage", 
       },
     );
   } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
+// --- graphql failures are outages, and error bodies are never cached ---
+
+test("stashdb graphql resolver failures read as outages, not absence", async () => {
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  const fixture = await startFixture((_req, res, body) => {
+    const parsed = JSON.parse(body) as { query: string };
+    if (parsed.query.includes("findScene")) {
+      // gqlgen answers a failed resolver with HTTP 200 and partial data.
+      sendJson(res, 200, {
+        data: { findScene: null },
+        errors: [{ message: "boom" }],
+      });
+      return;
+    }
+    if (parsed.query.includes("findPerformer")) {
+      // Errors beside a populated dataKey are failures elsewhere in the
+      // document; the requested record resolved, so the payload is used.
+      sendJson(res, 200, {
+        data: {
+          findPerformer: {
+            id: CANON_PERFORMER_ID,
+            name: "Anna",
+            deleted: false,
+            aliases: [],
+            urls: [],
+            images: [],
+          },
+        },
+        errors: [{ message: "unrelated resolver failed" }],
+      });
+      return;
+    }
+    sendJson(res, 200, { data: null, errors: [{ message: "boom" }] });
+  });
+  try {
+    process.env.STASHDB_BASE_URL = fixture.origin;
+    await assert.rejects(
+      getCatalogDetail({
+        provider: "stashdb",
+        kind: "scene",
+        id: STASH_SCENE_ID,
+      }),
+      (err: unknown) => {
+        assertProviderError(err, 502, "upstream_bad_response");
+        assert.match((err as AppError).message, /boom/);
+        return true;
+      },
+    );
+    const performer = await getCatalogDetail({
+      provider: "stashdb",
+      kind: "performer",
+      id: CANON_PERFORMER_ID,
+    });
+    assert.equal(performer?.title, "Anna");
+    // A whole-body data:null with errors is an unusable response, not a 404.
+    await assert.rejects(
+      getCatalogDetail({
+        provider: "stashdb",
+        kind: "studio",
+        id: STASH_STUDIO_ID,
+      }),
+      (err: unknown) => {
+        assertProviderError(err, 502, "upstream_bad_response");
+        return true;
+      },
+    );
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
+test("graphql error bodies are never cached; stale fallback keeps the last good payload", async () => {
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  let mode: "errors" | "good" | "outage" = "errors";
+  const fixture = await startFixture((_req, res, body) => {
+    const parsed = JSON.parse(body) as { query: string };
+    if (!parsed.query.includes("findScene")) {
+      sendJson(res, 200, { data: {} });
+      return;
+    }
+    if (mode === "errors") {
+      // gqlgen answers a failed resolver with HTTP 200 and partial data.
+      sendJson(res, 200, {
+        data: { findScene: null },
+        errors: [{ message: "boom" }],
+      });
+    } else if (mode === "good") {
+      sendJson(res, 200, {
+        data: {
+          findScene: {
+            id: STASH_SCENE_ID,
+            title: "Good Scene",
+            images: [],
+            urls: [],
+            tags: [],
+            performers: [],
+          },
+        },
+      });
+    } else {
+      sendJson(res, 503, { down: true });
+    }
+  });
+  const detail = () =>
+    getCatalogDetail({
+      provider: "stashdb",
+      kind: "scene",
+      id: STASH_SCENE_ID,
+    });
+  try {
+    process.env.STASHDB_BASE_URL = fixture.origin;
+    // The error body is named as an outage, and a second read within the
+    // TTL re-requests instead of replaying the cached error.
+    await assert.rejects(detail(), (err: unknown) => {
+      assertProviderError(err, 502, "upstream_bad_response");
+      assert.match((err as AppError).message, /boom/);
+      return true;
+    });
+    await assert.rejects(detail(), (err: unknown) => {
+      assertProviderError(err, 502, "upstream_bad_response");
+      return true;
+    });
+    assert.equal(fixture.log.length, 2);
+    // The mocked clock starts at epoch 0, so it must be running before the
+    // good read stamps the cache entry's timestamp.
+    mock.timers.enable({ apis: ["Date"] });
+    mock.timers.tick(1_000_000_000);
+    mode = "good";
+    const good = await detail();
+    assert.equal(good?.reference.id, STASH_SCENE_ID);
+    assert.equal(fixture.log.length, 3);
+    // Fresh within the TTL: no new upstream call.
+    assert.equal((await detail())?.reference.id, STASH_SCENE_ID);
+    assert.equal(fixture.log.length, 3);
+    // Past the 10-minute TTL the outage serves the last good payload stale —
+    // the error body never replaced it.
+    mode = "outage";
+    mock.timers.tick(10 * 60_000 + 1);
+    const stale = await detail();
+    assert.equal(stale?.reference.id, STASH_SCENE_ID);
+    assert.equal(fixture.log.length, 4);
+  } finally {
+    mock.timers.reset();
     await fixture.close();
     restore();
   }
