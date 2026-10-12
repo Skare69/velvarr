@@ -63,29 +63,69 @@ export function isLoopbackHost(hostname: string): boolean {
   return isIP(h) === 4 && Number(h.split(".")[0]) === 127;
 }
 
+// RFC1918 ranges by first two octets; shared by the dotted-quad and the
+// IPv4-mapped-IPv6 paths.
+function isPrivateIPv4(a: number, b: number): boolean {
+  return (
+    a === 10 ||
+    (a === 192 && b === 168) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 169 && b === 254)
+  );
+}
+
+// Expand an IPv6 literal to its 8 numeric hextets; a trailing embedded IPv4
+// quad (::ffff:a.b.c.d) becomes its two hextets. isIP has already vetted the
+// syntax; anything unparsable returns null and classifies as public.
+type Hextets = [number, number, number, number, number, number, number, number];
+
+function ipv6Hextets(h: string): Hextets | null {
+  const quad =
+    /^((?:[0-9a-f]{0,4}:)*)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  let v6 = h;
+  if (quad) {
+    const [a = 0, b = 0, c = 0, d = 0] = quad.slice(2, 6).map(Number);
+    v6 =
+      (quad[1] ?? "") +
+      ((a << 8) | b).toString(16) +
+      ":" +
+      ((c << 8) | d).toString(16);
+  }
+  const halves = v6.split("::");
+  if (halves.length > 2) return null;
+  const [left = "", right] = halves;
+  const head = left === "" ? [] : left.split(":");
+  const tail = right === undefined || right === "" ? [] : right.split(":");
+  const fill = 8 - head.length - tail.length;
+  if (fill < 0 || (halves.length === 2 && fill === 0)) return null;
+  const parts = [...head, ...Array(fill).fill("0"), ...tail].map((g) =>
+    Number.parseInt(g, 16),
+  );
+  // The cast holds: length is exactly 8 and every hextet parsed to a number.
+  return parts.length === 8 && parts.every(Number.isFinite)
+    ? (parts as Hextets)
+    : null;
+}
+
 export function isPrivateHost(hostname: string): boolean {
   if (isLoopbackHost(hostname)) return true;
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
-  if (v4) {
-    const a = Number(v4[1]);
-    const b = Number(v4[2]);
-    return (
-      a === 10 ||
-      (a === 192 && b === 168) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 169 && b === 254)
-    );
+  if (v4) return isPrivateIPv4(Number(v4[1]), Number(v4[2]));
+  if (isIP(h) === 6) {
+    const p = ipv6Hextets(h);
+    if (!p) return false;
+    // IPv4-mapped (::ffff:0:0/96, serialized by the URL parser in hex form)
+    // classifies by its embedded IPv4.
+    if (p.slice(0, 5).every((x) => x === 0) && p[5] === 0xffff)
+      return isPrivateIPv4(p[6] >> 8, p[6] & 0xff);
+    // fc00::/7 unique-local addresses only.
+    return p[0] >= 0xfc00 && p[0] <= 0xfdff;
   }
   // ponytail: dotless hostnames are treated as Docker-network-internal
   // (compose service names like "jellyfin"); resolvable-name classification
-  // needs async DNS if this ever misfires.
-  return (
-    h.endsWith(".local") ||
-    h.startsWith("fc") ||
-    h.startsWith("fd") ||
-    !h.includes(".")
-  );
+  // needs async DNS if this ever misfires. Only non-IP names reach here.
+  return h.endsWith(".local") || !h.includes(".");
 }
 
 // Preserves any reverse-proxy path prefix, strips trailing slashes, and

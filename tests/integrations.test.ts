@@ -10,6 +10,7 @@ import { test } from "node:test";
 
 import {
   AppError,
+  isPrivateHost,
   requestBytes,
   requestJson,
   validateBaseUrl,
@@ -196,6 +197,57 @@ test("validateBaseUrl allows private HTTP only through VELVARR_ALLOW_HTTP=1", ()
     assert.throws(
       () => validateBaseUrl("http://media.example.com"),
       appError(400, "invalid_url"),
+    );
+  } finally {
+    if (previous === undefined) delete process.env.VELVARR_ALLOW_HTTP;
+    else process.env.VELVARR_ALLOW_HTTP = previous;
+  }
+});
+
+test("isPrivateHost classifies public DNS names and IPv6 literals as public", () => {
+  // fc/fd are unique-local hextets, not DNS-name prefixes; IPv6 literals are
+  // not dotless Docker service names; IPv4-mapped IPv6 classifies by its
+  // embedded IPv4 (the URL parser serializes [::ffff:8.8.8.8] to the hex
+  // form [::ffff:808:808]).
+  assert.equal(isPrivateHost("fdic.gov"), false);
+  assert.equal(isPrivateHost("fc.attacker.example.com"), false);
+  assert.equal(isPrivateHost("[2001:4860:4860::8888]"), false);
+  assert.equal(isPrivateHost("[::ffff:808:808]"), false);
+  assert.equal(isPrivateHost("[::ffff:8.8.8.8]"), false);
+  assert.equal(isPrivateHost("[::ffff:10.0.0.1]"), true);
+  assert.equal(isPrivateHost("[fd00::1]"), true);
+  assert.equal(isPrivateHost("jellyfin"), true);
+  const previous = process.env.VELVARR_ALLOW_HTTP;
+  try {
+    process.env.VELVARR_ALLOW_HTTP = "1";
+    assert.throws(
+      () => validateBaseUrl("http://[2001:4860:4860::8888]:8096"),
+      appError(400, "invalid_url"),
+    );
+    assert.throws(
+      () => validateBaseUrl("http://fdic.gov"),
+      appError(400, "invalid_url"),
+    );
+    assert.throws(
+      () => validateBaseUrl("http://fc.attacker.example.com"),
+      appError(400, "invalid_url"),
+    );
+    assert.throws(
+      () => validateBaseUrl("http://[::ffff:8.8.8.8]"),
+      appError(400, "invalid_url"),
+    );
+    assert.throws(
+      () => validateBaseUrl("http://velvarr.example.com"),
+      appError(400, "invalid_url"),
+    );
+    // Docker service names and unique-local literals stay admitted.
+    assert.equal(
+      validateBaseUrl("http://jellyfin:8096"),
+      "http://jellyfin:8096",
+    );
+    assert.equal(
+      validateBaseUrl("http://[fd00::1]:8096"),
+      "http://[fd00::1]:8096",
     );
   } finally {
     if (previous === undefined) delete process.env.VELVARR_ALLOW_HTTP;
