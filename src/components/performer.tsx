@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   ApiError,
@@ -362,6 +362,10 @@ function BulkRequest({
       ].filter(Boolean)
     : [];
 
+  // Each page can render one BulkRequest per listing side; the id must be
+  // unique or IDREF resolution points every dialog at the first title.
+  const titleId = useId();
+
   return (
     <div className="mb-4 min-w-0 text-right">
       <button
@@ -391,10 +395,10 @@ function BulkRequest({
       <dialog
         ref={confirmRef}
         className="bulk-dialog"
-        aria-labelledby="bulk-request-title"
+        aria-labelledby={titleId}
       >
         <div className="p-5">
-          <h3 id="bulk-request-title" className="font-semibold">
+          <h3 id={titleId} className="font-semibold">
             Request every {noun}?
           </h3>
           <p className="mt-2 text-sm text-muted">
