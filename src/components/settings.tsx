@@ -774,6 +774,7 @@ type ProviderCheckRow =
     };
 
 function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
+  const { refreshSession } = useSession();
   const [check, setCheck] = useState<ProviderCheckRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
@@ -837,6 +838,12 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
       setSaved(true);
       load();
       loadShape();
+      // The save/clear landed; this re-read only refreshes the session's
+      // provider status (chips here and not-configured claims elsewhere).
+      // If it fails the boot-time chip stays until the next reload — never
+      // read as a failed save — and the live check above still reports
+      // reality.
+      refreshSession().catch(() => undefined);
     } catch (e) {
       setSaveError(messageOf(e));
     } finally {

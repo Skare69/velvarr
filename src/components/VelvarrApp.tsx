@@ -123,14 +123,21 @@ export default function VelvarrApp() {
   const [bootError, setBootError] = useState<string | null>(null);
   useTapReveal();
 
-  const enterApp = useCallback(async () => {
+  // Re-reads the session snapshot; also runs after an admin saves or clears
+  // a provider key, so provider chips and not-configured claims update
+  // without a full reload.
+  const refreshSession = useCallback(async () => {
     const me = await api<{ account: Account; providers: ProviderStatus }>(
       "/api/me",
     );
     setAccount(me.account);
     setProviders(me.providers);
-    setPhase("app");
   }, []);
+
+  const enterApp = useCallback(async () => {
+    await refreshSession();
+    setPhase("app");
+  }, [refreshSession]);
 
   const enterAppSafe = useCallback(() => {
     // This tab just swapped the cookie (login or setup completion); other
@@ -231,7 +238,9 @@ export default function VelvarrApp() {
 
   if (phase !== "app" || !account) return <BootSkeleton />;
   return (
-    <SessionCtx.Provider value={{ account, providers, signOut }}>
+    <SessionCtx.Provider
+      value={{ account, providers, signOut, refreshSession }}
+    >
       <Shell />
     </SessionCtx.Provider>
   );

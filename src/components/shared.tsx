@@ -481,6 +481,7 @@ interface SessionInfo {
   account: Account;
   providers: ProviderStatus | null;
   signOut: () => void;
+  refreshSession: () => Promise<void>;
 }
 
 export const SessionCtx = createContext<SessionInfo | null>(null);
