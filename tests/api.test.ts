@@ -2394,12 +2394,24 @@ test("catalog search: auth, filter combos, honest totals, outage honesty", async
   assert.equal(filteredBody.totalCountKnown, true);
   assert.equal(filteredBody.total, 1);
 
+  // The shared 1900–2100 band is accepted and travels natively to TPDB.
+  // Below the band the route refuses (1899): accepting would let the
+  // adapter drop the filter and return unfiltered titles as if filtered.
+  const banded = await call(
+    "GET",
+    "/api/catalog/search?provider=tpdb&kind=movie&year=1900",
+    { cookie: member },
+  );
+  assert.equal(banded.status, 200);
+  assert.match(tpdbFx.lastQuery, /(^|[?&])year=1900(&|$)/);
+
   // Unsupported provider+kind+filter combinations: explicit errors, never
   // silent ignores.
   for (const query of [
     "provider=stashdb&kind=movie",
     "provider=stashdb&kind=scene&year=2020",
     "provider=tpdb&kind=movie&year=1800",
+    "provider=tpdb&kind=movie&year=1899",
     "provider=tpdb&kind=performer",
     "provider=tpdb&kind=performer&q=x&year=2020",
     `provider=tpdb&kind=performer&q=x&performer=${TPDB_PERFORMER}`,

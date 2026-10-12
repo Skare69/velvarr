@@ -36,6 +36,7 @@ import type {
   CatalogReference,
   CatalogTagSelection,
 } from "../lib/contracts";
+import { CATALOG_YEAR_MAX, CATALOG_YEAR_MIN } from "../lib/contracts";
 // Names for studio/tag filter ids live in lib/names, seeded at navigation
 // time (details, picks, tiles) — URLs carry ids, chips still get labels.
 import { filterName, seedPerformerPick } from "../lib/names";
@@ -328,7 +329,11 @@ function YearBox({
     const t = input.trim();
     // Server rejects anything but a 4-digit year in range; never send junk.
     if (t !== "" && !/^\d{4}$/.test(t)) return;
-    if (t !== "" && (Number(t) < 1870 || Number(t) > 2100)) return;
+    if (
+      t !== "" &&
+      (Number(t) < CATALOG_YEAR_MIN || Number(t) > CATALOG_YEAR_MAX)
+    )
+      return;
     mark(t);
     onCommit(t);
   }, [disabled, input, mark, onCommit]);
@@ -341,8 +346,8 @@ function YearBox({
         id={id}
         type="number"
         inputMode="numeric"
-        min={1870}
-        max={2100}
+        min={CATALOG_YEAR_MIN}
+        max={CATALOG_YEAR_MAX}
         placeholder="Any year"
         className="input"
         value={input}

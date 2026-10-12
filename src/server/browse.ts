@@ -41,7 +41,11 @@ import type {
 } from "./providers.ts";
 import { getConfig, parseTagSelections } from "./storage.ts";
 import { isIsoDate, isUuid } from "./provider-rows.ts";
-import { normalizeFacetName } from "../lib/contracts.ts";
+import {
+  CATALOG_YEAR_MAX,
+  CATALOG_YEAR_MIN,
+  normalizeFacetName,
+} from "../lib/contracts.ts";
 import { BROWSE_MIXED_SORTS, SORT_KEYS, sortSpec } from "../lib/sorts.ts";
 import type {
   BrowseTagsResponse,
@@ -195,8 +199,14 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
   let year: number | undefined;
   if (yearRaw !== null && yearRaw.trim() !== "") {
     year = Number(yearRaw);
-    if (!Number.isInteger(year) || year < 1900 || year > 2100) {
-      throw invalidQuery("year must be a calendar year between 1900 and 2100.");
+    if (
+      !Number.isInteger(year) ||
+      year < CATALOG_YEAR_MIN ||
+      year > CATALOG_YEAR_MAX
+    ) {
+      throw invalidQuery(
+        `year must be a calendar year between ${CATALOG_YEAR_MIN} and ${CATALOG_YEAR_MAX}.`,
+      );
     }
   }
   const pageRaw = params.get("page");

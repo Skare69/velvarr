@@ -329,6 +329,8 @@ test("parseBrowseQuery round-trips pinned keys and rejects malformed input", () 
     ["date=2025-02-30&date_operation=%3D", "invalid_query"],
     ["date=2025-13-01&date_operation=%3D", "invalid_query"],
     ["year=1800", "invalid_query"],
+    ["year=1899", "invalid_query"],
+    ["year=2101", "invalid_query"],
     ["page=0", "invalid_query"],
     ["perPage=101", "invalid_query"],
     ["direction=desc", "invalid_query"], // sort missing

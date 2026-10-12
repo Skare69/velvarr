@@ -15,6 +15,10 @@ import type {
   CatalogDetailResponse,
 } from "../../../../lib/contracts.ts";
 import {
+  CATALOG_YEAR_MAX,
+  CATALOG_YEAR_MIN,
+} from "../../../../lib/contracts.ts";
+import {
   getAcquisitionByReference,
   acquisitionView,
   getContentPreferences,
@@ -123,8 +127,8 @@ export function catalogSearchParams(
   if (
     yearRaw !== null &&
     (!/^\d{4}$/.test(yearRaw) ||
-      Number(yearRaw) < 1870 ||
-      Number(yearRaw) > 2100)
+      Number(yearRaw) < CATALOG_YEAR_MIN ||
+      Number(yearRaw) > CATALOG_YEAR_MAX)
   ) {
     throw new AppError(400, "invalid_query", "Invalid year.");
   }

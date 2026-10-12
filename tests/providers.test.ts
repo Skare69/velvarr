@@ -536,6 +536,53 @@ test("tpdb unfiltered totals are suppressed; filtered totals and continuation ar
   }
 });
 
+test("tpdb year: accepted band travels natively; out-of-band year is refused, never dropped", async () => {
+  const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
+  const fixture = await startFixture((req, res) => {
+    sendJson(res, 200, {
+      data: [
+        {
+          id: MOVIE_ID,
+          title: `Movie for ${queryOf(req.url ?? "").get("year") ?? "no-year"}`,
+          posters: {},
+          background: {},
+          performers: [],
+          tags: [],
+          scenes: [],
+          movies: [],
+        },
+      ],
+      links: { next: null },
+      meta: { current_page: 1, per_page: 1, total: 1 },
+    });
+  });
+  try {
+    process.env.TPDB_BASE_URL = fixture.origin;
+    const page = await searchCatalog({
+      provider: "tpdb",
+      kind: "movie",
+      year: 1900,
+    });
+    // The accepted boundary year reached the provider as a native filter:
+    // an accepted year can never silently return unfiltered results.
+    assert.deepEqual(queryParams(fixture, 0).get("year"), "1900");
+    assert.equal(page.items[0]?.title, "Movie for 1900");
+
+    await assert.rejects(
+      searchCatalog({ provider: "tpdb", kind: "movie", year: 1895 }),
+      (err: unknown) => {
+        assertProviderError(err, 400, "invalid_search");
+        return true;
+      },
+    );
+    // The refusal happened before any upstream call: no unfiltered page.
+    assert.equal(fixture.log.length, 1);
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
 test("tpdb pagination continuation follows pages until the provider stops offering next", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   const fixture = await startFixture((req, res) => {

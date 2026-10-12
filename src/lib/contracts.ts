@@ -10,6 +10,14 @@ export type MediaKind = "movie" | "scene";
 
 export type CatalogKind = MediaKind | "performer" | "studio";
 
+/** The one catalog year range. Every entry point — the Browse year box, the
+ * catalog-search route, the browse query parser — and the provider adapter
+ * agree on it: TPDB filters `year` natively only inside this band, so a year
+ * outside it is refused at the door, never dropped into an unfiltered
+ * search. */
+export const CATALOG_YEAR_MIN = 1900;
+export const CATALOG_YEAR_MAX = 2100;
+
 /** Tags are labels, not entities: exact folded-label equality can pair them.
  * Never use this to infer performer or studio identity. */
 export function normalizeFacetName(value: string): string {

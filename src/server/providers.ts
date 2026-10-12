@@ -54,7 +54,11 @@ import type {
   CrossProviderLink,
   MediaKind,
 } from "../lib/contracts.ts";
-import { normalizeFacetName } from "../lib/contracts.ts";
+import {
+  CATALOG_YEAR_MAX,
+  CATALOG_YEAR_MIN,
+  normalizeFacetName,
+} from "../lib/contracts.ts";
 import { sortSpec, type SortKey } from "../lib/sorts.ts";
 
 // Pure cross-provider identity policy (published links only, no name
@@ -1242,7 +1246,7 @@ export async function searchCatalog(
       // paging only; query/year filters are rejected, not ignored.
       if (
         cleanQueryTerm(query.query) !== undefined ||
-        cleanYear(query.year) !== undefined ||
+        query.year !== undefined ||
         query.releaseDate !== undefined
       ) {
         throw new AppError(
@@ -1289,9 +1293,19 @@ export async function searchCatalog(
     }
     const studioFilter = await resolveTpdbStudioFilter(query.studio);
     const releaseDate = cleanReleaseDate(query.releaseDate);
+    if (query.year !== undefined && cleanYear(query.year) === undefined) {
+      // A year the provider cannot filter is refused here, never dropped:
+      // dropping would send the query unfiltered and present whatever came
+      // back as if the year filter had been applied.
+      throw new AppError(
+        400,
+        "invalid_search",
+        `year must be a calendar year between ${CATALOG_YEAR_MIN} and ${CATALOG_YEAR_MAX}.`,
+      );
+    }
     const path = tpdbQuery({
       q: cleanQueryTerm(query.query),
-      year: cleanYear(query.year),
+      year: query.year,
       date: releaseDate?.cutoff,
       date_operation: releaseDate?.operation,
       ...(await tpdbTagFilters(includeTags ?? allTags)),

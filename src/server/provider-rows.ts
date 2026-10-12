@@ -6,6 +6,7 @@
 // providers.ts. Upstream shape notes live in providers.ts's header.
 
 import { isLoopbackHost } from "./http.ts";
+import { CATALOG_YEAR_MAX, CATALOG_YEAR_MIN } from "../lib/contracts.ts";
 import type {
   CatalogDetail,
   CatalogPerson,
@@ -60,7 +61,10 @@ export function cleanInt(
 }
 
 export function cleanYear(v: unknown): number | undefined {
-  return typeof v === "number" && Number.isInteger(v) && v >= 1900 && v <= 2100
+  return typeof v === "number" &&
+    Number.isInteger(v) &&
+    v >= CATALOG_YEAR_MIN &&
+    v <= CATALOG_YEAR_MAX
     ? v
     : undefined;
 }
