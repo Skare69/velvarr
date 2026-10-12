@@ -302,8 +302,9 @@ function DetailBody({
       ? { provider: target.provider, kind: mediaKind, id: target.id }
       : null;
   const availability = useAvailability(mediaTarget);
-  // Year filtering exists on TPDB movie lists only; StashDB has no
-  // year or date filter (the route rejects it), so its dates stay plain.
+  // The year jump is offered for TPDB movies only; other targets keep
+  // their date as plain text. (Browse itself filters StashDB scenes by
+  // year locally and by date natively.)
   const releaseYear =
     mediaKind === "movie" && target.provider === "tpdb"
       ? (d.releaseDate?.slice(0, 4) ?? null)
@@ -331,8 +332,8 @@ function DetailBody({
               <span className="chip">
                 {providerLabel(target.provider)} · {target.kind}
               </span>
-              {/* Year filter on TPDB movie lists only; StashDB has
-                  no year or date filter, so its dates stay plain text. */}
+              {/* The year chip jumps to a year-filtered browse for TPDB
+                  movies only; a scene's date stays plain text. */}
               {d.releaseDate &&
                 (releaseYear ? (
                   <button

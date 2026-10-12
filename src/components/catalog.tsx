@@ -1574,13 +1574,13 @@ export function TitlesView() {
           disabled={performerTpdb !== "" && type !== "scene"}
           onCommit={onDate}
         />
-        {/* Year and the date cutoff are TPDB-movie criteria; while either is
-            set only TPDB qualifies, and the note says so — never silently
-            ignored. */}
+        {/* Year and date apply to both sides: TPDB natively, StashDB with
+            the year checked locally, so scene totals are approximate. The
+            note says exactly that — never silently ignored. */}
         {(year !== "" || date !== "") && (
           <p className="cat-note">
-            Year and release date apply to TPDB movies — while set, StashDB
-            scenes are left out.
+            Year and release date apply to TPDB movies and StashDB scenes; the
+            year is checked locally for scenes, so totals are approximate.
           </p>
         )}
         {studioStashdb !== "" && (
