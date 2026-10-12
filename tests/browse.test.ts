@@ -29,6 +29,12 @@ import {
   SORT_LABELS,
 } from "../src/lib/sorts.ts";
 import {
+  resolveIncludeCriteria,
+  scanCeilingOutcome,
+  softCeilingFor,
+  TAG_FILTER_ID_CAP,
+} from "../src/lib/browse-includes.ts";
+import {
   browseTitles,
   parseBrowseQuery,
   planBrowseSides,
@@ -771,6 +777,182 @@ test("every side failing after a side already delivered rows keeps the partial p
     );
     assert.equal(page.totalCountKnown, false);
     assert.equal(page.hasMore, false);
+  });
+});
+
+// --- include criteria decisions (pure, extracted from browse.ts) ---
+
+/** A complete, native expansion: the only shape the native criteria accept
+ * on its own. */
+const ready = (ids: string[]) => ({ complete: true, dropped: false, ids });
+
+test("resolveIncludeCriteria joins singleton expansions with anchored ids in the all-of criterion", () => {
+  // The single-tag all-of rule: a singleton group is as good as an anchored
+  // id (an AND match carries it), and multi-id terms keep the local
+  // re-check.
+  assert.deepEqual(
+    resolveIncludeCriteria(
+      [uuid(1)],
+      [ready([uuid(9)]), ready([uuid(2), uuid(3)])],
+    ),
+    {
+      allOf: [uuid(1), uuid(9)],
+      anyOf: [],
+      localTermIndexes: [1],
+      freeTextNative: true,
+    },
+  );
+  // Anchored ids alone: the all-of path with nothing free riding native.
+  assert.deepEqual(
+    resolveIncludeCriteria([uuid(1)], [ready([uuid(2), uuid(3)])]),
+    {
+      allOf: [uuid(1)],
+      anyOf: [],
+      localTermIndexes: [0],
+      freeTextNative: false,
+    },
+  );
+  // A singleton duplicating an anchored id travels once.
+  const deduped = resolveIncludeCriteria(
+    [uuid(7)],
+    [ready([uuid(7)]), ready([uuid(8), uuid(9)])],
+  );
+  assert.deepEqual(deduped.allOf, [uuid(7)]);
+  assert.deepEqual(deduped.localTermIndexes, [1]);
+  assert.equal(deduped.freeTextNative, true);
+});
+
+test("resolveIncludeCriteria rides the smallest group as any-of and keeps the rest local", () => {
+  // No singleton and no anchored id: the smallest multi-id group is the
+  // valid any-of pre-filter, the other terms keep filtering locally.
+  assert.deepEqual(
+    resolveIncludeCriteria(
+      [],
+      [ready([uuid(1), uuid(2), uuid(3)]), ready([uuid(4), uuid(5)])],
+    ),
+    {
+      allOf: [],
+      anyOf: [uuid(4), uuid(5)],
+      localTermIndexes: [0],
+      freeTextNative: true,
+    },
+  );
+  // Equal-size groups keep the first: the smallest pick is stable.
+  const tie = resolveIncludeCriteria(
+    [],
+    [ready([uuid(1), uuid(2)]), ready([uuid(3), uuid(4)])],
+  );
+  assert.deepEqual(tie.anyOf, [uuid(1), uuid(2)]);
+  assert.deepEqual(tie.localTermIndexes, [1]);
+});
+
+test("resolveIncludeCriteria routes a union past the native id cap to local filtering", () => {
+  const atCap = resolveIncludeCriteria(
+    [],
+    [ready(Array.from({ length: TAG_FILTER_ID_CAP }, (_, i) => uuid(i + 1)))],
+  );
+  assert.equal(atCap.anyOf.length, TAG_FILTER_ID_CAP);
+  assert.equal(atCap.freeTextNative, true);
+  // One id more and the criterion would silently ignore its tail upstream:
+  // the whole group filters locally instead.
+  assert.deepEqual(
+    resolveIncludeCriteria(
+      [],
+      [
+        ready(
+          Array.from({ length: TAG_FILTER_ID_CAP + 1 }, (_, i) => uuid(i + 1)),
+        ),
+      ],
+    ),
+    {
+      allOf: [],
+      anyOf: [],
+      localTermIndexes: [0],
+      freeTextNative: false,
+    },
+  );
+  // The same overload with an anchored id: the anchored id still travels
+  // the all-of criterion, the oversized term stays local.
+  assert.deepEqual(
+    resolveIncludeCriteria(
+      [uuid(9)],
+      [
+        ready(
+          Array.from({ length: TAG_FILTER_ID_CAP + 1 }, (_, i) => uuid(i + 1)),
+        ),
+      ],
+    ),
+    {
+      allOf: [uuid(9)],
+      anyOf: [],
+      localTermIndexes: [0],
+      freeTextNative: false,
+    },
+  );
+  // No terms at all: nothing rides, nothing re-checks — the function is
+  // total over empty input.
+  assert.deepEqual(resolveIncludeCriteria([], []), {
+    allOf: [],
+    anyOf: [],
+    localTermIndexes: [],
+    freeTextNative: false,
+  });
+});
+
+test("resolveIncludeCriteria keeps the whole group local when any term expands incompletely", () => {
+  for (const bad of [
+    { complete: false, dropped: false, ids: [uuid(2)] }, // capped listing walk
+    { complete: true, dropped: true, ids: [uuid(2)] }, // uuid-less match
+    { complete: true, dropped: false, ids: [] }, // empty: never proof of absence
+  ]) {
+    assert.deepEqual(
+      resolveIncludeCriteria([uuid(9)], [ready([uuid(1)]), bad]),
+      {
+        allOf: [uuid(9)],
+        anyOf: [],
+        localTermIndexes: [0, 1],
+        freeTextNative: false,
+      },
+    );
+  }
+  // No terms at all: nothing rides and nothing re-checks.
+  assert.deepEqual(resolveIncludeCriteria([uuid(9)], []), {
+    allOf: [uuid(9)],
+    anyOf: [],
+    localTermIndexes: [],
+    freeTextNative: false,
+  });
+});
+
+test("softCeilingFor degrades only a native free-text term that still re-checks locally", () => {
+  assert.equal(
+    softCeilingFor({ localInclude: [{}], freeTextNative: true }),
+    true,
+  );
+  assert.equal(
+    softCeilingFor({ localInclude: [], freeTextNative: true }),
+    false,
+  );
+  assert.equal(
+    softCeilingFor({ localInclude: [{}], freeTextNative: false }),
+    false,
+  );
+  assert.equal(
+    softCeilingFor({ localInclude: [], freeTextNative: false }),
+    false,
+  );
+});
+
+test("scanCeilingOutcome throws hard ceilings and degrades soft ones to scan_ceiling", () => {
+  assert.deepEqual(scanCeilingOutcome(false, "tpdb"), { hard: true });
+  assert.deepEqual(scanCeilingOutcome(true, "stashdb"), {
+    hard: false,
+    error: {
+      provider: "stashdb",
+      code: "scan_ceiling",
+      message:
+        "Reached the upstream page limit while filling this page — results are incomplete; narrow the filters.",
+    },
   });
 });
 
@@ -1838,16 +2020,19 @@ test("exclusions and hidden tags override includes on matching items", async () 
 
 // --- local tag filters see every tag, not only the first 50 kept for display ---
 
-test("a hidden tag past position 50 hides the title; a free-text include matching only that tag finds it", async () => {
-  const LAST = { id: 55, uuid: uuid(55), name: "Last Tag" }; // position 55: past the rendered 50
+test("a hidden tag past position 50 hides the title; a local free-text AND still sees tags past the rendered 50", async () => {
+  const LAST = { id: 55, uuid: uuid(55), name: "Last Tag" }; // position 56: past the rendered 50
+  const LEGACY_NUM = { id: 305, name: "Legacy" }; // uuid-less: forces the AND local
   const manyTags = [
     ...Array.from({ length: 54 }, (_, i) => ({
       id: 1000 + i,
       uuid: uuid(1000 + i),
       name: `Filler ${i + 1}`,
     })),
+    LEGACY_NUM,
     LAST,
   ];
+  const movieUrls: string[] = [];
   await runBrowse(
     scriptedUpstream({
       tagRows: manyTags,
@@ -1860,9 +2045,9 @@ test("a hidden tag past position 50 hides the title; a free-text include matchin
           next: null,
           total: 2,
         },
-        // The free-text include expands into a native tag criterion now, so
-        // this browse's query differs from the hidden one's and really
-        // fetches: script its page too.
+        // The free-text AND filters locally (a uuid-less expansion keeps it
+        // off the native criterion), so this browse really scans: script
+        // its page too.
         {
           rows: [
             tpdbRow(uuid(1), "Hidden by a late tag", "2024-01-01", manyTags),
@@ -1873,6 +2058,7 @@ test("a hidden tag past position 50 hides the title; a free-text include matchin
         },
       ],
       scenes: { count: 0, rows: [] },
+      onMovieRequest: (_page, qs) => movieUrls.push(qs.toString()),
     }),
     async () => {
       const hidden = await browseTitles(
@@ -1892,10 +2078,14 @@ test("a hidden tag past position 50 hides the title; a free-text include matchin
       );
       assert.equal(hidden.total, 0);
 
+      // The local AND's upstream request is byte-identical to the hidden
+      // browse's (no native criterion rides either), so drop the read
+      // cache: this browse's fetch must reach the fixture to be observed.
+      resetMetaCache();
       const found = await browseTitles(
         {
           type: "movie",
-          include: [{ name: LAST.name }],
+          include: [{ name: "legacy" }, { name: "last tag" }],
           exclude: [],
           studioMode: "exact",
           page: 1,
@@ -1903,11 +2093,18 @@ test("a hidden tag past position 50 hides the title; a free-text include matchin
         },
         [],
       );
-      // Pre-fix this include matched nothing: LAST sat past the kept 50.
+      // The uuid-less Legacy expansion keeps the whole AND local: no tag
+      // criterion rides, and the substring re-check must see BOTH names on
+      // the row's tags — at positions 55 and 56, past the rendered 50 — or
+      // every title drops.
+      assert.doesNotMatch(movieUrls[1]!, /tags%5B|tags\[/);
       assert.deepEqual(
         found.items.map((d) => d.title),
         ["Hidden by a late tag", "Found by a late tag"],
       );
+      // A finite local scan reports exact totals.
+      assert.equal(found.total, 2);
+      assert.equal(found.totalCountKnown, true);
     },
   );
 });

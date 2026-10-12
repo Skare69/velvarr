@@ -55,12 +55,14 @@ const config = {
   // per-mutant detail covers killed mutants only — the survived diffs are
   // console-only, so capture stdout when hunting survivors.
   fileLogLevel: "trace",
-  // break is the measured clean-run score (85.29, 2026-10-12, after
-  // src/server/update.ts joined the mutate set) floored to
-  // one decimal; a regression below it fails the run, and the margin is
-  // under two mutants.
-  // status.ts is fully killed: the badge and acquisition-line tests pin
-  // every branch, and the sorts suite pins the capability table.
+  // break is the measured clean-run score (86.23, 2026-10-12, after the
+  // browse include-criteria decisions moved into src/lib/browse-includes.ts)
+  // floored to one decimal; a regression below it fails the run, and the
+  // margin is under two mutants.
+  // status.ts and browse-includes.ts are fully killed: the badge and
+  // acquisition-line tests pin every status branch, the sorts suite pins
+  // the capability table, and tests/browse.test.ts pins the include
+  // criteria, the soft-ceiling predicate and the ceiling outcome directly.
   // Accepted survivors: sorts.ts's defensive `?.`/`?? []` chains, which
   // no typed provider/kind input can reach, the error-message copy
   // strings in related.ts, the
@@ -75,7 +77,7 @@ const config = {
   // caught TypeError and the two error-message copy strings never surface),
   // and api-get.ts's FIFO-cap edges (has/clear/eviction
   // conditionals asserted only loosely by the queue-order tests).
-  thresholds: { high: 85, low: 75, break: 85.2 },
+  thresholds: { high: 85, low: 75, break: 86.2 },
 };
 
 export default config;

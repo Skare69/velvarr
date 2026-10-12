@@ -33,8 +33,13 @@ import {
   searchCatalogTags,
   tagCounterpart,
   expandCatalogTagTerm,
-  TAG_FILTER_ID_CAP,
 } from "./providers.ts";
+import {
+  resolveIncludeCriteria,
+  scanCeilingOutcome,
+  softCeilingFor,
+  type TagExpansion,
+} from "../lib/browse-includes.ts";
 import type {
   CatalogSearchPage,
   CatalogSearchQuery,
@@ -368,67 +373,21 @@ async function includeIdsForSide(
   if (free.length === 0 || !expandFree) {
     return { allOf, anyOf: [], localFree: free, freeTextNative: false };
   }
-  // Every term must expand completely and natively, or the whole group
-  // filters locally: the native any-of is ONE union criterion, and a
-  // partial union would natively drop every title the missing part would
-  // have kept — silently, under claimed-exact totals.
-  const groups: string[][] = [];
-  let nativeReady = true;
+  // Every term expands before the decision: the tag listing behind
+  // expandCatalogTagTerm is memoized, so reading every term costs no extra
+  // upstream traffic, and complete term indexes keep localFree aligned
+  // with the caller's selections. The ride-local-or-native decision
+  // itself lives in resolveIncludeCriteria.
+  const expansions: TagExpansion[] = [];
   for (const sel of free) {
-    const expansion = await expandCatalogTagTerm(side, sel.name);
-    if (
-      !expansion.complete ||
-      expansion.dropped ||
-      expansion.ids.length === 0
-    ) {
-      nativeReady = false;
-      break;
-    }
-    groups.push(expansion.ids);
+    expansions.push(await expandCatalogTagTerm(side, sel.name));
   }
-  if (!nativeReady) {
-    // A capped listing walk, uuid-less rows in a match set, or an empty
-    // expansion: the side keeps the local substring re-check (the visible
-    // predicate) with its approximate totals and really scans. An empty
-    // expansion in particular never skips the side — that would read a
-    // maybe-incomplete walk as a provably empty catalog.
-    return { allOf, anyOf: [], localFree: free, freeTextNative: false };
-  }
-  // Every title satisfying the AND carries a tag from EVERY group, so a
-  // singleton group is as good as an anchored id: the all-of criterion IS
-  // their AND, and anchored ids and singleton ids travel it together.
-  // Multi-id terms keep the local re-check; when none remain, nothing is
-  // re-checked locally and the provider totals pass through exact.
-  const singletonIds = groups.flatMap((g) => (g.length === 1 ? g : []));
-  if (singletonIds.length > 0 || allOf.length > 0) {
-    const tagAll = [...allOf];
-    for (const id of singletonIds) if (!tagAll.includes(id)) tagAll.push(id);
-    return {
-      allOf: tagAll,
-      anyOf: [],
-      localFree: free.filter((_, i) => groups[i]!.length > 1),
-      freeTextNative: singletonIds.length > 0,
-    };
-  }
-  // No anchored id and no singleton group: the smallest group is a valid
-  // any-of pre-filter (an AND match must match it too) and strictly
-  // tighter than the union of every expansion, which admitted titles
-  // matching any ONE term and starved the local AND into the scan
-  // ceiling. The other terms keep filtering locally.
-  let smallest = 0;
-  for (let i = 1; i < groups.length; i++) {
-    if (groups[i]!.length < groups[smallest]!.length) smallest = i;
-  }
-  // The native tag criterion caps at TAG_FILTER_ID_CAP ids and silently
-  // ignores the tail past it: a larger group filters locally instead.
-  if (groups[smallest]!.length > TAG_FILTER_ID_CAP) {
-    return { allOf, anyOf: [], localFree: free, freeTextNative: false };
-  }
+  const criteria = resolveIncludeCriteria(allOf, expansions);
   return {
-    allOf,
-    anyOf: groups[smallest]!,
-    localFree: free.filter((_, i) => i !== smallest),
-    freeTextNative: true,
+    allOf: criteria.allOf,
+    anyOf: criteria.anyOf,
+    localFree: criteria.localTermIndexes.map((i) => free[i]!),
+    freeTextNative: criteria.freeTextNative,
   };
 }
 
@@ -532,7 +491,8 @@ class Stream {
     if (!this.live) return;
     this.fetches += 1;
     if (this.fetches > MAX_SCAN_PAGES) {
-      if (!this.softCeiling) {
+      const ceiling = scanCeilingOutcome(this.softCeiling, this.base.provider);
+      if (ceiling.hard) {
         throw new AppError(
           422,
           "query_too_broad",
@@ -545,12 +505,7 @@ class Stream {
       // partial answer and the named error says so. Widen the native
       // expression (provider combinator criteria) if this fires often.
       this.exhausted = true;
-      this.error = {
-        provider: this.base.provider,
-        code: "scan_ceiling",
-        message:
-          "Reached the upstream page limit while filling this page — results are incomplete; narrow the filters.",
-      };
+      this.error = ceiling.error;
       return;
     }
     this.page += 1;
@@ -1180,15 +1135,7 @@ export async function browseTitles(
         ),
         query.perPage,
         plan.localFiltered,
-        // The soft ceiling is exactly the documented contract: a multi-term
-        // free-text AND split between a native tag criterion and the local
-        // re-check — the native pre-filter kept the scanned pages
-        // productive, so the matches found are a real partial answer.
-        // Filmography scans (no native tag criterion), anchored+free mixes
-        // where every free term re-checks locally, and every other local
-        // filter keep the hard 422; hidden or exclude starvation on such a
-        // stream still degrades (the pages were productive).
-        plan.localInclude.length > 0 && plan.freeTextNative,
+        softCeilingFor(plan),
       ),
   );
   streams.push(...unresolved);

@@ -60,6 +60,7 @@ import {
   normalizeFacetName,
 } from "../lib/contracts.ts";
 import { sortSpec, type SortKey } from "../lib/sorts.ts";
+import { TAG_FILTER_ID_CAP } from "../lib/browse-includes.ts";
 
 // Pure cross-provider identity policy (published links only, no name
 // matching) lives in its own module; this adapter keeps the I/O around it.
@@ -848,12 +849,7 @@ function requireStashStudioId(v: unknown): string {
 }
 
 /** Tag filter ids stay provider-native: UUIDs on both providers, deduplicated,
- * capped. An empty array is a no-op filter, not an unsupported one. The cap
- * is the native tag criterion's own limit: the providers silently ignore ids
- * past it, so callers must never send more (browse re-routes oversized
- * free-text unions to local filtering instead). */
-export const TAG_FILTER_ID_CAP = 25;
-
+ * capped. An empty array is a no-op filter, not an unsupported one. */
 function cleanTagIds(
   v: unknown,
   provider: "TPDB" | "StashDB",
