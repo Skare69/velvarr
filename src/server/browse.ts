@@ -14,9 +14,10 @@
 // ponytail: upstream scan ceiling is 40 provider pages per stream per
 // request. Hitting it before a page fills is a visible 422 "query_too_broad",
 // never a fake empty page or fake end — narrow the filters. One exception:
-// a multi-term free-text AND riding its native any-of union degrades to a
-// named partial page instead (Stream.softCeiling). Raise MAX_SCAN_PAGES only
-// when real browsing measurably needs it.
+// a multi-term free-text AND split between a native tag criterion and the
+// local re-check degrades to a named partial page instead
+// (Stream.softCeiling). Raise MAX_SCAN_PAGES only when real browsing
+// measurably needs it.
 
 // Stryker disable all — the mutation window re-opens below the parse/adapters
 // block and covers the pure merge/plan logic only (mergeStreams, nativeQuery,
@@ -298,18 +299,24 @@ function visiblePredicate(
   };
 }
 
-/** The native include criteria one provider side can carry: `allOf` are the
- * anchored tag ids (AND criterion), `anyOf` the free-text expansion (any-of
- * criterion — every published tag whose name contains a term, sent only
- * when every term's expansion is complete and the union fits the native
- * id cap). `localFree` holds the free-text terms the visible predicate
- * must still re-check locally: several terms AND together, which one
- * upstream tag criterion cannot express, so the any-of union only
- * pre-filters. */
+/** The native include criteria one provider side can carry: `allOf` are
+ * the anchored tag ids plus every singleton free-text expansion (AND
+ * criterion — a title satisfying the term AND must carry each of these
+ * tags), `anyOf` the smallest free-text expansion (any-of criterion — a
+ * valid pre-filter only, sent when no singleton or anchored id exists and
+ * the expansion is complete and fits the native id cap). `localFree`
+ * holds the free-text terms the visible predicate must still re-check
+ * locally: several terms AND together, which one upstream tag criterion
+ * cannot express. */
 type ResolvedIncludes = {
   allOf: string[];
   anyOf: string[];
   localFree: CatalogTagSelection[];
+  /** True when at least one free-text term rides the native tag criterion
+   * (a singleton expansion in `allOf`, or the `anyOf` group): at the scan
+   * ceiling such a stream degrades softly — its pages were productive and
+   * the matches found are a real partial answer. */
+  freeTextNative: boolean;
 };
 
 /** Resolves the native include criteria for one provider side. Anchored
@@ -319,16 +326,17 @@ type ResolvedIncludes = {
  * — including a uuid-less match (TPDB numeric-string id) — disqualifies the
  * whole side (undefined) — it is NEVER allowed to run unfiltered.
  * Free-text includes expand on THIS side's complete published tag listing
- * (expandCatalogTagTerm). The native any-of union travels only when it
- * provably covers the local substring predicate: every term's expansion
- * complete, no uuid-less rows, and the union within the native id cap.
- * Anything else — a capped walk, uuid-less rows, or an empty expansion —
- * keeps the WHOLE free group on the local substring re-check with the
- * side's approximate totals: the union is one criterion and a partial one
- * would silently drop titles, and an empty expansion is never proof the
- * side is empty, so the side is never skipped for one. (With anchored ids
- * present the terms keep filtering locally as before — one upstream tag
- * criterion per query, and the anchored ids take it.) A lookup that fails
+ * (expandCatalogTagTerm), anchored ids or not. Every term's expansion must
+ * be complete and native — no capped walk, no uuid-less rows — before
+ * anything free travels: a partial criterion would silently drop titles,
+ * and an empty expansion is never proof the side is empty, so the side is
+ * never skipped for one; anything incomplete keeps the WHOLE free group on
+ * the local substring re-check with the side's approximate totals. Of a
+ * complete group set, the most selective valid pre-filter travels: every
+ * singleton group joins the anchored ids in the all-of criterion (an AND
+ * match must carry each of those tags), and with no singleton and no
+ * anchored id the smallest group rides alone as any-of while the other
+ * terms keep filtering locally. A lookup that fails
  * throws; browseTitles records the side as a failed source instead of
  * reading the outage as absence. */
 async function includeIdsForSide(
@@ -357,8 +365,8 @@ async function includeIdsForSide(
     }
     free.push(sel);
   }
-  if (free.length === 0 || !expandFree || allOf.length > 0) {
-    return { allOf, anyOf: [], localFree: free };
+  if (free.length === 0 || !expandFree) {
+    return { allOf, anyOf: [], localFree: free, freeTextNative: false };
   }
   // Every term must expand completely and natively, or the whole group
   // filters locally: the native any-of is ONE union criterion, and a
@@ -384,30 +392,43 @@ async function includeIdsForSide(
     // predicate) with its approximate totals and really scans. An empty
     // expansion in particular never skips the side — that would read a
     // maybe-incomplete walk as a provably empty catalog.
-    return { allOf, anyOf: [], localFree: free };
+    return { allOf, anyOf: [], localFree: free, freeTextNative: false };
   }
-  const union = [...new Set(groups.flat())];
+  // Every title satisfying the AND carries a tag from EVERY group, so a
+  // singleton group is as good as an anchored id: the all-of criterion IS
+  // their AND, and anchored ids and singleton ids travel it together.
+  // Multi-id terms keep the local re-check; when none remain, nothing is
+  // re-checked locally and the provider totals pass through exact.
+  const singletonIds = groups.flatMap((g) => (g.length === 1 ? g : []));
+  if (singletonIds.length > 0 || allOf.length > 0) {
+    const tagAll = [...allOf];
+    for (const id of singletonIds) if (!tagAll.includes(id)) tagAll.push(id);
+    return {
+      allOf: tagAll,
+      anyOf: [],
+      localFree: free.filter((_, i) => groups[i]!.length > 1),
+      freeTextNative: singletonIds.length > 0,
+    };
+  }
+  // No anchored id and no singleton group: the smallest group is a valid
+  // any-of pre-filter (an AND match must match it too) and strictly
+  // tighter than the union of every expansion, which admitted titles
+  // matching any ONE term and starved the local AND into the scan
+  // ceiling. The other terms keep filtering locally.
+  let smallest = 0;
+  for (let i = 1; i < groups.length; i++) {
+    if (groups[i]!.length < groups[smallest]!.length) smallest = i;
+  }
   // The native tag criterion caps at TAG_FILTER_ID_CAP ids and silently
-  // ignores the tail past it: a larger union filters locally instead.
-  if (union.length > TAG_FILTER_ID_CAP) {
-    return { allOf, anyOf: [], localFree: free };
-  }
-  // Several terms that each matched exactly one tag: the all-of criterion
-  // IS their AND, so it goes native whole — exact totals, nothing
-  // re-checked locally. (A single term keeps the any-of form: it is the
-  // same set and already fully native.) Only a fully native expansion
-  // earns the exact form: a local term forces the local re-check atop the
-  // any-of union.
-  if (groups.length > 1 && groups.every((g) => g.length === 1)) {
-    return { allOf: union, anyOf: [], localFree: [] };
+  // ignores the tail past it: a larger group filters locally instead.
+  if (groups[smallest]!.length > TAG_FILTER_ID_CAP) {
+    return { allOf, anyOf: [], localFree: free, freeTextNative: false };
   }
   return {
     allOf,
-    anyOf: union,
-    // Several terms AND together, which one upstream tag criterion cannot
-    // express: the union pre-filters natively and the local per-term
-    // re-check keeps it honest.
-    localFree: groups.length > 1 ? free : [],
+    anyOf: groups[smallest]!,
+    localFree: free.filter((_, i) => i !== smallest),
+    freeTextNative: true,
   };
 }
 
@@ -468,9 +489,10 @@ class Stream {
   /** True when any displayed predicate is evaluated locally, which makes
    * provider-reported totals count the wrong thing. */
   readonly localFiltered: boolean;
-  /** True when this stream's local filter is a free-text AND: at the scan
+  /** True when this stream's local filter is the local half of a free-text
+   * AND whose other terms ride the native tag criterion: at the scan
    * ceiling it degrades to a named incomplete error instead of throwing,
-   * because the native any-of union kept the scanned pages productive and
+   * because the native pre-filter kept the scanned pages productive and
    * the matches found are a real partial answer. */
   readonly softCeiling: boolean;
   private page = 0;
@@ -518,8 +540,8 @@ class Stream {
         );
       }
       // ponytail ceiling: a free-text AND the providers cannot express
-      // natively degrades instead of 422ing — the native union pre-filter
-      // kept every scanned page productive, so the matches found are a real
+      // natively degrades instead of 422ing — the native pre-filter kept
+      // every scanned page productive, so the matches found are a real
       // partial answer and the named error says so. Widen the native
       // expression (provider combinator criteria) if this fires often.
       this.exhausted = true;
@@ -1030,6 +1052,7 @@ export async function browseTitles(
     provider: CatalogProvider;
     includeIds: string[];
     includeAny: boolean;
+    freeTextNative: boolean;
     excludeIds: string[];
     localFiltered: boolean;
     localInclude: CatalogTagSelection[];
@@ -1038,14 +1061,16 @@ export async function browseTitles(
   }[] = [];
   if (movieWanted && tpdbIncludes !== undefined) {
     // Free-text includes expand natively on this side (the filmography
-    // route rejects tag parameters, so there they stay local); the anchored
-    // all-of keeps the one native criterion when both are present.
+    // route rejects tag parameters, so there they stay local); anchored
+    // ids and singleton expansions share the one all-of criterion, so
+    // anyOf only ever rides alone.
     plans.push({
       provider: "tpdb",
       includeIds:
         tpdbIncludes.allOf.length > 0 ? tpdbIncludes.allOf : tpdbIncludes.anyOf,
       includeAny:
         tpdbIncludes.allOf.length === 0 && tpdbIncludes.anyOf.length > 0,
+      freeTextNative: tpdbIncludes.freeTextNative,
       excludeIds: [], // TPDB has no native exclude criterion
       localFiltered:
         hiddenTags.length > 0 ||
@@ -1067,6 +1092,7 @@ export async function browseTitles(
           : stashIncludes.anyOf,
       includeAny:
         stashIncludes.allOf.length === 0 && stashIncludes.anyOf.length > 0,
+      freeTextNative: stashIncludes.freeTextNative,
       // One upstream tag criterion: native excludes only when no include is
       // native. Selections without a StashDB id stay local-only below.
       excludeIds: includesNative
@@ -1155,12 +1181,14 @@ export async function browseTitles(
         query.perPage,
         plan.localFiltered,
         // The soft ceiling is exactly the documented contract: a multi-term
-        // free-text AND riding its native any-of union — the union kept the
-        // scanned pages productive. Filmography scans (no native tag
-        // criterion), anchored+free mixes (native all-of) and every other
-        // local filter keep the hard 422; hidden or exclude starvation on
-        // a union stream still degrades (the pages were productive).
-        plan.includeAny && plan.localInclude.length > 1,
+        // free-text AND split between a native tag criterion and the local
+        // re-check — the native pre-filter kept the scanned pages
+        // productive, so the matches found are a real partial answer.
+        // Filmography scans (no native tag criterion), anchored+free mixes
+        // where every free term re-checks locally, and every other local
+        // filter keep the hard 422; hidden or exclude starvation on such a
+        // stream still degrades (the pages were productive).
+        plan.localInclude.length > 0 && plan.freeTextNative,
       ),
   );
   streams.push(...unresolved);

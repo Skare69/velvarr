@@ -774,9 +774,9 @@ test("every side failing after a side already delivered rows keeps the partial p
   });
 });
 
-// --- free-text includes: expand on each provider's tags, native any-of ---
+// --- free-text includes: expand on each provider's tags, travel native ---
 
-test("a free-text include expands on each provider's tags and travels as a native any-of filter", async () => {
+test("a free-text include expands on each provider's tags and travels as a native all-of filter", async () => {
   const TPDB_XYZ = { id: 11, uuid: uuid(101), name: "XYZ Special" };
   const STASH_XYZ = uuid(201);
   const movieUrls: string[] = [];
@@ -820,10 +820,11 @@ test("a free-text include expands on each provider's tags and travels as a nativ
         [],
       );
       // The term expanded on both providers (each side's complete tag
-      // listing walk) and travels as each side's native any-of criterion. The
-      // fixture returns every row regardless of the native filter, so the
-      // untagged siblings stay: there is no local substring post-filter to
-      // drop them. Recency-desc merge order.
+      // listing walk); its one matching tag travels as each side's native
+      // all-of criterion — a single tag a title must carry is the all-of
+      // form by definition. The fixture returns every row regardless of
+      // the native filter, so the untagged siblings stay: there is no
+      // local substring post-filter to drop them. Recency-desc merge order.
       assert.deepEqual(
         page.items.map((d) => [d.reference.provider, d.reference.id]),
         [
@@ -838,14 +839,14 @@ test("a free-text include expands on each provider's tags and travels as a nativ
       assert.equal(page.totalCountKnown, true);
       assert.equal(page.total, 4);
       assert.deepEqual(page.errors, []);
-      // TPDB: the expanded tag rides the any-of criterion (its uuid 101
-      // resolved to numeric 11), with no tag_and — not the all-of form.
+      // TPDB: the expanded tag rides the all-of criterion (its uuid 101
+      // resolved to numeric 11) under tag_and.
       assert.match(movieUrls[0]!, /tags%5B11%5D=1|tags\[11\]=1/);
-      assert.doesNotMatch(movieUrls[0]!, /tag_and=1/);
-      // StashDB: the expansion is the INCLUDES (any-of) criterion.
+      assert.match(movieUrls[0]!, /tag_and=1/);
+      // StashDB: the expansion is the INCLUDES_ALL (all-of) criterion.
       assert.deepEqual(scenesSeen[0]!.tags, {
         value: [STASH_XYZ],
-        modifier: "INCLUDES",
+        modifier: "INCLUDES_ALL",
       });
     },
   );
@@ -1300,11 +1301,12 @@ test("a uuid-less TPDB expansion keeps the movie side local while StashDB stays 
       );
       // The TPDB expansion is uuid-less, so the movie side filters locally
       // (no tag criterion on the wire); the StashDB expansion is a real
-      // UUID and travels as the native any-of INCLUDES. Recency merge.
+      // UUID and — a single tag the title must carry — travels as the
+      // native all-of INCLUDES_ALL. Recency merge.
       assert.doesNotMatch(movieUrls[0]!, /tags%5B|tags\[/);
       assert.deepEqual(scenesSeen[0]!.tags, {
         value: [STASH_TAG],
-        modifier: "INCLUDES",
+        modifier: "INCLUDES_ALL",
       });
       assert.deepEqual(
         page.items.map((d) => [d.reference.provider, d.reference.id]),
@@ -1473,11 +1475,14 @@ test("a multi-match free-text AND pre-filters natively, ANDs locally, and degrad
   await runBrowse(
     scriptedUpstream({
       tagRows: [TAG_XYZ_A, TAG_XYZ_B, TAG_ABC],
-      // Endless pages of rows matching only the xyz group: the local abc
-      // AND never fills the page, so the stream runs to its ceiling.
+      // abc's expansion is the singleton tag 13: it rides the all-of
+      // criterion and xyz keeps the local re-check. The fixture returns
+      // every row regardless of the native filter; the endless abc-only
+      // rows are what a faithful upstream would return, and their missing
+      // xyz tag never fills the page, so the stream runs to its ceiling.
       moviePages: [
         {
-          rows: [tpdbRow(uuid(2), "Only xyz", "2024-02-01", [TAG_XYZ_A])],
+          rows: [tpdbRow(uuid(2), "Only abc", "2024-02-01", [TAG_ABC])],
           next: "x",
           total: 10000,
         },
@@ -1500,10 +1505,12 @@ test("a multi-match free-text AND pre-filters natively, ANDs locally, and degrad
         },
         [],
       );
-      // "xyz" expands to two tags, so the union rides any-of and the terms
-      // AND locally; the ceiling degrades the browse instead of 422ing.
-      assert.match(movieUrls.join("\n"), /tags%5B11%5D=1|tags\[11\]=1/);
-      assert.doesNotMatch(movieUrls.join("\n"), /tag_and=1/);
+      // The smallest term's expansion is a single tag: it rides the
+      // all-of criterion alone and the other term ANDs locally; the
+      // ceiling degrades the browse instead of 422ing.
+      assert.match(movieUrls.join("\n"), /tags%5B13%5D=1|tags\[13\]=1/);
+      assert.match(movieUrls.join("\n"), /tag_and=1/);
+      assert.doesNotMatch(movieUrls.join("\n"), /tags%5B11%5D=1|tags\[11\]=1/);
       assert.equal(moviesCalled, 40);
       assert.deepEqual(page.items, []);
       assert.equal(page.totalCountKnown, false);
@@ -1525,18 +1532,19 @@ test("a multi-match free-text AND returns the partial matches beside the ceiling
       tagRows: [TAG_XYZ_A, TAG_XYZ_B, TAG_ABC],
       moviePages: [
         {
-          // First page: one full AND match amid xyz-only rows.
+          // First page: one full AND match amid abc-only rows.
           rows: [
             tpdbRow(uuid(1), "Both terms", "2024-03-01", [TAG_XYZ_A, TAG_ABC]),
-            tpdbRow(uuid(2), "Only xyz", "2024-02-01", [TAG_XYZ_B]),
+            tpdbRow(uuid(2), "Only abc", "2024-02-01", [TAG_ABC]),
           ],
           next: "x",
           total: 10000,
         },
         {
-          // The endless continuation only ever carries xyz-group tags, so
-          // the local abc AND never fills the page again.
-          rows: [tpdbRow(uuid(2), "Only xyz", "2024-02-01", [TAG_XYZ_B])],
+          // The endless continuation only ever carries the abc tag (what
+          // the native tag_and pre-filter would return), so the local xyz
+          // AND never fills the page again.
+          rows: [tpdbRow(uuid(2), "Only abc", "2024-02-01", [TAG_ABC])],
           next: "x",
           total: 10000,
         },
@@ -1576,12 +1584,13 @@ test("a scan-ceiling side beside a real outage returns the partial page, not a 5
   await runBrowse(
     scriptedUpstream({
       tagRows: [TAG_XYZ_A, TAG_XYZ_B, TAG_ABC],
-      // Endless pages of rows matching only the xyz group: the local abc
-      // AND never fills the page, so the TPDB stream runs to its ceiling —
-      // a bounded matchless answer, not an outage.
+      // Endless pages of abc-only rows (what the native tag_and pre-filter
+      // would return): the local xyz AND never fills the page, so the TPDB
+      // stream runs to its ceiling — a bounded matchless answer, not an
+      // outage.
       moviePages: [
         {
-          rows: [tpdbRow(uuid(2), "Only xyz", "2024-02-01", [TAG_XYZ_A])],
+          rows: [tpdbRow(uuid(2), "Only abc", "2024-02-01", [TAG_ABC])],
           next: "x",
           total: 10000,
         },
@@ -1666,7 +1675,7 @@ test("a free-text include expands by folded substring, not family", async () => 
   );
 });
 
-test("a free-text include rides beside a native one: the term filters locally, the tag travels natively", async () => {
+test("a free-text singleton joins the anchored tag in the native all-of criterion", async () => {
   const TAG_A = { id: 11, uuid: uuid(101), name: "Tag A" };
   const TAG_XYZ = { id: 12, uuid: uuid(102), name: "XYZ Special" };
   const movieUrls: string[] = [];
@@ -1699,19 +1708,79 @@ test("a free-text include rides beside a native one: the term filters locally, t
         },
         [],
       );
-      // The anchored include is delegated to the provider's native tag
-      // filter (this fixture returns every row regardless), so the local
-      // predicate applies only the free text: the row with no xyz tag drops
-      // even though it carries the native tag.
+      // The anchored tag and the free text's one matching tag share the
+      // all-of criterion, and nothing filters locally: the fixture returns
+      // every row regardless of the native filter, so all three stay.
       assert.deepEqual(
         page.items.map((d) => d.reference.id),
-        [uuid(1), uuid(3)],
+        [uuid(1), uuid(2), uuid(3)],
       );
-      assert.equal(page.total, 2);
+      assert.equal(page.total, 3);
       assert.equal(page.totalCountKnown, true);
-      // The anchored half still travels natively; the free text stays local.
+      // The anchored half and the singleton expansion travel natively
+      // together under tag_and.
       assert.match(movieUrls[0]!, /tag_and=1/);
       assert.match(movieUrls[0]!, /tags%5B11%5D=1|tags\[11\]=1/);
+      assert.match(movieUrls[0]!, /tags%5B12%5D=1|tags\[12\]=1/);
+    },
+  );
+});
+
+test("a multi-match free-text AND with no singleton sends the smallest expansion as the native any-of", async () => {
+  const TAG_XYZ_A = { id: 11, uuid: uuid(101), name: "XYZ Special" };
+  const TAG_XYZ_B = { id: 12, uuid: uuid(102), name: "XYZ Thing" };
+  const TAG_XYZ_C = { id: 13, uuid: uuid(103), name: "XYZ Other" };
+  const TAG_ABC_A = { id: 14, uuid: uuid(104), name: "ABC Thing" };
+  const TAG_ABC_B = { id: 15, uuid: uuid(105), name: "ABC Other" };
+  const movieUrls: string[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [TAG_XYZ_A, TAG_XYZ_B, TAG_XYZ_C, TAG_ABC_A, TAG_ABC_B],
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(uuid(1), "Both terms", "2024-03-01", [
+              TAG_XYZ_A,
+              TAG_ABC_A,
+            ]),
+            tpdbRow(uuid(2), "Only abc", "2024-02-01", [TAG_ABC_A, TAG_ABC_B]),
+          ],
+          next: null,
+          total: 2,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: (_page, qs) => movieUrls.push(qs.toString()),
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "movie",
+          include: [{ name: "xyz" }, { name: "abc" }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // No singleton group and no anchored id: the smaller expansion (abc,
+      // two tags) rides the any-of criterion — a valid pre-filter, since an
+      // AND match must match it too — and xyz keeps the local re-check.
+      assert.match(movieUrls[0]!, /tags%5B14%5D=1|tags\[14\]=1/);
+      assert.match(movieUrls[0]!, /tags%5B15%5D=1|tags\[15\]=1/);
+      assert.doesNotMatch(movieUrls[0]!, /tag_and=1/);
+      assert.doesNotMatch(movieUrls[0]!, /tags%5B11%5D=1|tags\[11\]=1/);
+      // The AND still holds: the abc-only row drops on the local xyz
+      // re-check; the row carrying both terms' tags stays.
+      assert.deepEqual(
+        page.items.map((d) => d.reference.id),
+        [uuid(1)],
+      );
+      // Exact only at true exhaustion, because a term re-checks locally.
+      assert.equal(page.total, 1);
+      assert.equal(page.totalCountKnown, true);
+      assert.deepEqual(page.errors, []);
     },
   );
 });
@@ -2272,10 +2341,10 @@ test("a free-text AND starved by hidden tags still degrades at the ceiling", asy
       tagRows: [TAG_XYZ_A, TAG_XYZ_B, TAG_ABC],
       moviePages: [
         {
-          // Union-matching rows the account's hidden tag then filters
-          // locally: the native any-of keeps every scanned page productive,
-          // hidden tags just starve the visible yield, so this stays the
-          // soft degrade with its named error.
+          // Rows the native abc all-of still returns (the fixture ignores the
+          // native filter) and the local xyz re-check keeps: the account's
+          // hidden tag then filters them all, so the visible yield starves and
+          // this stays the soft degrade with its named error.
           rows: [
             tpdbRow(uuid(2), "Hidden xyz", "2024-02-01", [
               TAG_XYZ_A,
