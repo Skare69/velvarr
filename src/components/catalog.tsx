@@ -463,14 +463,18 @@ function DateCutoff({
 /** Debounced performer lookup behind the performer filter: the filter takes
  * a provider-native id, so the user picks a result — a typed name is never
  * sent. One field searches both sources; each result carries its side.
+ * Failures stay per side and sides the session marks not configured are
+ * skipped, so one source failing never hides the other source's rows.
  * TPDB performer search is paged; StashDB is unpaged and caps its result
  * list, which the picker says out loud. */
 function usePerformerOptions(term: string): {
   items: { performer: CatalogDetail; side: CatalogProvider }[];
-  error: string | null;
+  errors: { provider: CatalogProvider; message: string }[];
+  skipped: CatalogProvider[];
   loading: boolean;
 } {
   const t = term.trim();
+  const { providers } = useSession();
   // The debounce commits the read path, not the fetch: keystrokes settle
   // before the hook sees a new read at all.
   const [committed, setCommitted] = useState<string | null>(null);
@@ -489,15 +493,36 @@ function usePerformerOptions(term: string): {
       q: committed ?? "",
       ...(provider === "tpdb" ? { page: "1", perPage: "10" } : {}),
     })}`;
+  // A side the session marks not configured can never answer; looking it up
+  // would only draw its guaranteed 503 over the working side's rows. An
+  // unknown status (session not loaded) still looks the side up.
   const tpdb = useApiGet<CatalogSearchPage>(
-    committed !== null ? search("tpdb") : null,
+    committed !== null && providers?.tpdb !== "not_configured"
+      ? search("tpdb")
+      : null,
     [committed],
   );
   const stash = useApiGet<CatalogSearchPage>(
-    committed !== null ? search("stashdb") : null,
+    committed !== null && providers?.stashdb !== "not_configured"
+      ? search("stashdb")
+      : null,
     [committed],
   );
-  const error = [tpdb.error, stash.error].find((e) => e !== null) ?? null;
+  // Failures stay per side: one source failing must not hide the other
+  // source's rows, and the picker names the side that failed.
+  const errors = [
+    ...(tpdb.error !== null
+      ? [{ provider: "tpdb" as const, message: tpdb.error }]
+      : []),
+    ...(stash.error !== null
+      ? [{ provider: "stashdb" as const, message: stash.error }]
+      : []),
+  ];
+  const skipped = providers
+    ? (["tpdb", "stashdb"] as const).filter(
+        (p) => providers[p] === "not_configured",
+      )
+    : [];
   return {
     items: [
       ...(tpdb.data?.items ?? []).map((performer) => ({
@@ -509,7 +534,8 @@ function usePerformerOptions(term: string): {
         side: "stashdb" as const,
       })),
     ],
-    error,
+    errors,
+    skipped,
     loading: t !== "" && (committed !== t || tpdb.loading || stash.loading),
   };
 }
@@ -526,7 +552,7 @@ function PerformerPicker({
   onStarred: (on: boolean) => void;
 }) {
   const [term, setTerm] = useState("");
-  const { items, error, loading } = usePerformerOptions(term);
+  const { items, errors, skipped, loading } = usePerformerOptions(term);
   return (
     <div>
       <div className="cat-picker-head">
@@ -562,16 +588,10 @@ function PerformerPicker({
           ? "Scenes featuring any performer you follow. Picking a specific performer replaces this filter; performers known only to TPDB cannot match."
           : "One field, both sources: a TPDB performer opens their whole filmography (movies) and replaces the other filters until removed; a StashDB performer filters scenes. StashDB caps results at about ten rows."}
       </p>
-      {error ? (
-        <p className="cat-note" role="alert">
-          Performer search failed: {error}
-        </p>
-      ) : loading ? (
+      {loading ? (
         <p className="cat-note" aria-live="polite">
           Searching…
         </p>
-      ) : term.trim() !== "" && items.length === 0 ? (
-        <p className="cat-note">No performers match “{term.trim()}”.</p>
       ) : items.length > 0 ? (
         <ul className="cat-picker">
           {items.map(({ performer, side }) => (
@@ -598,7 +618,22 @@ function PerformerPicker({
             </li>
           ))}
         </ul>
+      ) : term.trim() !== "" && errors.length === 0 && skipped.length === 0 ? (
+        // Empty is only claimed when nothing failed and nothing was skipped:
+        // the notes below carry the failures, like the grid's per-provider
+        // panels.
+        <p className="cat-note">No performers match “{term.trim()}”.</p>
       ) : null}
+      {errors.map((e) => (
+        <p key={e.provider} className="cat-note" role="alert">
+          {providerLabel(e.provider)} search failed: {e.message}
+        </p>
+      ))}
+      {skipped.map((p) => (
+        <p key={`skipped-${p}`} className="cat-note">
+          {providerLabel(p)} is not configured, so it was not searched.
+        </p>
+      ))}
     </div>
   );
 }
