@@ -23,9 +23,45 @@ export const JELLYFIN_ID =
 export async function readJson(
   request: Request,
 ): Promise<Record<string, unknown>> {
-  const text = await request.text();
-  if (new TextEncoder().encode(text).length > BODY_LIMIT_BYTES) {
+  // CWE-400/CWE-770: an unauthenticated client can POST to open routes, so
+  // the 32KiB limit must fire before the server buffers the body. A declared
+  // Content-Length over the limit is refused unread; a body that lies about
+  // its size is still bounded by the counted stream read below.
+  const declared = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > BODY_LIMIT_BYTES) {
     throw new AppError(413, "payload_too_large", "Request body exceeds 32KiB.");
+  }
+  let text = "";
+  if (request.body) {
+    const reader = request.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > BODY_LIMIT_BYTES) {
+          throw new AppError(
+            413,
+            "payload_too_large",
+            "Request body exceeds 32KiB.",
+          );
+        }
+        chunks.push(value);
+      }
+    } finally {
+      // Stop the producer once the verdict is in: the client must not keep
+      // streaming a body the server already refused.
+      await reader.cancel().catch(() => {});
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    text = new TextDecoder().decode(bytes);
   }
   if (text.trim() === "") return {};
   let parsed: unknown;

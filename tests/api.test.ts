@@ -7178,3 +7178,69 @@ test("unexpected route errors log once with the path and answer the stock 500; m
     console.error = realConsoleError;
   }
 });
+
+test("oversized POST bodies are rejected without buffering them", async () => {
+  // A non-browser client can POST application/json to open routes without a
+  // session, so the 32KiB limit must fire on the stream, not after a full
+  // read into memory.
+  const CHUNK = 1024;
+  const TOTAL = 256 * CHUNK; // 256 KiB available, 8x over the limit
+  let produced = 0;
+  let cancelled = false;
+  const counting = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (produced >= TOTAL) {
+        controller.close();
+        return;
+      }
+      produced += CHUNK;
+      controller.enqueue(new Uint8Array(CHUNK).fill(0x20));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const res = await api.POST(
+    new Request(`${ORIGIN}/api/login`, {
+      method: "POST",
+      headers: { origin: ORIGIN, "content-type": "application/json" },
+      body: counting,
+      duplex: "half",
+    } as RequestInit),
+    { params: Promise.resolve({ path: ["login"] }) },
+  );
+  assert.equal(res.status, 413);
+  assert.equal((await errorShape(res)).code, "payload_too_large");
+  // The producer was cut off near the limit, never drained.
+  assert.ok(produced <= 32 * 1024 + 4 * CHUNK, `pulled ${produced} bytes`);
+  assert.ok(cancelled, "stream was not cancelled");
+});
+
+test("a declared Content-Length over the limit is refused without reading", async () => {
+  let produced = 0;
+  const never = new ReadableStream<Uint8Array>({
+    pull() {
+      produced += 1;
+      throw new Error("body must not be read");
+    },
+  });
+  const res = await api.POST(
+    new Request(`${ORIGIN}/api/login`, {
+      method: "POST",
+      headers: {
+        origin: ORIGIN,
+        "content-type": "application/json",
+        "content-length": String(64 * 1024),
+      },
+      body: never,
+      duplex: "half",
+    } as RequestInit),
+    { params: Promise.resolve({ path: ["login"] }) },
+  );
+  assert.equal(res.status, 413);
+  assert.equal((await errorShape(res)).code, "payload_too_large");
+  // The one pull below is the Request constructor's body inspection, not the
+  // handler's: it errors the stream, so any handler read would reject into a
+  // 500 — the 413 above proves the body was never read.
+  assert.ok(produced <= 1, `handler read the body (${produced} pulls)`);
+});
