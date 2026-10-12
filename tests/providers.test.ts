@@ -1613,19 +1613,26 @@ test("cross-provider identity uses only explicit provider URLs; scenes stay unli
   );
   assert.equal(wrongProvider.linked, undefined);
 
-  // Scenes/other kinds never link across providers.
-  const sceneDetail: CatalogDetail = {
-    reference: { provider: "tpdb", kind: "movie", id: MOVIE_ID },
-    title: "Movie",
+  // Movies and scenes never link across providers, whatever links the
+  // record publishes; the reason must say that truthfully for both kinds.
+  const expectedMediaReason =
+    "performers and studios link only through provider-published URLs; movies and scenes are never linked across providers";
+  const mediaDetail = (kind: "movie" | "scene"): CatalogDetail => ({
+    reference: { provider: "tpdb", kind, id: MOVIE_ID },
+    title: "Media",
     credits: [],
     tags: [],
     related: [],
     links: [{ url: `https://stashdb.org/performers/${STASH_CROSS_ID}` }],
     aliases: [],
-  };
-  assert.match(
-    crossProviderLink(sceneDetail).unlinkedReason ?? "",
-    /performer-level/,
+  });
+  assert.equal(
+    crossProviderLink(mediaDetail("movie")).unlinkedReason,
+    expectedMediaReason,
+  );
+  assert.equal(
+    crossProviderLink(mediaDetail("scene")).unlinkedReason,
+    expectedMediaReason,
   );
 });
 

@@ -42,8 +42,8 @@
 //   scenes under that studio's child rows; mutually exclusive with studios,
 //   which is a MultiIDCriterionInput). StudioSortEnum
 //   has no trending order, so studio search exposes no sort at all. StashDB
-//   studio records carry explicit provider URLs, but cross-provider linking
-//   stays performer-level only — studios are never merged across providers.
+//   studio records carry explicit provider URLs, which drive cross-provider
+//   linking; movies and scenes are never linked across providers.
 
 import { AppError, parseJson, requestBytes, requestJsonBytes } from "./http.ts";
 import type { Service } from "./http.ts";

@@ -200,6 +200,6 @@ export function crossProviderLink(detail: CatalogDetail): CrossProviderLink {
   }
   return {
     unlinkedReason:
-      "cross-provider identity is performer-level only; scenes are never linked across providers",
+      "performers and studios link only through provider-published URLs; movies and scenes are never linked across providers",
   };
 }
