@@ -264,6 +264,11 @@ function AccountDialog({
           }),
         },
       );
+      // Close before onSaved: the native close steps hand focus back to
+      // the element focused when showModal ran (the row's Edit button).
+      // Unmounting the still-open dialog skips them and drops focus to
+      // <body>, losing keyboard users their place in the table.
+      dialogRef.current?.close();
       onSaved({ ...initial, ...r.account });
     } catch (e) {
       setError(messageOf(e));

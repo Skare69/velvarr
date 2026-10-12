@@ -872,12 +872,19 @@ function Shell() {
   const isAdmin = session.account.role === "admin";
   const navigation = useRef<HTMLDialogElement>(null);
   const accountMenu = useRef<HTMLDetailsElement>(null);
+  // The menu's Preferences button hides with the menu before showModal, so
+  // only that opener needs a manual focus restore; live openers (Browse's
+  // "N hidden" button) get the browser's native one.
+  const prefsFromMenu = useRef(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
   // Browse controls ("N hidden", drawer note) open the modal in place so the
   // URL keeps every filter — the removed ?view=preferences dropped them.
   useEffect(() => {
-    const open = () => setPrefsOpen(true);
+    const open = () => {
+      prefsFromMenu.current = false;
+      setPrefsOpen(true);
+    };
     window.addEventListener(OPEN_PREFERENCES, open);
     return () => window.removeEventListener(OPEN_PREFERENCES, open);
   }, []);
@@ -1022,6 +1029,7 @@ function Shell() {
               className="btn"
               onClick={() => {
                 if (accountMenu.current) accountMenu.current.open = false;
+                prefsFromMenu.current = true;
                 setPrefsOpen(true);
               }}
             >
@@ -1130,8 +1138,10 @@ function Shell() {
           setPrefsOpen(false);
           // The Preferences button hid with the account menu before
           // showModal, so the browser has no live element to return focus
-          // to; put it back on the menu's visible opener.
-          accountMenu.current?.querySelector("summary")?.focus();
+          // to; put it back on the menu's visible opener. Other openers
+          // stay live, and the native close steps already restored them.
+          if (prefsFromMenu.current)
+            accountMenu.current?.querySelector("summary")?.focus();
         }}
       />
     </div>
