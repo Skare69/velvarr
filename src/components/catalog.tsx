@@ -964,7 +964,16 @@ export function TitlesView() {
             hasMore: items.length > prev.items.length ? page.hasMore : false,
             ...(page.total !== undefined ? { total: page.total } : {}),
             totalCountKnown: page.totalCountKnown,
-            errors: page.errors,
+            // The server rebuilds each page from scratch and reports only
+            // that request's errors, so an append keeps earlier pages'
+            // named errors (newest message per provider wins) until a
+            // reset; a recovered provider cannot unreport its lost rows.
+            errors: [
+              ...prev.errors.filter(
+                (pe) => !page.errors.some((ne) => ne.provider === pe.provider),
+              ),
+              ...page.errors,
+            ],
             hiddenTagCount: page.hiddenTagCount ?? prev.hiddenTagCount,
           };
         });
@@ -1452,10 +1461,13 @@ export function TitlesView() {
                   {!loading &&
                     error === null &&
                     !acc.hasMore &&
+                    acc.errors.length === 0 &&
                     acc.totalCountKnown &&
                     acc.total != null && (
-                      // Count only when the service attests a real total; a
-                      // capped total ends the scroll without a denominator.
+                      // Count only when the service attests a real total and
+                      // no source error stands: a capped total ends the
+                      // scroll without a denominator, and a standing error
+                      // may hide rows the exact number would deny.
                       <p className="mt-6 text-center text-sm text-muted">
                         {acc.total} titles
                       </p>
