@@ -17,6 +17,7 @@ import { resolvePlaybackAccess } from "../../../../server/jellyfin.ts";
 import {
   getCatalogDetail,
   searchCatalog,
+  type CatalogSearchPage,
 } from "../../../../server/providers.ts";
 import { searchVisibleCatalog } from "../../../../server/browse.ts";
 
@@ -105,6 +106,11 @@ export interface SearchCategory {
   provider: "tpdb" | "stashdb";
   kind: CatalogKind;
   items: CatalogDetail[];
+  /** Provider-attested exact total; absent when the count is unknown. */
+  total?: number;
+  totalCountKnown: boolean;
+  /** More results exist behind this first page. */
+  hasMore: boolean;
   error?: ShelfError;
 }
 
@@ -114,11 +120,29 @@ export function categoryOf(
   id: string,
   provider: "tpdb" | "stashdb",
   kind: CatalogKind,
-  result: PromiseSettledResult<CatalogDetail[]>,
+  result: PromiseSettledResult<CatalogSearchPage>,
 ): SearchCategory {
   return result.status === "fulfilled"
-    ? { id, provider, kind, items: result.value }
-    : { id, provider, kind, items: [], error: shelfError(result.reason) };
+    ? {
+        id,
+        provider,
+        kind,
+        items: result.value.items,
+        ...(result.value.total !== undefined
+          ? { total: result.value.total }
+          : {}),
+        totalCountKnown: result.value.totalCountKnown,
+        hasMore: result.value.hasMore,
+      }
+    : {
+        id,
+        provider,
+        kind,
+        items: [],
+        totalCountKnown: false,
+        hasMore: false,
+        error: shelfError(result.reason),
+      };
 }
 
 export async function globalSearch(
@@ -154,7 +178,7 @@ export async function globalSearch(
         perPage: SEARCH_PER_PAGE,
       },
       hiddenTags,
-    ).then((page) => page.items),
+    ),
     searchVisibleCatalog(
       {
         provider: "stashdb",
@@ -164,31 +188,31 @@ export async function globalSearch(
         perPage: SEARCH_PER_PAGE,
       },
       hiddenTags,
-    ).then((page) => page.items),
+    ),
     searchCatalog({
       provider: "tpdb",
       kind: "performer",
       query: term,
       page: 1,
       perPage: SEARCH_PER_PAGE,
-    }).then((page) => page.items),
+    }),
     searchCatalog({
       provider: "stashdb",
       kind: "performer",
       query: term,
-    }).then((page) => page.items),
+    }),
     searchCatalog({
       provider: "tpdb",
       kind: "studio",
       query: term,
       page: 1,
       perPage: SEARCH_PER_PAGE,
-    }).then((page) => page.items),
+    }),
     searchCatalog({
       provider: "stashdb",
       kind: "studio",
       query: term,
-    }).then((page) => page.items),
+    }),
   ]);
   // Six source-labeled categories, never merged across providers. Each is
   // the provider's own search order — no global ranking is computed here.

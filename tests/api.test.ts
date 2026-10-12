@@ -719,6 +719,20 @@ async function tpdbHandler(
         links: {},
       });
     }
+    // Isolated behind an exact q marker: a full first page with a provider
+    // next link under the fake 10000 cap total — more results exist while
+    // the count stays unknown.
+    if (url.searchParams.get("q") === "Many") {
+      return json(res, 200, {
+        data: Array.from({ length: 6 }, (_, i) =>
+          tpdbMovieRow(
+            `b1c2d3e4-0000-0000-0000-${String(700 + i).padStart(12, "0")}`,
+          ),
+        ),
+        meta: { total: 10000 },
+        links: { next: "https://fixture.test/next" },
+      });
+    }
     // TPDB caps unfiltered totals at the fake 10000 marker; a countable
     // filter (q) yields a real total. Mirrors the live provider behavior.
     const realTotal = url.searchParams.get("q") !== null;
@@ -3685,6 +3699,9 @@ interface FixtureCategory {
   provider: string;
   kind: string;
   items: { reference: { provider: string; kind: string; id: string } }[];
+  total?: number;
+  totalCountKnown?: boolean;
+  hasMore?: boolean;
   error?: { code: string };
 }
 
@@ -5618,6 +5635,24 @@ test("global search: six isolated categories, auth, blank q 400", async () => {
       assert.equal(item.reference.provider, category.provider, category.id);
     }
   }
+  // The count travels with the category: the provider's attested exact
+  // total, never the bare page length. StashDB's studio search is the
+  // provider-capped shape: no total is known and none is invented.
+  assert.deepEqual(
+    search.categories.map((category) => [
+      category.totalCountKnown,
+      category.total,
+      category.hasMore,
+    ]),
+    [
+      [true, 1, false], // tpdb-movies
+      [true, 1, false], // stashdb-scenes
+      [true, 1, false], // tpdb-performers
+      [true, 1, false], // stashdb-performers
+      [true, 1, false], // tpdb-studios
+      [false, undefined, false], // stashdb-studios
+    ],
+  );
   assert.deepEqual(moviesCat?.items[0]?.reference, {
     provider: "tpdb",
     kind: "movie",
@@ -5677,6 +5712,34 @@ test("global search: six isolated categories, auth, blank q 400", async () => {
     assert.equal(category?.error, undefined, category?.id);
     assert.ok((category?.items.length ?? 0) > 0, category?.id);
   }
+  // A failed source carries no count at all — no total, no attestation.
+  for (const category of [
+    outStashScenes,
+    outStashPerformers,
+    outStashStudios,
+  ]) {
+    assert.equal(category?.totalCountKnown, false, category?.id);
+    assert.equal(category?.total, undefined, category?.id);
+    assert.equal(category?.hasMore, false, category?.id);
+  }
+});
+
+test("global search: a full first page reports hasMore, not the page length", async () => {
+  const ok = await call("GET", "/api/search?q=Many", { cookie: member });
+  assert.equal(ok.status, 200);
+  const search = await searchOf(ok);
+  const movies = search.categories.find((c) => c.id === "tpdb-movies");
+  assert.equal(movies?.error, undefined, "tpdb-movies");
+  // The fixture serves a full 6-row page under the fake 10000 cap with a
+  // provider next link: more results exist, the count stays unknown, and
+  // no total is invented.
+  assert.equal(movies?.hasMore, true, "tpdb-movies");
+  assert.equal(movies?.totalCountKnown, false, "tpdb-movies");
+  assert.equal(movies?.total, undefined, "tpdb-movies");
+  assert.ok(
+    (movies?.items.length ?? 0) > 0 && (movies?.items.length ?? 0) <= 6,
+    "tpdb-movies",
+  );
 });
 
 // --- M3: studioMode — accepted only for StashDB scene + studio filter ---

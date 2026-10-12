@@ -29,6 +29,11 @@ type SearchCategory = {
   provider: CatalogProvider;
   kind: CatalogKind;
   items: CatalogDetail[];
+  /** Provider-attested exact total; absent when the count is unknown. */
+  total?: number;
+  totalCountKnown: boolean;
+  /** More results exist behind this first page. */
+  hasMore: boolean;
   error?: { code: string; message: string };
 };
 
@@ -42,6 +47,16 @@ const KIND_LABEL: Record<CatalogKind, string> = {
   performer: "Performers",
   studio: "Studios",
 };
+
+// A count is shown only when it is actually known — the provider's attested
+// exact total. A page with more behind it shows "6+"; a provider-capped page
+// with an unknown total shows no number: a capped length is not a count.
+function countLabel(cat: SearchCategory): string | null {
+  if (cat.error) return null;
+  if (cat.totalCountKnown) return String(cat.total ?? cat.items.length);
+  if (cat.hasMore) return `${cat.items.length}+`;
+  return null;
+}
 
 /* ---------- Cards ---------- */
 
@@ -86,7 +101,7 @@ function CategorySection({
   const headingId = `search-cat-${cat.id}`;
   // A count is shown only when it is actually known — a failed source has
   // none, and none is invented for it.
-  const count = cat.error ? null : cat.items.length;
+  const count = countLabel(cat);
   return (
     <section
       aria-labelledby={headingId}
@@ -152,6 +167,20 @@ function CategorySection({
           </div>
         )}
       </div>
+      {/* The route to the rest: media kinds have a real browse listing for
+          the same query. */}
+      {!cat.error &&
+        cat.hasMore &&
+        (cat.kind === "movie" || cat.kind === "scene") && (
+          // ponytail: performer and studio categories have no browse listing
+          // to route into; "6+" is all they get until one exists.
+          <a
+            className="btn mt-3"
+            href={`/?view=titles&type=${cat.kind}&q=${encodeURIComponent(q)}`}
+          >
+            See all matches in Browse
+          </a>
+        )}
     </section>
   );
 }
@@ -273,18 +302,23 @@ export function SearchView() {
                 aria-label="Jump to a result section"
                 className="mb-2 flex flex-wrap gap-2"
               >
-                {data.categories.map((cat) => (
-                  <a
-                    key={cat.id}
-                    className="chip"
-                    href={`#search-cat-${cat.id}`}
-                  >
-                    {providerLabel(cat.provider)} {KIND_LABEL[cat.kind]}
-                    <span className="ml-1.5 text-muted">
-                      {cat.error ? "unavailable" : String(cat.items.length)}
-                    </span>
-                  </a>
-                ))}
+                {data.categories.map((cat) => {
+                  const count = countLabel(cat);
+                  return (
+                    <a
+                      key={cat.id}
+                      className="chip"
+                      href={`#search-cat-${cat.id}`}
+                    >
+                      {providerLabel(cat.provider)} {KIND_LABEL[cat.kind]}
+                      {cat.error ? (
+                        <span className="ml-1.5 text-muted">unavailable</span>
+                      ) : count !== null ? (
+                        <span className="ml-1.5 text-muted">{count}</span>
+                      ) : null}
+                    </a>
+                  );
+                })}
               </nav>
             )}
             {data.categories.map((cat) => (
