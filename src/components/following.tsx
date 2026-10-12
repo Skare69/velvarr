@@ -9,6 +9,7 @@ import { useSearchParams } from "next/navigation";
 import type { CatalogReference, PerformerFollow } from "../lib/contracts.ts";
 import {
   api,
+  ApiError,
   ErrorPanel,
   Icon,
   ItemImage,
@@ -56,7 +57,10 @@ export function FollowingView() {
   );
 
   // The row leaves the list only after the server confirmed the delete; a
-  // failure keeps the row and says so.
+  // failure keeps the row and says so — except 404 follow_not_found: the
+  // follow is already gone (another tab, or the performer page unfollowed
+  // her and this list still shows its pre-Back snapshot), so the stale row
+  // drops and the list resyncs instead of claiming she is still followed.
   const unfollow = (f: PerformerFollow) => {
     setBusyId(f.id);
     setRowError(null);
@@ -68,7 +72,12 @@ export function FollowingView() {
         setFollows((list) => (list ?? []).filter((x) => x.id !== f.id));
       })
       .catch((e) => {
-        setRowError(`${f.name} is still followed — ${messageOf(e)}`);
+        if (e instanceof ApiError && e.code === "follow_not_found") {
+          setFollows((list) => (list ?? []).filter((x) => x.id !== f.id));
+          setReload((r) => r + 1);
+        } else {
+          setRowError(`${f.name} is still followed — ${messageOf(e)}`);
+        }
       })
       .finally(() => setBusyId(null));
   };
