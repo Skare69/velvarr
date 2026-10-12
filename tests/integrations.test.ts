@@ -2246,6 +2246,8 @@ import {
   buildMoviePayload,
   deliverToWhisparr,
   findWhisparrItem,
+  findWhisparrItemByPath,
+  MOVIE_LIST_BYTES,
   observeWhisparrItem,
   resolveWhisparrItem,
 } from "../src/server/whisparr.ts";
@@ -2368,6 +2370,52 @@ function metadataSource(payload: {
   if (/^tpdbid:/i.test(payload.foreignId)) return "tpdb";
   return "scene";
 }
+
+// --- full-list read bound ---
+
+test("the full movie-list read carries its own bound above the shared JSON cap", async () => {
+  const served =
+    (pad: number, count: number): FixtureHandler =>
+    (req, res) => {
+      if (pathOf(req.url ?? "") === "/api/v3/movie") {
+        return sendJson(
+          res,
+          200,
+          Array.from({ length: count }, (_, i) =>
+            storedMovie({
+              id: i + 1,
+              path: `/data/xxx/Pad Movie ${i + 1}`,
+              pad: "x".repeat(pad),
+            }),
+          ),
+        );
+      }
+      sendJson(res, 404, {});
+    };
+  // A >2 MiB list (the shared JSON_LIMIT) still resolves by path.
+  await withFixture(served(2300, 1000), async (fx) => {
+    assert.deepEqual(
+      await findWhisparrItemByPath(deliveryConfig(fx.origin), [
+        "/data/xxx/Pad Movie 7/file.mkv",
+      ]),
+      { provider: "tpdb", kind: "movie", id: MOVIE_UUID },
+    );
+  });
+  // Above the movie-list bound the failure keeps its name.
+  await withFixture(
+    served(Math.ceil(MOVIE_LIST_BYTES / 12000) + 200, 12000),
+    async (fx) => {
+      await assert.rejects(
+        findWhisparrItemByPath(deliveryConfig(fx.origin), [
+          "/data/xxx/Pad Movie 7/file.mkv",
+        ]),
+        (err: unknown) =>
+          err instanceof AppError &&
+          err.message === "Whisparr returned an oversized response.",
+      );
+    },
+  );
+});
 
 // --- resolution ---
 

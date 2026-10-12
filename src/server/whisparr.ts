@@ -347,6 +347,7 @@ export async function findWhisparrItemByPath(
   const dtos = asMovieResources(
     await requestJson<unknown>(whisparr.url, "/api/v3/movie", whisparr.apiKey, {
       service: "whisparr",
+      sizeLimit: MOVIE_LIST_BYTES,
     }),
   );
   const matches = matchesByPaths(dtos, whisparr, jellyfinPaths);
@@ -361,6 +362,13 @@ export async function findWhisparrItemByPath(
 }
 
 // --- movie-list cache for list enrichment ---
+
+/** The /api/v3/movie list is the only full-list read. Radarr-family movie
+ * resources run several KB each (Radarr #7423: 3,575 movies ≈ 19.6 MB), so
+ * medium libraries pass the shared 2 MiB JSON cap; 32 MiB ≈ 5-6k titles.
+ * ponytail: fixed bound — move to a per-id lookup or a paged endpoint if
+ * lists outgrow it. */
+export const MOVIE_LIST_BYTES = 32 * 1024 * 1024;
 
 // ponytail: in-memory, 30 s TTL, 4-server FIFO cap; a persisted index only
 // if one fetch per window still hurts.
@@ -386,7 +394,7 @@ function cachedMovieList(
     whisparr.url,
     "/api/v3/movie",
     whisparr.apiKey,
-    { service: "whisparr" },
+    { service: "whisparr", sizeLimit: MOVIE_LIST_BYTES },
   ).then(asMovieResources);
   movieListCache.delete(whisparr.url);
   movieListCache.set(whisparr.url, { at, dtos });

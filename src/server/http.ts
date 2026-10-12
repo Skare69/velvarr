@@ -400,6 +400,8 @@ export async function requestJsonBytes(
     body?: unknown;
     service?: Service;
     timeoutMs?: number;
+    /** Per-call body bound; defaults to the shared JSON_LIMIT. */
+    sizeLimit?: number;
   } = {},
 ): Promise<Uint8Array> {
   const { bytes } = await requestBounded(
@@ -411,7 +413,7 @@ export async function requestJsonBytes(
     options.body,
     options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     "application/json",
-    JSON_LIMIT,
+    options.sizeLimit ?? JSON_LIMIT,
     true,
   );
   return bytes;
@@ -426,6 +428,8 @@ export async function requestJson<T>(
     body?: unknown;
     service?: Service;
     timeoutMs?: number;
+    /** Per-call body bound; defaults to the shared JSON_LIMIT. */
+    sizeLimit?: number;
   } = {},
 ): Promise<T> {
   return parseJson<T>(
