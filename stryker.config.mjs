@@ -22,7 +22,7 @@ const config = {
   // (measured: 5–27 flaky failures at default fan-out, green at ≤4 suites).
   commandRunner: {
     command:
-      "node --experimental-strip-types --import ./tests/setup.ts --test --test-concurrency=1 tests/status.test.ts tests/tags.test.ts tests/related.test.ts tests/browse.test.ts tests/browse-items.test.ts tests/providers.test.ts tests/api.test.ts tests/approvals.test.ts tests/decisions.test.ts tests/names.test.ts tests/update.test.ts tests/browse-url.test.ts tests/person.test.ts tests/api-get.test.ts",
+      "node --experimental-strip-types --import ./tests/setup.ts --test --test-concurrency=1 tests/status.test.ts tests/tags.test.ts tests/related.test.ts tests/browse.test.ts tests/browse-items.test.ts tests/providers.test.ts tests/api.test.ts tests/approvals.test.ts tests/decisions.test.ts tests/names.test.ts tests/update.test.ts tests/browse-url.test.ts tests/person.test.ts tests/api-get.test.ts tests/sorts.test.ts",
   },
   // The command runner only reports an exit code, so per-test coverage is
   // impossible; Stryker runs every mutant against the whole scoped command.
@@ -44,16 +44,20 @@ const config = {
   // No `incremental` here: with the command runner a stale cache replayed
   // statuses from an older command (one replay reported decisions.ts at 0%
   // that the current suite kills completely). The honest cost is the full
-  // run: ~26 min at 1365 tested of 2136 instrumented (2026-10-11, Linux
-  // worker, concurrency 8).
+  // run: ~18.5 min at 1468 tested of 2272 instrumented (2026-10-12,
+  // Linux worker, concurrency 8).
   reporters: ["clear-text", "progress"],
-  // stryker.log (cwd) captures the full run including worker deaths; the
-  // console progress lines survive on stdout.
+  // stryker.log (cwd) captures the run including worker deaths, but its
+  // per-mutant detail covers killed mutants only — the survived diffs are
+  // console-only, so capture stdout when hunting survivors.
   fileLogLevel: "trace",
-  // break is the measured clean-run score (85.27, 2026-10-11), floored;
-  // a regression below it fails the run. status.ts is fully killed: the
-  // badge and acquisition-line tests pin every branch. Accepted
-  // survivors: the error-message copy strings in related.ts, the
+  // break is the measured clean-run score (85.01, 2026-10-12), floored;
+  // a regression below it fails the run, and the margin is one mutant.
+  // status.ts is fully killed: the badge and acquisition-line tests pin
+  // every branch, and the sorts suite pins the capability table.
+  // Accepted survivors: sorts.ts's defensive `?.`/`?? []` chains, which
+  // no typed provider/kind input can reach, the error-message copy
+  // strings in related.ts, the
   // REQUESTS_CHANGED event name,
   // empty-array shape defaults asserted nowhere, the fetch-param conditionals
   // and sort comparators in browse.ts/contracts.ts/related.ts that the
