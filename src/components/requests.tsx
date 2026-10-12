@@ -85,12 +85,18 @@ function decisionError(e: unknown): string {
   return messageOf(e);
 }
 
-/** The provider reference — shown when the catalog summary is unresolvable. */
+/** The provider reference — shown when the catalog summary is unresolvable.
+ * A link, not text: with no summary there is no title link, and the poster
+ * link is aria-hidden, so this is the row's only keyboard route to the
+ * detail. */
 function ReferenceLine({ media }: { media: MediaReference }) {
   return (
-    <span className="font-mono text-xs break-all text-muted">
+    <a
+      className="font-mono text-xs break-all text-muted"
+      href={detailHref(media)}
+    >
       {media.provider} · {media.kind} · {media.id}
-    </span>
+    </a>
   );
 }
 
@@ -149,8 +155,9 @@ function RequestCard({
         />
       )}
       <div className="request-card-head">
-        {/* aria-hidden + tabIndex -1: the title link beside it points at the
-            same detail — one keyboard stop, not two. */}
+        {/* aria-hidden + tabIndex -1: a link beside it (the title, or the
+            reference line when no summary resolved) points at the same
+            detail — one keyboard stop, not two. */}
         <a
           className="request-poster"
           href={detailHref(r.media)}
