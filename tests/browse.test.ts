@@ -679,6 +679,61 @@ test("when every wanted side's include lookup fails, browse is a 502 instead of 
   );
 });
 
+test("every side failing after a side already delivered rows keeps the partial page", async () => {
+  let movies = 0;
+  const handler: FixtureHandler = (req, res) => {
+    const path = pathOf(req.url ?? "");
+    if (path === "/movies") {
+      movies += 1;
+      if (movies === 1) {
+        // First page delivers a real match, then continues.
+        sendJson(res, 200, {
+          data: [tpdbRow(uuid(1), "First page match", "2024-02-01")],
+          links: { next: "x" },
+          meta: { total: 10000 },
+        });
+        return;
+      }
+      // The continuation dies: a real outage after delivered rows.
+      sendJson(res, 500, { message: "upstream down" });
+      return;
+    }
+    if (path === "/graphql") {
+      sendJson(res, 500, { message: "upstream down" });
+      return;
+    }
+    sendJson(res, 404, { message: `fixture has no ${path}` });
+  };
+  await runBrowse(handler, async () => {
+    const page = await browseTitles(
+      {
+        type: "all",
+        include: [],
+        exclude: [],
+        studioMode: "exact",
+        page: 1,
+        perPage: 10,
+      },
+      [],
+    );
+    // Both sides ended in outages, but the movie side had already delivered
+    // its page-1 row: the partial page survives with both errors named.
+    assert.deepEqual(
+      page.items.map((d) => d.reference.id),
+      [uuid(1)],
+    );
+    assert.deepEqual(
+      page.errors.map((e) => [e.provider, e.code]),
+      [
+        ["tpdb", "upstream_unavailable"],
+        ["stashdb", "upstream_unavailable"],
+      ],
+    );
+    assert.equal(page.totalCountKnown, false);
+    assert.equal(page.hasMore, false);
+  });
+});
+
 // --- free-text includes: expand on each provider's tags, native any-of ---
 
 test("a free-text include expands on each provider's tags and travels as a native any-of filter", async () => {
@@ -1243,6 +1298,56 @@ test("a multi-match free-text AND returns the partial matches beside the ceiling
       assert.deepEqual(
         page.errors.map((e) => e.code),
         ["scan_ceiling"],
+      );
+    },
+  );
+});
+
+test("a scan-ceiling side beside a real outage returns the partial page, not a 502", async () => {
+  const TAG_XYZ_A = { id: 11, uuid: uuid(101), name: "XYZ Special" };
+  const TAG_XYZ_B = { id: 12, uuid: uuid(102), name: "XYZ Thing" };
+  const TAG_ABC = { id: 13, uuid: uuid(103), name: "ABC Thing" };
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [TAG_XYZ_A, TAG_XYZ_B, TAG_ABC],
+      // Endless pages of rows matching only the xyz group: the local abc
+      // AND never fills the page, so the TPDB stream runs to its ceiling —
+      // a bounded matchless answer, not an outage.
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(2), "Only xyz", "2024-02-01", [TAG_XYZ_A])],
+          next: "x",
+          total: 10000,
+        },
+      ],
+      // StashDB is dark: its include expansion (searchTag) 500s, so the
+      // scene side enters the merge as an already-failed stream.
+      stashStatus: 500,
+      scenes: { count: 0, rows: [] },
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "all",
+          include: [{ name: "xyz" }, { name: "abc" }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // Ceiling beside outage is a partial (matchless) page with both
+      // errors named, never a 502 provider_unavailable.
+      assert.deepEqual(page.items, []);
+      assert.equal(page.totalCountKnown, false);
+      assert.equal(page.hasMore, false);
+      assert.deepEqual(
+        page.errors.map((e) => [e.provider, e.code]),
+        [
+          ["tpdb", "scan_ceiling"],
+          ["stashdb", "upstream_unavailable"],
+        ],
       );
     },
   );

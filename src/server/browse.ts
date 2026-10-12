@@ -662,13 +662,17 @@ async function mergeStreams(
   const errors: SourceError[] = streams
     .filter((s) => s.error !== undefined)
     .map((s) => s.error!);
-  if (items.length === 0 && errors.length === streams.length) {
-    // Every stream stopping on its own scan ceiling is a bounded (if
-    // matchless) answer, not an outage: the named errors travel with the
-    // empty page. Real source failures stay a 502.
-    if (!errors.every((e) => e.code === "scan_ceiling")) {
-      allSourcesFailed(streams); // all-source failure stays visible
-    }
+  // A 502 needs every side to have failed for real: a stream stopping on
+  // its own scan ceiling is a bounded (if matchless) answer, not an outage,
+  // so a ceiling beside a real outage — or beside another ceiling — stays
+  // a partial page whose named errors say so. Only outages on every side
+  // leave nothing answered.
+  if (
+    items.length === 0 &&
+    errors.length === streams.length &&
+    errors.every((e) => e.code !== "scan_ceiling")
+  ) {
+    allSourcesFailed(streams); // all-source failure stays visible
   }
   const exhausted =
     streams.every((s) => s.exhausted) &&

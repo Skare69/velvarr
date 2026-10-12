@@ -44,15 +44,15 @@ const config = {
   // No `incremental` here: with the command runner a stale cache replayed
   // statuses from an older command (one replay reported decisions.ts at 0%
   // that the current suite kills completely). The honest cost is the full
-  // run: ~18.5 min at 1468 tested of 2272 instrumented (2026-10-12,
-  // Linux worker, concurrency 8).
+  // run: ~22 min at 1478 tested (2026-10-12, Linux worker, concurrency 8).
   reporters: ["clear-text", "progress"],
   // stryker.log (cwd) captures the run including worker deaths, but its
   // per-mutant detail covers killed mutants only — the survived diffs are
   // console-only, so capture stdout when hunting survivors.
   fileLogLevel: "trace",
-  // break is the measured clean-run score (85.01, 2026-10-12), floored;
-  // a regression below it fails the run, and the margin is one mutant.
+  // break is the measured clean-run score (85.18, 2026-10-12) floored to
+  // one decimal; a regression below it fails the run, and the margin is
+  // under two mutants.
   // status.ts is fully killed: the badge and acquisition-line tests pin
   // every branch, and the sorts suite pins the capability table.
   // Accepted survivors: sorts.ts's defensive `?.`/`?? []` chains, which
@@ -66,7 +66,7 @@ const config = {
   // (guard some-vs-every, loop-bound and comparison rewrites that cannot flip
   // a returned boolean), and api-get.ts's FIFO-cap edges (has/clear/eviction
   // conditionals asserted only loosely by the queue-order tests).
-  thresholds: { high: 85, low: 75, break: 85 },
+  thresholds: { high: 85, low: 75, break: 85.1 },
 };
 
 export default config;
