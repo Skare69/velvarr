@@ -173,6 +173,7 @@ type Statements = {
   insertAcquisition: StatementSync;
   getAcquisition: StatementSync;
   getAcquisitionByIdentity: StatementSync;
+  latestAcquisitionForReference: StatementSync;
   listDueAcquisitions: StatementSync;
   claimAcquisition: StatementSync;
   beginSubmission: StatementSync;
@@ -541,6 +542,9 @@ function S(): Statements {
       getAcquisition: d.prepare("SELECT * FROM acquisitions WHERE id = ?"),
       getAcquisitionByIdentity: d.prepare(
         "SELECT * FROM acquisitions WHERE instance_id = ? AND provider = ? AND kind = ? AND external_id = ?",
+      ),
+      latestAcquisitionForReference: d.prepare(
+        "SELECT * FROM acquisitions WHERE provider = ? AND kind = ? AND external_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1",
       ),
       listDueAcquisitions: d.prepare(
         `SELECT * FROM acquisitions
@@ -951,6 +955,42 @@ export function getConfig(): IntegrationConfig | null {
   return JSON.parse(decryptString(loadKey(), row.data)) as IntegrationConfig;
 }
 
+/** Backfills the shared acquisition rows `instanceId` is missing for approvals
+ * recorded before the identity existed (first setup, URL change, boot repair).
+ * An approval whose latest prior row under any identity is `imported` carries
+ * that terminal observed outcome forward instead of being re-enqueued:
+ * requests stay approved after import, so defaulting every approval to unsent
+ * would replay the whole approval history against the new endpoint —
+ * re-POSTing titles Whisparr no longer holds and searching them again. The
+ * carried row is a new row of the new identity; rows of retired identities
+ * are never reused or scheduled. */
+function backfillApprovals(
+  instanceId: string,
+  state: "unsent" | "blocked",
+  now: number,
+): void {
+  for (const row of S().listAllRequests.all() as RequestRow[]) {
+    if (row.decision !== "approved") continue;
+    const prior = S().latestAcquisitionForReference.get(
+      row.provider,
+      row.kind,
+      row.external_id,
+    ) as AcquisitionRow | undefined;
+    const carried = prior?.state === "imported" ? "imported" : state;
+    S().insertAcquisition.run(
+      randomUUID(),
+      instanceId,
+      row.provider,
+      row.kind,
+      row.external_id,
+      carried,
+      carried === "unsent" ? now : null,
+      now,
+      now,
+    );
+  }
+}
+
 export function saveConfig(config: IntegrationConfig): void {
   assertConfigShape(config);
   const d = open();
@@ -988,21 +1028,11 @@ export function saveConfig(config: IntegrationConfig): void {
       // approvals recorded before it existed (first setup, URL change) are
       // backfilled here — the same INSERT OR IGNORE the boot backfill uses.
       if (instanceId !== current?.whisparr?.instanceId) {
-        const state = whisparr.delivery?.enabled ? "unsent" : "blocked";
-        for (const row of S().listAllRequests.all() as RequestRow[]) {
-          if (row.decision !== "approved") continue;
-          S().insertAcquisition.run(
-            randomUUID(),
-            instanceId,
-            row.provider,
-            row.kind,
-            row.external_id,
-            state,
-            state === "unsent" ? now : null,
-            now,
-            now,
-          );
-        }
+        backfillApprovals(
+          instanceId,
+          whisparr.delivery?.enabled ? "unsent" : "blocked",
+          now,
+        );
       }
     }
     S().updateConfig.run(
@@ -1375,22 +1405,11 @@ export function initializeStorage(): void {
   // Approvals recorded before this instance identity existed enqueued nothing.
   // INSERT OR IGNORE leaves already-tracked identities untouched.
   inTransaction(d, () => {
-    const now = Date.now();
-    const state = whisparr.delivery?.enabled ? "unsent" : "blocked";
-    for (const row of S().listAllRequests.all() as RequestRow[]) {
-      if (row.decision !== "approved") continue;
-      S().insertAcquisition.run(
-        randomUUID(),
-        instanceId,
-        row.provider,
-        row.kind,
-        row.external_id,
-        state,
-        state === "unsent" ? now : null,
-        now,
-        now,
-      );
-    }
+    backfillApprovals(
+      instanceId,
+      whisparr.delivery?.enabled ? "unsent" : "blocked",
+      Date.now(),
+    );
   });
 }
 

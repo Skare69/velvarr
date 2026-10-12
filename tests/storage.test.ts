@@ -1627,6 +1627,42 @@ test("a Whisparr URL change re-enqueues work on the new identity and retires the
   );
 });
 
+test("a URL change carries imported approvals forward and still delivers never-dispatched ones", () => {
+  freshDir();
+  storage.bootstrap(deliveryConfig(true), ownerUser(), "jf-owner-token");
+  const owner = storage.getAccount(ownerUser().id) as Account;
+
+  // Imported before the move: the terminal observed outcome must survive the
+  // URL change, never replay as unsent work against the new endpoint.
+  const done = storage.createRequest(owner.id, MOVIE);
+  storage.decideRequest(owner, done.id, "approved");
+  const importedRow = storage.getAcquisitionByReference(MOVIE);
+  assert.ok(importedRow);
+  storage.recordAcquisitionObservation(importedRow.id, {
+    state: "imported",
+    item: { monitored: true },
+  });
+
+  // Approved but never dispatched: delivery must still happen after the move.
+  const pending = storage.createRequest(owner.id, SCENE);
+  storage.decideRequest(owner, pending.id, "approved");
+
+  const moved = deliveryConfig(true);
+  moved.whisparr = { ...moved.whisparr!, url: "http://127.0.0.1:6970" };
+  storage.saveConfig(moved);
+
+  const carried = storage.getAcquisitionByReference(MOVIE);
+  assert.ok(carried);
+  assert.equal(carried.state, "imported", "imported survives the URL change");
+
+  const due = storage.listDueAcquisitions(Date.now() + 60_000);
+  assert.deepEqual(
+    due.map((a) => [a.media.id, a.state]),
+    [[SCENE.id, "unsent"]],
+    "only the never-dispatched approval is due after the change",
+  );
+});
+
 test("the last withdrawal suppresses only undispatched work; sent work survives", () => {
   freshDir();
   storage.bootstrap(deliveryConfig(true), ownerUser(), "jf-owner-token");
