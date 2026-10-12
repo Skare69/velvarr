@@ -219,9 +219,10 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
     ...(q !== undefined && q !== "" ? { q } : {}),
     include: parseSelections(params, "include"),
     // Both lists accept labels with no provider id: an include label is a
-    // free-text term matched locally as a substring, an exclude label runs
-    // the local family matcher. Neither can travel natively, so neither is
-    // rejected here.
+    // free-text term that expands to every published tag whose name
+    // contains it and travels as a native any-of filter on each side, an
+    // exclude label runs the local family matcher. Neither can travel as
+    // an exact native tag, so neither is rejected here.
     exclude: parseSelections(params, "exclude"),
     ...omitUndefined({
       studioTpdb: parseId(params, "studioTpdb"),
@@ -246,10 +247,12 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
 
 // --- stream planning ---
 
-/** A selection with no provider id on either side: a free-text chip, which
- * can only filter locally. One predicate for the whole pipeline — parse,
- * native resolution and the visible predicate must agree on it, or a
- * free-text include 400s or disqualifies a side again. */
+/** A selection with no provider id on either side: a free-text chip. An
+ * include expands to every published tag whose name contains the term and
+ * travels natively as an any-of criterion; an exclude runs the local
+ * family matcher. One predicate for the whole pipeline — parse, native
+ * resolution and the visible predicate must agree on it, or a free-text
+ * include 400s or disqualifies a side again. */
 function isFreeTextSelection(sel: CatalogTagSelection): boolean {
   return sel.tpdb === undefined && sel.stashdb === undefined;
 }
@@ -280,37 +283,95 @@ function visiblePredicate(
   };
 }
 
-/** Resolves the native include-id list for one provider side. Every included
- * tag must be matchable on a qualifying source: a selection already carrying
- * the side's UUID uses it; otherwise the counterpart id is resolved through
- * the providers' own published label pairing. Free-text selections carry no
- * native anchor anywhere, so they are skipped here and filter locally
- * instead. An unresolvable anchored tag disqualifies the whole side
- * (undefined) — it is NEVER allowed to run unfiltered. A lookup that fails
- * throws; browseTitles records the side as a failed source instead of
- * reading the outage as absence. */
+/** The native include criteria one provider side can carry: `allOf` are the
+ * anchored tag ids (AND criterion), `anyOf` the free-text expansion (any-of
+ * criterion — every published tag whose name contains a term). `localFree`
+ * holds the free-text terms the visible predicate must still re-check
+ * locally: several terms AND together, which one upstream tag criterion
+ * cannot express, so the any-of union only pre-filters. */
+type ResolvedIncludes = {
+  allOf: string[];
+  anyOf: string[];
+  localFree: CatalogTagSelection[];
+};
+
+/** Expands one free-text term into the side's own tag ids: every tag the
+ * provider's search returns whose folded name contains the folded term.
+ * ponytail: the provider tag search caps at MAX.tags (50) rows per side, so
+ * a term matching more published tags than the cap loses the tail; page the
+ * provider tag listing if a real filter ever hits that ceiling. */
+async function freeTagIds(
+  side: "tpdb" | "stashdb",
+  term: string,
+): Promise<string[]> {
+  const needle = normalizeFacetName(term);
+  if (needle === "") return [];
+  const rows = await searchCatalogTags(side, term);
+  const ids: string[] = [];
+  for (const row of rows) {
+    if (!normalizeFacetName(row.name).includes(needle)) continue;
+    if (!ids.includes(row.id)) ids.push(row.id);
+  }
+  return ids;
+}
+
+/** Resolves the native include criteria for one provider side. Anchored
+ * selections resolve as before: a selection already carrying the side's
+ * UUID uses it; otherwise the counterpart id is resolved through the
+ * providers' own published label pairing, and an unresolvable anchored tag
+ * disqualifies the whole side (undefined) — it is NEVER allowed to run
+ * unfiltered. Free-text includes expand on THIS side's published tags and
+ * travel as the native any-of criterion, but the upstream exposes one tag
+ * criterion per query, so expansion only takes the native slot when no
+ * anchored id needs it (with anchored ids present the terms keep filtering
+ * locally as before), and each term must expand to at least one tag or the
+ * side contributes nothing. A lookup that fails throws; browseTitles
+ * records the side as a failed source instead of reading the outage as
+ * absence. */
 async function includeIdsForSide(
   selections: CatalogTagSelection[],
   side: "tpdb" | "stashdb",
-): Promise<string[] | undefined> {
-  const ids: string[] = [];
+  expandFree: boolean,
+): Promise<ResolvedIncludes | undefined> {
+  const allOf: string[] = [];
+  const free: CatalogTagSelection[] = [];
   for (const sel of selections) {
     const direct = side === "tpdb" ? sel.tpdb : sel.stashdb;
     if (direct !== undefined) {
-      if (!ids.includes(direct)) ids.push(direct);
+      if (!allOf.includes(direct)) allOf.push(direct);
       continue;
     }
-    // Free text filters locally below; it never constrains a native query.
-    if (isFreeTextSelection(sel)) continue;
-    // tagCounterpart searches the OTHER provider by exact normalized label.
-    const counterpart = await tagCounterpart(
-      side === "tpdb" ? "stashdb" : "tpdb",
-      sel.name,
-    );
-    if (counterpart === undefined) return undefined;
-    if (!ids.includes(counterpart.id)) ids.push(counterpart.id);
+    if (!isFreeTextSelection(sel)) {
+      // tagCounterpart searches the OTHER provider by exact normalized
+      // label.
+      const counterpart = await tagCounterpart(
+        side === "tpdb" ? "stashdb" : "tpdb",
+        sel.name,
+      );
+      if (counterpart === undefined) return undefined;
+      if (!allOf.includes(counterpart.id)) allOf.push(counterpart.id);
+      continue;
+    }
+    free.push(sel);
   }
-  return ids;
+  if (free.length === 0 || !expandFree || allOf.length > 0) {
+    return { allOf, anyOf: [], localFree: free };
+  }
+  const groups: string[][] = [];
+  for (const sel of free) {
+    const ids = await freeTagIds(side, sel.name);
+    // No published tag contains the term: nothing on this side can match,
+    // so the side is skipped rather than run unfiltered.
+    if (ids.length === 0) return undefined;
+    groups.push(ids);
+  }
+  return {
+    allOf,
+    anyOf: [...new Set(groups.flat())],
+    // One term is fully expressed by the native any-of; several terms AND
+    // together and still need the local per-term re-check.
+    localFree: groups.length > 1 ? free : [],
+  };
 }
 
 // --- ordered merge over provider-native streams ---
@@ -576,6 +637,9 @@ function nativeQuery(
   plan: {
     provider: CatalogProvider;
     includeIds: string[];
+    /** True when includeIds are a free-text expansion: the native criterion
+     * is any-of (`tags`) instead of all-of (`tagsAll`). */
+    includeAny: boolean;
     excludeIds: string[];
     performerIds?: string[];
   },
@@ -601,7 +665,9 @@ function nativeQuery(
       ...(query.studioTpdb !== undefined ? { studio: query.studioTpdb } : {}),
       ...(filmography ? { performer: query.performerTpdb } : {}),
       ...(plan.includeIds.length > 0 && !filmography
-        ? { tagsAll: plan.includeIds }
+        ? plan.includeAny
+          ? { tags: plan.includeIds }
+          : { tagsAll: plan.includeIds }
         : {}),
       ...(sort !== undefined
         ? {
@@ -627,11 +693,14 @@ function nativeQuery(
     ...(query.studioStashdb !== undefined
       ? { studio: query.studioStashdb, studioMode: query.studioMode }
       : {}),
-    // One upstream tag criterion: native ALL-of-includes, or — only when no
-    // include is native — native excludes. Mixed include+exclude keeps the
-    // includes native and re-checks every exclusion locally.
+    // One upstream tag criterion: native includes (all-of anchored or any-of
+    // free-text expansion), or — only when no include is native — native
+    // excludes. Mixed include+exclude keeps the includes native and
+    // re-checks every exclusion locally.
     ...(plan.includeIds.length > 0
-      ? { tagsAll: plan.includeIds }
+      ? plan.includeAny
+        ? { tags: plan.includeIds }
+        : { tagsAll: plan.includeIds }
       : plan.excludeIds.length > 0
         ? { tagsExclude: plan.excludeIds }
         : {}),
@@ -869,25 +938,27 @@ export async function browseTitles(
   const resolveIncludes = (
     wanted: boolean,
     side: "tpdb" | "stashdb",
-  ): Promise<string[] | undefined> => {
+  ): Promise<ResolvedIncludes | undefined> => {
     if (!wanted) return Promise.resolve(undefined);
-    return includeIdsForSide(query.include, side).catch((err: unknown) => {
-      unresolved.push(unresolvedStream(side, err));
-      return undefined;
-    });
+    // The filmography route rejects tag parameters, so TPDB never expands
+    // free text there; every other side can carry the any-of criterion.
+    const expandFree = !(side === "tpdb" && filmography);
+    return includeIdsForSide(query.include, side, expandFree).catch(
+      (err: unknown) => {
+        unresolved.push(unresolvedStream(side, err));
+        return undefined;
+      },
+    );
   };
   const [tpdbIncludes, stashIncludes] = await Promise.all([
     resolveIncludes(movieWanted, "tpdb"),
     resolveIncludes(sceneWanted, "stashdb"),
   ]);
 
-  // Free-text includes carry no native anchor: both sides keep running and
-  // the visible predicate applies the term locally as a substring.
-  const freeIncludes = query.include.filter(isFreeTextSelection);
-
   const plans: {
     provider: CatalogProvider;
     includeIds: string[];
+    includeAny: boolean;
     excludeIds: string[];
     localFiltered: boolean;
     localInclude: CatalogTagSelection[];
@@ -895,37 +966,49 @@ export async function browseTitles(
     performerIds?: string[];
   }[] = [];
   if (movieWanted && tpdbIncludes !== undefined) {
+    // Free-text includes expand natively on this side (the filmography
+    // route rejects tag parameters, so there they stay local); the anchored
+    // all-of keeps the one native criterion when both are present.
     plans.push({
       provider: "tpdb",
-      includeIds: tpdbIncludes,
+      includeIds:
+        tpdbIncludes.allOf.length > 0 ? tpdbIncludes.allOf : tpdbIncludes.anyOf,
+      includeAny:
+        tpdbIncludes.allOf.length === 0 && tpdbIncludes.anyOf.length > 0,
       excludeIds: [], // TPDB has no native exclude criterion
       localFiltered:
         hiddenTags.length > 0 ||
         query.exclude.length > 0 ||
-        freeIncludes.length > 0 ||
+        tpdbIncludes.localFree.length > 0 ||
         (filmography && query.include.length > 0),
-      localInclude: filmography ? query.include : freeIncludes,
+      localInclude: filmography ? query.include : tpdbIncludes.localFree,
       localYear: undefined,
     });
   }
   if (sceneWanted && stashIncludes !== undefined) {
+    const includesNative =
+      stashIncludes.allOf.length > 0 || stashIncludes.anyOf.length > 0;
     plans.push({
       provider: "stashdb",
-      includeIds: stashIncludes,
+      includeIds:
+        stashIncludes.allOf.length > 0
+          ? stashIncludes.allOf
+          : stashIncludes.anyOf,
+      includeAny:
+        stashIncludes.allOf.length === 0 && stashIncludes.anyOf.length > 0,
       // One upstream tag criterion: native excludes only when no include is
       // native. Selections without a StashDB id stay local-only below.
-      excludeIds:
-        stashIncludes.length === 0
-          ? query.exclude
-              .map((sel) => sel.stashdb)
-              .filter((id): id is string => id !== undefined)
-          : [],
+      excludeIds: includesNative
+        ? []
+        : query.exclude
+            .map((sel) => sel.stashdb)
+            .filter((id): id is string => id !== undefined),
       localFiltered:
         hiddenTags.length > 0 ||
         query.exclude.length > 0 ||
-        freeIncludes.length > 0 ||
+        stashIncludes.localFree.length > 0 ||
         query.year !== undefined,
-      localInclude: freeIncludes,
+      localInclude: stashIncludes.localFree,
       localYear: query.year,
       performerIds:
         query.performerStarred === true ? starredPerformerIds : undefined,

@@ -63,10 +63,11 @@ export function TagPicker({
   description?: string;
   disabled?: boolean;
   /** Offer the typed term itself as a label-only selection, pinned at the
-   * top of the list and kept there even after real matches load. Excludes
-   * and hidden tags match it locally; includes match it as a substring of
-   * tag names — a free-text include can never travel to a provider that
-   * filters on its own tag ids. */
+   * top of the list and kept there even after real matches load. The
+   * server expands an include on each provider's published tags and
+   * filters natively; excludes and hidden tags match locally — the chip
+   * carries no provider id, so it can never travel as an exact native
+   * tag. */
   allowFreeText?: boolean;
 }) {
   const [term, setTerm] = useState("");

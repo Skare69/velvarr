@@ -160,6 +160,9 @@ function scriptedUpstream(options: {
   tpdbTagsStatus?: number;
   /** HTTP status for the StashDB searchTag (the counterpart tag lookup). */
   searchTagStatus?: number;
+  /** Rows for the StashDB searchTag (counterpart lookups and free-text
+   * expansion). */
+  stashTagRows?: { id: string; name: string }[];
   /** TPDB site-key (uuid or slug) -> numeric site id, for /sites/<key>. */
   siteIds?: Record<string, number>;
   onMovieRequest?: (page: number, qs: URLSearchParams, url: string) => void;
@@ -251,7 +254,7 @@ function scriptedUpstream(options: {
         sendJson(res, options.searchTagStatus, { message: "upstream down" });
         return;
       }
-      sendJson(res, 200, { data: { searchTag: [] } });
+      sendJson(res, 200, { data: { searchTag: options.stashTagRows ?? [] } });
       return;
     }
     sendJson(res, 404, { message: `fixture has no ${path}` });
@@ -675,9 +678,9 @@ test("when every wanted side's include lookup fails, browse is a 502 instead of 
   );
 });
 
-// --- free-text includes: local substring, never a native constraint ---
+// --- free-text includes: expand on each provider's tags, native any-of ---
 
-test("a free-text include filters both sides locally as a substring and runs no native tag criterion", async () => {
+test("a free-text include expands on each provider's tags and travels as a native any-of filter", async () => {
   const TPDB_XYZ = { id: 11, uuid: uuid(101), name: "XYZ Special" };
   const STASH_XYZ = uuid(201);
   const movieUrls: string[] = [];
@@ -685,6 +688,7 @@ test("a free-text include filters both sides locally as a substring and runs no 
   await runBrowse(
     scriptedUpstream({
       tagRows: [TPDB_XYZ],
+      stashTagRows: [{ id: STASH_XYZ, name: "XYZ Thing" }],
       moviePages: [
         {
           rows: [
@@ -719,29 +723,145 @@ test("a free-text include filters both sides locally as a substring and runs no 
         },
         [],
       );
-      // Only titles carrying a tag whose folded name contains "xyz" survive;
-      // both sides ran — the free text never disqualified one.
+      // The term expanded on both providers (TPDB /tags?q=xyz, StashDB
+      // searchTag) and travels as each side's native any-of criterion. The
+      // fixture returns every row regardless of the native filter, so the
+      // untagged siblings stay: there is no local substring post-filter to
+      // drop them. Recency-desc merge order.
       assert.deepEqual(
         page.items.map((d) => [d.reference.provider, d.reference.id]),
         [
           ["stashdb", uuid(3)],
           ["tpdb", uuid(1)],
+          ["tpdb", uuid(2)],
+          ["stashdb", uuid(4)],
         ],
       );
-      // Local filtering: totals exact only at true exhaustion.
+      // Fully native includes: the providers' own totals pass through.
       assert.equal(page.hasMore, false);
       assert.equal(page.totalCountKnown, true);
-      assert.equal(page.total, 2);
+      assert.equal(page.total, 4);
       assert.deepEqual(page.errors, []);
-      // No native tag criterion anywhere: the term is not a provider id.
-      assert.equal(movieUrls[0]!.includes("tag"), false);
-      assert.equal(scenesSeen[0]!.tags, undefined);
+      // TPDB: the expanded tag rides the any-of criterion (its uuid 101
+      // resolved to numeric 11), with no tag_and — not the all-of form.
+      assert.match(movieUrls[0]!, /tags%5B11%5D=1|tags\[11\]=1/);
+      assert.doesNotMatch(movieUrls[0]!, /tag_and=1/);
+      // StashDB: the expansion is the INCLUDES (any-of) criterion.
+      assert.deepEqual(scenesSeen[0]!.tags, {
+        value: [STASH_XYZ],
+        modifier: "INCLUDES",
+      });
     },
   );
 });
 
-test("a free-text include matches inside a tag word: substring, not family", async () => {
+test("a free-text term that expands on no TPDB tag skips the movie side and runs StashDB natively", async () => {
+  const STASH_XYZ = uuid(201);
+  let moviesCalled = 0;
+  await runBrowse(
+    scriptedUpstream({
+      // TPDB publishes no tag containing the term.
+      tagRows: [],
+      stashTagRows: [{ id: STASH_XYZ, name: "XYZ Thing" }],
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(1), "Whatever", "2024-01-01")],
+          next: null,
+          total: 1,
+        },
+      ],
+      scenes: {
+        count: 1,
+        rows: [
+          stashRow(uuid(3), "Scene with", "2024-06-01", [
+            { id: STASH_XYZ, name: "XYZ Thing" },
+          ]),
+        ],
+      },
+      onMovieRequest: () => {
+        moviesCalled += 1;
+      },
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "all",
+          include: [{ name: "xyz" }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // Nothing TPDB publishes can match the term, so no TPDB query runs at
+      // all — the side is skipped, never run unfiltered. The scene side
+      // carries the expansion natively.
+      assert.equal(moviesCalled, 0);
+      assert.deepEqual(
+        page.items.map((d) => d.reference.provider),
+        ["stashdb"],
+      );
+      assert.equal(page.total, 1);
+      assert.equal(page.totalCountKnown, true);
+      assert.deepEqual(page.errors, []);
+    },
+  );
+});
+
+test("two free-text includes pre-filter natively as a union and still AND locally", async () => {
+  const TAG_XYZ = { id: 11, uuid: uuid(101), name: "XYZ Special" };
+  const TAG_ABC = { id: 12, uuid: uuid(102), name: "ABC Thing" };
+  const movieUrls: string[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [TAG_XYZ, TAG_ABC],
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(uuid(1), "Both terms", "2024-03-01", [TAG_XYZ, TAG_ABC]),
+            tpdbRow(uuid(2), "Only xyz", "2024-02-01", [TAG_XYZ]),
+            tpdbRow(uuid(3), "Untagged", "2024-01-01"),
+          ],
+          next: null,
+          total: 3,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: (_page, qs) => movieUrls.push(qs.toString()),
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "movie",
+          include: [{ name: "xyz" }, { name: "abc" }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // The upstream exposes one tag criterion: the union of both terms'
+      // expansions travels as the any-of pre-filter, without tag_and.
+      assert.match(movieUrls[0]!, /tags%5B11%5D=1|tags\[11\]=1/);
+      assert.match(movieUrls[0]!, /tags%5B12%5D=1|tags\[12\]=1/);
+      assert.doesNotMatch(movieUrls[0]!, /tag_and=1/);
+      // The per-term AND survives locally: only the row carrying both tags
+      // stays. The single page exhausted, so the count is exact again.
+      assert.deepEqual(
+        page.items.map((d) => d.reference.id),
+        [uuid(1)],
+      );
+      assert.equal(page.total, 1);
+      assert.equal(page.totalCountKnown, true);
+    },
+  );
+});
+
+test("a free-text include expands by folded substring, not family", async () => {
   const TPDB_XYZ = { id: 11, uuid: uuid(101), name: "XYZ Special" };
+  const movieUrls: string[] = [];
   await runBrowse(
     scriptedUpstream({
       tagRows: [TPDB_XYZ],
@@ -756,11 +876,13 @@ test("a free-text include matches inside a tag word: substring, not family", asy
         },
       ],
       scenes: { count: 0, rows: [] },
+      onMovieRequest: (_page, qs) => movieUrls.push(qs.toString()),
     }),
     async () => {
-      // "yz" sits inside the token "xyz": the substring matcher keeps the
-      // tagged title, while the family matcher (whole-word token runs)
-      // would drop it. This pins the mode for free-text includes.
+      // "yz" sits inside the token "xyz": the expansion keeps the tag
+      // (folded substring of the published name), where the family matcher
+      // (whole-word token runs) would drop it — so the native any-of
+      // criterion carries tag 11.
       const page = await browseTitles(
         {
           type: "movie",
@@ -772,11 +894,14 @@ test("a free-text include matches inside a tag word: substring, not family", asy
         },
         [],
       );
+      assert.match(movieUrls[0]!, /tags%5B11%5D=1|tags\[11\]=1/);
+      // The fixture returns every row regardless of the native filter.
       assert.deepEqual(
         page.items.map((d) => d.reference.id),
-        [uuid(1)],
+        [uuid(1), uuid(2)],
       );
-      assert.equal(page.total, 1);
+      assert.equal(page.total, 2);
+      assert.equal(page.totalCountKnown, true);
     },
   );
 });
@@ -898,6 +1023,17 @@ test("a hidden tag past position 50 hides the title; a free-text include matchin
     scriptedUpstream({
       tagRows: manyTags,
       moviePages: [
+        {
+          rows: [
+            tpdbRow(uuid(1), "Hidden by a late tag", "2024-01-01", manyTags),
+            tpdbRow(uuid(2), "Found by a late tag", "2023-01-01", manyTags),
+          ],
+          next: null,
+          total: 2,
+        },
+        // The free-text include expands into a native tag criterion now, so
+        // this browse's query differs from the hidden one's and really
+        // fetches: script its page too.
         {
           rows: [
             tpdbRow(uuid(1), "Hidden by a late tag", "2024-01-01", manyTags),

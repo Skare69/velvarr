@@ -1802,8 +1802,9 @@ const IS_DISCOVER_ID = new Set<string>(DISCOVER_IDS);
 
 /** Trust-boundary check for one tag selection: a real published label of
  * 1..120 characters and no unknown fields. Provider UUIDs are optional —
- * an include label is a free-text term matched locally as a substring,
- * while excludes and hidden tags run the local family matcher. A
+ * an include label is a free-text term the browse planner expands on each
+ * provider's published tags, while excludes and hidden tags run the local
+ * family matcher. A
  * label-only selection whose label has no letters or digits after
  * normalization ("日本", "++") can never match anything — tagMatches
  * returns false for an empty folded label in every mode — so it is refused
