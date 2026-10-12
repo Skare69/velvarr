@@ -96,36 +96,59 @@ jobs:
           fi
       - name: Assert non-root runtime
         run: docker exec velvarr-smoke node -e "if (process.getuid() === 0) { console.error('container must not run as root'); process.exit(1) }"
-      # Deep scan plus direct probes, both as the exec user (velvarr). The scan
-      # alone cannot carry the verdict: CI run 38287663285 failed here with a
-      # bare exit 1, and the old form let a find error (set -e on the capture)
-      # look identical to listed writable paths. Now find's stderr is printed
-      # and only listed paths fail the job; the verdict comes from write
-      # probes on every directory the Dockerfile creates and on the code
-      # files, which is the property this job promises: writable /data only.
+      # One exec inside the container gathers every piece of evidence: the exec
+      # identity, the deep find scan with its stderr inline, and write probes
+      # on every directory the Dockerfile creates and on the code files. A
+      # find error alone does not fail the job — the probes decide. The full
+      # verdict also goes to the job summary, which is readable on the public
+      # run page without a GitHub session; the step log is not (runs
+      # 38287663285 and 38293705590 failed here with unreadable logs, and the
+      # previous form captured find's stderr to a file it never printed).
       - name: Assert app code is not writable by the runtime user
         run: |
-          writable=$(docker exec velvarr-smoke find /app -writable 2>/tmp/velvarr-find.err) \
-            || echo "deep scan exited $? (stderr above)"
-          if [ -n "$writable" ]; then
-            echo "/app paths writable by the runtime user:"
-            echo "$writable"
-            exit 1
-          fi
-          docker exec velvarr-smoke sh -c '
+          verdict=$(docker exec velvarr-smoke sh -c '
+            echo "exec user: uid=$(id -u) gid=$(id -g) groups=$(id -G | tr " " ",")"
+            : > /tmp/ci-bad
+            bad_find=$(find /app -writable 2>/tmp/ci-find.err); fexit=$?
+            [ -n "$bad_find" ] && echo "$bad_find" >> /tmp/ci-bad
+            [ -s /tmp/ci-find.err ] && { echo "find stderr:"; cat /tmp/ci-find.err; }
             for d in /app /app/.next /app/.next/static /app/public /app/node_modules; do
               [ -d "$d" ] || continue
               if touch "$d/.ci-wprobe" 2>/dev/null; then
-                echo "runtime user created a file in $d"; rm -f "$d/.ci-wprobe"; exit 1
+                echo "probe wrote: $d" >> /tmp/ci-bad
+                rm -f "$d/.ci-wprobe"
               fi
             done
             for f in /app/server.js /app/package.json; do
               if [ -f "$f" ] && [ -w "$f" ]; then
-                echo "runtime user can write $f"; exit 1
+                echo "probe can write: $f" >> /tmp/ci-bad
               fi
             done
-            exit 0
-          '
+            if [ "$fexit" -ne 0 ]; then
+              echo "note: deep scan exited $fexit; the probes decide"
+            fi
+            if [ -s /tmp/ci-bad ]; then
+              echo "RUNTIME USER CAN WRITE:"
+              cat /tmp/ci-bad
+              echo "modes of the listed paths:"
+              while IFS= read -r p; do stat -c "%A %u:%g %n" "$p" 2>/dev/null; done < /tmp/ci-bad
+              exit 1
+            fi
+            echo "clean: no /app path is writable by the runtime user (deep scan exit $fexit)"
+          ' 2>&1)
+          status=$?
+          echo "$verdict"
+          if [ "$status" -ne 0 ] && [ -z "$verdict" ]; then
+            echo "the docker exec itself failed: container dead or exec error"
+          fi
+          {
+            echo "### Writable-app-code check"
+            echo ""
+            echo '```'
+            echo "$verdict"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
       - name: Restart and re-check readiness on persistent data
         run: |
           docker restart velvarr-smoke
