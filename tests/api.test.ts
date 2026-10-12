@@ -109,6 +109,10 @@ const TPDB_MOVIE = "2a2b3c4d-0000-0000-0000-000000000001";
 const TPDB_MOVIE2 = "2a2b3c4d-0000-0000-0000-000000000002";
 const TPDB_MOVIE3 = "2a2b3c4d-0000-0000-0000-000000000003";
 const TPDB_MOVIE4 = "2a2b3c4d-0000-0000-0000-000000000004";
+// Dedicated to the availability year-hint test: its catalog row and
+// acquisition belong to that test alone, so no other case's observation
+// facts can leak in or out (recordObservation merges, never replaces).
+const TPDB_MOVIE_YEAR = "2a2b3c4d-0000-0000-0000-0000000000c2";
 // Only used by the performer-filmography bulk test: TPDB_MOVIE3 already
 // carries approved intents from earlier tests, and an active-intent row
 // would collide with the bulk's new pending intent and show up in the
@@ -845,6 +849,8 @@ async function tpdbHandler(
     });
   if (p === `/movies/${TPDB_MOVIE}`)
     return json(res, 200, { data: tpdbMovieRow(TPDB_MOVIE) });
+  if (p === `/movies/${TPDB_MOVIE_YEAR}`)
+    return json(res, 200, { data: tpdbMovieRow(TPDB_MOVIE_YEAR) });
   if (p === `/movies/${TPDB_MOVIE4}`)
     return json(res, 200, { data: tpdbMovieRow(TPDB_MOVIE4) });
   json(res, 404, {});
@@ -3308,6 +3314,57 @@ test("availability: distinct verdicts under the caller's own token", async () =>
       cookie: member,
     }),
   );
+});
+
+test("availability: the catalog year reaches the judgment; no detail read without a title hint", async () => {
+  // Exact title "Alpha Movie", but the catalog record (fixture row date
+  // 2024-02-03) contradicts the library item's ProductionYear 2020: the year
+  // policy rejects the pair, so the verdict is 'missing' — not the
+  // 'ambiguous' a title-only comparison produces. The acquisition is this
+  // test's own (recordObservation merges facts, so a shared one would leak).
+  const ownReq = await call("POST", "/api/requests", {
+    cookie: member,
+    body: {
+      media: { provider: "tpdb", kind: "movie", id: TPDB_MOVIE_YEAR },
+    },
+  });
+  assert.equal(ownReq.status, 201);
+  const ownId = ((await ownReq.json()) as { request: { id: string } }).request
+    .id;
+  await call("PATCH", `/api/requests/${ownId}`, {
+    cookie: owner,
+    body: { decision: "approved" },
+  });
+  const acq = getAcquisitionByReference({
+    provider: "tpdb",
+    kind: "movie",
+    id: TPDB_MOVIE_YEAR,
+  });
+  assert.ok(acq);
+  recordAcquisitionObservation(acq.id, {
+    state: "monitoring",
+    item: { whisparrId: 88, title: "Alpha Movie" },
+  });
+  const readsBefore = tpdbFx.calls;
+  const contradicting = await call(
+    "GET",
+    `/api/availability/tpdb/movie/${TPDB_MOVIE_YEAR}`,
+    { cookie: member },
+  );
+  assert.equal((await outcomeOf(contradicting)).outcome, "missing");
+  // One detail read carried both the year and the performer; never two.
+  assert.equal(tpdbFx.calls, readsBefore + 1);
+
+  // No acquisition, no title hint: nothing can use the year or the
+  // performer, so the provider is not read at all.
+  const idleBefore = tpdbFx.calls;
+  const neverAcquired = await call(
+    "GET",
+    "/api/availability/tpdb/movie/2a2b3c4d-0000-0000-0000-000000000005",
+    { cookie: member },
+  );
+  assert.equal((await outcomeOf(neverAcquired)).outcome, "missing");
+  assert.equal(tpdbFx.calls, idleBefore);
 });
 
 // --- M3 phase B: studio kind; browse params wired with explicit rejects ---

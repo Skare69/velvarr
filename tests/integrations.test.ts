@@ -1873,6 +1873,28 @@ test("resolvePlaybackAccess reports ambiguity instead of guessing", async () => 
   });
 });
 
+/** Intercepts api.typesafe.ai judgment calls, counts them, and answers
+ * "same work" (noul 0.93); every other URL passes through untouched. The
+ * returned callable is a plain two-arg fetch; the named cast only satisfies
+ * lib.dom's read-only fetch signature, no shape beyond it. */
+function typeSafeJudgeYes(count: { judged: number }): typeof fetch {
+  const realFetch = globalThis.fetch;
+  const intercept = async (
+    url: RequestInfo | URL,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    if (String(url).includes("api.typesafe.ai")) {
+      count.judged += 1;
+      return new Response(
+        JSON.stringify({ answers: { sameWork: { type: "noul", noul: 0.93 } } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return realFetch(url, init);
+  };
+  return intercept as unknown as typeof fetch; // lib.dom fetch signature
+}
+
 test("resolvePlaybackAccess near-miss uses the stored TypeSafe key with no environment key", async () => {
   // A key saved in Settings is reported as configured, yet the sweep's
   // default ask called sameWork without it: the judgment then read only
@@ -1880,18 +1902,9 @@ test("resolvePlaybackAccess near-miss uses the stored TypeSafe key with no envir
   // Settings showed "AI-assisted matching on".
   const priorEnvKey = process.env.TYPESAFE_API_KEY;
   delete process.env.TYPESAFE_API_KEY;
-  const realFetch = globalThis.fetch;
-  let judged = 0;
-  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
-    if (String(url).includes("api.typesafe.ai")) {
-      judged++;
-      return new Response(
-        JSON.stringify({ answers: { sameWork: { type: "noul", noul: 0.93 } } }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    }
-    return realFetch(url, init);
-  }) as typeof fetch;
+  const priorFetch = globalThis.fetch;
+  const counter = { judged: 0 };
+  globalThis.fetch = typeSafeJudgeYes(counter);
   try {
     await withFixture(avHandler({ entries: avEntries() }), async (fx) => {
       const cfg = {
@@ -1913,10 +1926,51 @@ test("resolvePlaybackAccess near-miss uses the stored TypeSafe key with no envir
           reason: "Title/year similarity only; administrator review required.",
         },
       );
-      assert.equal(judged, 1);
+      assert.equal(counter.judged, 1);
     });
   } finally {
-    globalThis.fetch = realFetch;
+    globalThis.fetch = priorFetch;
+    if (priorEnvKey === undefined) delete process.env.TYPESAFE_API_KEY;
+    else process.env.TYPESAFE_API_KEY = priorEnvKey;
+  }
+});
+
+test("resolvePlaybackAccess spends no judgment on contradicting years", async () => {
+  // The year policy lives in code: an exact title whose catalog year
+  // contradicts the item's ProductionYear is 'missing', and the same-work
+  // judgment is never asked even when a key is configured.
+  const priorEnvKey = process.env.TYPESAFE_API_KEY;
+  delete process.env.TYPESAFE_API_KEY;
+  const priorFetch = globalThis.fetch;
+  const counter = { judged: 0 };
+  globalThis.fetch = typeSafeJudgeYes(counter);
+  try {
+    await withFixture(
+      // Only the contradicting item is in the pool: any other near-miss
+      // candidate without a year would legitimately reach the judgment.
+      avHandler({ entries: avEntries().slice(0, 1) }),
+      async (fx) => {
+        const cfg = {
+          ...avConfig(fx.origin, [LIB_A]),
+          providers: { typesafeApiKey: "ts_contradicting_year" },
+        };
+        // "Provider Movie" is the fixture item's exact name (year 2024); a
+        // 1999 record is a different work — a remake, not a naming variant.
+        assert.deepEqual(
+          await resolvePlaybackAccess(cfg, TOKEN, account([LIB_A]), {
+            provider: "tpdb",
+            kind: "movie",
+            id: "tpdb-unjudged-uuid",
+            title: "Provider Movie",
+            year: 1999,
+          }),
+          { outcome: "missing" },
+        );
+        assert.equal(counter.judged, 0);
+      },
+    );
+  } finally {
+    globalThis.fetch = priorFetch;
     if (priorEnvKey === undefined) delete process.env.TYPESAFE_API_KEY;
     else process.env.TYPESAFE_API_KEY = priorEnvKey;
   }

@@ -20,15 +20,26 @@ import {
 } from "../../../../server/providers.ts";
 import { searchVisibleCatalog } from "../../../../server/browse.ts";
 
-async function performerHint(
+// Year and performer reach the same-work judgment only through a title
+// hint: candidatesMayMatch returns before any ask without one, and
+// titleYearSimilar needs the title too. So the provider detail read waits
+// for a title hint and carries both facts in one round-trip; an outage or
+// an absent record degrades to exact matching, exactly as before.
+async function identityHints(
   media: MediaReference,
-): Promise<{ performer: string } | Record<string, never>> {
+  title: string | null | undefined,
+): Promise<{ performer?: string; year?: number }> {
+  if (!title) return {};
   try {
     const detail = await getCatalogDetail(media);
+    const year = Number.parseInt((detail?.releaseDate ?? "").slice(0, 4), 10);
     const credit = detail?.credits.find(
       (c) => c.reference.kind === "performer",
     );
-    return credit ? { performer: credit.name } : {};
+    return {
+      ...(credit ? { performer: credit.name } : {}),
+      ...(Number.isInteger(year) && year > 0 ? { year } : {}),
+    };
   } catch {
     return {};
   }
@@ -61,7 +72,7 @@ export async function availability(
         ? { title: acquisition.whisparrTitle }
         : {}),
       ...(acquisition?.state === "imported" ? { imported: true } : {}),
-      ...(await performerHint(media)),
+      ...(await identityHints(media, acquisition?.whisparrTitle)),
     },
     // The one cache-eligible caller: repeated badge calls share one sweep.
     { cachedSweep: true },
