@@ -7129,3 +7129,52 @@ test("login spray cap: rotating strangers fill it, the admitted owner still sign
   });
   assert.notEqual(guess.status, 200);
 });
+
+// A plain-Error def folded into the real dispatch: pushed at module scope so
+// the spread inside route.ts (imported in before()) sees it. Session auth —
+// the open-surface assertion at the top of this file pins the exact open
+// list. At the file's end: the owner account exists only after setup ran.
+catalogRoutes.push({
+  method: "GET",
+  segments: ["boom"],
+  auth: "session",
+  run: () => {
+    throw new Error("boom");
+  },
+});
+
+test("unexpected route errors log once with the path and answer the stock 500; malformed path escapes answer 400", async () => {
+  const cookie = await loginAs("owner");
+  const logged: unknown[][] = [];
+  const realConsoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    logged.push(args);
+  };
+  try {
+    const failing = await call("GET", "/api/boom", { cookie });
+    assert.equal(failing.status, 500);
+    assert.deepEqual(await failing.json(), {
+      error: { code: "internal", message: "Internal server error." },
+    });
+    assert.equal(logged.length, 1);
+    assert.match(String(logged[0]?.[0]), /^GET \/api\/boom/);
+    assert.ok(logged[0]?.[1] instanceof Error);
+
+    // A malformed percent-escape is the client's mistake: 400 invalid_path,
+    // and never a logged fault. Direct api.GET: call()'s segments() helper
+    // decodes eagerly and would throw before dispatch sees the path.
+    const malformed = await api.GET(
+      new Request(`${ORIGIN}/api/catalog/%E0%A4%A`, {
+        headers: { origin: ORIGIN, cookie },
+      }),
+      { params: Promise.resolve({ path: ["catalog", "%E0%A4%A"] }) },
+    );
+    assert.equal(malformed.status, 400);
+    assert.deepEqual(await malformed.json(), {
+      error: { code: "invalid_path", message: "Invalid request path." },
+    });
+    assert.equal(logged.length, 1);
+  } finally {
+    console.error = realConsoleError;
+  }
+});

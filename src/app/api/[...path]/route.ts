@@ -54,12 +54,20 @@ const SESSION_401_CODES: Record<string, true> = {
   session_revoked: true,
 };
 
-function errorResponse(err: unknown): Response {
+function errorResponse(
+  err: unknown,
+  method: string,
+  pathname: string,
+): Response {
   if (err instanceof AppError) {
     const status =
       err.status === 401 && !SESSION_401_CODES[err.code] ? 502 : err.status;
     return json({ error: { code: err.code, message: err.message } }, status);
   }
+  // Unexpected faults (TypeError, SQLite constraint, decrypt bug) must leave a
+  // trace: method + pathname only — never the query string, which can carry
+  // secrets — plus the error's own name/message/stack.
+  console.error(`${method} ${pathname}: unexpected route failure`, err);
   return json(
     { error: { code: "internal", message: "Internal server error." } },
     500,
@@ -74,7 +82,15 @@ async function dispatch(request: Request, method: string): Promise<Response> {
     const segments = new URL(request.url).pathname
       .split("/")
       .filter((segment) => segment.length > 0)
-      .map((segment) => decodeURIComponent(segment));
+      .map((segment) => {
+        try {
+          return decodeURIComponent(segment);
+        } catch {
+          // A malformed percent-escape (e.g. /api/catalog/%E0%A4%A) is the
+          // caller's mistake: a 400, not an unlogged 500.
+          throw new AppError(400, "invalid_path", "Invalid request path.");
+        }
+      });
     // The one origin-CSRF gate: runs before matching and before admission on
     // every mutation, keeping the first-failure precedence it had when each
     // handler called it, and a future mutating route cannot ship without it.
@@ -90,7 +106,7 @@ async function dispatch(request: Request, method: string): Promise<Response> {
         : await requireSession(request);
     return await def.run(ctx, request, paramsOf(def, segments.slice(1)));
   } catch (err) {
-    return errorResponse(err);
+    return errorResponse(err, method, new URL(request.url).pathname);
   }
 }
 
