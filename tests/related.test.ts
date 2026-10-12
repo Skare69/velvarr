@@ -833,17 +833,26 @@ test("performer tags count tags across visible filmography only", async () => {
 });
 
 test("performer tags stop at the page ceiling and say so", async () => {
-  await withFx(async () => {
+  await withFx(async (fx) => {
     filmography = [movieRow(SOURCE_ID, "Film One", [ROMANCE])];
     filmographyLinks = { next: "/performers/x/movies?page=2" };
     const result = await performerTags(performerRef("tpdb", PERF_ID), []);
-    // Three ceiling pages of the same single row: counted three times, and
-    // capped reports the scan stopped at the ceiling, not at exhaustion.
+    // Thirteen ceiling pages of the same single row: counted thirteen times,
+    // and capped reports the scan stopped at the ceiling, not at exhaustion.
+    // 13 × 24 keeps the ~300-row ceiling the former 3 × 100 scan gave.
     assert.deepEqual(result.tags, [
-      { name: "Romance", count: 3, id: TAG_ROMANCE },
+      { name: "Romance", count: 13, id: TAG_ROMANCE },
     ]);
-    assert.equal(result.scanned, 3);
+    assert.equal(result.scanned, 13);
     assert.equal(result.capped, true);
+    // TPDB filmography pages stay at the byte-safe 24 rows: a 100-row page
+    // overflows the provider client's 2 MiB response bound for prolific
+    // performers, so the ceiling is kept with more pages instead.
+    const first = fx.log.find(
+      (r) => pathOf(r.url) === `/performers/${PERF_ID}/movies`,
+    );
+    assert.ok(first);
+    assert.equal(queryOf(first.url).get("per_page"), "24");
   });
 });
 

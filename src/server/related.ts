@@ -376,13 +376,21 @@ export type PerformerTags = {
   errors: SourceError[];
 };
 
-// ponytail: three pages of 100 rows per performer page view — the same
+// ponytail: ~300 scanned rows per performer page view — the same
 // bounded-slice call as FILMOGRAPHY_SLICE, wider because counting wants
-// breadth. Widen TAG_SCAN_PAGES only if overviews feel thin; the provider
-// calls scale with it on every page view.
-const TAG_PAGE_ROWS = 100;
-const TAG_SCAN_PAGES = 3;
+// breadth. Widen the ceilings only if overviews feel thin; the provider
+// calls scale with them on every page view.
 const TAGS_RETURNED = 200;
+// A TPDB filmography page of 100 rows overflows the provider client's 2 MiB
+// response bound for prolific performers ("TPDB returned an oversized
+// response" — the lesson requests.ts encodes as BULK_SCAN_PAGE), so TPDB is
+// paged at the proven-safe 24 rows the browse surfaces use and walks more
+// pages for the same ceiling (13 × 24 ≈ 3 × 100). StashDB GraphQL rows are
+// slimmer and keep 100-row pages.
+const TAG_PAGE_ROWS_TPDB = 24;
+const TAG_SCAN_PAGES_TPDB = 13;
+const TAG_PAGE_ROWS_STASHDB = 100;
+const TAG_SCAN_PAGES_STASHDB = 3;
 
 export async function performerTags(
   reference: CatalogReference,
@@ -396,21 +404,24 @@ export async function performerTags(
     );
   }
   // One metadata source per kind, same mapping the page's listings use.
+  const tpdb = reference.provider === "tpdb";
+  const pageRows = tpdb ? TAG_PAGE_ROWS_TPDB : TAG_PAGE_ROWS_STASHDB;
+  const maxPages = tpdb ? TAG_SCAN_PAGES_TPDB : TAG_SCAN_PAGES_STASHDB;
   const query = (page: number): CatalogSearchQuery =>
-    reference.provider === "tpdb"
+    tpdb
       ? {
           provider: "tpdb",
           kind: "movie",
           performer: reference.id,
           page,
-          perPage: TAG_PAGE_ROWS,
+          perPage: pageRows,
         }
       : {
           provider: "stashdb",
           kind: "scene",
           performer: reference.id,
           page,
-          perPage: TAG_PAGE_ROWS,
+          perPage: pageRows,
         };
   const counts = new Map<string, { name: string; count: number; id: string }>();
   let scanned = 0;
@@ -425,7 +436,7 @@ export async function performerTags(
     capped,
     errors,
   });
-  for (let page = 1; page <= TAG_SCAN_PAGES; page++) {
+  for (let page = 1; page <= maxPages; page++) {
     let rows: CatalogSearchPage;
     try {
       rows = await searchCatalog(query(page));
@@ -445,7 +456,7 @@ export async function performerTags(
       }
     }
     if (!rows.hasMore) break;
-    capped = page === TAG_SCAN_PAGES;
+    capped = page === maxPages;
   }
   return finish([]);
 }
