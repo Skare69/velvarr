@@ -7596,3 +7596,35 @@ test("concurrent wrong-password logins for one name: at most ACCOUNT_LIMIT reach
     fx.journalOn = false;
   }
 });
+
+test("failed sign-in attempts leave an audit line with the reported client ip", async () => {
+  // Seerr-parity detection: every credential rejection logs the attempted
+  // name and the client address the hop in front reported — never the
+  // password.
+  resetLoginBuckets();
+  const lines: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (line?: unknown) => {
+    lines.push(String(line));
+  };
+  try {
+    const res = await call("POST", "/api/login", {
+      headers: { "x-forwarded-for": "203.0.113.7, 10.0.0.1" },
+      body: { username: "member", password: "pass-guess-9" },
+    });
+    assert.equal(res.status, 502);
+  } finally {
+    console.warn = originalWarn;
+  }
+  const line = lines.find((entry) => entry.includes("failed sign-in attempt"));
+  assert.ok(line, "a credential rejection must leave an audit line");
+  assert.ok(line.includes("ip=203.0.113.7"), "first forwarded hop wins");
+  assert.ok(
+    line.includes(`account=${JSON.stringify("member")}`),
+    "the attempted name is logged injection-safe",
+  );
+  assert.ok(
+    !line.includes("pass-guess-9"),
+    "the password stays out of the log",
+  );
+});

@@ -70,14 +70,25 @@ export function setupFields(body: Record<string, unknown>): SetupFields {
   };
 }
 
+// The client address as reported by the hop in front of Velvarr, for the
+// failed sign-in audit line. Direct LAN callers without a proxy have none;
+// the header is client-controlled until a trusted proxy overwrites it, so
+// the line is evidence to correlate, not attribution.
+function clientIp(request: Request): string {
+  return (
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown"
+  );
+}
+
 // Login limiter wiring, shared by every route that authenticates a name:
 // the gate is checked read-only before the attempt and the attempt's
 // per-account slot is reserved in the same synchronous step, so parallel
 // guesses each hold a slot before any upstream round-trip starts. A
-// credential rejection ("upstream_auth") keeps the reserved slot and
-// charges the global spray cap; a success or a non-credential error
-// (upstream outage, malformed fields) refunds the slot — only real guesses
-// consume budget. Callers that
+// credential rejection ("upstream_auth") keeps the reserved slot, charges
+// the global spray cap, and leaves a warn audit line with the attempted
+// name and the reported client ip (never the password); a success or a
+// non-credential error (upstream outage, malformed fields) refunds the
+// slot — only real guesses consume budget. Callers that
 // authenticate an admitted Velvarr account pass admitted=true so a
 // rotating-name sprayer filling the global bucket cannot lock the
 // household out; setup paths keep the cap fully (no accounts exist before
@@ -86,6 +97,7 @@ async function guardedAuthentication<T>(
   name: string,
   attempt: () => Promise<T>,
   admitted = false,
+  ip = "unknown",
 ): Promise<T> {
   assertLoginAllowed(name, admitted);
   const refund = reserveLoginAttempt(name);
@@ -94,9 +106,13 @@ async function guardedAuthentication<T>(
     refund();
     return result;
   } catch (e) {
-    if (e instanceof AppError && e.code === "upstream_auth")
+    if (e instanceof AppError && e.code === "upstream_auth") {
+      // JSON.stringify keeps an attacker-chosen name on one log line.
+      console.warn(
+        `[auth] failed sign-in attempt: account=${JSON.stringify(name)} ip=${ip}`,
+      );
       recordLoginFailure();
-    else refund();
+    } else refund();
     throw e;
   }
 }
@@ -146,8 +162,11 @@ export async function setupInspect(request: Request): Promise<Response> {
   const body = await readJson(request);
   verifySetupSecret(body.setupSecret);
   const fields = setupFields(body);
-  const selection = await guardedAuthentication(fields.username, () =>
-    verifySetupSelection(fields),
+  const selection = await guardedAuthentication(
+    fields.username,
+    () => verifySetupSelection(fields),
+    false,
+    clientIp(request),
   );
   return json({
     user: { id: selection.user.id, name: selection.user.name },
@@ -180,8 +199,11 @@ export async function setupCommit(request: Request): Promise<Response> {
       );
     whisparr = { url: validateBaseUrl(whisparrUrl), apiKey: whisparrApiKey };
   }
-  const selection = await guardedAuthentication(fields.username, () =>
-    verifySetupSelection(fields),
+  const selection = await guardedAuthentication(
+    fields.username,
+    () => verifySetupSelection(fields),
+    false,
+    clientIp(request),
   );
   if (
     !libraryIds.every((id) =>
@@ -223,6 +245,7 @@ export async function login(request: Request): Promise<Response> {
     username,
     () => authenticate(config.jellyfin.url, username, password),
     hasAccountNamed(username),
+    clientIp(request),
   );
   const account = getAccount(user.id);
   if (!account)
