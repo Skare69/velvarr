@@ -246,7 +246,7 @@ function SortSelect({
 
 /** Local input that resyncs when the URL value changes from the outside
  * (chip removal, provider switch, Back) without fighting the user's typing. */
-function useSyncedInput(value: string) {
+export function useSyncedInput(value: string) {
   const [input, setInput] = useState(value);
   const committed = useRef(value);
   useEffect(() => {

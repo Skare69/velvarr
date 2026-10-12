@@ -2,7 +2,7 @@
 
 /* Library Shell view: LibraryView grid plus the ItemDetail overlay page. */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import type {
   CatalogDetailResponse,
@@ -24,7 +24,7 @@ import {
   useParamsSetter,
 } from "./shared.tsx";
 import { DetailSections, type DetailTarget } from "./catalog-detail.tsx";
-import { useBrowseTo } from "./catalog.tsx";
+import { useBrowseTo, useSyncedInput } from "./catalog.tsx";
 
 const runtime = (ticks?: number) =>
   ticks && ticks > 0 ? `${Math.round(ticks / 600_000_000)} min` : null;
@@ -41,7 +41,11 @@ export function LibraryView() {
   const limit = limitRaw >= 1 && limitRaw <= 60 ? limitRaw : 24;
   const itemId = params.get("item");
 
-  const [searchInput, setSearchInput] = useState(search);
+  const {
+    input: searchInput,
+    setInput: setSearchInput,
+    mark,
+  } = useSyncedInput(search);
   const closeItem = useCallback(() => setP({ item: null }), [setP]);
 
   const {
@@ -54,12 +58,12 @@ export function LibraryView() {
   // ponytail: fixed 400ms debounce; typed-submit (Enter) flushes immediately
   useEffect(() => {
     if (searchInput === search) return;
-    const t = setTimeout(
-      () => setP({ search: searchInput || null, start: null }),
-      400,
-    );
+    const t = setTimeout(() => {
+      mark(searchInput);
+      setP({ search: searchInput || null, start: null });
+    }, 400);
     return () => clearTimeout(t);
-  }, [searchInput, search, setP]);
+  }, [searchInput, search, setP, mark]);
 
   const gridQs = new URLSearchParams({
     start: String(start),
@@ -116,8 +120,10 @@ export function LibraryView() {
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter")
+                if (e.key === "Enter") {
+                  mark(searchInput);
                   setP({ search: searchInput || null, start: null });
+                }
               }}
             />
           </div>
