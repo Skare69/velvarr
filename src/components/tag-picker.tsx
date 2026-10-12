@@ -39,6 +39,12 @@ function realTag(t: CatalogTagSelection): boolean {
   );
 }
 
+/** The typed term itself: a selection with no provider id, workable only
+ * where matching runs locally. */
+function isFreeText(t: CatalogTagSelection): boolean {
+  return t.tpdb === undefined && t.stashdb === undefined;
+}
+
 /** Where a tag exists, in library terms: TPDB publishes movies, StashDB
  * scenes; both references means both. */
 function sources(t: CatalogTagSelection): string {
@@ -122,7 +128,23 @@ export function TagPicker({
     !picked.has(normalizeFacetName(t))
       ? { name: t }
       : null;
-  const choices = freeText === null ? options : [freeText, ...options];
+  // Exact real-tag matches go above the pinned free-text row: the default
+  // active row is index 0, so Enter must land on the actual tag when the
+  // typed term carries a real tag's name. The free-text offer itself stays
+  // in the list (efd5cfb) — only its lead position is conditional.
+  const nTerm = normalizeFacetName(t);
+  const choices =
+    freeText === null
+      ? options
+      : [
+          ...options.filter((o) => normalizeFacetName(o.name) === nTerm),
+          freeText,
+          ...options.filter((o) => normalizeFacetName(o.name) !== nTerm),
+        ];
+  // Typing shrinks the list until the debounced search settles; a stored
+  // index must never point past the rendered options.
+  const activeIdx =
+    choices.length === 0 ? 0 : Math.min(active, choices.length - 1);
   const sourceErrors = current && error === null ? (data?.errors ?? []) : [];
   const showList = open && choices.length > 0;
 
@@ -140,13 +162,16 @@ export function TagPicker({
       if (choices.length === 0) return;
       setOpen(true);
       const last = choices.length - 1;
-      setActive((a) =>
-        e.key === "ArrowDown" ? Math.min(a + 1, last) : Math.max(a - 1, 0),
+      setActive(
+        e.key === "ArrowDown"
+          ? Math.min(activeIdx + 1, last)
+          : Math.max(activeIdx - 1, 0),
       );
     } else if (e.key === "Enter") {
       // A tag field must never submit the surrounding form.
       e.preventDefault();
-      if (showList && choices[active] !== undefined) pick(choices[active]);
+      if (showList && choices[activeIdx] !== undefined)
+        pick(choices[activeIdx]);
     } else if (e.key === "Escape") {
       if (showList) {
         e.preventDefault();
@@ -176,7 +201,7 @@ export function TagPicker({
         aria-describedby={description === undefined ? undefined : `${id}-hint`}
         aria-expanded={showList}
         aria-controls={showList ? `${id}-listbox` : undefined}
-        aria-activedescendant={showList ? `${id}-opt-${active}` : undefined}
+        aria-activedescendant={showList ? `${id}-opt-${activeIdx}` : undefined}
         aria-autocomplete="list"
         maxLength={200}
         placeholder="Search tags…"
@@ -184,6 +209,9 @@ export function TagPicker({
         value={term}
         onChange={(e) => {
           setTerm(e.target.value);
+          // A stored pointer describes the previous term's list; typing
+          // always falls back to the default row.
+          setActive(0);
           setOpen(true);
         }}
         onFocus={() => {
@@ -225,8 +253,7 @@ export function TagPicker({
               {choices.map((tag, i) => {
                 // A free-text term can normalize to the same name as a
                 // loaded tag; the label-only row needs its own key.
-                const free =
-                  tag.tpdb === undefined && tag.stashdb === undefined;
+                const free = isFreeText(tag);
                 return (
                   <li
                     key={
@@ -240,11 +267,11 @@ export function TagPicker({
                       type="button"
                       role="option"
                       id={`${id}-opt-${i}`}
-                      aria-selected={i === active}
+                      aria-selected={i === activeIdx}
                       tabIndex={-1}
                       className="cat-picker-row"
                       style={
-                        i === active
+                        i === activeIdx
                           ? { borderColor: "var(--color-accent)" }
                           : undefined
                       }
@@ -286,8 +313,13 @@ export function TagPicker({
                 className="chip"
                 disabled={disabled}
                 onClick={() => onChange(selected.filter((_, j) => j !== i))}
-                aria-label={`Remove tag: ${tag.name}`}
+                aria-label={`Remove ${
+                  isFreeText(tag) ? "free-text tag" : "tag"
+                }: ${tag.name}`}
               >
+                {isFreeText(tag) && (
+                  <span className="text-muted">Free text:</span>
+                )}
                 {tag.name} <span aria-hidden="true">×</span>
               </button>
             </li>
