@@ -499,6 +499,19 @@ test("guardMutation enforces exact configured origin and safe transport", () => 
   process.env.VELVARR_ORIGIN = "http://127.0.0.1:5577";
 });
 
+// One failed login, the way routes/auth.ts runs it: the attempt reserves
+// its account slot before the upstream call, and a credential rejection
+// keeps that slot and feeds the global spray cap. A full global cap
+// surfaces 429 to the route, but the account charge stands either way.
+function failedLogin(name: string): void {
+  security.reserveLoginAttempt(name); // refund dropped: this was a guess
+  try {
+    security.recordLoginFailure();
+  } catch {
+    // global spray cap full — the reservation's charge already landed
+  }
+}
+
 test("setup secret compare is constant-time-correct; login limiter is bounded per account and globally", () => {
   assert.throws(
     () => security.verifySetupSecret("wrong-secret"),
@@ -513,14 +526,14 @@ test("setup secret compare is constant-time-correct; login limiter is bounded pe
   let last: unknown;
   for (let i = 0; i < 5; i++) {
     try {
-      security.recordLoginFailure("alice");
+      failedLogin("alice");
     } catch (e) {
       last = e;
     }
   }
   assert.equal(last, undefined, "five failures must pass");
   assert.throws(
-    () => security.recordLoginFailure("alice"),
+    () => failedLogin("alice"),
     (e: { code: string }) => e.code === "too_many_attempts",
   );
   // The gate is read-only and account-scoped: alice is locked out, bob is
@@ -530,15 +543,23 @@ test("setup secret compare is constant-time-correct; login limiter is bounded pe
     (e: { code: string }) => e.code === "too_many_attempts",
   );
   security.assertLoginAllowed("bob");
-  security.recordLoginFailure("bob");
+  failedLogin("bob");
+  security.assertLoginAllowed("bob");
+  // A login that never fails refunds its slot: six successful logins in a
+  // row leave bob's account bucket untouched.
+  for (let i = 0; i < 6; i++) {
+    const refund = security.reserveLoginAttempt("bob");
+    refund();
+  }
+  security.assertLoginAllowed("bob");
 
-  // The global spray cap: many distinct names, each far under its own
-  // account limit, must still trip the process-global bucket. Reaching it
+  // The global spray cap: failures that each stay far under their own
+  // account limit must still trip the process-global bucket. Reaching it
   // here is what makes this test fail if the global charge ever disappears.
   let tripped: unknown;
   for (let i = 0; i < 300 && tripped === undefined; i++) {
     try {
-      security.recordLoginFailure(`spray-${i}`);
+      security.recordLoginFailure();
     } catch (e) {
       tripped = e;
     }
@@ -561,17 +582,16 @@ test("login limiter: the spray cap binds strangers, admitted names ride past it"
   security.resetLoginBuckets();
   // The per-account bucket still binds an admitted name even with admitted
   // set: brute force on a real account stays throttled.
-  for (let i = 0; i < 5; i++) security.recordLoginFailure("locked-owner");
+  for (let i = 0; i < 5; i++) failedLogin("locked-owner");
   assert.throws(
     () => security.assertLoginAllowed("locked-owner", true),
     (e: { code: string }) => e.code === "too_many_attempts",
   );
-  // Fill the global bucket with rotating unknown names, whatever earlier
-  // tests left in it.
+  // Fill the global bucket with whatever earlier tests left in it.
   let sprayed = 0;
   for (;;) {
     try {
-      security.recordLoginFailure(`spray-${sprayed}`);
+      security.recordLoginFailure();
       sprayed += 1;
     } catch (e) {
       assert.ok(
@@ -598,6 +618,25 @@ test("login limiter: the spray cap binds strangers, admitted names ride past it"
   // ...while an admitted name rides past the spray cap: the owner can sign
   // in while a sprayer hammers the box.
   security.assertLoginAllowed("fresh-admitted", true);
+  // The regression this pair must prevent: with the global bucket full,
+  // guessing an admitted name is still bounded by its own account bucket.
+  // The old global-first charge skipped the account charge once the spray
+  // cap was full, leaving admitted names unbounded.
+  security.assertLoginAllowed("brute-target", true);
+  for (let i = 0; i < 5; i++) failedLogin("brute-target");
+  // The sixth guess is refused by its own account bucket, not the spray
+  // cap: global full no longer means unlimited guesses.
+  assert.throws(
+    () => failedLogin("brute-target"),
+    (e: { code: string }) => e.code === "too_many_attempts",
+  );
+  assert.throws(
+    () => security.assertLoginAllowed("brute-target", true),
+    (e: { code: string }) => e.code === "too_many_attempts",
+  );
+  // An untouched admitted name is exempt from the spray cap only, not
+  // unlocked: a full global bucket locks no admitted name by itself.
+  security.assertLoginAllowed("brute-bystander", true);
 });
 
 test("session cookie flags follow request transport and clear correctly", () => {

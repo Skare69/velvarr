@@ -17,6 +17,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { resetMetaCache } from "../src/server/providers.ts";
 import { resetSweepCache } from "../src/server/jellyfin.ts";
 import { resetUpdateCache } from "../src/server/update.ts";
+import { resetLoginBuckets } from "../src/server/security.ts";
 import { countPendingApprovals } from "../src/lib/approvals.ts";
 import type { RouteDef } from "../src/app/api/[...path]/admission.ts";
 import { resetSessionCache } from "../src/app/api/[...path]/admission.ts";
@@ -7553,4 +7554,45 @@ test("a declared Content-Length over the limit is refused without reading", asyn
   // handler's: it errors the stream, so any handler read would reject into a
   // 500 — the 413 above proves the body was never read.
   assert.ok(produced <= 1, `handler read the body (${produced} pulls)`);
+});
+test("concurrent wrong-password logins for one name: at most ACCOUNT_LIMIT reach Jellyfin", async () => {
+  // The account bucket must bound a burst, not just a sequence: a charge
+  // that only lands after the upstream round-trip lets every parallel
+  // guess pass the read-only gate before any of them is counted.
+  resetLoginBuckets();
+  fx.journalOn = true;
+  fx.journal.length = 0;
+  try {
+    const responses = await Promise.all(
+      Array.from({ length: 40 }, () =>
+        call("POST", "/api/login", {
+          body: { username: "owner", password: "pass-member" },
+        }),
+      ),
+    );
+    const reached = fx.journal.filter(
+      (entry) =>
+        entry.method === "POST" && entry.path === "/Users/AuthenticateByName",
+    ).length;
+    assert.ok(
+      reached >= 1,
+      "the burst must be real: at least one guess reaches Jellyfin",
+    );
+    assert.ok(
+      reached <= 5,
+      `at most ACCOUNT_LIMIT guesses may reach Jellyfin, saw ${reached}`,
+    );
+    assert.ok(
+      responses.some((res) => res.status === 429),
+      "the surplus guesses must be refused at the gate",
+    );
+    for (const res of responses) {
+      assert.ok(
+        res.status === 429 || res.status === 502,
+        `unexpected status ${res.status}`,
+      );
+    }
+  } finally {
+    fx.journalOn = false;
+  }
 });

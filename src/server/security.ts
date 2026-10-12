@@ -168,8 +168,9 @@ export function verifySetupSecret(value: unknown): void {
 }
 
 // Read-only gate: may this name try to authenticate now. Nothing is consumed
-// here — budget is charged on failed authentications only
-// (recordLoginFailure), so a successful login never burns its own account's
+// here — the attempt reserves its per-account slot right after the gate
+// (reserveLoginAttempt), and the slot is refunded on a success or a
+// non-credential error, so a successful login never burns its own account's
 // budget. The spray cap binds only names without an admitted Velvarr
 // account: admitted names skip it (their brute force is bounded by the
 // per-account bucket), so a rotating-name sprayer can fill the global
@@ -209,17 +210,35 @@ export function resetLoginBuckets(): void {
   buckets.clear();
 }
 
-// Charges one failed authentication: the account bucket carries the
-// brute-force limit, the global bucket is the last-resort spray cap. Global
-// is charged first so an already-locked account's guesses still feed it.
-// ponytail: with the global bucket full, an admitted name's failure throws
-// on the global charge before its account bucket fills; if upstream
-// round-trips during an active spray ever matter, charge admitted names
-// account-first.
-export function recordLoginFailure(name: string): void {
-  const now = Date.now();
-  consumeBucket("global", GLOBAL_LIMIT, now);
-  consumeBucket(`account:${name.trim().toLowerCase()}`, ACCOUNT_LIMIT, now);
+// Reserves one attempt slot in the account bucket before the attempt runs.
+// The reservation lands in the same synchronous step as the gate, so every
+// in-flight guess holds a slot and parallel guesses cannot all reach
+// upstream at once (a charge that only landed after the upstream
+// round-trip let a whole burst through). The returned refund covers the
+// outcomes that were not guesses — a success, an upstream outage, a
+// malformed field; a credential rejection keeps the charge. The account
+// bucket is charged regardless of the global bucket's state, so a sprayer
+// who fills the global cap cannot unlock unlimited guesses against known
+// admitted names.
+export function reserveLoginAttempt(name: string): () => void {
+  const key = `account:${name.trim().toLowerCase()}`;
+  consumeBucket(key, ACCOUNT_LIMIT, Date.now());
+  // ponytail: a refund landing after a window rollover frees one slot in
+  // the fresh window; only non-guess outcomes refund, so no guess ever
+  // gets capacity back.
+  return () => {
+    const bucket = buckets.get(key);
+    if (bucket && bucket.count > 0) bucket.count -= 1;
+  };
+}
+
+// Charges one failed authentication against the global spray cap. The
+// process-wide cap has no name dimension: the account slot was already
+// paid by reserveLoginAttempt before the attempt. Charging the cap on
+// every credential rejection keeps an active brute force feeding it even
+// once the name's account bucket is full.
+export function recordLoginFailure(): void {
+  consumeBucket("global", GLOBAL_LIMIT, Date.now());
 }
 
 export function sessionCookie(grant?: SessionGrant, secure?: boolean): string {
