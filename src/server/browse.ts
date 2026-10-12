@@ -13,8 +13,10 @@
 //
 // ponytail: upstream scan ceiling is 40 provider pages per stream per
 // request. Hitting it before a page fills is a visible 422 "query_too_broad",
-// never a fake empty page or fake end — narrow the filters. Raise
-// MAX_SCAN_PAGES only when real browsing measurably needs it.
+// never a fake empty page or fake end — narrow the filters. One exception:
+// a multi-term free-text AND riding its native any-of union degrades to a
+// named partial page instead (Stream.softCeiling). Raise MAX_SCAN_PAGES only
+// when real browsing measurably needs it.
 
 // Stryker disable all — the mutation window re-opens below the parse/adapters
 // block and covers the pure merge/plan logic only (mergeStreams, nativeQuery,
@@ -516,7 +518,9 @@ class Stream {
   }
 
   /** One more upstream page into the buffer. Throws query_too_broad when the
-   * documented ceiling is hit while upstream continuation still exists. */
+   * documented ceiling is hit while upstream continuation still exists —
+   * except a softCeiling stream, which degrades to a named scan_ceiling
+   * error instead of throwing. */
   async fetch(): Promise<void> {
     if (!this.live) return;
     this.fetches += 1;
@@ -634,7 +638,8 @@ async function mergeStreams(
     // an unfetched page.
     // A page whose rows were all filtered out locally must not end the
     // browse: keep pulling that stream until it yields a visible row or
-    // genuinely runs out (the scan ceiling throws).
+    // genuinely runs out (a hard scan ceiling throws; a soft one ends the
+    // stream with its named scan_ceiling error).
     for (const s of streams) {
       while (s.buffer.length === 0 && s.live) await s.fetch();
     }
@@ -1164,9 +1169,13 @@ export async function browseTitles(
         ),
         query.perPage,
         plan.localFiltered,
-        // A free-text AND is the local filter the scan ceiling degrades on;
-        // hidden, exclude and year scans keep the hard 422.
-        plan.localInclude.some((sel) => isFreeTextSelection(sel)),
+        // The soft ceiling is exactly the documented contract: a multi-term
+        // free-text AND riding its native any-of union — the union kept the
+        // scanned pages productive. Filmography scans (no native tag
+        // criterion), anchored+free mixes (native all-of) and every other
+        // local filter keep the hard 422; hidden or exclude starvation on
+        // a union stream still degrades (the pages were productive).
+        plan.includeAny && plan.localInclude.length > 1,
       ),
   );
   streams.push(...unresolved);

@@ -1910,6 +1910,140 @@ test("an unbounded narrow query ends in a visible ceiling error, not a fake end"
   );
 });
 
+test("a filmography free-text include keeps the hard ceiling error", async () => {
+  let moviesCalled = 0;
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [
+        {
+          // Endless filmography pages, none carrying a tag with the term:
+          // with no native tag criterion the scan can stay matchless
+          // forever, so it must 422 instead of degrading.
+          rows: [tpdbRow(uuid(9), "No rare tag", "2024-01-01")],
+          next: "x",
+          total: 10000,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: () => {
+        moviesCalled += 1;
+      },
+    }),
+    async () => {
+      await assert.rejects(
+        browseTitles(
+          {
+            type: "movie",
+            performerTpdb: uuid(55),
+            include: [{ name: "rare" }],
+            exclude: [],
+            studioMode: "exact",
+            page: 1,
+            perPage: 10,
+          },
+          [],
+        ),
+        appError(422, "query_too_broad"),
+      );
+      assert.equal(moviesCalled, 40);
+    },
+  );
+});
+
+test("a free-text term beside an anchored tag keeps the hard ceiling error", async () => {
+  const TAG_ANCHOR = { id: 15, uuid: uuid(105), name: "Anchor Tag" };
+  let moviesCalled = 0;
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [TAG_ANCHOR],
+      moviePages: [
+        {
+          // Every row carries the anchored tag but none carries a tag
+          // containing the free term: the native all-of keeps the pages
+          // flowing while the local free term filters everything, so the
+          // stream runs to its ceiling.
+          rows: [tpdbRow(uuid(9), "Anchor only", "2024-01-01", [TAG_ANCHOR])],
+          next: "x",
+          total: 10000,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: () => {
+        moviesCalled += 1;
+      },
+    }),
+    async () => {
+      await assert.rejects(
+        browseTitles(
+          {
+            type: "movie",
+            include: [
+              { name: TAG_ANCHOR.name, tpdb: TAG_ANCHOR.uuid },
+              { name: "nevermatches" },
+            ],
+            exclude: [],
+            studioMode: "exact",
+            page: 1,
+            perPage: 10,
+          },
+          [],
+        ),
+        appError(422, "query_too_broad"),
+      );
+      assert.equal(moviesCalled, 40);
+    },
+  );
+});
+
+test("a free-text AND starved by hidden tags still degrades at the ceiling", async () => {
+  const TAG_XYZ_A = { id: 11, uuid: uuid(101), name: "XYZ Special" };
+  const TAG_XYZ_B = { id: 12, uuid: uuid(102), name: "XYZ Thing" };
+  const TAG_ABC = { id: 13, uuid: uuid(103), name: "ABC Thing" };
+  const TAG_HIDDEN = { id: 14, uuid: uuid(104), name: "Hidden" };
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [TAG_XYZ_A, TAG_XYZ_B, TAG_ABC],
+      moviePages: [
+        {
+          // Union-matching rows the account's hidden tag then filters
+          // locally: the native any-of keeps every scanned page productive,
+          // hidden tags just starve the visible yield, so this stays the
+          // soft degrade with its named error.
+          rows: [
+            tpdbRow(uuid(2), "Hidden xyz", "2024-02-01", [
+              TAG_XYZ_A,
+              TAG_HIDDEN,
+            ]),
+          ],
+          next: "x",
+          total: 10000,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "movie",
+          include: [{ name: "xyz" }, { name: "abc" }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [{ name: TAG_HIDDEN.name, tpdb: TAG_HIDDEN.uuid }],
+      );
+      assert.deepEqual(page.items, []);
+      assert.equal(page.hasMore, false);
+      assert.deepEqual(
+        page.errors.map((e) => [e.provider, e.code]),
+        [["tpdb", "scan_ceiling"]],
+      );
+    },
+  );
+});
+
 // --- local year predicate on StashDB, native year on TPDB ---
 
 test("year filters natively on TPDB and locally on StashDB", async () => {

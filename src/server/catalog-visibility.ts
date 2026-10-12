@@ -10,8 +10,9 @@ import type { CatalogDetail, CatalogTagSelection } from "../lib/contracts.ts";
 
 /** `"exact"`: folded-label equality — the include paths, which mirror or
  * must agree with native provider tag ids. `"substring"`: the folded term
- * appears anywhere in a tag's folded name — free-text include chips, which
- * filter locally after pages arrive. `"family"`: the selection's
+ * appears anywhere in a tag's folded name — free-text include chips, whose
+ * native any-of expansion only pre-filters, so the visible predicate
+ * re-checks every term locally after pages arrive. `"family"`: the selection's
  * token sequence appears as a contiguous run of the tag's tokens, so
  * "Anal" matches "Anal Creampie"/"Rough Anal Sex" but never "Analingus",
  * and "Double Penetration" never matches "Double Anal Penetration" — the
