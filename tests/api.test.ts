@@ -1290,6 +1290,30 @@ test("update chip: surfaces once per check, untrusted urls and failure degrade t
     resetUpdateCache();
     const degraded = await call("GET", "/api/update");
     assert.deepEqual(await degraded.json(), { update: null });
+
+    // A non-OK status degrades even when the body happens to carry a valid
+    // payload, and only a *leading* v is stripped from the tag: a malformed
+    // tag must not become a chip (1.v0.0 would otherwise strip to 1.0.0).
+    globalThis.fetch = (async () =>
+      Response.json(
+        {
+          tag_name: "v9.9.9",
+          html_url: "https://github.com/Skare69/velvarr/releases/tag/v9.9.9",
+        },
+        { status: 403 },
+      )) as typeof fetch;
+    resetUpdateCache();
+    const nonOk = await call("GET", "/api/update");
+    assert.deepEqual(await nonOk.json(), { update: null });
+
+    globalThis.fetch = (async () =>
+      Response.json({
+        tag_name: "1.v0.0",
+        html_url: "https://github.com/Skare69/velvarr/releases/tag/1.v0.0",
+      })) as typeof fetch;
+    resetUpdateCache();
+    const malformed = await call("GET", "/api/update");
+    assert.deepEqual(await malformed.json(), { update: null });
   } finally {
     globalThis.fetch = realFetch;
     resetUpdateCache();
@@ -1315,6 +1339,86 @@ test("update chip: VELVARR_UPDATE_CHECK=0 opts out with no github call", async (
   } finally {
     if (hadEnv) process.env.VELVARR_UPDATE_CHECK = realEnv;
     else delete process.env.VELVARR_UPDATE_CHECK;
+    globalThis.fetch = realFetch;
+    resetUpdateCache();
+  }
+});
+
+test("update chip: cache windows — one hour after success, ten minutes after failure", async () => {
+  const realFetch = globalThis.fetch;
+  const realNow = Date.now;
+  let now = 1_700_000_000_000;
+  let calls = 0;
+  let seenUrl = "";
+  let seenAccept = "";
+  let stub: () => Response = () => Response.json({});
+  try {
+    // README promises github is asked "at most once an hour — ten minutes
+    // after a failure". The windows are hardcoded here, not imported, so
+    // swapping FRESH_MS/FAILED_MS in src/server/update.ts fails this test.
+    Date.now = () => now;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      calls++;
+      seenUrl = String(input);
+      seenAccept =
+        (init?.headers as Record<string, string> | undefined)?.accept ?? "";
+      return stub();
+    }) as typeof fetch;
+
+    // A success is trusted for one hour: 1 ms inside the window is served
+    // from cache, exactly 1 h later github is asked again.
+    stub = () =>
+      Response.json({
+        tag_name: "v9.9.9",
+        html_url: "https://github.com/Skare69/velvarr/releases/tag/v9.9.9",
+      });
+    resetUpdateCache();
+    const first = await call("GET", "/api/update");
+    assert.deepEqual(await first.json(), {
+      update: {
+        version: "9.9.9",
+        url: "https://github.com/Skare69/velvarr/releases/tag/v9.9.9",
+      },
+    });
+    assert.equal(
+      seenUrl,
+      "https://api.github.com/repos/Skare69/velvarr/releases/latest",
+    );
+    assert.equal(seenAccept, "application/vnd.github+json");
+    assert.equal(calls, 1);
+    now += 60 * 60 * 1000 - 1;
+    await call("GET", "/api/update");
+    assert.equal(calls, 1);
+    now += 1;
+    await call("GET", "/api/update");
+    assert.equal(calls, 2);
+
+    // A failed check retries after ten minutes: 1 ms inside the window stays
+    // cached (one github blip must not hide a release for an hour, nor cost
+    // a call per hit), exactly 10 min later it retries — and a tag older
+    // than the current build correctly reports no update.
+    stub = () => new Response("rate limited", { status: 403 });
+    resetUpdateCache();
+    const degraded = await call("GET", "/api/update");
+    assert.deepEqual(await degraded.json(), { update: null });
+    assert.equal(calls, 3);
+    now += 10 * 60 * 1000 - 1;
+    await call("GET", "/api/update");
+    assert.equal(calls, 3);
+    now += 1;
+    stub = () =>
+      Response.json({
+        tag_name: "v0.0.1",
+        html_url: "https://github.com/Skare69/velvarr/releases/tag/v0.0.1",
+      });
+    const recovered = await call("GET", "/api/update");
+    assert.deepEqual(await recovered.json(), { update: null });
+    assert.equal(calls, 4);
+  } finally {
+    Date.now = realNow;
     globalThis.fetch = realFetch;
     resetUpdateCache();
   }
