@@ -1381,14 +1381,25 @@ export function TitlesView() {
             />
           ) : (
             <>
-              {acc.errors.map((e) => (
-                <ErrorPanel
-                  key={e.provider}
-                  title={`${providerLabel(e.provider)} unavailable`}
-                  message={e.message}
-                  onRetry={retry}
-                />
-              ))}
+              {acc.errors.map((e) =>
+                e.code === "scan_ceiling" ? (
+                  // The source answered every scanned page and hit the
+                  // documented limit: a partial answer, not an outage. No
+                  // retry — only narrower filters change the outcome.
+                  <ErrorPanel
+                    key={e.provider}
+                    title={`${providerLabel(e.provider)}: scan limit reached`}
+                    message={e.message}
+                  />
+                ) : (
+                  <ErrorPanel
+                    key={e.provider}
+                    title={`${providerLabel(e.provider)} unavailable`}
+                    message={e.message}
+                    onRetry={retry}
+                  />
+                ),
+              )}
               {acc.items.length === 0 ? (
                 // Empty is only claimed when no source failed: the error
                 // panels above carry the failures.
