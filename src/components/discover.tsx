@@ -668,6 +668,16 @@ export function DiscoverShelves() {
   if (!page) return null;
   return (
     <section aria-label="Discover">
+      {/* A failed reload keeps the loaded shelves by design (useApiGet only
+          drops cache-hit data); the panel says they are stale instead of
+          reading as current. */}
+      {error !== null && (
+        <ErrorPanel
+          title="Could not refresh Discover"
+          message={error}
+          onRetry={reload}
+        />
+      )}
       {/* The server's shelf order IS the composition — it resolves each
           account's saved order (personal content preferences) over the
           default, and only shelves present in this response are rendered.
