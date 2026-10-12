@@ -1090,7 +1090,7 @@ test("a 30-tag StashDB expansion filters the scene side locally instead of sendi
   );
 });
 
-test("an empty expansion on an endless scene source degrades at the ceiling instead of a provably-empty page", async () => {
+test("an empty expansion on an endless scene source stays a named 422, never a provably-empty page", async () => {
   await runBrowse(
     scriptedUpstream({
       // No tag anywhere contains the term: the expansion is complete and
@@ -1105,27 +1105,27 @@ test("an empty expansion on an endless scene source degrades at the ceiling inst
       },
     }),
     async () => {
-      const page = await browseTitles(
-        {
-          type: "scene",
-          include: [{ name: "zzzz" }],
-          exclude: [],
-          studioMode: "exact",
-          page: 1,
-          perPage: 10,
-        },
-        [],
-      );
-      // No exact zero: the page carries the named ceiling error and unknown
-      // totals — the scan cannot prove the side is empty, so nothing says
-      // so. (The old behavior skipped a side whose search found nothing and
-      // answered total 0, totalCountKnown true without any upstream read.)
-      assert.deepEqual(page.items, []);
-      assert.equal(page.totalCountKnown, false);
-      assert.equal(page.total, undefined);
-      assert.deepEqual(
-        page.errors.map((e) => [e.provider, e.code]),
-        [["stashdb", "scan_ceiling"]],
+      // No exact zero: the side really scans, and when the endless source
+      // meets the documented ceiling the named 422 is the answer — never a
+      // fake empty page. (The old behavior skipped a side whose search
+      // found nothing and answered total 0, totalCountKnown true without
+      // any upstream read.) Under the reconciled soft-ceiling contract a
+      // single-term local scan keeps the hard ceiling; only a multi-term
+      // AND riding its native any-of union degrades to the named partial
+      // page.
+      await assert.rejects(
+        browseTitles(
+          {
+            type: "scene",
+            include: [{ name: "zzzz" }],
+            exclude: [],
+            studioMode: "exact",
+            page: 1,
+            perPage: 10,
+          },
+          [],
+        ),
+        appError(422, "query_too_broad"),
       );
     },
   );
