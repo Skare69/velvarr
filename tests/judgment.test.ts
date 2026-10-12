@@ -118,6 +118,43 @@ test("the judgment is capped, so a bloated library cannot run away", async () =>
   assert.ok(calls <= 20, `expected at most 20 judgments, saw ${calls}`);
 });
 
+test("a real near-miss is judged even when 25 stop-word siblings crowd the pool", async () => {
+  // Release-review repro: 25 "Into the Night NN" items share only the stop
+  // word "the" with the ask, yet the old first-20 loop spent the whole
+  // judgment cap on them in SortName order, so the naming variant at the
+  // end of the alphabet was never judged and the verdict read missing.
+  const candidates = Array.from({ length: 25 }, (_, i) =>
+    candidate(`Into the Night ${String(i + 1).padStart(2, "0")}`, 2020),
+  );
+  candidates.push(candidate("Brazzers: The Office Affair", 2021));
+  const calls: Array<[string, string]> = [];
+  assert.equal(
+    await candidatesMayMatch(
+      candidates,
+      hints("The Office Affair", 2021),
+      async (a, b) => {
+        calls.push([a.title, b.title]);
+        return true;
+      },
+    ),
+    true,
+  );
+  assert.deepEqual(calls, [
+    ["The Office Affair", "Brazzers: The Office Affair"],
+  ]);
+});
+
+test("a pool sharing only stop words never reaches the judgment", async () => {
+  const candidates = [
+    candidate("Into the Night", 2020),
+    candidate("Her and the City", 2019),
+  ];
+  assert.equal(
+    await candidatesMayMatch(candidates, hints("The Office Affair"), never),
+    false,
+  );
+});
+
 test("candidatesMayMatch feeds the performer into the judgment", async () => {
   const candidates = [candidate("Sunset Blvd with Maddie Wren", 2024)];
   let seen: { title: string; performer?: string; year?: number } | null = null;

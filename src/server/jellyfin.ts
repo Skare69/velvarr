@@ -1069,20 +1069,28 @@ function titleYearSimilar(dto: BaseItemDto, hints: PlaybackHints): boolean {
   return true;
 }
 
-/** Words long enough to carry meaning, for the cheap near-miss prefilter. */
-const significantWords = (s: string) =>
-  s
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((w) => w.length >= 3);
+/** Common words that carry no evidence that two titles name the same work.
+ * Shorter junk ("a", "of", "to") is already dropped by the 3-char floor. */
+const STOP_WORDS: Record<string, true> = {
+  the: true,
+  and: true,
+  for: true,
+  with: true,
+  her: true,
+  his: true,
+  its: true,
+};
 
 // The widen step behind titleYearSimilar: exact title equality misses the
 // same work named slightly differently ("No Time to Die" vs "Bond: No Time
-// to Die", a transliteration, a dropped subtitle). Each near-miss goes to a
-// typed same-work judgment — but the verdict contract is untouched: a yes
-// still only produces 'ambiguous' for administrator review, never
-// 'available', and a missing key, an outage, or a low-probability answer
-// behaves exactly like the exact matcher alone.
+// to Die", a dropped subtitle). Each near-miss goes to a typed same-work
+// judgment — but the verdict contract is untouched: a yes still only
+// produces 'ambiguous' for administrator review, never 'available', and a
+// missing key, an outage, or a low-probability answer behaves exactly like
+// the exact matcher alone.
+// ponytail: the ASCII-only word split cannot read non-Latin titles
+// (Cyrillic, Han, …), so those yield no words and are never judged;
+// Unicode folding or provider-supplied romanized titles would lift that.
 const JUDGMENT_CAP = 20;
 
 export async function candidatesMayMatch(
@@ -1095,17 +1103,31 @@ export async function candidatesMayMatch(
 ): Promise<boolean> {
   if (candidates.some((c) => titleYearSimilar(c.dto, hints))) return true;
   if (!hints.title) return false;
-  const wanted = new Set(significantWords(hints.title));
+  // Meaningful words of the requested title: 3+ chars, stop words dropped.
+  const wanted = new Set(
+    hints.title
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length >= 3 && !Object.hasOwn(STOP_WORDS, w)),
+  );
   if (wanted.size === 0) return false;
-  let judged = 0;
-  for (const c of candidates) {
-    if (judged >= JUDGMENT_CAP) break;
-    if (!c.dto.Name) continue;
-    const words = significantWords(c.dto.Name);
-    // Prefilter: one meaningful word in common. Nothing shared is not a
-    // naming variant, and the judgment never sees it.
-    if (!words.some((w) => wanted.has(w))) continue;
-    judged++;
+  // Rank by shared-word overlap and spend the judgment cap on the most
+  // similar names, not on whichever titles SortName puts first. Nothing
+  // shared is not a naming variant and the judgment never sees it;
+  // Array.sort is stable, so equal overlaps keep their pool order.
+  const ranked = candidates
+    .flatMap((c) => {
+      const name = c.dto.Name;
+      if (!name) return [];
+      const overlap = name
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((w) => wanted.has(w)).length;
+      return overlap > 0 ? [{ name, year: c.dto.ProductionYear, overlap }] : [];
+    })
+    .sort((a, b) => b.overlap - a.overlap)
+    .slice(0, JUDGMENT_CAP);
+  for (const { name, year } of ranked) {
     if (
       await ask(
         {
@@ -1113,12 +1135,7 @@ export async function candidatesMayMatch(
           ...(hints.performer ? { performer: hints.performer } : {}),
           ...(hints.year !== undefined ? { year: hints.year } : {}),
         },
-        {
-          title: c.dto.Name,
-          ...(c.dto.ProductionYear !== undefined
-            ? { year: c.dto.ProductionYear }
-            : {}),
-        },
+        { title: name, ...(year !== undefined ? { year } : {}) },
       )
     ) {
       return true;
