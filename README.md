@@ -21,13 +21,13 @@
 ## Features
 
 - **Provider-backed catalogs** — movies (TPDB), scenes (TPDB + StashDB), performers (with the biography facts the provider publishes), and studios, each with the filters and sort orders that provider actually supports
-- **One Browse surface** — TPDB movies and StashDB scenes in a single grid with title search, tag include/exclude (a picked tag matches exactly; a typed term keeps titles with any tag containing it), studio, performer, year, and date filters; every constraint rides in the URL
+- **One Browse surface** — TPDB movies and StashDB scenes in a single grid with title search, tag include/exclude (an included picked tag matches exactly and a typed include term keeps titles with any tag containing it; an exclusion, picked or typed, also drops tags that contain it as a word — Anal drops Anal Creampie, never Analingus), studio, performer, year, and date filters; every constraint rides in the URL
 - **Global search** across both providers, plus unified **Studios** and **Genres** rails; results are never merged across providers and cross-provider identity comes only from links the providers publish — never name matching
 - **Durable requests** with administrator or moderator approval and an optional per-account auto-approve grant; the Requests list filters by media type and status and sorts by most recent or last modified
 - **Crash-safe acquisition worker** — every attempt is persisted before any network call and reconciled by exact identity after a restart; never a lost or duplicated add
 - **Per-user Jellyfin availability** and credential-free watch links
 - **Performer follows** — follow a performer once to track them on both providers (Following view, a Discover rail); when the providers never linked two entries, Merge pairs the current entry with an already-followed entry on the other provider and follows the current one if needed. Failed merges leave follows unchanged.
-- **Personal preferences** — per-account hidden tags and Discover shelf ordering
+- **Personal preferences** — per-account hidden tags (matched like exclusions) and Discover shelf ordering
 - **Similar titles** on movies and scenes (shared published tags) and **Often appears with** on performers (co-appearance)
 - **Update notice** — the sidebar shows a chip linking to a newer GitHub release; the server asks api.github.com at most once an hour (`VELVARR_UPDATE_CHECK=0` disables it)
 - **Optional Discord notifier** posting to a private webhook, identity-only by default
