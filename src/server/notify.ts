@@ -64,7 +64,9 @@ export async function notifyRequestEvent(
       ? {
           embeds: [
             {
-              ...(event.title ? { title: event.title } : {}),
+              // Discord caps embed titles at 256 characters and rejects the
+              // whole embed with 400 Invalid Form Body above it.
+              ...(event.title ? { title: event.title.slice(0, 256) } : {}),
               description: message,
             },
           ],

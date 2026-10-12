@@ -148,6 +148,26 @@ test("detail mode includes the title", async () => {
   }
 });
 
+test("a 300-character title posts an embed title of at most 256 characters", async () => {
+  requests = [];
+  mode = "ok";
+  try {
+    pinEnv(WEBHOOK, "1");
+    const long = "x".repeat(300);
+    await notifyRequestEvent({ ...EVENT, title: long });
+    assert.equal(requests.length, 1);
+    const sent = requests[0];
+    assert.ok(sent, "fixture received one request");
+    const embeds = sent.body.embeds as
+      { title?: string; description?: string }[] | undefined;
+    const title = embeds?.[0]?.title;
+    assert.ok(typeof title === "string", "embed title present");
+    assert.ok(title.length <= 256, `title length ${title.length} > 256`);
+  } finally {
+    pinEnv(undefined);
+  }
+});
+
 test("non-Discord or non-https destinations are refused without a request", async () => {
   requests = [];
   mode = "ok";
