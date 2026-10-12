@@ -1804,7 +1804,13 @@ export async function tagCounterpart(
   if (target === "") return undefined; // an empty label identifies nothing
   const other: CatalogProvider = from === "tpdb" ? "stashdb" : "tpdb";
   const rows = await searchCatalogTags(other, name);
-  const row = rows.find((r) => normalizeFacetName(r.name) === target);
+  // A uuid-less label match (TPDB sometimes emits numeric-string tag ids)
+  // is unresolvable: the id can never ride a native tag filter, and
+  // cleanTagIds would 400 the whole query. Callers treat undefined as an
+  // unresolvable anchored tag and disqualify the side.
+  const row = rows.find(
+    (r) => normalizeFacetName(r.name) === target && isUuid(r.id),
+  );
   return row === undefined ? undefined : { provider: other, id: row.id };
 }
 

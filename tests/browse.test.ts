@@ -82,7 +82,8 @@ async function withEnv(
 
 interface TagRow {
   id: number;
-  uuid: string;
+  /** Absent on some real TPDB rows: tpdbTags then emits a numeric-string id. */
+  uuid?: string;
   name: string;
 }
 
@@ -879,6 +880,265 @@ test("two free-text includes that each match one tag go native as an all-of AND"
       assert.equal(page.total, 4);
       assert.equal(page.totalCountKnown, true);
       assert.deepEqual(page.errors, []);
+    },
+  );
+});
+
+test("a free-text include whose TPDB expansion holds a uuid-less tag filters the movie side locally instead of 400ing", async () => {
+  const LEGACY_NUM = { id: 305, name: "Legacy" }; // uuid-less: numeric-string id
+  const LEGACY_PLUS = { id: 11, uuid: uuid(101), name: "Legacy Plus" };
+  const movieUrls: string[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [LEGACY_NUM, LEGACY_PLUS],
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(uuid(1), "Legacy movie", "2024-01-01", [LEGACY_NUM]),
+            tpdbRow(uuid(2), "Plain movie", "2023-01-01"),
+          ],
+          next: null,
+          total: 2,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: (_page, qs) => movieUrls.push(qs.toString()),
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "movie",
+          include: [{ name: "legacy" }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // Before the uuid-less guard this threw 400 invalid_search ("TPDB tag
+      // filters require TPDB tag UUIDs"). Now the term goes local: the
+      // movie query carries NO tag criterion, and the visible predicate
+      // keeps only the title actually tagged Legacy.
+      assert.equal(movieUrls.length, 1);
+      assert.doesNotMatch(movieUrls[0]!, /tags%5B|tags\[/);
+      assert.deepEqual(
+        page.items.map((d) => d.reference.id),
+        [uuid(1)],
+      );
+      // A finite scan reports exact totals even when filtering locally.
+      assert.equal(page.total, 1);
+      assert.equal(page.totalCountKnown, true);
+      assert.deepEqual(page.errors, []);
+    },
+  );
+});
+
+test("a uuid-less TPDB expansion keeps the movie side local while StashDB stays native on All", async () => {
+  const LEGACY_NUM = { id: 305, name: "Legacy" };
+  const STASH_TAG = uuid(201);
+  const movieUrls: string[] = [];
+  const scenesSeen: Record<string, unknown>[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [LEGACY_NUM],
+      stashTagRows: [{ id: STASH_TAG, name: "Legacy" }],
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(uuid(1), "Legacy movie", "2024-01-01", [LEGACY_NUM]),
+            tpdbRow(uuid(2), "Plain movie", "2022-01-01"),
+          ],
+          next: null,
+          total: 2,
+        },
+      ],
+      scenes: {
+        count: 2,
+        rows: [
+          stashRow(uuid(3), "Legacy scene", "2024-06-01", [
+            { id: STASH_TAG, name: "Legacy" },
+          ]),
+          stashRow(uuid(4), "Plain scene", "2023-01-01"),
+        ],
+      },
+      onMovieRequest: (_page, qs) => movieUrls.push(qs.toString()),
+      onScenesRequest: (input) => scenesSeen.push(input),
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "all",
+          include: [{ name: "legacy" }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // The TPDB expansion is uuid-less, so the movie side filters locally
+      // (no tag criterion on the wire); the StashDB expansion is a real
+      // UUID and travels as the native any-of INCLUDES. Recency merge.
+      assert.doesNotMatch(movieUrls[0]!, /tags%5B|tags\[/);
+      assert.deepEqual(scenesSeen[0]!.tags, {
+        value: [STASH_TAG],
+        modifier: "INCLUDES",
+      });
+      assert.deepEqual(
+        page.items.map((d) => [d.reference.provider, d.reference.id]),
+        [
+          ["stashdb", uuid(3)],
+          ["tpdb", uuid(1)],
+          ["stashdb", uuid(4)],
+        ],
+      );
+      // The fixture returns every row regardless of the native scene
+      // filter, so the untagged scene sibling stays; the local movie
+      // predicate drops the untagged movie.
+      assert.equal(page.total, 3);
+      assert.equal(page.totalCountKnown, true);
+      assert.deepEqual(page.errors, []);
+    },
+  );
+});
+
+test("a free-text term matching only uuid-less TPDB tags runs the movie side locally instead of 400ing or reading as absence", async () => {
+  const VINTAGE = { id: 305, name: "Vintage" }; // uuid-less
+  let moviesCalled = 0;
+  const movieUrls: string[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [VINTAGE],
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(1), "Vintage movie", "2024-01-01", [VINTAGE])],
+          next: null,
+          total: 1,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: (_page, qs) => {
+        moviesCalled += 1;
+        movieUrls.push(qs.toString());
+      },
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "movie",
+          include: [{ name: "vintage" }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // The term matches a published tag with no UUID: no native criterion
+      // is possible, but the tag still matches details by name, so the side
+      // runs locally rather than 400ing (the bug) or vanishing (absence).
+      assert.equal(moviesCalled, 1);
+      assert.doesNotMatch(movieUrls[0]!, /tags%5B|tags\[/);
+      assert.deepEqual(
+        page.items.map((d) => d.reference.id),
+        [uuid(1)],
+      );
+      assert.equal(page.total, 1);
+      assert.equal(page.totalCountKnown, true);
+      assert.deepEqual(page.errors, []);
+    },
+  );
+});
+
+test("an anchored include whose TPDB counterpart is uuid-less drops the movie side instead of 400ing", async () => {
+  const LEGACY_NUM = { id: 305, name: "Legacy" }; // uuid-less TPDB row
+  const STASH_TAG = uuid(201);
+  let moviesCalled = 0;
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [LEGACY_NUM],
+      stashTagRows: [{ id: STASH_TAG, name: "Legacy" }],
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(1), "Legacy movie", "2024-01-01", [LEGACY_NUM])],
+          next: null,
+          total: 1,
+        },
+      ],
+      scenes: {
+        count: 1,
+        rows: [
+          stashRow(uuid(3), "Legacy scene", "2024-06-01", [
+            { id: STASH_TAG, name: "Legacy" },
+          ]),
+        ],
+      },
+      onMovieRequest: () => {
+        moviesCalled += 1;
+      },
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "all",
+          include: [{ name: "Legacy", stashdb: STASH_TAG }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // The anchored StashDB id cannot pair with a TPDB tag: the label
+      // match is uuid-less, which counts as unresolvable, so the movie side
+      // is dropped — never run unfiltered, never 400ed. The scene side
+      // carries its own anchored id natively.
+      assert.equal(moviesCalled, 0);
+      assert.deepEqual(
+        page.items.map((d) => d.reference.provider),
+        ["stashdb"],
+      );
+      assert.equal(page.total, 1);
+      assert.equal(page.totalCountKnown, true);
+    },
+  );
+});
+
+test("searchBrowseTags never returns a non-UUID tpdb id", async () => {
+  const LEGACY_NUM = { id: 305, name: "Legacy" };
+  const LEGACY_PLUS = { id: 11, uuid: uuid(101), name: "Legacy Plus" };
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [LEGACY_NUM, LEGACY_PLUS],
+      stashTagRows: [{ id: uuid(201), name: "Legacy" }],
+      moviePages: [{ rows: [], next: null, total: 0 }],
+      scenes: { count: 0, rows: [] },
+    }),
+    async () => {
+      const picked = await searchBrowseTags("legacy");
+      // The uuid-less TPDB row never rides back: "Legacy" carries only its
+      // StashDB id, "Legacy Plus" its TPDB UUID. Before the guard the
+      // numeric id passed through, and a stored selection built from it was
+      // rejected by the storage boundary with a misleading label 400.
+      const UUID_RE =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      for (const tag of picked.tags) {
+        if (tag.tpdb !== undefined) assert.match(tag.tpdb, UUID_RE);
+        if (tag.stashdb !== undefined) assert.match(tag.stashdb, UUID_RE);
+      }
+      assert.deepEqual(
+        picked.tags.map((t) => [
+          t.name,
+          t.tpdb !== undefined,
+          t.stashdb !== undefined,
+        ]),
+        [
+          ["Legacy Plus", true, false],
+          ["Legacy", false, true],
+        ],
+      );
+      assert.deepEqual(picked.errors, []);
     },
   );
 });
