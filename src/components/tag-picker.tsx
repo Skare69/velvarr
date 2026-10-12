@@ -70,8 +70,10 @@ export function TagPicker({
   disabled?: boolean;
   /** Offer the typed term itself as a label-only selection, pinned at the
    * top of the list and kept there even after real matches load. The
-   * server expands an include on each provider's published tags and
-   * filters natively; excludes and hidden tags match locally — the chip
+   * server expands an include on each provider's published tags — as the
+   * native any-of filter when the expansion is complete and within the
+   * native id cap, through the local substring re-check otherwise —
+   * while excludes and hidden tags always match locally: the chip
    * carries no provider id, so it can never travel as an exact native
    * tag. */
   allowFreeText?: boolean;

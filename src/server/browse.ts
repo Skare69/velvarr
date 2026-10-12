@@ -31,6 +31,8 @@ import {
   searchCatalog,
   searchCatalogTags,
   tagCounterpart,
+  expandCatalogTagTerm,
+  TAG_FILTER_ID_CAP,
 } from "./providers.ts";
 import type {
   CatalogSearchPage,
@@ -231,8 +233,9 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
     ...(q !== undefined && q !== "" ? { q } : {}),
     include: parseSelections(params, "include"),
     // Both lists accept labels with no provider id: an include label is a
-    // free-text term that expands to every published tag whose name
-    // contains it and travels as a native any-of filter on each side, an
+    // free-text term that expands on each side's published tags — the
+    // native any-of criterion when the expansion is complete and within
+    // the native id cap, the local substring re-check otherwise — and an
     // exclude label runs the local family matcher. Neither can travel as
     // an exact native tag, so neither is rejected here.
     exclude: parseSelections(params, "exclude"),
@@ -297,44 +300,17 @@ function visiblePredicate(
 
 /** The native include criteria one provider side can carry: `allOf` are the
  * anchored tag ids (AND criterion), `anyOf` the free-text expansion (any-of
- * criterion — every published tag whose name contains a term). `localFree`
- * holds the free-text terms the visible predicate must still re-check
- * locally: several terms AND together, which one upstream tag criterion
- * cannot express, so the any-of union only pre-filters. */
+ * criterion — every published tag whose name contains a term, sent only
+ * when every term's expansion is complete and the union fits the native
+ * id cap). `localFree` holds the free-text terms the visible predicate
+ * must still re-check locally: several terms AND together, which one
+ * upstream tag criterion cannot express, so the any-of union only
+ * pre-filters. */
 type ResolvedIncludes = {
   allOf: string[];
   anyOf: string[];
   localFree: CatalogTagSelection[];
 };
-
-/** Expands one free-text term into the side's own tag ids: every tag the
- * provider's search returns whose folded name contains the folded term.
- * `dropped` reports uuid-less matches (TPDB's numeric-string tag ids): they
- * can never ride the native filter (cleanTagIds would 400 the whole query),
- * so the term must fall back to local substring filtering or titles tagged
- * only with those rows would silently vanish.
- * ponytail: the provider tag search caps at MAX.tags (50) rows per side, so
- * a term matching more published tags than the cap loses the tail; page the
- * provider tag listing if a real filter ever hits that ceiling. */
-async function freeTagIds(
-  side: "tpdb" | "stashdb",
-  term: string,
-): Promise<{ ids: string[]; dropped: boolean }> {
-  const needle = normalizeFacetName(term);
-  if (needle === "") return { ids: [], dropped: false };
-  const rows = await searchCatalogTags(side, term);
-  const ids: string[] = [];
-  let dropped = false;
-  for (const row of rows) {
-    if (!normalizeFacetName(row.name).includes(needle)) continue;
-    if (!isUuid(row.id)) {
-      dropped = true;
-      continue;
-    }
-    if (!ids.includes(row.id)) ids.push(row.id);
-  }
-  return { ids, dropped };
-}
 
 /** Resolves the native include criteria for one provider side. Anchored
  * selections resolve as before: a selection already carrying the side's
@@ -342,17 +318,19 @@ async function freeTagIds(
  * providers' own published label pairing, and an unresolvable anchored tag
  * — including a uuid-less match (TPDB numeric-string id) — disqualifies the
  * whole side (undefined) — it is NEVER allowed to run unfiltered.
- * Free-text includes expand on THIS side's published tags and travel as
- * the native any-of criterion, but the upstream exposes one tag criterion
- * per query, so expansion only takes the native slot when no anchored id
- * needs it (with anchored ids present the terms keep filtering locally as
- * before), and each term must expand to at least one tag or the side
- * contributes nothing — except a term whose expansion includes uuid-less
- * tags, which filters locally instead of going native (a uuid-less id
- * cannot ride the native criterion, and dropping it would silently lose
- * the titles tagged only with it). A lookup that fails throws;
- * browseTitles records the side as a failed source instead of reading the
- * outage as absence. */
+ * Free-text includes expand on THIS side's complete published tag listing
+ * (expandCatalogTagTerm). The native any-of union travels only when it
+ * provably covers the local substring predicate: every term's expansion
+ * complete, no uuid-less rows, and the union within the native id cap.
+ * Anything else — a capped walk, uuid-less rows, or an empty expansion —
+ * keeps the WHOLE free group on the local substring re-check with the
+ * side's approximate totals: the union is one criterion and a partial one
+ * would silently drop titles, and an empty expansion is never proof the
+ * side is empty, so the side is never skipped for one. (With anchored ids
+ * present the terms keep filtering locally as before — one upstream tag
+ * criterion per query, and the anchored ids take it.) A lookup that fails
+ * throws; browseTitles records the side as a failed source instead of
+ * reading the outage as absence. */
 async function includeIdsForSide(
   selections: CatalogTagSelection[],
   side: "tpdb" | "stashdb",
@@ -382,35 +360,36 @@ async function includeIdsForSide(
   if (free.length === 0 || !expandFree || allOf.length > 0) {
     return { allOf, anyOf: [], localFree: free };
   }
+  // Every term must expand completely and natively, or the whole group
+  // filters locally: the native any-of is ONE union criterion, and a
+  // partial union would natively drop every title the missing part would
+  // have kept — silently, under claimed-exact totals.
   const groups: string[][] = [];
-  // Terms whose expansion includes uuid-less tags (TPDB numeric-string
-  // ids): they cannot travel native, so they filter locally with the
-  // approximate totals of the scan ceiling instead of silently losing the
-  // titles tagged only with those rows.
-  const localOnly: CatalogTagSelection[] = [];
+  let nativeReady = true;
   for (const sel of free) {
-    const expansion = await freeTagIds(side, sel.name);
-    if (expansion.ids.length === 0) {
-      // No native-sendable tag contains the term: with uuid-less matches
-      // the term still filters locally below; with none at all nothing on
-      // this side can match, so the side is skipped, never run unfiltered.
-      if (!expansion.dropped) return undefined;
-      localOnly.push(sel);
-      continue;
-    }
-    if (expansion.dropped) {
-      // Sending only the UUID half of the expansion would make upstream
-      // drop every title tagged just with the uuid-less rows. The whole
-      // term goes local instead.
-      localOnly.push(sel);
-      continue;
+    const expansion = await expandCatalogTagTerm(side, sel.name);
+    if (
+      !expansion.complete ||
+      expansion.dropped ||
+      expansion.ids.length === 0
+    ) {
+      nativeReady = false;
+      break;
     }
     groups.push(expansion.ids);
   }
-  if (groups.length === 0) {
-    // Every free term is local: the side runs on the local substring
-    // re-check alone (the visible predicate), totals approximate past the
-    // scan ceiling.
+  if (!nativeReady) {
+    // A capped listing walk, uuid-less rows in a match set, or an empty
+    // expansion: the side keeps the local substring re-check (the visible
+    // predicate) with its approximate totals and really scans. An empty
+    // expansion in particular never skips the side — that would read a
+    // maybe-incomplete walk as a provably empty catalog.
+    return { allOf, anyOf: [], localFree: free };
+  }
+  const union = [...new Set(groups.flat())];
+  // The native tag criterion caps at TAG_FILTER_ID_CAP ids and silently
+  // ignores the tail past it: a larger union filters locally instead.
+  if (union.length > TAG_FILTER_ID_CAP) {
     return { allOf, anyOf: [], localFree: free };
   }
   // Several terms that each matched exactly one tag: the all-of criterion
@@ -419,20 +398,16 @@ async function includeIdsForSide(
   // same set and already fully native.) Only a fully native expansion
   // earns the exact form: a local term forces the local re-check atop the
   // any-of union.
-  if (
-    localOnly.length === 0 &&
-    groups.length > 1 &&
-    groups.every((g) => g.length === 1)
-  ) {
-    return { allOf: [...new Set(groups.flat())], anyOf: [], localFree: [] };
+  if (groups.length > 1 && groups.every((g) => g.length === 1)) {
+    return { allOf: union, anyOf: [], localFree: [] };
   }
   return {
     allOf,
-    anyOf: [...new Set(groups.flat())],
-    // Several terms with several matches — or any term forced local by a
-    // uuid-less tag — AND together and still need the local per-term
-    // re-check atop the native any-of union.
-    localFree: localOnly.length > 0 || groups.length > 1 ? free : [],
+    anyOf: union,
+    // Several terms AND together, which one upstream tag criterion cannot
+    // express: the union pre-filters natively and the local per-term
+    // re-check keeps it honest.
+    localFree: groups.length > 1 ? free : [],
   };
 }
 
