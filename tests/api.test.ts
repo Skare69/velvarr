@@ -3040,25 +3040,42 @@ test("requests: lifecycle, autoApprove, privacy, roles, origin", async () => {
   ).json()) as { acquisition: { state: string } | null };
   assert.equal(sharedForM2.acquisition?.state, "unsent");
 
+  // A second, still-pending request for the viewer (uniqueness is per-user,
+  // so m2's row on the same movie does not collide) keeps the non-approved
+  // side of member's list non-empty: the approved movie is the only other row.
+  const memberPending = await call("POST", "/api/requests", {
+    cookie: member,
+    body: { media: { provider: "tpdb", kind: "movie", id: TPDB_MOVIE2 } },
+  });
+  assert.equal(memberPending.status, 201);
+  const memberPendingBody = (await memberPending.json()) as {
+    request: { id: string };
+  };
+  const memberPendingId = memberPendingBody.request.id;
+
   // The requests LIST carries the shared acquisition state on approved rows
   // only: the requester can watch progress without another user's history.
   const listed = (await (
     await call("GET", "/api/requests", { cookie: member })
   ).json()) as {
     requests: {
+      id: string;
       decision: string;
-      acquisition: { state: string } | null;
+      acquisition?: { state: string } | null;
     }[];
   };
   // Requester list: acquisition facts yes, requester names no.
   assert.ok(listed.requests.every((r) => !("requestedBy" in r)));
   const approvedRow = listed.requests.find((r) => r.decision === "approved");
   assert.equal(approvedRow?.acquisition?.state, "unsent");
-  assert.ok(
-    listed.requests
-      .filter((r) => r.decision !== "approved")
-      .every((r) => r.acquisition === null),
+  // Non-approved rows return unchanged: exactly the pending row, by id,
+  // and it carries no acquisition field at all.
+  const nonApproved = listed.requests.filter((r) => r.decision !== "approved");
+  assert.deepEqual(
+    nonApproved.map((r) => r.id),
+    [memberPendingId],
   );
+  assert.ok(nonApproved.every((r) => !("acquisition" in r)));
 
   // Owner declines member2's pending request.
   const decline = await call("PATCH", `/api/requests/${m2RequestId}`, {
