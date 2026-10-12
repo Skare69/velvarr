@@ -91,6 +91,16 @@ jobs:
           fi
       - name: Assert non-root runtime
         run: docker exec velvarr-smoke node -e "if (process.getuid() === 0) { console.error('container must not run as root'); process.exit(1) }"
+      # -writable tests against the exec user (velvarr), so this fails if any
+      # /app path is writable by the runtime user; only /data may be.
+      - name: Assert app code is not writable by the runtime user
+        run: |
+          writable=$(docker exec velvarr-smoke find /app -writable)
+          if [ -n "$writable" ]; then
+            echo "/app paths writable by the runtime user:"
+            echo "$writable"
+            exit 1
+          fi
       - name: Restart and re-check readiness on persistent data
         run: |
           docker restart velvarr-smoke

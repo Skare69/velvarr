@@ -28,9 +28,11 @@ RUN groupadd --system --gid 10001 velvarr \
  && useradd --system --uid 10001 --gid velvarr --home-dir /app --shell /usr/sbin/nologin velvarr \
  && mkdir -p /data \
  && chown velvarr:velvarr /data
-COPY --from=build --chown=velvarr:velvarr /app/.next/standalone ./
-COPY --from=build --chown=velvarr:velvarr /app/.next/static ./.next/static
-COPY --from=build --chown=velvarr:velvarr /app/public ./public
+# Code stays root-owned and world-readable so app-level code execution cannot
+# rewrite it; the runtime user may write only /data.
+COPY --from=build /app/.next/standalone ./
+COPY --from=build /app/.next/static ./.next/static
+COPY --from=build /app/public ./public
 USER velvarr
 EXPOSE 6699
 VOLUME /data
