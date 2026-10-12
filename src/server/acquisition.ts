@@ -136,21 +136,16 @@ async function dispatch(
     result = await deliverToWhisparr(config, record.media);
   } catch (e) {
     const permanent = permanentFailure(e);
-    const proven = e instanceof AppError ? e.upstreamStatus : undefined;
-    // A 401/403 here comes from the lookups before the POST (the POST's own
-    // 4xx is resolved inside deliverToWhisparr): a rotated or mistyped key is
-    // a configuration fault, not proof this identity can never be delivered.
-    // Hold it like an outage so reconciliation retries once the key works.
-    if (
-      permanent !== null ||
-      (proven !== undefined &&
-        proven >= 400 &&
-        proven < 500 &&
-        proven !== 401 &&
-        proven !== 403)
-    ) {
-      // Definitive client-side rejection before any add was accepted. A
-      // generic 400 is a failure, never "already exists".
+    // Everything that escapes deliverToWhisparr comes from the reads before
+    // the POST (the POST's own 4xx is resolved inside it). A proven 4xx
+    // there — a 404 from a reverse proxy whose backend is restarting, a
+    // 401/403 from a rotated key — is a routing or configuration fault, not
+    // proof this identity can never be delivered. Hold it like an outage so
+    // reconciliation retries by exact identity once the fault clears.
+    if (permanent !== null) {
+      // Definitive proof this identity can never be delivered
+      // (invalid_reference, identity_mismatch): a failure the requester can
+      // read.
       storage.completeSubmission(
         record.id,
         claimToken,
@@ -160,9 +155,9 @@ async function dispatch(
       );
       summary.failed++;
     } else {
-      // Timeout/5xx/network, and 401/403 auth faults: unknown whether
-      // Whisparr stored anything. Stay uncertain; the next pass reconciles
-      // by exact identity.
+      // Timeout/5xx/network and any proven 4xx from the pre-POST reads:
+      // unknown whether Whisparr stored anything. Stay uncertain; the next
+      // pass reconciles by exact identity.
       storage.completeSubmission(
         record.id,
         claimToken,

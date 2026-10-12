@@ -56,6 +56,7 @@ let knobs = {
   failFindOnce: 0,
   holdAdd: null as Promise<void> | null,
   pathOverride: null as string | null,
+  findStatus: 0,
 };
 let onAdd: (() => void) | null = null;
 let storedItems = new Map<string, number>();
@@ -90,6 +91,8 @@ async function handle(
     return json(401, { message: "bad key" });
   if (knobs.downAll) return json(503, { message: "down" });
   if (req.method === "GET" && path.startsWith("/api/v3/movie?")) {
+    if (knobs.findStatus > 0)
+      return json(knobs.findStatus, { message: "routing fault" });
     if (knobs.failFindOnce > 0) {
       knobs.failFindOnce--;
       return json(503, { message: "find down" });
@@ -179,6 +182,7 @@ function freshDb(): void {
     failFindOnce: 0,
     pathOverride: null,
     holdAdd: null,
+    findStatus: 0,
   };
   storedItems = new Map();
   nextId = 1;
@@ -663,6 +667,33 @@ test("a 401 from a rotated key stays uncertain; the fixed key delivers", async (
   storage.saveConfig(config(true));
   const healed = await acquisition.runDueWork(later());
   assert.equal(healed.delivered, 1, "the fixed key delivers the held work");
+  assert.equal(postCount(), 1);
+  assert.equal(probe(id).state, "monitoring");
+});
+
+test("a 404 from the pre-POST lookup stays uncertain; a healthy pass delivers", async () => {
+  const owner = boot();
+  approve(owner.id, MOVIE_C);
+  const id = workId(MOVIE_C);
+
+  // A reverse proxy whose backend is restarting answers 404 for the whole
+  // API — including the stored-item lookup that precedes any POST. A
+  // healthy Whisparr answers that lookup with a list, never 404, so the 404
+  // is a routing fault, not proof the identity can never be delivered.
+  knobs.findStatus = 404;
+  const first = await acquisition.runDueWork();
+  assert.equal(first.failed, 0, "a routing 404 is not a terminal failure");
+  assert.equal(first.uncertain, 1);
+  assert.equal(postCount(), 0, "no POST when the lookup cannot be read");
+  assert.equal(probe(id).state, "uncertain");
+
+  knobs.findStatus = 0;
+  const healed = await acquisition.runDueWork(later());
+  assert.equal(
+    healed.delivered,
+    1,
+    "the recovered proxy delivers the held work",
+  );
   assert.equal(postCount(), 1);
   assert.equal(probe(id).state, "monitoring");
 });
