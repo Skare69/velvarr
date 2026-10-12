@@ -90,7 +90,7 @@ export function acquisitionText(a: {
         : `Downloading — ${a.progress.percent}%${lastCheck}`;
     }
     case "imported":
-      return "Imported — in your library";
+      return "Imported by Whisparr";
     case "uncertain":
       return a.lastError
         ? `Being reconciled — last check: ${a.lastError}`

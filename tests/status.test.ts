@@ -203,9 +203,12 @@ test("acquisitionText: one line per state, on cards and catalog detail", () => {
     }),
     "Queued — not submitted yet — last check: whisparr delivery is disabled or unconfigured",
   );
+  // Deliberate wording flip (v0.37.1 review): "in your library" claimed a
+  // per-user Jellyfin fact for a worker-observed Whisparr state; it lied
+  // during scan lag and to accounts without a library grant.
   assert.equal(
     acquisitionText({ state: "imported", lastError: null }),
-    "Imported — in your library",
+    "Imported by Whisparr",
   );
   assert.equal(
     acquisitionText({
