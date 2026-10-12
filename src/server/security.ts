@@ -19,15 +19,25 @@ const MAX_BUCKETS = 1024;
 type Bucket = { count: number; windowStart: number };
 const buckets = new Map<string, Bucket>();
 
-// HTTPS upgrade for the session cookie comes from the request, not from a
-// pinned origin: behind any https reverse proxy (X-Forwarded-Proto) or direct
-// https URL the cookie gains Secure; plain LAN http legitimately cannot have
-// it (browsers drop Secure cookies on http).
+// HTTPS upgrade for the session cookie: an https reverse proxy
+// (X-Forwarded-Proto), a direct https URL, or a pinned https VELVARR_ORIGIN
+// all gain Secure. The pin covers proxies that do not send
+// X-Forwarded-Proto, so an accidental plain-http hop to the pinned host
+// never carries the token in cleartext. Plain LAN http legitimately cannot
+// have it (browsers drop Secure cookies on http).
 export function isSecureRequest(request: Request): boolean {
+  const proto = request.headers.get("x-forwarded-proto");
+  if (proto === "https:" || proto === "https") return true;
+  let pinned: URL | null = null;
+  try {
+    pinned = process.env.VELVARR_ORIGIN
+      ? new URL(process.env.VELVARR_ORIGIN)
+      : null;
+  } catch {
+    // Invalid pin: enforceOriginConfig reports it on the gated paths.
+  }
   return (
-    request.headers.get("x-forwarded-proto") === "https:" ||
-    request.headers.get("x-forwarded-proto") === "https" ||
-    new URL(request.url).protocol === "https:"
+    pinned?.protocol === "https:" || new URL(request.url).protocol === "https:"
   );
 }
 
@@ -94,9 +104,10 @@ export function guardMutation(request: Request): void {
   // with the victim's cookies and no CORS preflight. The browser's
   // Sec-Fetch-Site is the reliable same-origin signal; HTML forms cannot
   // send application/json, so any other content type on a mutation is a
-  // form post whatever the browser's age. Header-absent passes: the
-  // client's own bodyless DELETEs, and browsers without fetch metadata
-  // (their form posts still fail the content-type gate).
+  // form post whatever the browser's age. Header-absent passes only for
+  // bodyless mutations (the app's own DELETEs): a wire-framed body without
+  // a JSON content type — form posts and typeless Blob bodies alike — is
+  // refused here.
   const site = request.headers.get("sec-fetch-site");
   if (site && site.trim().toLowerCase() !== "same-origin") {
     throw new AppError(
@@ -106,10 +117,14 @@ export function guardMutation(request: Request): void {
     );
   }
   const contentType = request.headers.get("content-type");
-  if (
-    contentType &&
-    contentType.split(";")[0]!.trim().toLowerCase() !== "application/json"
-  ) {
+  const typeOk =
+    contentType?.split(";")[0]!.trim().toLowerCase() === "application/json";
+  // A body is framed by Content-Length or chunked Transfer-Encoding on the
+  // wire; Content-Length: 0 and absent framing mean no body.
+  const hasBody =
+    Number(request.headers.get("content-length") ?? "0") > 0 ||
+    request.headers.get("transfer-encoding") !== null;
+  if (contentType ? !typeOk : hasBody) {
     throw new AppError(
       403,
       "bad_content_type",

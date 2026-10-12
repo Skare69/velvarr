@@ -5954,6 +5954,66 @@ test("same-site and form mutations are refused even with VELVARR_ORIGIN unset", 
   }
 });
 
+// A pinned https origin upgrades the session cookie even without
+// X-Forwarded-Proto (a proxy may omit it), and bodied mutations need the
+// JSON content type even when fetch metadata would let them through.
+test("pinned https origin secures the cookie; bodied mutations need a JSON content type", async () => {
+  process.env.VELVARR_ORIGIN = "https://velvarr.example.com";
+  try {
+    // Plain-http request URL, no X-Forwarded-Proto: only the pin can
+    // upgrade, so the login cookie must carry Secure.
+    const login = await call("POST", "/api/login", {
+      origin: "https://velvarr.example.com",
+      headers: { "sec-fetch-site": "same-origin" },
+      body: { username: "owner", password: "pass-owner" },
+    });
+    assert.equal(login.status, 200);
+    assert.match(login.headers.get("set-cookie") ?? "", /; Secure/);
+
+    // The sibling-app attack without fetch metadata: a typeless Blob body
+    // (no Content-Type, no CORS preflight). The wire frames every body with
+    // Content-Length or chunked encoding, so the Request models that
+    // framing explicitly.
+    const payload = JSON.stringify({
+      username: "owner",
+      password: "pass-owner",
+    });
+    const typeless = await api.POST(
+      new Request(`${ORIGIN}/api/login`, {
+        method: "POST",
+        body: new Blob([payload]),
+        headers: {
+          origin: "https://velvarr.example.com",
+          "content-length": String(payload.length),
+        },
+      }),
+      {
+        params: Promise.resolve({
+          path: segments(new URL("/api/login", ORIGIN).pathname),
+        }),
+      },
+    );
+    assert.equal(typeless.status, 403);
+    const typelessBody = (await typeless.json()) as {
+      error: { code: string };
+    };
+    assert.equal(typelessBody.error.code, "bad_content_type");
+    assert.equal(typeless.headers.get("set-cookie"), null);
+
+    // A bodyless DELETE without fetch metadata still passes the gate: it
+    // reaches the route and fails on the malformed id instead.
+    const del = await call("DELETE", "/api/follows/tpdb/not-a-uuid", {
+      origin: "https://velvarr.example.com",
+      cookie: owner,
+    });
+    assert.equal(del.status, 400);
+    const delBody = (await del.json()) as { error: { code: string } };
+    assert.equal(delBody.error.code, "invalid_reference");
+  } finally {
+    process.env.VELVARR_ORIGIN = ORIGIN;
+  }
+});
+
 // --- M4: hazard 2 — warmed artwork/detail stays protected for everyone else ---
 test("warmed library artwork and detail refuse anonymous, library-denied and revoked callers", async () => {
   // An admitted, granted user fetches the bytes first ("warming").

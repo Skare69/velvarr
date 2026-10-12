@@ -59,7 +59,7 @@ bun run dev     # http://127.0.0.1:6699
 | ---------------------------- | ---------------- | ----------------------------------------------------------------------------------- |
 | `VELVARR_SECRET_KEY`         | yes              | 64 hex chars; decrypts credentials stored in the database. Restores need the key from backup time. |
 | `VELVARR_SETUP_SECRET`       | until bootstrap  | ≥ 32 characters; gates the one-time owner setup.                                     |
-| `VELVARR_ORIGIN`             | no               | Pin the public origin (e.g. behind a reverse proxy); mutations from other origins are refused. Unset, mutations are still gated on browser fetch metadata (`Sec-Fetch-Site: same-origin`) and a JSON content type, on top of the `HttpOnly` + `SameSite=Strict` session cookie. |
+| `VELVARR_ORIGIN`             | no               | Pin the public origin (e.g. behind a reverse proxy); mutations from other origins are refused, and an `https:` pin marks the session cookie `Secure` even when the proxy does not send `X-Forwarded-Proto`. Unpinned, `Secure` needs `X-Forwarded-Proto: https` (set it if your proxy terminates TLS) or a direct https request URL. Mutations are always gated on browser fetch metadata (`Sec-Fetch-Site: same-origin`) and a JSON content type, on top of the `HttpOnly` + `SameSite=Strict` session cookie. |
 | `VELVARR_DATA_DIR`           | no               | Data directory; default `./data`, `/data` in the container.                          |
 | `VELVARR_ALLOW_HTTP`         | no               | `1` allows plain HTTP for private/Docker-network addresses on the LAN.               |
 | `VELVARR_DISCORD_WEBHOOK_URL`| no               | Private Discord webhook for notifications; https only.                               |
