@@ -1092,6 +1092,11 @@ const STOP_WORDS: Record<string, true> = {
 // (Cyrillic, Han, …), so those yield no words and are never judged;
 // Unicode folding or provider-supplied romanized titles would lift that.
 const JUDGMENT_CAP = 20;
+// Judged through a bounded pool: a total outage now costs the widen step
+// ceil(cap / 5) x the judgment's 2 s one-attempt timeout, not
+// cap x (SDK retries + backoff). Five in flight stays polite to the
+// provider while keeping the worst pass in single-digit seconds.
+const JUDGMENT_CONCURRENCY = 5;
 
 export async function candidatesMayMatch(
   candidates: CandidateItem[],
@@ -1127,21 +1132,36 @@ export async function candidatesMayMatch(
     })
     .sort((a, b) => b.overlap - a.overlap)
     .slice(0, JUDGMENT_CAP);
-  for (const { name, year } of ranked) {
-    if (
-      await ask(
-        {
-          title: hints.title,
-          ...(hints.performer ? { performer: hints.performer } : {}),
-          ...(hints.year !== undefined ? { year: hints.year } : {}),
-        },
-        { title: name, ...(year !== undefined ? { year } : {}) },
-      )
-    ) {
-      return true;
-    }
-  }
-  return false;
+  // Bounded pool: each worker pulls the next ranked candidate until the
+  // list runs out or a yes lands. A yes still only ever yields 'ambiguous'
+  // upstream; the cap bounds the total number of judgments as before.
+  const requested = {
+    title: hints.title,
+    ...(hints.performer ? { performer: hints.performer } : {}),
+    ...(hints.year !== undefined ? { year: hints.year } : {}),
+  };
+  let yes = false;
+  let cursor = 0;
+  await Promise.all(
+    Array.from(
+      { length: Math.min(JUDGMENT_CONCURRENCY, ranked.length) },
+      async () => {
+        while (!yes) {
+          const item = ranked[cursor++];
+          if (!item) return;
+          if (
+            await ask(requested, {
+              title: item.name,
+              ...(item.year !== undefined ? { year: item.year } : {}),
+            })
+          ) {
+            yes = true;
+          }
+        }
+      },
+    ),
+  );
+  return yes;
 }
 
 async function sweepVisibleItems(

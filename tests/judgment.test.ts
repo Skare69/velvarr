@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { candidatesMayMatch } from "../src/server/jellyfin.ts";
-import { sameWork, suggestTags } from "../src/server/judgment.ts";
+import {
+  resetSameWorkBreaker,
+  sameWork,
+  suggestTags,
+} from "../src/server/judgment.ts";
 
 /** The judgment must be inert without a key: sameWork answers false and no
  * network call is possible. Runs first, before any test sets a key. */
@@ -118,6 +122,65 @@ test("the judgment is capped, so a bloated library cannot run away", async () =>
   assert.ok(calls <= 20, `expected at most 20 judgments, saw ${calls}`);
 });
 
+test(
+  "the cap is judged concurrently, not one after another",
+  // A sequential loop deadlocks on the pool-full gate below, so the test's
+  // own timeout is the failure mode — no measured duration.
+  { timeout: 2000 },
+  async () => {
+    const candidates = Array.from({ length: 20 }, (_, i) =>
+      candidate(`No Time to Die cut ${i}`, 2021),
+    );
+    let calls = 0;
+    let inFlight = 0;
+    let peak = 0;
+    // Every judgment waits until a full pool is in flight, so overlap —
+    // not a timer — is the awaited condition.
+    const { promise, resolve } = Promise.withResolvers<void>();
+    assert.equal(
+      await candidatesMayMatch(
+        candidates,
+        hints("No Time to Die", 2021),
+        async () => {
+          calls++;
+          inFlight++;
+          peak = Math.max(peak, inFlight);
+          if (inFlight === 5) resolve();
+          await promise;
+          inFlight--;
+          return false;
+        },
+      ),
+      false,
+    );
+    assert.equal(calls, 20, "every near-miss within the cap is judged");
+    assert.equal(
+      peak,
+      5,
+      `judgments must overlap, peak concurrency was ${peak}`,
+    );
+  },
+);
+
+test("a yes at the end of the pool still wins", async () => {
+  const candidates = Array.from({ length: 20 }, (_, i) =>
+    candidate(`No Time to Die cut ${i}`, 2021),
+  );
+  let calls = 0;
+  assert.equal(
+    await candidatesMayMatch(
+      candidates,
+      hints("No Time to Die", 2021),
+      async (_a, b) => {
+        calls++;
+        return b.title === "No Time to Die cut 19";
+      },
+    ),
+    true,
+  );
+  assert.ok(calls <= 20, `expected at most 20 judgments, saw ${calls}`);
+});
+
 test("a real near-miss is judged even when 25 stop-word siblings crowd the pool", async () => {
   // Release-review repro: 25 "Into the Night NN" items share only the stop
   // word "the" with the ask, yet the old first-20 loop spent the whole
@@ -230,7 +293,7 @@ test("sameWork asks the model and applies the probability gate", async () => {
   }
 });
 
-test("an answered pair is asked once; an outage is never remembered", async () => {
+test("an outage gates calls for a short window but is never pinned as a no", async () => {
   process.env.TYPESAFE_API_KEY = "test-key";
   const realFetch = globalThis.fetch;
   let calls = 0;
@@ -246,20 +309,77 @@ test("an answered pair is asked once; an outage is never remembered", async () =
   const requested = { title: "Heat", year: 1995 };
   const candidate = { title: "Heat (Director's Cut)", year: 1995 };
   try {
+    resetSameWorkBreaker();
     // The outage answers false but must not pin that "no" for the pair.
     assert.equal(await sameWork(requested, candidate), false);
     const afterOutage = calls;
+    // The failure gate now skips calls for a short window: an outage must
+    // not re-run the candidate cap on every availability check.
+    assert.equal(await sameWork(requested, candidate), false);
+    assert.equal(calls, afterOutage, "a failure gates calls for a window");
+    // Once the window lapses (cleared here), the pair is asked again: the
+    // outage was never stored as an answer.
+    resetSameWorkBreaker();
     down = false;
     assert.equal(await sameWork(requested, candidate), true);
-    assert.ok(calls > afterOutage, "the pair is asked again after an outage");
+    assert.ok(calls > afterOutage, "the pair is asked again after the gate");
     const afterAnswer = calls;
     assert.equal(await sameWork(requested, candidate), true);
     assert.equal(calls, afterAnswer, "an answered pair is not asked again");
   } finally {
     globalThis.fetch = realFetch;
     delete process.env.TYPESAFE_API_KEY;
+    resetSameWorkBreaker();
   }
 });
+
+test(
+  "a hanging endpoint is cut off after one attempt and trips the gate",
+  // The SDK's internal per-attempt timeout is the real timer under test —
+  // fake timers cannot reach into it — so the failure mode is the test's
+  // own 6 s timeout, not a guessed sleep.
+  { timeout: 6000 },
+  async () => {
+    process.env.TYPESAFE_API_KEY = "test-key";
+    const realFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (_url, init) => {
+      calls++;
+      // Never settles on its own — the endpoint hangs — but honors the
+      // abort signal exactly like real fetch: the SDK's per-attempt
+      // timeout works through that signal.
+      const { promise, reject } = Promise.withResolvers<never>();
+      const signal = init?.signal;
+      if (signal) {
+        signal.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+      }
+      return promise;
+    };
+    // A pair no earlier test answered: the memo must not answer for it.
+    const requested = { title: "Solaris", year: 1972 };
+    const candidate = { title: "Solaris (Remastered)", year: 1972 };
+    try {
+      resetSameWorkBreaker();
+      const t0 = Date.now();
+      assert.equal(await sameWork(requested, candidate), false);
+      const elapsed = Date.now() - t0;
+      assert.ok(
+        elapsed < 5000,
+        `the per-attempt timeout must cut the call short, took ${elapsed} ms`,
+      );
+      assert.equal(calls, 1, "a hanging judgment must not be retried");
+      // The gate trips: the next call makes no HTTP request at all.
+      assert.equal(await sameWork(requested, candidate), false);
+      assert.equal(calls, 1, "a failure gates the next call");
+    } finally {
+      globalThis.fetch = realFetch;
+      delete process.env.TYPESAFE_API_KEY;
+      resetSameWorkBreaker();
+    }
+  },
+);
 
 test("contradicting years are refused in code, without a call", async () => {
   process.env.TYPESAFE_API_KEY = "test-key";
@@ -283,6 +403,7 @@ test("contradicting years are refused in code, without a call", async () => {
 
 test("a stored admin-UI key works with no environment key", async () => {
   delete process.env.TYPESAFE_API_KEY;
+  resetSameWorkBreaker();
   const realFetch = globalThis.fetch;
   let called = 0;
   globalThis.fetch = async () => {

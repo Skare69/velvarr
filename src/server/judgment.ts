@@ -53,6 +53,18 @@ function typeSafe(stored: string | undefined): TypeSafeClient | null {
 const SAME_WORK_MEMO_MAX = 2000;
 const sameWorkMemo = new Map<string, boolean>();
 
+// After a failed call, judgment calls are skipped for this window: an
+// outage must not re-run the candidate cap on every availability check.
+// Only calls are gated — answers are never stored on failure, and the memo
+// is read before the gate, so an answered pair keeps answering.
+const SAME_WORK_BREAKER_MS = 15_000;
+let sameWorkDownUntil = 0;
+
+/** Test hook: clears the failure gate (same pattern as resetSweepCache). */
+export function resetSameWorkBreaker(): void {
+  sameWorkDownUntil = 0;
+}
+
 /** P(same work) between the requested record and a library candidate. The
  * year policy stays in code: two records with contradicting years are never
  * the same work, and no call is spent asking. */
@@ -69,16 +81,23 @@ export async function sameWork(
   const memoKey = JSON.stringify([a, b]);
   const known = sameWorkMemo.get(memoKey);
   if (known !== undefined) return known;
+  if (Date.now() < sameWorkDownUntil) return false;
   try {
-    const res = await ts.systemOne({
-      state: { requested: a, candidate: b },
-      questions: {
-        sameWork: noul(SAME_WORK_INSTRUCTIONS, {
-          true: "Both records name the same work.",
-          false: "These are different works.",
-        }),
+    const res = await ts.systemOne(
+      {
+        state: { requested: a, candidate: b },
+        questions: {
+          sameWork: noul(SAME_WORK_INSTRUCTIONS, {
+            true: "Both records name the same work.",
+            false: "These are different works.",
+          }),
+        },
       },
-    });
+      // One short attempt: the widen step sits on the availability path,
+      // and the SDK's default retries (2 attempts, Retry-After up to 60 s)
+      // serialized a TypeSafe outage into minutes across the candidate cap.
+      { timeout: 2000, retry: { maxRetries: 0 } },
+    );
     const same = res.answers.sameWork.noul >= SAME_WORK_P;
     if (sameWorkMemo.size >= SAME_WORK_MEMO_MAX) {
       sameWorkMemo.delete(sameWorkMemo.keys().next().value!);
@@ -87,7 +106,8 @@ export async function sameWork(
     return same;
   } catch {
     // An outage or a malformed answer degrades to exact matching, never
-    // to a guess.
+    // to a guess — and trips the short call gate above.
+    sameWorkDownUntil = Date.now() + SAME_WORK_BREAKER_MS;
     return false;
   }
 }
