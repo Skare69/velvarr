@@ -747,6 +747,9 @@ export function useBrowseTo(): (filter: BrowseFilter) => void {
         // drops that view's own keys (provider, per-view paging).
         ...clearBrowseKeys(),
         view: "titles",
+        // The old facet label never rides a fresh browse; the jump names no
+        // facet of its own (chips carry the labels).
+        name: null,
         type:
           filter.param === "year" || filter.provider === "tpdb"
             ? "movie"
@@ -1037,6 +1040,9 @@ export function TitlesView() {
       setP(
         {
           include: tags.length > 0 ? JSON.stringify(tags) : null,
+          // `name` is the facet tile's display label — it never survives a
+          // change to the selection it names (same rule in every patch below).
+          name: null,
         },
         { push: true },
       ),
@@ -1047,6 +1053,7 @@ export function TitlesView() {
       setP(
         {
           exclude: tags.length > 0 ? JSON.stringify(tags) : null,
+          name: null,
         },
         { push: true },
       ),
@@ -1113,11 +1120,12 @@ export function TitlesView() {
     [setP],
   );
   const onStudioTpdb = useCallback(
-    (id: string | null) => setP({ studioTpdb: id }, { push: true }),
+    (id: string | null) => setP({ studioTpdb: id, name: null }, { push: true }),
     [setP],
   );
   const onStudioStashdb = useCallback(
-    (id: string | null) => setP({ studioStashdb: id }, { push: true }),
+    (id: string | null) =>
+      setP({ studioStashdb: id, name: null }, { push: true }),
     [setP],
   );
   const onStudioMode = useCallback(
@@ -1126,8 +1134,12 @@ export function TitlesView() {
     [setP],
   );
   const clearFilters = useCallback(() => {
-    // The tab and paging survive a clear — every constraint goes.
-    setP(clearBrowseKeys(["type", "perPage"]), { push: true });
+    // The tab and paging survive a clear — every constraint goes, and the
+    // facet display label goes with them.
+    setP(
+      { ...clearBrowseKeys(["type", "perPage"]), name: null },
+      { push: true },
+    );
   }, [setP]);
 
   // An active studio/tag id without a captured name stays an id — never a

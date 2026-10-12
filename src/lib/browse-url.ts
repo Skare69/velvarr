@@ -142,6 +142,9 @@ export function performerTpdbPatch(
     studioMode: null,
     sort: null,
     direction: null,
+    // `name` is the facet display label; this reset drops the studio/tag
+    // constraints it names, so it never survives the filmography route.
+    name: null,
     // A TPDB performer cannot constrain the scenes side: on that tab no
     // side would qualify and the grid would show an empty page that names
     // the wrong cause — drop to the combined browse, the same clamp

@@ -184,6 +184,10 @@ test("performerTpdbPatch is the full filmography reset", () => {
     studioMode: null,
     sort: null,
     direction: null,
+    // `name` is the facet tile's display heading; the reset drops the
+    // studio/tag constraints it names, so the label dies with them
+    // (a stale "Brazzers" heading must not survive a filmography jump).
+    name: null,
     type: null,
   });
   // On the movie tab the type also stays out of the patch — the tab never
