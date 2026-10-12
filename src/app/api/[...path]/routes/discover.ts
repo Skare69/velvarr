@@ -52,13 +52,14 @@ export const SEARCH_PER_PAGE = 6;
 export const FOLLOW_SHELF_PERFORMERS = 5;
 
 // First page of each followed performer's title filmography, merged within
-// ONE provider and capped at SHELF_ITEMS. Partial failure survives: pages
-// that failed are dropped, and the shelf only reports an error when every
-// page failed — nothing truthful to show beats a quiet empty list.
+// ONE provider and capped at SHELF_ITEMS. Partial failure is reported, not
+// dropped: the first failed page rides back as `failure` beside the
+// survivors, so the shelf can name the provider. Throwing is reserved for a
+// side with nothing to show — every page failed.
 export async function followedTitles(
   accountId: string,
   provider: CatalogProvider,
-): Promise<CatalogDetail[]> {
+): Promise<{ items: CatalogDetail[]; failure?: unknown }> {
   const follows = listFollowsByProvider(
     accountId,
     provider,
@@ -89,10 +90,8 @@ export async function followedTitles(
   );
   const items: CatalogDetail[] = [];
   const seen = new Set<string>();
-  let failed = false;
   for (const page of pages) {
     if (page.status === "rejected") {
-      failed = true;
       continue;
     }
     for (const item of page.value) {
@@ -102,11 +101,14 @@ export async function followedTitles(
       items.push(item);
     }
   }
-  if (items.length === 0 && failed) {
-    throw (pages.find((p) => p.status === "rejected") as PromiseRejectedResult)
-      .reason;
-  }
-  return items.slice(0, SHELF_ITEMS);
+  const firstFailure = pages.find(
+    (p): p is PromiseRejectedResult => p.status === "rejected",
+  );
+  if (items.length === 0 && firstFailure) throw firstFailure.reason;
+  return {
+    items: items.slice(0, SHELF_ITEMS),
+    ...(firstFailure ? { failure: firstFailure.reason } : {}),
+  };
 }
 
 // The one "From performers you follow" rail across BOTH providers. Sides
@@ -129,8 +131,12 @@ export async function followedShelf(
     const provider = i === 0 ? ("tpdb" as const) : ("stashdb" as const);
     if (side.status === "fulfilled") {
       merged.push(
-        ...side.value.filter((item) => !isHiddenTitle(item, hiddenTags)),
+        ...side.value.items.filter((item) => !isHiddenTitle(item, hiddenTags)),
       );
+      // A partial side keeps its survivors and still names the provider.
+      if (side.value.failure !== undefined) {
+        errors.push(sourceError(provider, side.value.failure));
+      }
     } else errors.push(sourceError(provider, side.reason));
   });
   if (merged.length === 0 && errors.length === 0) return null;

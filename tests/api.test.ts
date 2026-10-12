@@ -5325,6 +5325,66 @@ test("discover appends ONE followed rail across providers and isolates a provide
   }
 });
 
+test("followed rail names the provider when one performer's filmography fails", async () => {
+  // Two TPDB follows; one filmography 500s. The survivor's titles must
+  // still render beside a tpdb-tagged warning — a partial success never
+  // reads as complete.
+  for (const [id, name] of [
+    [TPDB_PERFORMER, "Fixture Performer"],
+    [TPDB_PERFORMER3, "Bulk Fixture Performer"],
+  ] as const) {
+    const created = await call("POST", "/api/follows", {
+      cookie: member2,
+      body: { performer: { provider: "tpdb", kind: "performer", id }, name },
+    });
+    assert.equal(created.status, 201);
+  }
+  resetMetaCache();
+  tpdbFx.failPaths = [`/performers/${TPDB_PERFORMER}/movies`];
+  try {
+    const page = await call("GET", "/api/discover", { cookie: member2 });
+    assert.equal(page.status, 200, "shelf failure must not fail the page");
+    const shelf = (await shelvesOf(page)).find(
+      (s) => s.id === "followed-titles",
+    );
+    assert.ok(shelf, "rail exists");
+    assert.equal(shelf.error, undefined);
+    assert.equal(shelf.errors?.length, 1, "the failed provider is named");
+    assert.equal(shelf.errors?.[0]?.provider, "tpdb");
+    assert.match(shelf.errors?.[0]?.code ?? "", /unavailable/);
+    // The failing performer contributes nothing; the other one's title
+    // survives.
+    assert.deepEqual(
+      (shelf.items ?? []).map((item) => refOf(item)?.id),
+      [TPDB_MOVIE6],
+    );
+  } finally {
+    tpdbFx.failPaths = [];
+  }
+
+  // All pages answer: no warning at all.
+  resetMetaCache();
+  const allOk = await call("GET", "/api/discover", { cookie: member2 });
+  assert.equal(allOk.status, 200);
+  const okShelf = (await shelvesOf(allOk)).find(
+    (s) => s.id === "followed-titles",
+  );
+  assert.equal(okShelf?.error, undefined);
+  assert.equal(okShelf?.errors, undefined);
+  assert.deepEqual(
+    (okShelf?.items ?? []).map((item) => refOf(item)?.id).sort(),
+    [TPDB_MOVIE5, TPDB_MOVIE6].sort(),
+  );
+
+  // Leave the standard six shelves for everyone after this test.
+  for (const id of [TPDB_PERFORMER, TPDB_PERFORMER3]) {
+    const removed = await call("DELETE", `/api/follows/tpdb/${id}`, {
+      cookie: member2,
+    });
+    assert.equal(removed.status, 204);
+  }
+});
+
 test("global search: six isolated categories, auth, blank q 400", async () => {
   assert.equal((await call("GET", "/api/search?q=Fixture")).status, 401);
 
