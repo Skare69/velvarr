@@ -809,17 +809,22 @@ test("a free-text term that expands on no TPDB tag skips the movie side and runs
   );
 });
 
-test("two free-text includes pre-filter natively as a union and still AND locally", async () => {
+test("two free-text includes that each match one tag go native as an all-of AND", async () => {
   const TAG_XYZ = { id: 11, uuid: uuid(101), name: "XYZ Special" };
   const TAG_ABC = { id: 12, uuid: uuid(102), name: "ABC Thing" };
   const movieUrls: string[] = [];
+  const scenesSeen: Record<string, unknown>[] = [];
   await runBrowse(
     scriptedUpstream({
       tagRows: [TAG_XYZ, TAG_ABC],
+      stashTagRows: [
+        { id: uuid(201), name: "XYZ Special" },
+        { id: uuid(202), name: "ABC Thing" },
+      ],
       moviePages: [
         {
           rows: [
-            tpdbRow(uuid(1), "Both terms", "2024-03-01", [TAG_XYZ, TAG_ABC]),
+            tpdbRow(uuid(1), "Both tags", "2024-03-01", [TAG_XYZ, TAG_ABC]),
             tpdbRow(uuid(2), "Only xyz", "2024-02-01", [TAG_XYZ]),
             tpdbRow(uuid(3), "Untagged", "2024-01-01"),
           ],
@@ -827,8 +832,80 @@ test("two free-text includes pre-filter natively as a union and still AND locall
           total: 3,
         },
       ],
-      scenes: { count: 0, rows: [] },
+      scenes: {
+        count: 1,
+        rows: [
+          stashRow(uuid(5), "Scene both", "2024-06-01", [
+            { id: uuid(201), name: "XYZ Special" },
+            { id: uuid(202), name: "ABC Thing" },
+          ]),
+        ],
+      },
       onMovieRequest: (_page, qs) => movieUrls.push(qs.toString()),
+      onScenesRequest: (input) => scenesSeen.push(input),
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "all",
+          include: [{ name: "xyz" }, { name: "abc" }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // Each term matched exactly one published tag per side, so the
+      // all-of criterion IS the AND: both ids travel natively with tag_and.
+      assert.match(movieUrls[0]!, /tags%5B11%5D=1|tags\[11\]=1/);
+      assert.match(movieUrls[0]!, /tags%5B12%5D=1|tags\[12\]=1/);
+      assert.match(movieUrls[0]!, /tag_and=1/);
+      assert.deepEqual(scenesSeen[0]!.tags, {
+        value: [uuid(201), uuid(202)],
+        modifier: "INCLUDES_ALL",
+      });
+      // Fully native: the fixture returns every row regardless of the
+      // criterion, and nothing is re-checked locally. Recency-desc merge.
+      assert.deepEqual(
+        page.items.map((d) => [d.reference.provider, d.reference.id]),
+        [
+          ["stashdb", uuid(5)],
+          ["tpdb", uuid(1)],
+          ["tpdb", uuid(2)],
+          ["tpdb", uuid(3)],
+        ],
+      );
+      assert.equal(page.total, 4);
+      assert.equal(page.totalCountKnown, true);
+      assert.deepEqual(page.errors, []);
+    },
+  );
+});
+
+test("a multi-match free-text AND pre-filters natively, ANDs locally, and degrades at the scan ceiling instead of erroring", async () => {
+  const TAG_XYZ_A = { id: 11, uuid: uuid(101), name: "XYZ Special" };
+  const TAG_XYZ_B = { id: 12, uuid: uuid(102), name: "XYZ Thing" };
+  const TAG_ABC = { id: 13, uuid: uuid(103), name: "ABC Thing" };
+  let moviesCalled = 0;
+  const movieUrls: string[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [TAG_XYZ_A, TAG_XYZ_B, TAG_ABC],
+      // Endless pages of rows matching only the xyz group: the local abc
+      // AND never fills the page, so the stream runs to its ceiling.
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(2), "Only xyz", "2024-02-01", [TAG_XYZ_A])],
+          next: "x",
+          total: 10000,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: (_page, qs) => {
+        moviesCalled += 1;
+        movieUrls.push(qs.toString());
+      },
     }),
     async () => {
       const page = await browseTitles(
@@ -842,19 +919,71 @@ test("two free-text includes pre-filter natively as a union and still AND locall
         },
         [],
       );
-      // The upstream exposes one tag criterion: the union of both terms'
-      // expansions travels as the any-of pre-filter, without tag_and.
-      assert.match(movieUrls[0]!, /tags%5B11%5D=1|tags\[11\]=1/);
-      assert.match(movieUrls[0]!, /tags%5B12%5D=1|tags\[12\]=1/);
-      assert.doesNotMatch(movieUrls[0]!, /tag_and=1/);
-      // The per-term AND survives locally: only the row carrying both tags
-      // stays. The single page exhausted, so the count is exact again.
+      // "xyz" expands to two tags, so the union rides any-of and the terms
+      // AND locally; the ceiling degrades the browse instead of 422ing.
+      assert.match(movieUrls.join("\n"), /tags%5B11%5D=1|tags\[11\]=1/);
+      assert.doesNotMatch(movieUrls.join("\n"), /tag_and=1/);
+      assert.equal(moviesCalled, 40);
+      assert.deepEqual(page.items, []);
+      assert.equal(page.totalCountKnown, false);
+      assert.equal(page.hasMore, false);
+      assert.deepEqual(
+        page.errors.map((e) => [e.provider, e.code]),
+        [["tpdb", "scan_ceiling"]],
+      );
+    },
+  );
+});
+
+test("a multi-match free-text AND returns the partial matches beside the ceiling error", async () => {
+  const TAG_XYZ_A = { id: 11, uuid: uuid(101), name: "XYZ Special" };
+  const TAG_XYZ_B = { id: 12, uuid: uuid(102), name: "XYZ Thing" };
+  const TAG_ABC = { id: 13, uuid: uuid(103), name: "ABC Thing" };
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [TAG_XYZ_A, TAG_XYZ_B, TAG_ABC],
+      moviePages: [
+        {
+          // First page: one full AND match amid xyz-only rows.
+          rows: [
+            tpdbRow(uuid(1), "Both terms", "2024-03-01", [TAG_XYZ_A, TAG_ABC]),
+            tpdbRow(uuid(2), "Only xyz", "2024-02-01", [TAG_XYZ_B]),
+          ],
+          next: "x",
+          total: 10000,
+        },
+        {
+          // The endless continuation only ever carries xyz-group tags, so
+          // the local abc AND never fills the page again.
+          rows: [tpdbRow(uuid(2), "Only xyz", "2024-02-01", [TAG_XYZ_B])],
+          next: "x",
+          total: 10000,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "movie",
+          include: [{ name: "xyz" }, { name: "abc" }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // The one real AND match survives beside the named incompleteness.
       assert.deepEqual(
         page.items.map((d) => d.reference.id),
         [uuid(1)],
       );
-      assert.equal(page.total, 1);
-      assert.equal(page.totalCountKnown, true);
+      assert.equal(page.totalCountKnown, false);
+      assert.deepEqual(
+        page.errors.map((e) => e.code),
+        ["scan_ceiling"],
+      );
     },
   );
 });

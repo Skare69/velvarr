@@ -365,11 +365,18 @@ async function includeIdsForSide(
     if (ids.length === 0) return undefined;
     groups.push(ids);
   }
+  // Several terms that each matched exactly one tag: the all-of criterion
+  // IS their AND, so it goes native whole — exact totals, nothing
+  // re-checked locally. (A single term keeps the any-of form: it is the
+  // same set and already fully native.)
+  if (groups.length > 1 && groups.every((g) => g.length === 1)) {
+    return { allOf: [...new Set(groups.flat())], anyOf: [], localFree: [] };
+  }
   return {
     allOf,
     anyOf: [...new Set(groups.flat())],
-    // One term is fully expressed by the native any-of; several terms AND
-    // together and still need the local per-term re-check.
+    // Several terms with several matches AND together and still need the
+    // local per-term re-check atop the native any-of union.
     localFree: groups.length > 1 ? free : [],
   };
 }
@@ -431,6 +438,11 @@ class Stream {
   /** True when any displayed predicate is evaluated locally, which makes
    * provider-reported totals count the wrong thing. */
   readonly localFiltered: boolean;
+  /** True when this stream's local filter is a free-text AND: at the scan
+   * ceiling it degrades to a named incomplete error instead of throwing,
+   * because the native any-of union kept the scanned pages productive and
+   * the matches found are a real partial answer. */
+  readonly softCeiling: boolean;
   private page = 0;
   private fetches = 0;
   private readonly base: CatalogSearchQuery;
@@ -442,11 +454,13 @@ class Stream {
     visible: (d: CatalogDetail) => boolean,
     perPage: number,
     localFiltered: boolean,
+    softCeiling = false,
   ) {
     this.base = base;
     this.visible = visible;
     this.perPage = perPage;
     this.localFiltered = localFiltered;
+    this.softCeiling = softCeiling;
   }
 
   get live(): boolean {
@@ -464,11 +478,26 @@ class Stream {
     if (!this.live) return;
     this.fetches += 1;
     if (this.fetches > MAX_SCAN_PAGES) {
-      throw new AppError(
-        422,
-        "query_too_broad",
-        "Browse reached its upstream page limit before filling this page; narrow the filters.",
-      );
+      if (!this.softCeiling) {
+        throw new AppError(
+          422,
+          "query_too_broad",
+          "Browse reached its upstream page limit before filling this page; narrow the filters.",
+        );
+      }
+      // ponytail ceiling: a free-text AND the providers cannot express
+      // natively degrades instead of 422ing — the native union pre-filter
+      // kept every scanned page productive, so the matches found are a real
+      // partial answer and the named error says so. Widen the native
+      // expression (provider combinator criteria) if this fires often.
+      this.exhausted = true;
+      this.error = {
+        provider: this.base.provider,
+        code: "scan_ceiling",
+        message:
+          "Reached the upstream page limit while filling this page — results are incomplete; narrow the filters.",
+      };
+      return;
     }
     this.page += 1;
     try {
@@ -591,7 +620,12 @@ async function mergeStreams(
     .filter((s) => s.error !== undefined)
     .map((s) => s.error!);
   if (items.length === 0 && errors.length === streams.length) {
-    allSourcesFailed(streams); // all-source failure stays visible
+    // Every stream stopping on its own scan ceiling is a bounded (if
+    // matchless) answer, not an outage: the named errors travel with the
+    // empty page. Real source failures stay a 502.
+    if (!errors.every((e) => e.code === "scan_ceiling")) {
+      allSourcesFailed(streams); // all-source failure stays visible
+    }
   }
   const exhausted =
     streams.every((s) => s.exhausted) &&
@@ -1083,6 +1117,9 @@ export async function browseTitles(
         ),
         query.perPage,
         plan.localFiltered,
+        // A free-text AND is the local filter the scan ceiling degrades on;
+        // hidden, exclude and year scans keep the hard 422.
+        plan.localInclude.some((sel) => isFreeTextSelection(sel)),
       ),
   );
   streams.push(...unresolved);
