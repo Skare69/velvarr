@@ -2166,6 +2166,84 @@ test("resolvePlaybackAccess reports a capped sweep as unavailable, never missing
   });
 });
 
+test("resolvePlaybackAccess retries a truncated cached pool when the matched item 404s", async () => {
+  // The stale-index case at the cap: Jellyfin replaces a matched item (an
+  // upgraded file gets a new id), so the cached pool still holds the old id
+  // whose Ancestors probe 404s into 'denied'. A truncated pool must not
+  // blanket-skip the forced fresh retry — only its nothing-found verdict
+  // stands; the retried walk finds the replacement and reads available.
+  const entries: AvEntry[] = [
+    {
+      lib: LIB_A,
+      item: avItem({
+        id: hexId(0x6001),
+        name: "Replaced Movie",
+        providerIds: { Tpdb: "tpdb-replaced-uuid" },
+        path: "C:\\media\\movies\\Replaced Movie\\Replaced Movie.mkv",
+      }),
+    },
+    ...Array.from({ length: 12_001 }, (_, i) => ({
+      lib: LIB_A,
+      item: avItem({ id: hexId(0x6100 + i), name: `Filler Movie ${i}` }),
+    })),
+  ];
+  await withFixture(avHandler({ entries }), async (fx) => {
+    const cfg = avConfig(fx.origin, [LIB_A]);
+    const hints = {
+      provider: "tpdb" as const,
+      kind: "movie" as const,
+      id: "tpdb-replaced-uuid",
+    };
+    // First resolve walks a truncated pool (12,002 items, 12,000 fetched),
+    // matches the old id, proves it live: available. 200 movie pages plus
+    // one empty episode page.
+    const first = await resolvePlaybackAccess(
+      cfg,
+      TOKEN,
+      account([LIB_A]),
+      hints,
+    );
+    assert.equal(first.outcome, "available");
+    if (first.outcome !== "available") return assert.fail("unreachable");
+    assert.equal(first.item.id, hexId(0x6001));
+    assert.equal(
+      fx.log.filter(
+        (r) => r.method === "GET" && pathOf(r.url) === `/users/${ME_ID}/items`,
+      ).length,
+      201,
+    );
+    // The upgrade swaps the item id under the same provider id; the cached
+    // pool still holds the old one, which now 404s on Ancestors.
+    entries[0] = {
+      lib: LIB_A,
+      item: avItem({
+        id: hexId(0x6002),
+        name: "Replaced Movie",
+        providerIds: { Tpdb: "tpdb-replaced-uuid" },
+        path: "C:\\media\\movies\\Replaced Movie\\Replaced Movie.mkv",
+      }),
+    };
+    const again = await resolvePlaybackAccess(
+      cfg,
+      TOKEN,
+      account([LIB_A]),
+      hints,
+      { cachedSweep: true },
+    );
+    // The stale pooled 'denied' took the forced fresh retry, and the retried
+    // walk found the replacement: the verdict reflects the live library.
+    assert.equal(again.outcome, "available");
+    if (again.outcome !== "available") return assert.fail("unreachable");
+    assert.equal(again.item.id, hexId(0x6002));
+    assert.equal(
+      fx.log.filter(
+        (r) => r.method === "GET" && pathOf(r.url) === `/users/${ME_ID}/items`,
+      ).length,
+      402,
+    );
+  });
+});
+
 test("resolvePlaybackAccess reports outages as unavailable and propagates auth failures", async () => {
   await withFixture(
     avHandler({ entries: avEntries(), sweepStatus: 500 }),

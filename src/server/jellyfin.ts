@@ -1463,11 +1463,16 @@ export async function resolvePlaybackAccess(
     if (
       first.sweepAt !== null &&
       first.sweepAt < started &&
-      // A truncated pool skips the forced fresh retry: the cap is static,
-      // a fresh sweep truncates identically, so the retry only doubles the
-      // walk cost. Any found-item verdict is unaffected — verdictForItem
-      // re-proves every item live regardless of pool truncation.
-      !first.truncated &&
+      // Only a truncated pool's nothing-found verdict skips the forced
+      // fresh retry: the cap is static — a fresh sweep truncates
+      // identically — so the retry only doubles the walk cost. (This is
+      // the one resolveFromSweep result with truncated=true and outcome
+      // 'unavailable'; a failed item read maps to 'unavailable' with
+      // truncated=false, so it keeps the retry.) Found-item verdicts a
+      // cachedSafeVerdict rejects — a 'denied' whose pooled item has since
+      // vanished from the index, an 'ambiguous' — take the fresh retry,
+      // so a stale pooled id never stands as a denial.
+      !(first.truncated && first.access.outcome === "unavailable") &&
       !cachedSafeVerdict(first.access, hints)
     ) {
       // Forced fresh: notBefore = started rejects the entry this verdict
