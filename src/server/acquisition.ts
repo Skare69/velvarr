@@ -96,15 +96,22 @@ function notifyTransition(event: RequestNotification): void {
   void notifyRequestEvent(event).catch(() => {});
 }
 
-function deliveryReady(config: IntegrationConfig | null): boolean {
+/** A Whisparr endpoint exists: reads (observation, reconciliation by exact
+ * identity) may run. Writes additionally need enabled, specified delivery. */
+function whisparrReady(
+  config: IntegrationConfig | null,
+): config is IntegrationConfig {
   const w = config?.whisparr;
   return (
     typeof w?.url === "string" &&
     w.url !== "" &&
     typeof w.apiKey === "string" &&
-    w.apiKey !== "" &&
-    w.delivery?.enabled === true
+    w.apiKey !== ""
   );
+}
+
+function deliveryReady(config: IntegrationConfig | null): boolean {
+  return whisparrReady(config) && config.whisparr?.delivery?.enabled === true;
 }
 
 function itemFacts(item: WhisparrItem): {
@@ -294,6 +301,21 @@ async function reconcileUncertain(
     summary.blocked++;
     return;
   }
+  // Delivery disabled: a fresh add is the one write this path cannot make,
+  // so hold the row blocked (reads above already reconciled what a read
+  // could) instead of dispatching behind a disabled gate.
+  if (!deliveryReady(config)) {
+    storage.recordAcquisitionObservation(
+      record.id,
+      {
+        unavailable: true,
+        reason: "whisparr delivery is disabled or unconfigured",
+      },
+      claimToken,
+    );
+    summary.blocked++;
+    return;
+  }
   await dispatch(record, config, claimToken, summary);
 }
 
@@ -357,10 +379,16 @@ async function processOne(
   config: IntegrationConfig | null,
   summary: WorkSummary,
 ): Promise<void> {
-  // Local gates before any claim or network call: disabled delivery and
-  // inadmissible requesters leave work honestly blocked (reason persisted,
-  // state untouched) instead of looping against Whisparr or faking success.
-  if (config === null || !deliveryReady(config)) {
+  // Local gates before any claim or network call: work that cannot run
+  // leaves honestly blocked (reason persisted, state untouched) instead of
+  // looping against Whisparr or faking success. Reads (observation,
+  // reconciliation) need only a Whisparr endpoint, so sent work keeps
+  // progressing while delivery is off; `unsent` always needs the add POST.
+  // An uncertain row's reconciliation gates its own would-be dispatch.
+  if (
+    !whisparrReady(config) ||
+    (item.state === "unsent" && !deliveryReady(config))
+  ) {
     storage.recordAcquisitionObservation(item.id, {
       unavailable: true,
       reason: "whisparr delivery is disabled or unconfigured",
