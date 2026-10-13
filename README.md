@@ -43,6 +43,8 @@ docker compose up -d   # pulls ghcr.io/skare69/velvarr
 
 To upgrade, bump the image tag in `compose.yaml`, then `docker compose pull && docker compose up -d`.
 
+The container health check reads `/api/status`. The container becomes `unhealthy` when Velvarr cannot open its data directory (`/data`); run `docker compose logs velvarr` to see the cause. A new instance that waits for owner setup stays healthy.
+
 **From source** (Node 24.21+, Bun 1.3.14+):
 
 ```sh
@@ -66,6 +68,8 @@ bun run dev     # http://127.0.0.1:6699
 | `VELVARR_DISCORD_DETAIL`     | no               | `1` includes titles in notifications; off by default, messages stay identity-only.   |
 | `TYPESAFE_API_KEY`           | no               | Enables AI-assisted Jellyfin matching; a key saved in Settings → Metadata providers takes precedence. |
 | `VELVARR_UPDATE_CHECK`       | no               | `0` disables the release check. By default the server asks GitHub (`api.github.com`) for the latest release at most once an hour — ten minutes after a failure — to show the update chip. |
+
+Each failed sign-in writes one warning line to the server log: `[auth] failed sign-in attempt: account="<name>" ip="<address>"`. The password is never logged. The address is the first `X-Forwarded-For` entry, or `unknown` when no proxy sends the header. A client can set this header, so trust the address only when your proxy replaces `X-Forwarded-For` instead of appending to it.
 
 ## Backup and recovery
 
