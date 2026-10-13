@@ -551,9 +551,12 @@ function S(): Statements {
          VALUES (?, ?, ?, ?, ?, 'imported', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ),
       // Heals imported rows carried without their observed facts: only rows
-      // with no last observation are touched, so the run is idempotent. The
-      // facts come from the newest observed imported row of a retired
-      // identity for the same media.
+      // with no last observation are touched, so the run is idempotent.
+      // Scoped to the current identity: healing a retired row would stamp it
+      // with the boot time, making it latestAcquisitionForReference and
+      // hijacking the next URL change's carry with stale facts. The facts
+      // come from the newest observed imported row of a retired identity for
+      // the same media.
       repairImportedFacts: d.prepare(
         `UPDATE acquisitions SET
            last_observed_at = src.last_observed_at,
@@ -577,6 +580,7 @@ function S(): Statements {
          ) AS src
          WHERE acquisitions.state = 'imported'
            AND acquisitions.last_observed_at IS NULL
+           AND acquisitions.instance_id = ?
            AND acquisitions.provider = src.provider
            AND acquisitions.kind = src.kind
            AND acquisitions.external_id = src.external_id
@@ -1477,8 +1481,9 @@ export function initializeStorage(): void {
       Date.now(),
     );
     // Heals rows an earlier build carried as imported without their observed
-    // facts. Idempotent: only fact-less rows are touched.
-    S().repairImportedFacts.run(Date.now());
+    // facts, on this identity only. Idempotent: only fact-less rows are
+    // touched.
+    S().repairImportedFacts.run(Date.now(), instanceId);
   });
 }
 

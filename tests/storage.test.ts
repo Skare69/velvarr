@@ -1797,6 +1797,116 @@ test("boot repair restores facts a URL change dropped from a carried imported ro
   );
 });
 
+test("boot repair only heals the current identity so a retired row never hijacks the next carry", () => {
+  freshDir();
+  storage.bootstrap(deliveryConfig(true), ownerUser(), "jf-owner-token");
+  const owner = storage.getAccount(ownerUser().id) as Account;
+
+  // In flight on the current identity: delivered, observed, monitoring.
+  const request = storage.createRequest(owner.id, MOVIE);
+  storage.decideRequest(owner, request.id, "approved");
+  const current = storage.getAcquisitionByReference(MOVIE);
+  assert.ok(current);
+  storage.recordAcquisitionObservation(current.id, {
+    state: "monitoring",
+    item: {
+      whisparrId: 7,
+      path: "/data/whisparr/new/M.mkv",
+      title: "M",
+      monitored: true,
+    },
+  });
+
+  // Retired rows only the untagged 193ea58..7a6939b builds can leave behind:
+  // identity A imported with observed facts, identity B the same import
+  // carried without its facts. Their updated_at predates the current row.
+  storage.closeStorage();
+  const raw = new DatabaseSync(join(currentDir, "velvarr.sqlite"));
+  const retired = 1_000_000_000_000;
+  const insert = raw.prepare(
+    `INSERT INTO acquisitions
+       (id, instance_id, provider, kind, external_id, state,
+        created_at, updated_at, last_observed_at,
+        whisparr_id, whisparr_path, whisparr_title, whisparr_monitored)
+     VALUES (?, ?, 'tpdb', 'movie', ?, 'imported', ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  insert.run(
+    "retired-a",
+    "retired-a-instance",
+    MOVIE.id,
+    retired,
+    retired,
+    retired,
+    42,
+    "/data/whisparr/old/M.mkv",
+    "M",
+    1,
+  );
+  insert.run(
+    "retired-b",
+    "retired-b-instance",
+    MOVIE.id,
+    retired,
+    retired,
+    null,
+    null,
+    null,
+    null,
+  );
+  raw.close();
+
+  // Boot: the repair must leave retired rows alone. Unscoped, it healed B
+  // and stamped it with the boot time, so B became the
+  // latestAcquisitionForReference the next URL change carries from.
+  storage.initializeStorage();
+  storage.closeStorage();
+  const after = new DatabaseSync(join(currentDir, "velvarr.sqlite"));
+  const healed = after
+    .prepare(
+      "SELECT updated_at, whisparr_path FROM acquisitions WHERE id = 'retired-b'",
+    )
+    .get() as { updated_at: number; whisparr_path: string | null };
+  after.close();
+  assert.equal(
+    healed.updated_at,
+    retired,
+    "a retired row is never touched by boot repair",
+  );
+  assert.equal(
+    healed.whisparr_path,
+    null,
+    "a retired row gains no facts from boot repair",
+  );
+
+  // The next URL change must re-enqueue the in-flight title on the new
+  // identity, not replay identity A's stale import as a finished one.
+  const moved = deliveryConfig(true);
+  moved.whisparr = { ...moved.whisparr!, url: "http://127.0.0.1:6970" };
+  storage.saveConfig(moved);
+  const carried = storage.getAcquisitionByReference(MOVIE);
+  assert.ok(carried);
+  assert.equal(
+    carried.state,
+    "unsent",
+    "the in-flight title is re-enqueued, not carried as a stale import",
+  );
+  assert.ok(carried.dueAt, "the re-enqueued row is due");
+  assert.deepEqual(
+    storage.listDueAcquisitions(Date.now() + 60_000).map((a) => a.state),
+    ["unsent"],
+    "only the re-enqueued work is due on the new identity",
+  );
+
+  // A second boot changes nothing.
+  const updatedAt = carried.updatedAt;
+  storage.initializeStorage();
+  assert.equal(
+    storage.getAcquisitionByReference(MOVIE)?.updatedAt,
+    updatedAt,
+    "a second boot must not touch the re-enqueued row",
+  );
+});
+
 test("the last withdrawal suppresses only undispatched work; sent work survives", () => {
   freshDir();
   storage.bootstrap(deliveryConfig(true), ownerUser(), "jf-owner-token");
