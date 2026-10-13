@@ -131,10 +131,11 @@ export async function relatedTitles(
       if (!errors.some((e) => e.provider === other)) {
         errors.push(toSourceError(other, settled.reason));
       }
-    } else if (settled.value !== undefined && isUuid(settled.value.id)) {
-      // Non-UUID ids (TPDB's numeric String(t.id) fallback) can never travel
-      // native: cleanTagIds would 400 the whole query. Their names still
-      // rank below.
+    } else if (settled.value !== undefined && settled.value.native) {
+      // Native matches only: a uuid-less exact-label match (TPDB's numeric
+      // String(t.id) fallback) carries no id — it could never travel native
+      // (cleanTagIds would 400 the whole query). Their names still rank
+      // below.
       counterpartIds.push(settled.value.id);
     }
   }

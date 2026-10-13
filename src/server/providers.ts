@@ -1985,10 +1985,17 @@ export async function studioCounterpart(
   }
 }
 
-/** A tag reference: provider plus native id, no `kind`. Tags are labels, not
- * entities — CatalogKind is for entities, and widening it would claim a
- * cross-provider identity a label does not have. */
-export type TagReference = { provider: CatalogProvider; id: string };
+/** A tag reference: provider, no `kind`. Tags are labels, not entities —
+ * CatalogKind is for entities, and widening it would claim a cross-provider
+ * identity a label does not have. `native: true` carries the UUID id that
+ * can ride a native tag filter; `native: false` marks a uuid-less
+ * exact-label match (TPDB sometimes emits numeric-string tag ids): the tag
+ * exists there and matches titles by label, but its id can never ride a
+ * native criterion — cleanTagIds would 400 the query — so no id is
+ * reported. */
+export type TagReference =
+  | { provider: CatalogProvider; id: string; native: true }
+  | { provider: CatalogProvider; native: false };
 
 /** The other provider's tag with an exactly-equal normalized name. Exact
  * name equality (after normalizeFacetName) is honest for tags because a tag
@@ -1996,9 +2003,12 @@ export type TagReference = { provider: CatalogProvider; id: string };
  * one documented deterministic pairing that needs no published URL. It is
  * deliberately NOT used for studios or performers: those are entities whose
  * identity comes only from provider-published URLs, and equal names there
- * would be a guess. A successful search with no exact normalized match →
- * undefined; an upstream failure throws so callers record the outage
- * instead of reading it as absence. */
+ * would be a guess. A UUID row is preferred as the native counterpart; when
+ * only a uuid-less row matches (TPDB numeric-string ids), the reference
+ * reports `native: false` — the label exists on the other provider, but its
+ * id can never ride a native tag filter. No exact-label match at all →
+ * undefined: the one honest absence. An upstream failure throws so callers
+ * record the outage instead of reading it as absence. */
 export async function tagCounterpart(
   from: CatalogProvider,
   name: string,
@@ -2007,14 +2017,16 @@ export async function tagCounterpart(
   if (target === "") return undefined; // an empty label identifies nothing
   const other: CatalogProvider = from === "tpdb" ? "stashdb" : "tpdb";
   const rows = await searchCatalogTags(other, name);
-  // A uuid-less label match (TPDB sometimes emits numeric-string tag ids)
-  // is unresolvable: the id can never ride a native tag filter, and
-  // cleanTagIds would 400 the whole query. Callers treat undefined as an
-  // unresolvable anchored tag and disqualify the side.
-  const row = rows.find(
+  const nativeRow = rows.find(
     (r) => normalizeFacetName(r.name) === target && isUuid(r.id),
   );
-  return row === undefined ? undefined : { provider: other, id: row.id };
+  if (nativeRow !== undefined) {
+    return { provider: other, id: nativeRow.id, native: true };
+  }
+  const labelRow = rows.find((r) => normalizeFacetName(r.name) === target);
+  return labelRow === undefined
+    ? undefined
+    : { provider: other, native: false };
 }
 
 /** Tag-label normalization lives in lib/contracts.ts (shared with storage

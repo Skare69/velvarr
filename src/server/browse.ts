@@ -309,14 +309,16 @@ function visiblePredicate(
  * criterion — a title satisfying the term AND must carry each of these
  * tags), `anyOf` the smallest free-text expansion (any-of criterion — a
  * valid pre-filter only, sent when no singleton or anchored id exists and
- * the expansion is complete and fits the native id cap). `localFree`
- * holds the free-text terms the visible predicate must still re-check
- * locally: several terms AND together, which one upstream tag criterion
- * cannot express. */
+ * the expansion is complete and fits the native id cap). `localInclude`
+ * holds the selections the visible predicate must still re-check locally:
+ * the free-text terms (several AND together, which one upstream tag
+ * criterion cannot express) and anchored chips whose exact-label
+ * counterpart row is uuid-less (matched by exact label, never a native
+ * criterion). */
 type ResolvedIncludes = {
   allOf: string[];
   anyOf: string[];
-  localFree: CatalogTagSelection[];
+  localInclude: CatalogTagSelection[];
   /** True when at least one free-text term rides the native tag criterion
    * (a singleton expansion in `allOf`, or the `anyOf` group): at the scan
    * ceiling such a stream degrades softly — its pages were productive and
@@ -327,9 +329,12 @@ type ResolvedIncludes = {
 /** Resolves the native include criteria for one provider side. Anchored
  * selections resolve as before: a selection already carrying the side's
  * UUID uses it; otherwise the counterpart id is resolved through the
- * providers' own published label pairing, and an unresolvable anchored tag
- * — including a uuid-less match (TPDB numeric-string id) — disqualifies the
- * whole side (undefined) — it is NEVER allowed to run unfiltered.
+ * providers' own published label pairing. A uuid-less exact-label match
+ * (TPDB numeric-string id) keeps the anchored selection on the local
+ * exact-label re-check — the tag exists there, so disqualifying the side
+ * would claim an absence the provider never showed; only a label with no
+ * tag row at all disqualifies the whole side (undefined) — it is NEVER
+ * allowed to run unfiltered.
  * Free-text includes expand on THIS side's complete published tag listing
  * (expandCatalogTagTerm), anchored ids or not. Every term's expansion must
  * be complete and native — no capped walk, no uuid-less rows — before
@@ -351,6 +356,10 @@ async function includeIdsForSide(
 ): Promise<ResolvedIncludes | undefined> {
   const allOf: string[] = [];
   const free: CatalogTagSelection[] = [];
+  // Anchored selections whose exact-label counterpart row is uuid-less:
+  // the tag exists on this side but its id can never ride a native
+  // criterion, so they join the local exact-label re-check.
+  const local: CatalogTagSelection[] = [];
   for (const sel of selections) {
     const direct = side === "tpdb" ? sel.tpdb : sel.stashdb;
     if (direct !== undefined) {
@@ -365,17 +374,26 @@ async function includeIdsForSide(
         sel.name,
       );
       if (counterpart === undefined) return undefined;
-      if (!allOf.includes(counterpart.id)) allOf.push(counterpart.id);
+      if (counterpart.native) {
+        if (!allOf.includes(counterpart.id)) allOf.push(counterpart.id);
+      } else {
+        local.push(sel);
+      }
       continue;
     }
     free.push(sel);
   }
   if (free.length === 0 || !expandFree) {
-    return { allOf, anyOf: [], localFree: free, freeTextNative: false };
+    return {
+      allOf,
+      anyOf: [],
+      localInclude: [...free, ...local],
+      freeTextNative: false,
+    };
   }
   // Every term expands before the decision: the tag listing behind
   // expandCatalogTagTerm is memoized, so reading every term costs no extra
-  // upstream traffic, and complete term indexes keep localFree aligned
+  // upstream traffic, and complete term indexes keep localInclude aligned
   // with the caller's selections. The ride-local-or-native decision
   // itself lives in resolveIncludeCriteria.
   const expansions: TagExpansion[] = [];
@@ -386,7 +404,7 @@ async function includeIdsForSide(
   return {
     allOf: criteria.allOf,
     anyOf: criteria.anyOf,
-    localFree: criteria.localTermIndexes.map((i) => free[i]!),
+    localInclude: [...criteria.localTermIndexes.map((i) => free[i]!), ...local],
     freeTextNative: criteria.freeTextNative,
   };
 }
@@ -1030,9 +1048,9 @@ export async function browseTitles(
       localFiltered:
         hiddenTags.length > 0 ||
         query.exclude.length > 0 ||
-        tpdbIncludes.localFree.length > 0 ||
+        tpdbIncludes.localInclude.length > 0 ||
         (filmography && query.include.length > 0),
-      localInclude: filmography ? query.include : tpdbIncludes.localFree,
+      localInclude: filmography ? query.include : tpdbIncludes.localInclude,
       localYear: undefined,
     });
   }
@@ -1058,9 +1076,9 @@ export async function browseTitles(
       localFiltered:
         hiddenTags.length > 0 ||
         query.exclude.length > 0 ||
-        stashIncludes.localFree.length > 0 ||
+        stashIncludes.localInclude.length > 0 ||
         query.year !== undefined,
-      localInclude: stashIncludes.localFree,
+      localInclude: stashIncludes.localInclude,
       localYear: query.year,
       performerIds:
         query.performerStarred === true ? starredPerformerIds : undefined,

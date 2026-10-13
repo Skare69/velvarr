@@ -475,12 +475,18 @@ export async function resolveLinked(tiles: FacetItem[]): Promise<void> {
   );
   settled.forEach((result, i) => {
     const tile = missing[i];
-    if (tile && result.status === "fulfilled" && result.value !== undefined) {
-      tile.linked = {
-        provider: result.value.provider,
-        id: result.value.id,
-      };
+    if (tile === undefined || result.status !== "fulfilled") return;
+    const ref = result.value;
+    if (ref === undefined) return;
+    if ("native" in ref) {
+      // Tag reference: a uuid-less exact-label match carries no id — the
+      // label exists on the other provider, but there is nothing to link.
+      if (ref.native) {
+        tile.linked = { provider: ref.provider, id: ref.id };
+      }
+      return;
     }
+    tile.linked = { provider: ref.provider, id: ref.id };
   });
 }
 

@@ -1556,19 +1556,23 @@ test("a free-text term matching only uuid-less TPDB tags runs the movie side loc
   );
 });
 
-test("an anchored include whose TPDB counterpart is uuid-less drops the movie side instead of 400ing", async () => {
+test("an anchored include whose TPDB counterpart is uuid-less runs the movie side locally instead of 400ing or reading absence", async () => {
   const LEGACY_NUM = { id: 305, name: "Legacy" }; // uuid-less TPDB row
   const STASH_TAG = uuid(201);
   let moviesCalled = 0;
+  const movieUrls: string[] = [];
   await runBrowse(
     scriptedUpstream({
       tagRows: [LEGACY_NUM],
       stashTagRows: [{ id: STASH_TAG, name: "Legacy" }],
       moviePages: [
         {
-          rows: [tpdbRow(uuid(1), "Legacy movie", "2024-01-01", [LEGACY_NUM])],
+          rows: [
+            tpdbRow(uuid(1), "Legacy movie", "2024-01-01", [LEGACY_NUM]),
+            tpdbRow(uuid(2), "Untagged movie", "2023-01-01"),
+          ],
           next: null,
-          total: 1,
+          total: 2,
         },
       ],
       scenes: {
@@ -1579,8 +1583,9 @@ test("an anchored include whose TPDB counterpart is uuid-less drops the movie si
           ]),
         ],
       },
-      onMovieRequest: () => {
+      onMovieRequest: (_page, _qs, url) => {
         moviesCalled += 1;
+        movieUrls.push(url);
       },
     }),
     async () => {
@@ -1595,16 +1600,171 @@ test("an anchored include whose TPDB counterpart is uuid-less drops the movie si
         },
         [],
       );
-      // The anchored StashDB id cannot pair with a TPDB tag: the label
-      // match is uuid-less, which counts as unresolvable, so the movie side
-      // is dropped — never run unfiltered, never 400ed. The scene side
-      // carries its own anchored id natively.
+      // The anchored StashDB id pairs with a uuid-less TPDB tag: the label
+      // exists upstream, so absence is never claimed. The movie side runs
+      // locally — no native tag criterion on the wire, the visible
+      // predicate re-checks the exact label — while the scene side carries
+      // its own anchored id natively. The pin formerly asserted the drop
+      // (an exact 1, movies unread); a uuid-less row is not absence.
+      assert.equal(moviesCalled, 1);
+      assert.doesNotMatch(movieUrls[0]!, /tag_and|tags%5B|tags\[/);
+      assert.deepEqual(
+        page.items.map((d) => [d.reference.provider, d.title]),
+        [
+          ["stashdb", "Legacy scene"],
+          ["tpdb", "Legacy movie"],
+        ],
+      );
+      // Both streams exhausted: the locally filtered total is exact, and
+      // the untagged movie stayed dropped.
+      assert.equal(page.total, 2);
+      assert.equal(page.totalCountKnown, true);
+      assert.deepEqual(page.errors, []);
+    },
+  );
+});
+
+test("an anchored uuid-less counterpart keeps totals approximate until the local side exhausts", async () => {
+  const LEGACY_NUM = { id: 305, name: "Legacy" };
+  const STASH_TAG = uuid(201);
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [LEGACY_NUM],
+      stashTagRows: [{ id: STASH_TAG, name: "Legacy" }],
+      moviePages: [
+        {
+          rows: [
+            ...Array.from({ length: 10 }, (_, i) =>
+              tpdbRow(uuid(100 + i), `Legacy movie ${i + 1}`, "2024-01-01", [
+                LEGACY_NUM,
+              ]),
+            ),
+            tpdbRow(uuid(2), "Untagged movie", "2023-01-01"),
+          ],
+          next: "x",
+          total: 10000,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "movie",
+          include: [{ name: "Legacy", stashdb: STASH_TAG }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // The local side filled the page before exhausting upstream: an
+      // exact count would claim a completeness the scan never reached, so
+      // the total stays unknown (the regression reported an exact 0).
+      assert.equal(page.items.length, 10);
+      assert.equal(page.hasMore, true);
+      assert.equal(page.total, undefined);
+      assert.equal(page.totalCountKnown, false);
+      assert.deepEqual(page.errors, []);
+    },
+  );
+});
+
+test("TPDB performer filmography keeps a uuid-less anchored include local instead of dropping the filmography", async () => {
+  const LEGACY_NUM = { id: 305, name: "Legacy" }; // uuid-less TPDB row
+  const STASH_TAG = uuid(201);
+  const performer = uuid(55);
+  const urls: string[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [LEGACY_NUM],
+      stashTagRows: [{ id: STASH_TAG, name: "Legacy" }],
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(1), "Legacy movie", "2024-01-01", [LEGACY_NUM])],
+          next: null,
+          total: 1,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: (_page, _qs, url) => urls.push(url),
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "movie",
+          performerTpdb: performer,
+          include: [{ name: "Legacy", stashdb: STASH_TAG }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // The filmography route rejects tag parameters, so the uuid-less
+      // anchored include filters locally like any other include there — it
+      // must not disqualify the only wanted side (the regression returned
+      // an exact empty filmography with zero upstream reads).
+      assert.match(urls[0]!, new RegExp(`/performers/${performer}/movies`));
+      assert.doesNotMatch(urls[0]!, /tag_and|tags%5B|tags\[/);
+      assert.deepEqual(
+        page.items.map((d) => d.title),
+        ["Legacy movie"],
+      );
+      assert.equal(page.total, 1);
+      assert.equal(page.totalCountKnown, true);
+      assert.deepEqual(page.errors, []);
+    },
+  );
+});
+
+test("an anchored include whose label has no TPDB tag at all still disqualifies the movie side", async () => {
+  const STASH_TAG = uuid(201);
+  let moviesCalled = 0;
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [{ id: 305, name: "Unrelated" }],
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(1), "Unfiltered?", "2024-01-01")],
+          next: null,
+          total: 1,
+        },
+      ],
+      scenes: {
+        count: 1,
+        rows: [
+          stashRow(uuid(3), "Ghost scene", "2024-06-01", [
+            { id: STASH_TAG, name: "Ghost" },
+          ]),
+        ],
+      },
+      onMovieRequest: () => {
+        moviesCalled += 1;
+      },
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "all",
+          include: [{ name: "Ghost", stashdb: STASH_TAG }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      // No exact-label TPDB tag exists: the side could only run unfiltered,
+      // so the disqualification stands — absence with proof, never a
+      // filterless stream.
       assert.equal(moviesCalled, 0);
       assert.deepEqual(
         page.items.map((d) => d.reference.provider),
         ["stashdb"],
       );
-      assert.equal(page.total, 1);
       assert.equal(page.totalCountKnown, true);
     },
   );

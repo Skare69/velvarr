@@ -37,7 +37,10 @@ import {
   studioCounterpart,
   tagCounterpart,
 } from "../src/server/providers.ts";
-import type { CatalogSearchQuery } from "../src/server/providers.ts";
+import type {
+  CatalogSearchQuery,
+  TagReference,
+} from "../src/server/providers.ts";
 import type { CatalogDetail } from "../src/lib/contracts.ts";
 import { normalizeFacetName } from "../src/lib/contracts.ts";
 
@@ -2040,11 +2043,17 @@ test("tagCounterpart pairs only exact normalized names and rejects on upstream f
       },
     });
   });
-  let paired: { provider: string; id: string } | undefined;
+  let paired: TagReference | undefined;
   try {
     process.env.STASHDB_BASE_URL = stashFixture.origin;
     paired = await tagCounterpart("tpdb", "All Sex");
-    assert.deepEqual(paired, { provider: "stashdb", id: STASH_CROSS_ID });
+    // native:true now rides every reference (fix(browse): uuid-less
+    // exact-label matches report native:false instead of vanishing).
+    assert.deepEqual(paired, {
+      provider: "stashdb",
+      id: STASH_CROSS_ID,
+      native: true,
+    });
 
     // Near-misses only: normalization never bends "Anal" into a longer name.
     assert.equal(await tagCounterpart("tpdb", "Anal"), undefined);
@@ -2067,15 +2076,31 @@ test("tagCounterpart pairs only exact normalized names and rejects on upstream f
   const tpdbFixture = await startFixture((req, res) => {
     const params = queryOf(req.url ?? "");
     assert.equal(params.get("per_page"), "50");
-    sendJson(res, 200, {
-      data: [{ id: 70, uuid: TPDB_TAG_A, name: "All Sex" }],
-    });
+    // The search honours its term: "all-sex" holds a uuid-less row beside
+    // the UUID row (the UUID stays the preferred native counterpart);
+    // "legacy" holds a uuid-less row only — deliberate contract flip
+    // (fix(browse)): the label exists, so the reference reports
+    // native:false with no id; undefined would claim an absence the
+    // provider never showed.
+    const rows =
+      params.get("q") === "all-sex"
+        ? [
+            { id: 305, name: "All Sex" },
+            { id: 70, uuid: TPDB_TAG_A, name: "All Sex" },
+          ]
+        : [{ id: 305, name: "Legacy" }];
+    sendJson(res, 200, { data: rows });
   });
   try {
     process.env.TPDB_BASE_URL = tpdbFixture.origin;
     assert.deepEqual(await tagCounterpart("stashdb", "all-sex"), {
       provider: "tpdb",
       id: TPDB_TAG_A,
+      native: true,
+    });
+    assert.deepEqual(await tagCounterpart("stashdb", "legacy"), {
+      provider: "tpdb",
+      native: false,
     });
   } finally {
     await tpdbFixture.close();

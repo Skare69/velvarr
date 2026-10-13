@@ -74,9 +74,11 @@ export function mergeTagCounts(
  * performer on the other provider, the jump is a union: both of her ids
  * ride (primary `id` plus `counterpart`) and browse lands on All — her TPDB
  * movies plus her StashDB scenes in one page. No side can lie: a side whose
- * include tag cannot resolve itself self-disqualifies server-side
- * (`includeIdsForSide` resolves labels via `tagCounterpart`, exact
- * normalized name). Without a linked counterpart the old single-side rules
+ * include tag has no exact-label counterpart at all self-disqualifies
+ * server-side (`includeIdsForSide` resolves labels via `tagCounterpart`,
+ * exact normalized name); a uuid-less counterpart row filters locally with
+ * approximate totals instead of disqualifying. Without a linked counterpart
+ * the old single-side rules
  * stand: an own-side tag keeps the page performer; an other-side tag would
  * land on a provably empty page (a TPDB performer query never runs the
  * scene side), so it travels as a bare tag filter. */
