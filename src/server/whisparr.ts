@@ -344,12 +344,10 @@ export async function findWhisparrItemByPath(
   if (jellyfinPaths.length === 0) return null;
   const whisparr = config?.whisparr;
   if (!whisparr?.url || !whisparr.apiKey) return null;
-  const dtos = asMovieResources(
-    await requestJson<unknown>(whisparr.url, "/api/v3/movie", whisparr.apiKey, {
-      service: "whisparr",
-      sizeLimit: MOVIE_LIST_BYTES,
-    }),
-  );
+  // The shared 30 s list cache below: library detail and list enrichment
+  // share one /api/v3/movie fetch per window, so a detail page may show
+  // Whisparr data up to 30 s old.
+  const dtos = await cachedMovieList(whisparr);
   const matches = matchesByPaths(dtos, whisparr, jellyfinPaths);
   if (matches.length > 1) {
     throw new AppError(
@@ -376,28 +374,47 @@ const MOVIE_LIST_TTL_MS = 30_000;
 const MOVIE_LIST_CACHE_MAX = 4;
 // Keyed by Whisparr base URL. Entries hold the in-flight promise: the
 // prefetch that overlaps the Jellyfin read and the enrichment that follows
-// it share one fetch instead of two.
+// it share one fetch instead of two. A hit also needs the same API key, so
+// changed credentials never reuse another key's collection.
 const movieListCache = new Map<
   string,
-  { at: number; dtos: Promise<MovieResourceDto[]> }
+  { at: number; apiKey: string; dtos: Promise<MovieResourceDto[]> }
 >();
 
 function cachedMovieList(
   whisparr: NonNullable<IntegrationConfig["whisparr"]>,
 ): Promise<MovieResourceDto[]> {
   const hit = movieListCache.get(whisparr.url);
-  if (hit !== undefined && Date.now() - hit.at < MOVIE_LIST_TTL_MS) {
+  if (
+    hit !== undefined &&
+    hit.apiKey === whisparr.apiKey &&
+    Date.now() - hit.at < MOVIE_LIST_TTL_MS
+  ) {
     return hit.dtos;
   }
   const at = Date.now();
+  // Cache only the fields path correspondence reads (identityOf and
+  // matchesByPaths: itemType, path, foreignId, tmdbId, tpdbId, stashId) —
+  // not artwork or other bulky metadata.
   const dtos = requestJson<unknown>(
     whisparr.url,
     "/api/v3/movie",
     whisparr.apiKey,
     { service: "whisparr", sizeLimit: MOVIE_LIST_BYTES },
-  ).then(asMovieResources);
+  ).then((dto) =>
+    asMovieResources(dto).map(
+      ({ itemType, path, foreignId, tmdbId, tpdbId, stashId }) => ({
+        itemType,
+        path,
+        foreignId,
+        tmdbId,
+        tpdbId,
+        stashId,
+      }),
+    ),
+  );
   movieListCache.delete(whisparr.url);
-  movieListCache.set(whisparr.url, { at, dtos });
+  movieListCache.set(whisparr.url, { at, apiKey: whisparr.apiKey, dtos });
   if (movieListCache.size > MOVIE_LIST_CACHE_MAX) {
     const oldest = movieListCache.keys().next().value;
     if (oldest !== undefined) movieListCache.delete(oldest);

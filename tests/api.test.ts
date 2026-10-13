@@ -1828,7 +1828,11 @@ test("empty grant list never means all libraries", async () => {
   assert.deepEqual(await libs.json(), { libraries: [] });
 });
 
-test("library detail: catalog enrichment via whisparr path mappings", async () => {
+test("library detail: catalog enrichment via whisparr path mappings", async (t) => {
+  // Advance only the cache clock; live fixture I/O keeps its real timers.
+  const realNow = Date.now;
+  let elapsed = 0;
+  t.mock.method(Date, "now", () => realNow() + elapsed);
   // The preceding test arms fx.fail.items and never consumes it (its empty
   // grants short-circuit before the fixture); the Jellyfin reads here are real.
   fx.fail.items = 0;
@@ -1887,6 +1891,17 @@ test("library detail: catalog enrichment via whisparr path mappings", async () =
       itemType: "scene",
       statistics: { movieFileCount: 1, sizeOnDisk: 2_000_000_000 },
     };
+    // Library detail now shares the list-enrichment collection cache: a read
+    // inside the 30 s TTL still returns the catalog the first read resolved,
+    // even though the fixture changed underneath.
+    const cached = await call("GET", `/api/library/${ITEM_MOVIE}`, {
+      cookie: owner,
+    });
+    const cachedBody = (await cached.json()) as {
+      catalog?: { provider: string; kind: string; id: string };
+    };
+    assert.deepEqual(cachedBody.catalog, resolvedBody.catalog);
+    elapsed += 30_001;
     const scene = await call("GET", `/api/library/${ITEM_MOVIE}`, {
       cookie: owner,
     });
@@ -1920,6 +1935,8 @@ test("library detail: catalog enrichment via whisparr path mappings", async () =
       itemType: "movie",
       statistics: { movieFileCount: 1, sizeOnDisk: 1 },
     });
+    // The duplicate must become visible: expire the shared collection cache.
+    elapsed += 30_001;
     const ambiguous = await call("GET", `/api/library/${ITEM_MOVIE}`, {
       cookie: owner,
     });
