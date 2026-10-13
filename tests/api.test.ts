@@ -2834,6 +2834,7 @@ test("browse tag suggestions keep the stored-key gate for TypeSafe", async () =>
     key: process.env.TYPESAFE_API_KEY,
     base: process.env.TYPESAFE_BASE_URL,
     provider: process.env.VELVARR_JUDGMENT_PROVIDER,
+    ollamaBase: process.env.OLLAMA_BASE_URL,
   };
   try {
     delete process.env.VELVARR_JUDGMENT_PROVIDER;
@@ -2841,7 +2842,7 @@ test("browse tag suggestions keep the stored-key gate for TypeSafe", async () =>
     // Start clean: earlier tests in this file store credentials.
     await call("PATCH", "/api/admin/integrations", {
       cookie: owner,
-      body: { typesafeApiKey: "" },
+      body: { typesafeApiKey: "", judgmentProvider: "" },
     });
 
     // Env-only key: the search runs, but the cloud receives no search term.
@@ -2867,6 +2868,39 @@ test("browse tag suggestions keep the stored-key gate for TypeSafe", async () =>
       1,
       "a stored key restores the judged-suggestion path",
     );
+
+    // Environment-selected Ollama: the environment alone never sends
+    // member search terms — not even with the stored TypeSafe key above,
+    // which belongs to a different backend.
+    if (restored.key === undefined) delete process.env.TYPESAFE_API_KEY;
+    else process.env.TYPESAFE_API_KEY = restored.key;
+    process.env.VELVARR_JUDGMENT_PROVIDER = "ollama";
+    process.env.OLLAMA_BASE_URL = `http://127.0.0.1:${port}`;
+    const envOllama = await call("GET", "/api/browse/tags?q=zznomatchy", {
+      cookie: member,
+    });
+    assert.equal(envOllama.status, 200, await envOllama.text());
+    assert.equal(
+      hits.filter((u) => u.includes("/v1/systemone")).length,
+      1,
+      "environment-only Ollama sends no search terms",
+    );
+
+    // Saved Ollama choice: the gate reopens for the backend the admin saved.
+    const saved = await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: { judgmentProvider: "ollama" },
+    });
+    assert.equal(saved.status, 200);
+    const savedOllama = await call("GET", "/api/browse/tags?q=zznomatchy", {
+      cookie: member,
+    });
+    assert.equal(savedOllama.status, 200);
+    assert.equal(
+      hits.filter((u) => u.includes("/v1/systemone")).length,
+      2,
+      "the saved Ollama choice restores the judged-suggestion path",
+    );
   } finally {
     if (restored.key === undefined) delete process.env.TYPESAFE_API_KEY;
     else process.env.TYPESAFE_API_KEY = restored.key;
@@ -2875,9 +2909,11 @@ test("browse tag suggestions keep the stored-key gate for TypeSafe", async () =>
     if (restored.provider === undefined)
       delete process.env.VELVARR_JUDGMENT_PROVIDER;
     else process.env.VELVARR_JUDGMENT_PROVIDER = restored.provider;
+    if (restored.ollamaBase === undefined) delete process.env.OLLAMA_BASE_URL;
+    else process.env.OLLAMA_BASE_URL = restored.ollamaBase;
     await call("PATCH", "/api/admin/integrations", {
       cookie: owner,
-      body: { typesafeApiKey: "" },
+      body: { typesafeApiKey: "", judgmentProvider: "" },
     });
     listener.close();
   }

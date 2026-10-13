@@ -106,6 +106,20 @@ export function judgmentConfiguration(options?: JudgmentOptions): {
   };
 }
 
+/** Whether tag suggestions may run for the effective judgment backend.
+ * Suggestions carry the member's search term and provider tag lists, so
+ * they need a backend an administrator saved in Settings: a stored TypeSafe
+ * key for TypeSafe, the stored Ollama choice for Ollama. Environment-only
+ * settings keep title review and related-title ranking but never send
+ * member search terms — a stored key for one backend must not open the
+ * gate for another backend the environment selected. */
+export function tagSuggestionsAllowed(options?: JudgmentOptions): boolean {
+  const settings = judgmentConfiguration(options);
+  if (settings.provider === "ollama")
+    return options?.judgmentProvider === "ollama";
+  return Boolean(options?.typesafeApiKey?.trim());
+}
+
 let cached: { identity: string; client: TypeSafeClient } | null = null;
 
 /** Both servers speak System One; provider selection never falls back to cloud. */

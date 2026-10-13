@@ -28,11 +28,7 @@
 import { isHiddenTitle, tagMatches } from "./catalog-visibility.ts";
 
 import { AppError } from "./http.ts";
-import {
-  judgmentConfiguration,
-  judgmentConfigured,
-  suggestTags,
-} from "./judgment.ts";
+import { suggestTags, tagSuggestionsAllowed } from "./judgment.ts";
 import {
   listCatalogTags,
   searchCatalog,
@@ -1299,15 +1295,7 @@ export async function searchBrowseTags(
   if (tags.length === 0 && errors.length < providers.length) {
     try {
       const settings = getConfig()?.providers;
-      // TypeSafe keeps the previous gate: a stored key. An env-only
-      // TYPESAFE_API_KEY must not start sending member search terms and
-      // provider tag lists to the cloud; a local Ollama backend (stored or
-      // env-selected) carries no cloud exposure.
-      const judgment = judgmentConfiguration(settings);
-      const suggestionsOn =
-        (judgment.provider === "ollama" && judgmentConfigured(settings)) ||
-        Boolean(settings?.typesafeApiKey?.trim());
-      if (suggestionsOn) {
+      if (tagSuggestionsAllowed(settings)) {
         const candidates: {
           id: string;
           name: string;

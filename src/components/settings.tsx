@@ -1149,8 +1149,10 @@ function JudgmentCard({ refreshKey = 0 }: { refreshKey?: number }) {
       <h3 className="font-semibold">AI-assisted matching</h3>
       <p className="mt-1 text-sm text-muted">
         Choose TypeSafe or your own Ollama decision model for title review, tag
-        suggestions, and related-title ranking. Similarity still requires
-        administrator review and never grants playback access.
+        suggestions, and related-title ranking. Tag suggestions send member
+        search terms to the backend you select, so they start only after this
+        choice is saved. Similarity still requires administrator review and
+        never grants playback access.
       </p>
       {configError ? (
         <div className="mt-3">

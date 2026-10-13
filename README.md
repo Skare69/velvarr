@@ -66,8 +66,8 @@ bun run dev     # http://127.0.0.1:6699
 | `VELVARR_ALLOW_HTTP`         | no               | `1` allows plain HTTP for private/Docker-network addresses on the LAN.               |
 | `VELVARR_DISCORD_WEBHOOK_URL`| no               | Private Discord webhook for notifications; https only.                               |
 | `VELVARR_DISCORD_DETAIL`     | no               | `1` includes titles in notifications; off by default, messages stay identity-only.   |
-| `TYPESAFE_API_KEY`           | no               | TypeSafe key for AI-assisted matching when TypeSafe is selected; a stored key takes precedence. |
-| `VELVARR_JUDGMENT_PROVIDER` | no | `typesafe` (default) or `ollama`; stored AI-assisted matching settings take precedence. |
+| `TYPESAFE_API_KEY`           | no               | TypeSafe key for AI-assisted matching when TypeSafe is selected; a stored key takes precedence. Tag suggestions send member search terms, so they run only with a key saved in Settings. |
+| `VELVARR_JUDGMENT_PROVIDER` | no | `typesafe` (default) or `ollama`; stored AI-assisted matching settings take precedence. An environment-only choice keeps title review and related-title ranking, but tag suggestions start only after the choice is saved in Settings. |
 | `OLLAMA_BASE_URL` | no | Ollama API root; default `http://localhost:11434`. |
 | `OLLAMA_MODEL` | no | Downloaded decision model; default `nimble`. |
 | `VELVARR_UPDATE_CHECK`       | no               | `0` disables the release check. By default the server asks GitHub (`api.github.com`) for the latest release at most once an hour — ten minutes after a failure — to show the update chip. |
@@ -86,7 +86,7 @@ In **Settings → Metadata providers → AI-assisted matching**, select **Ollama
 
 For Velvarr running natively on the same machine, use `http://localhost:11434`. For Velvarr in Docker Desktop on a Mac with Ollama running natively, use `http://host.docker.internal:11434` and set `VELVARR_ALLOW_HTTP=1` in Velvarr's runtime environment. `localhost` inside a container refers to that container. For a different host, use Ollama's reachable private address and follow its [network configuration guidance](https://docs.ollama.com/faq#how-do-i-configure-ollama-server).
 
-Alternatively, set `VELVARR_JUDGMENT_PROVIDER=ollama`, `OLLAMA_BASE_URL`, and `OLLAMA_MODEL` in the runtime environment. **Use environment settings** clears the stored selection, URL, and model. Existing TypeSafe deployments retain their behavior until Ollama is explicitly selected.
+Alternatively, set `VELVARR_JUDGMENT_PROVIDER=ollama`, `OLLAMA_BASE_URL`, and `OLLAMA_MODEL` in the runtime environment. **Use environment settings** clears the stored selection, URL, and model. Environment-only Ollama serves title review and related-title ranking; tag suggestions send member search terms, so they start only after the Ollama choice is saved in Settings. Existing TypeSafe deployments retain their behavior until Ollama is explicitly selected.
 
 The existing matching rules remain unchanged: AI can flag a possible title match for administrator review, never mark it available or grant playback. Local tag suggestions use bounded batches because decision models limit the number of choices; large tag lists can require multiple inference calls. Related-title ranking only reorders existing candidates. Models have different accuracy and latency, so test representative naming variants and mismatches before choosing one.
 
