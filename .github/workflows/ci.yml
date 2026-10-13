@@ -106,6 +106,7 @@ jobs:
       # previous form captured find's stderr to a file it never printed).
       - name: Assert app code is not writable by the runtime user
         run: |
+          status=0
           verdict=$(docker exec velvarr-smoke sh -c '
             echo "exec user: uid=$(id -u) gid=$(id -g) groups=$(id -G | tr " " ",")"
             : > /tmp/ci-bad
@@ -135,8 +136,7 @@ jobs:
               exit 1
             fi
             echo "clean: no /app path is writable by the runtime user (deep scan exit $fexit)"
-          ' 2>&1)
-          status=$?
+          ' 2>&1) || status=$?
           echo "$verdict"
           if [ "$status" -ne 0 ] && [ -z "$verdict" ]; then
             echo "the docker exec itself failed: container dead or exec error"

@@ -19,6 +19,13 @@ const nextConfig: NextConfig = {
   output: "standalone",
   poweredByHeader: false,
   reactStrictMode: true,
+  // /app is root-owned and group/other read-only in the container image, so
+  // the image optimizer's disk cache (/app/.next/cache/images) can never be
+  // created: every /_next/image request logged an unhandledRejection mkdir
+  // error and re-encoded with sharp. The app never uses next/image, so turn
+  // the endpoint off entirely (unoptimized makes it answer 404;
+  // maximumDiskCacheSize 0 skips the eager cache-dir init).
+  images: { unoptimized: true, maximumDiskCacheSize: 0 },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },
