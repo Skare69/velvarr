@@ -1465,7 +1465,7 @@ async function verdictForItem(
 // 2. exact Whisparr-to-Jellyfin path correspondence through the configured
 //    pathMappings, full components only;
 // 3. title/year similarity alone is 'ambiguous', never a guess — exact
-//    normalized-title equality, widened (only when TYPESAFE_API_KEY is set)
+//    normalized-title equality, widened (only when an AI judgment backend is configured)
 //    by a typed same-work judgment over near-miss titles, still only ever
 //    producing 'ambiguous' for administrator review — and a
 //    parent/child (ancestor) relationship proves grants, never availability.
@@ -1622,7 +1622,7 @@ async function resolveFromSweep(
     }
     if (
       await candidatesMayMatch(candidates, hints, (a, b) =>
-        sameWork(a, b, config.providers?.typesafeApiKey),
+        sameWork(a, b, config.providers),
       )
     ) {
       return {

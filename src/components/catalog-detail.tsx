@@ -775,6 +775,7 @@ export function RelatedTitles({
     items: CatalogDetail[];
     ranking: "tags" | "jev";
     canRank: boolean;
+    canRefine?: boolean;
     errors: { provider: CatalogProvider; code: string; message: string }[];
   }>(
     `/api/catalog/${target.provider}/${target.kind}/${encodeURIComponent(target.id)}/related?rank=${rank}`,
@@ -784,15 +785,15 @@ export function RelatedTitles({
     <section className="cat-section" aria-label="Similar titles">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="cat-section-title">Similar titles</h2>
-        {data?.canRank === true && rank === "tags" && (
+        {data?.canRefine === true && rank === "tags" && (
           <button type="button" className="btn" onClick={() => setRank("jev")}>
-            Refine with Jev
+            Refine with AI
           </button>
         )}
       </div>
       <p className="cat-note">
         {data?.ranking === "jev"
-          ? "Jev reranked the same provider candidates by metadata similarity — it never adds titles."
+          ? "AI reranked the same provider candidates by metadata similarity — it never adds titles."
           : "Matched by shared provider tags; a title with no tags has no candidates."}
       </p>
       {error !== null ? (

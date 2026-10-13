@@ -2708,6 +2708,181 @@ test("provider credentials: stored config wins over environment, clear falls bac
   });
 });
 
+test("Ollama settings and model verification require admin admission and preserve integrations", async () => {
+  const baselineResponse = await call("GET", "/api/admin/integrations", {
+    cookie: owner,
+  });
+  const baseline = await baselineResponse.json();
+  const body = {
+    judgmentProvider: "ollama",
+    ollamaUrl: "http://localhost:11434",
+    ollamaModel: "nimble",
+  };
+  const denied = await call("PATCH", "/api/admin/integrations", {
+    cookie: member,
+    body,
+  });
+  assert.equal(denied.status, 403);
+  const checkDenied = await call("POST", "/api/admin/judgment/check", {
+    cookie: member,
+    body: {},
+  });
+  assert.equal(checkDenied.status, 403);
+  const foreignOrigin = await call("POST", "/api/admin/judgment/check", {
+    cookie: owner,
+    origin: "https://foreign.example",
+    body: {},
+  });
+  assert.equal(foreignOrigin.status, 403);
+
+  const saved = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body,
+  });
+  assert.equal(saved.status, 200);
+  const shape = await saved.json();
+  assert.equal(shape.judgment.provider, "ollama");
+  assert.equal(shape.judgment.configured, true);
+  assert.equal(shape.judgment.stored, true);
+  assert.deepEqual(shape.jellyfin, baseline.jellyfin);
+  assert.deepEqual(shape.whisparr, baseline.whisparr);
+  assert.deepEqual(shape.providers, baseline.providers);
+  assert.equal(JSON.stringify(shape).includes('apiKey"'), false);
+
+  const credentialEdit = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: { typesafeApiKey: "unused-while-ollama-selected" },
+  });
+  assert.equal((await credentialEdit.json()).judgment.provider, "ollama");
+  const clear = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: {
+      judgmentProvider: "",
+      ollamaUrl: "",
+      ollamaModel: "",
+      typesafeApiKey: "",
+    },
+  });
+  assert.equal(clear.status, 200);
+  assert.equal((await clear.json()).judgment.provider, "typesafe");
+});
+
+test("an invalid environment judgment provider degrades the integrations response", async () => {
+  const before = process.env.VELVARR_JUDGMENT_PROVIDER;
+  try {
+    process.env.VELVARR_JUDGMENT_PROVIDER = "Ollama";
+    const baseline = await call("GET", "/api/admin/integrations", {
+      cookie: owner,
+    });
+    assert.equal(baseline.status, 200, "the settings card must still load");
+    const shape = await baseline.json();
+    assert.equal(shape.judgment.provider, "typesafe");
+    assert.equal(shape.judgment.configured, false);
+    assert.match(shape.judgment.error, /invalid value "Ollama"/);
+    // A credential edit that leaves the provider unset still saves and
+    // returns the (degraded) shape instead of failing after the write.
+    const patched = await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: { typesafeApiKey: "key-while-env-invalid" },
+    });
+    assert.equal(patched.status, 200);
+    assert.match((await patched.json()).judgment.error, /invalid value/);
+  } finally {
+    if (before === undefined) delete process.env.VELVARR_JUDGMENT_PROVIDER;
+    else process.env.VELVARR_JUDGMENT_PROVIDER = before;
+  }
+});
+
+test("the integrations response never carries a raw environment Ollama URL", async () => {
+  const keys = ["OLLAMA_BASE_URL", "VELVARR_JUDGMENT_PROVIDER"] as const;
+  const before = keys.map((k) => process.env[k]);
+  try {
+    process.env.VELVARR_JUDGMENT_PROVIDER = "ollama";
+    process.env.OLLAMA_BASE_URL =
+      "http://user:password@127.0.0.1:11434/?token=s3cret";
+    const response = await call("GET", "/api/admin/integrations", {
+      cookie: owner,
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.judgment.url, "", "a rejected URL reads as no URL");
+    assert.match(body.judgment.error, /valid integration base URL/);
+    const wire = JSON.stringify(body);
+    assert.equal(wire.includes("user:password"), false);
+    assert.equal(wire.includes("s3cret"), false);
+  } finally {
+    keys.forEach((k, i) => {
+      if (before[i] === undefined) delete process.env[k];
+      else process.env[k] = before[i];
+    });
+  }
+});
+
+test("browse tag suggestions keep the stored-key gate for TypeSafe", async () => {
+  // Local listener standing in for TypeSafe: counts decision calls, always
+  // fails them — the gate, not the answer, is under test.
+  const hits: string[] = [];
+  const listener: Server = createServer((req, res) => {
+    hits.push(req.url ?? "");
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((resolve) =>
+    listener.listen(0, "127.0.0.1", resolve),
+  );
+  const port = (listener.address() as { port: number }).port;
+  const restored = {
+    key: process.env.TYPESAFE_API_KEY,
+    base: process.env.TYPESAFE_BASE_URL,
+    provider: process.env.VELVARR_JUDGMENT_PROVIDER,
+  };
+  try {
+    delete process.env.VELVARR_JUDGMENT_PROVIDER;
+    process.env.TYPESAFE_BASE_URL = `http://127.0.0.1:${port}`;
+    // Start clean: earlier tests in this file store credentials.
+    await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: { typesafeApiKey: "" },
+    });
+
+    // Env-only key: the search runs, but the cloud receives no search term.
+    process.env.TYPESAFE_API_KEY = "ts_env_only_key";
+    const envOnly = await call("GET", "/api/browse/tags?q=zznomatchy", {
+      cookie: member,
+    });
+    assert.equal(envOnly.status, 200, await envOnly.text());
+    assert.equal(hits.length, 0, "an env-only key sends no search terms");
+
+    // Stored key: the previous gate — the suggestion call is attempted.
+    const stored = await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: { typesafeApiKey: "ts_stored_gate_key" },
+    });
+    assert.equal(stored.status, 200);
+    const gated = await call("GET", "/api/browse/tags?q=zznomatchy", {
+      cookie: member,
+    });
+    assert.equal(gated.status, 200);
+    assert.equal(
+      hits.filter((u) => u.includes("/v1/systemone")).length,
+      1,
+      "a stored key restores the judged-suggestion path",
+    );
+  } finally {
+    if (restored.key === undefined) delete process.env.TYPESAFE_API_KEY;
+    else process.env.TYPESAFE_API_KEY = restored.key;
+    if (restored.base === undefined) delete process.env.TYPESAFE_BASE_URL;
+    else process.env.TYPESAFE_BASE_URL = restored.base;
+    if (restored.provider === undefined)
+      delete process.env.VELVARR_JUDGMENT_PROVIDER;
+    else process.env.VELVARR_JUDGMENT_PROVIDER = restored.provider;
+    await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: { typesafeApiKey: "" },
+    });
+    listener.close();
+  }
+});
+
 test("catalog search with a rejected tpdb key is 502 upstream_auth, not a 401 sign-out", async () => {
   // The client signs out on any 401 (shared.tsx api()), so an expired
   // provider key reaching the wire as 401 signs every user out of catalog
@@ -5951,7 +6126,11 @@ test("scan lag: imported-but-unscanned is awaiting_scan; outage and denial stay 
 });
 
 // Sweep cache: one scan per user per window; stale-index verdicts re-check.
-test("availability: cached sweep serves repeated calls; removed title reads missing, gained title reads available", async () => {
+test("availability: cached sweep serves repeated calls; removed title reads missing, gained title reads available", async (t) => {
+  // Each fixture change must follow the sweep timestamp; real millisecond
+  // collisions otherwise make the cached entry correctly appear fresh.
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
   // Cold cache so the fixture sweep counter measures only this test.
   resetSweepCache();
   const probeId = "2a2b3c4d-0000-0000-0000-0000000000c1";
@@ -6015,6 +6194,7 @@ test("availability: cached sweep serves repeated calls; removed title reads miss
     cookie: member,
   });
   assert.equal((await outcomeOf(avail)).outcome, "available");
+  now++;
   removeProbe();
   const afterRemoval = await call(
     "GET",
@@ -6034,6 +6214,7 @@ test("availability: cached sweep serves repeated calls; removed title reads miss
     cookie: member,
   });
   assert.equal((await outcomeOf(lagging)).outcome, "awaiting_scan");
+  now++;
   fx.items.push({
     Id: probeItem,
     Name: "Cache Probe Movie",

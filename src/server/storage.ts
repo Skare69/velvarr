@@ -36,6 +36,7 @@ import type {
   SessionGrant,
 } from "../lib/contracts.ts";
 import { AppError } from "./http.ts";
+import { isJudgmentProvider, isOllamaModel } from "../lib/contracts.ts";
 import { DISCOVER_SHELVES, normalizeFacetName } from "../lib/contracts.ts";
 
 // Schema identity: application_id spells 'VLVR', user_version is the schema version.
@@ -942,7 +943,14 @@ function assertConfigShape(config: IntegrationConfig): void {
       typeof p !== "object" ||
       p === null ||
       !credentialOk(p.tpdbApiToken, 1024) ||
-      !credentialOk(p.stashdbApiKey, 512)
+      !credentialOk(p.stashdbApiKey, 512) ||
+      (p.judgmentProvider !== undefined &&
+        !isJudgmentProvider(p.judgmentProvider)) ||
+      (p.ollamaUrl !== undefined &&
+        (typeof p.ollamaUrl !== "string" ||
+          !p.ollamaUrl ||
+          p.ollamaUrl.length > 2048)) ||
+      (p.ollamaModel !== undefined && !isOllamaModel(p.ollamaModel))
     ) {
       throw new AppError(
         400,

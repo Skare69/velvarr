@@ -511,7 +511,7 @@ export async function relatedRoute(
       hiddenTags,
       {
         rank: rankRaw === "jev" ? "jev" : "tags",
-        typesafeApiKey: ctx.config.providers?.typesafeApiKey,
+        providers: ctx.config.providers,
       },
     ),
   );

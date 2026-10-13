@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type {
+  JudgmentProvider,
   ProviderStatus,
   WhisparrDelivery,
   WhisparrPathMapping,
@@ -66,6 +67,9 @@ export function SettingsView() {
   const { providers } = useSession();
   const [forbidden, setForbidden] = useState(false);
   const [section, setSection] = useState("connections");
+  // Bumped when the Providers card stores a key so the AI-assisted matching
+  // card re-reads its configuration without a page reload.
+  const [providersSavedAt, setProvidersSavedAt] = useState(0);
   // Stable identity: IntegrationsForm's load useCallback depends on this, so a
   // fresh arrow on every render would refetch and wipe unsaved draft edits.
   const forbid = useCallback(() => setForbidden(true), []);
@@ -107,7 +111,13 @@ export function SettingsView() {
         </div>
       </div>
       <div hidden={section !== "metadata"}>
-        <ProvidersCard providers={providers} />
+        <div className="settings-content">
+          <ProvidersCard
+            providers={providers}
+            onSaved={() => setProvidersSavedAt((v) => v + 1)}
+          />
+          <JudgmentCard refreshKey={providersSavedAt} />
+        </div>
       </div>
       <div hidden={section !== "system"}>
         <div className="settings-content">
@@ -773,7 +783,13 @@ type ProviderCheckRow =
       account: string;
     };
 
-function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
+function ProvidersCard({
+  providers,
+  onSaved,
+}: {
+  providers: ProviderStatus | null;
+  onSaved?: () => void;
+}) {
   const { refreshSession } = useSession();
   const [check, setCheck] = useState<ProviderCheckRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -836,6 +852,7 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
       setStashdbKey("");
       setTypesafeKey("");
       setSaved(true);
+      onSaved?.();
       load();
       loadShape();
       // The save/clear landed; this re-read only refreshes the session's
@@ -903,7 +920,7 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
                 {id === "typesafe" ? (
                   <span className="chip">
                     {conf?.configured
-                      ? "AI-assisted matching on"
+                      ? "API key configured"
                       : conf
                         ? "Off — no key"
                         : shapeError || forbidden
@@ -984,8 +1001,8 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
                     Enables AI-assisted matching: a Jellyfin item whose title
                     only nearly matches a request is judged &ldquo;same
                     work?&rdquo; and flagged for administrator review instead of
-                    counting as missing. Without a key everything still works,
-                    just with exact matching only.
+                    counting as missing when TypeSafe is selected below. Ollama
+                    uses a local model and does not need this key.
                   </p>
                 ) : null}
               </div>
@@ -1035,6 +1052,205 @@ function ProvidersCard({ providers }: { providers: ProviderStatus | null }) {
             onRetry={loadShape}
           />
         </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Local model settings share the existing encrypted integration configuration. */
+function JudgmentCard({ refreshKey = 0 }: { refreshKey?: number }) {
+  const [provider, setProvider] = useState<JudgmentProvider>("typesafe");
+  const [url, setUrl] = useState("http://localhost:11434");
+  const [model, setModel] = useState("nimble");
+  const [configured, setConfigured] = useState(false);
+  const [stored, setStored] = useState(false);
+  const [configError, setConfigError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [forbidden, setForbidden] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    try {
+      const { judgment } = await api<{
+        judgment: {
+          provider: JudgmentProvider;
+          url: string;
+          model: string;
+          configured: boolean;
+          stored: boolean;
+          error?: string;
+        };
+      }>("/api/admin/integrations");
+      setProvider(judgment.provider);
+      setUrl(judgment.url);
+      setModel(judgment.model);
+      setConfigured(judgment.configured);
+      setStored(judgment.stored);
+      setConfigError(judgment.error ?? null);
+      setReady(true);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 403) setForbidden(true);
+      setMessage(messageOf(error));
+    }
+  }, []);
+  useEffect(() => {
+    void load();
+  }, [load, refreshKey]);
+  const save = async (clear = false) => {
+    setPending(true);
+    setMessage(null);
+    try {
+      await api("/api/admin/integrations", {
+        method: "PATCH",
+        body: JSON.stringify(
+          clear
+            ? { judgmentProvider: "", ollamaUrl: "", ollamaModel: "" }
+            : provider === "typesafe"
+              ? { judgmentProvider: provider }
+              : {
+                  judgmentProvider: provider,
+                  ollamaUrl: url,
+                  ollamaModel: model,
+                },
+        ),
+      });
+      await load();
+      setMessage(
+        "Settings saved. Test the connection to verify the selected model.",
+      );
+    } catch (error) {
+      setMessage(messageOf(error));
+    } finally {
+      setPending(false);
+    }
+  };
+  const check = async () => {
+    setPending(true);
+    setMessage(null);
+    try {
+      const result = await api<{
+        provider: JudgmentProvider;
+        connected: boolean;
+        error?: string;
+      }>("/api/admin/judgment/check", { method: "POST", body: "{}" });
+      setMessage(
+        result.connected
+          ? `${result.provider === "ollama" ? "Ollama" : "TypeSafe"} answered a decision successfully.`
+          : (result.error ?? "Connection failed."),
+      );
+    } catch (error) {
+      setMessage(messageOf(error));
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <div className="panel p-5">
+      <h3 className="font-semibold">AI-assisted matching</h3>
+      <p className="mt-1 text-sm text-muted">
+        Choose TypeSafe or your own Ollama decision model for title review, tag
+        suggestions, and related-title ranking. Similarity still requires
+        administrator review and never grants playback access.
+      </p>
+      {configError ? (
+        <div className="mt-3">
+          <ErrorPanel
+            title="Judgment configuration error"
+            message={configError}
+            onRetry={load}
+          />
+        </div>
+      ) : null}
+      {forbidden ? (
+        <p className="mt-3 text-sm text-muted">
+          An administrator account is required to configure the model.
+        </p>
+      ) : (
+        <div className="mt-4 space-y-3">
+          <label className="label" htmlFor="judgment-provider">
+            Provider
+          </label>
+          <select
+            id="judgment-provider"
+            className="input max-w-md"
+            disabled={!ready || pending}
+            value={provider}
+            onChange={(e) => setProvider(e.target.value as JudgmentProvider)}
+          >
+            <option value="typesafe">TypeSafe</option>
+            <option value="ollama">Ollama (local)</option>
+          </select>
+          {provider === "ollama" ? (
+            <>
+              <label className="label" htmlFor="ollama-url">
+                Ollama URL
+              </label>
+              <input
+                id="ollama-url"
+                className="input max-w-md"
+                type="url"
+                disabled={!ready || pending}
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+              />
+              <label className="label" htmlFor="ollama-model">
+                Decision model
+              </label>
+              <input
+                id="ollama-model"
+                className="input max-w-md"
+                disabled={!ready || pending}
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+              />
+              <p className="text-sm text-muted">
+                Requires Ollama 0.35 or later and a downloaded decision model
+                such as nimble or tev1. From Docker Desktop on a Mac, use
+                http://host.docker.internal:11434 and enable
+                VELVARR_ALLOW_HTTP=1.
+              </p>
+            </>
+          ) : (
+            <p className="text-sm text-muted">
+              Uses the TypeSafe key configured above. Without a key, ordinary
+              matching remains active.
+            </p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="btn btn-accent"
+              disabled={
+                !ready ||
+                pending ||
+                (provider === "ollama" && (!url.trim() || !model.trim()))
+              }
+              onClick={() => void save()}
+            >
+              Save settings
+            </button>
+            <button
+              className="btn"
+              disabled={!ready || pending || !configured}
+              onClick={() => void check()}
+            >
+              Test saved connection
+            </button>
+            {stored ? (
+              <button
+                className="btn"
+                disabled={!ready || pending}
+                onClick={() => void save(true)}
+              >
+                Use environment settings
+              </button>
+            ) : null}
+          </div>
+        </div>
+      )}
+      {message ? (
+        <p className="mt-3 text-sm text-muted" role="status">
+          {message}
+        </p>
       ) : null}
     </div>
   );

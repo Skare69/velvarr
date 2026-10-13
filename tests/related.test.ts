@@ -532,7 +532,7 @@ test("a successful jev rerank reorders the exact same candidates in one metadata
     try {
       const result = await relatedTitles(movieRef(SOURCE_ID), [], {
         rank: "jev",
-        typesafeApiKey: TS_KEY,
+        providers: { typesafeApiKey: TS_KEY },
       });
       assert.equal(result.ranking, "jev");
       assert.equal(result.canRank, true);
@@ -633,7 +633,7 @@ test("outage, incomplete, and out-of-range jev answers all preserve the determin
       try {
         const result = await relatedTitles(movieRef(SOURCE_ID), [], {
           rank: "jev",
-          typesafeApiKey: TS_KEY,
+          providers: { typesafeApiKey: TS_KEY },
         });
         assert.deepEqual(ids(result.items), TAG_ORDER);
         assert.equal(result.ranking, "tags");

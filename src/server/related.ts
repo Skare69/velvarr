@@ -4,6 +4,7 @@
 // candidates code has already vetted.
 
 import type {
+  IntegrationConfig,
   CatalogCredit,
   CatalogDetail,
   CatalogProvider,
@@ -12,7 +13,11 @@ import type {
   MediaReference,
 } from "../lib/contracts.ts";
 import { normalizeFacetName } from "../lib/contracts.ts";
-import { rankRelatedTitles, type RankableTitle } from "./judgment.ts";
+import {
+  judgmentConfigured,
+  rankRelatedTitles,
+  type RankableTitle,
+} from "./judgment.ts";
 import { isHiddenTitle } from "./catalog-visibility.ts";
 import { type SourceError } from "../lib/contracts.ts";
 import { AppError } from "./http.ts";
@@ -36,6 +41,8 @@ export type RelatedTitles = {
   items: CatalogDetail[];
   ranking: "tags" | "jev";
   canRank: boolean;
+  /** Configured capability, independent of whether this request reranked. */
+  canRefine?: boolean;
   errors: SourceError[];
 };
 
@@ -76,7 +83,10 @@ function descriptor(d: CatalogDetail): RankableTitle {
 export async function relatedTitles(
   reference: MediaReference,
   hiddenTags: CatalogTagSelection[],
-  options: { rank?: "tags" | "jev"; typesafeApiKey?: string } = {},
+  options: {
+    rank?: "tags" | "jev";
+    providers?: IntegrationConfig["providers"];
+  } = {},
 ): Promise<RelatedTitles> {
   // The source's own provider detail grounds everything below.
   let source: CatalogDetail | null;
@@ -254,7 +264,7 @@ export async function relatedTitles(
     const reranked = await rankRelatedTitles(
       descriptor(source),
       descriptors,
-      options.typesafeApiKey,
+      options.providers,
     );
     if (reranked !== null) {
       const back = new Map(descriptors.map((d, i) => [d, shortlist[i]!]));
@@ -263,7 +273,13 @@ export async function relatedTitles(
       canRank = true;
     }
   }
-  return { items, ranking, canRank, errors };
+  return {
+    items,
+    ranking,
+    canRank,
+    canRefine: shortlist.length > 1 && judgmentConfigured(options.providers),
+    errors,
+  };
 }
 
 /** "Often appears with" rail for one performer: co-appearance counts over a

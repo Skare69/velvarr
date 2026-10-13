@@ -149,9 +149,13 @@ export function validateBaseUrl(value: string): string {
   if (u.username || u.password || u.search || u.hash) throw invalid();
   const scheme = u.protocol.slice(0, -1);
   if (scheme === "http") {
+    // Docker Desktop's host endpoint is an outbound-only allowance: session
+    // origins keep the stricter isPrivateHost gate in security.ts.
+    const dockerHost = u.hostname === "host.docker.internal";
     if (
       !isLoopbackHost(u.hostname) &&
-      (process.env.VELVARR_ALLOW_HTTP !== "1" || !isPrivateHost(u.hostname))
+      (process.env.VELVARR_ALLOW_HTTP !== "1" ||
+        (!isPrivateHost(u.hostname) && !dockerHost))
     ) {
       // ponytail: EnableRemoteAccess-style trusted client-network model does
       // not exist yet, so private HTTP needs the explicit operator escape

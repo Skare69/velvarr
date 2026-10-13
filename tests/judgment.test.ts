@@ -418,7 +418,7 @@ test("a stored admin-UI key works with no environment key", async () => {
       await sameWork(
         { title: "Sunset Blvd", performer: "Maddie Wren", year: 2024 },
         { title: "Sunset Blvd with Maddie Wren", year: 2024 },
-        "ts_stored_key",
+        { typesafeApiKey: "ts_stored_key" },
       ),
       true,
     );
@@ -459,11 +459,14 @@ test("suggestTags offers the top three real tags and drops none and junk", async
     ];
     // "Made-up tag" is not among the offered names, so it can never come
     // back; the none hatch is dropped; the top three real tags survive.
-    assert.deepEqual(await suggestTags("threesome", tags, "ts_key"), [
-      { id: "g", name: "Group" },
-      { id: "m", name: "Massage" },
-      { id: "f", name: "Fitness" },
-    ]);
+    assert.deepEqual(
+      await suggestTags("threesome", tags, { typesafeApiKey: "ts_key" }),
+      [
+        { id: "g", name: "Group" },
+        { id: "m", name: "Massage" },
+        { id: "f", name: "Fitness" },
+      ],
+    );
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -482,7 +485,10 @@ test("suggestTags without a key or with an empty list offers nothing", async () 
       await suggestTags("threesome", [{ id: "g", name: "Group" }]),
       [],
     );
-    assert.deepEqual(await suggestTags("threesome", [], "ts_key"), []);
+    assert.deepEqual(
+      await suggestTags("threesome", [], { typesafeApiKey: "ts_key" }),
+      [],
+    );
     assert.equal(calls, 0, "neither the no-key nor the empty-list path calls");
   } finally {
     globalThis.fetch = realFetch;

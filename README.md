@@ -31,7 +31,7 @@
 - **Similar titles** on movies and scenes (shared published tags) and **Often appears with** on performers (co-appearance)
 - **Update notice** — the sidebar shows a chip linking to a newer GitHub release; the server asks api.github.com at most once an hour (`VELVARR_UPDATE_CHECK=0` disables it)
 - **Optional Discord notifier** posting to a private webhook, identity-only by default
-- **Optional AI-assisted matching** via [TypeSafe](https://typesafe.ai) — a near-miss Jellyfin title is flagged "ambiguous — administrator review", never auto-`available`; without a key, matching is exact
+- **Optional AI-assisted matching** via [TypeSafe](https://typesafe.ai) or a local [Ollama decision model](https://docs.ollama.com/capabilities/decision) — a near-miss Jellyfin title is flagged "ambiguous — administrator review", never auto-`available`; without either backend, matching is exact
 
 ## Getting started
 
@@ -66,10 +66,29 @@ bun run dev     # http://127.0.0.1:6699
 | `VELVARR_ALLOW_HTTP`         | no               | `1` allows plain HTTP for private/Docker-network addresses on the LAN.               |
 | `VELVARR_DISCORD_WEBHOOK_URL`| no               | Private Discord webhook for notifications; https only.                               |
 | `VELVARR_DISCORD_DETAIL`     | no               | `1` includes titles in notifications; off by default, messages stay identity-only.   |
-| `TYPESAFE_API_KEY`           | no               | Enables AI-assisted Jellyfin matching; a key saved in Settings → Metadata providers takes precedence. |
+| `TYPESAFE_API_KEY`           | no               | TypeSafe key for AI-assisted matching when TypeSafe is selected; a stored key takes precedence. |
+| `VELVARR_JUDGMENT_PROVIDER` | no | `typesafe` (default) or `ollama`; stored AI-assisted matching settings take precedence. |
+| `OLLAMA_BASE_URL` | no | Ollama API root; default `http://localhost:11434`. |
+| `OLLAMA_MODEL` | no | Downloaded decision model; default `nimble`. |
 | `VELVARR_UPDATE_CHECK`       | no               | `0` disables the release check. By default the server asks GitHub (`api.github.com`) for the latest release at most once an hour — ten minutes after a failure — to show the update chip. |
 
 Each failed sign-in writes one warning line to the server log: `[auth] failed sign-in attempt: account="<name>" ip="<address>"`. The password is never logged. The address is the first `X-Forwarded-For` entry, or `unknown` when no proxy sends the header. A client can set this header, so trust the address only when your proxy replaces `X-Forwarded-For` instead of appending to it.
+
+## Local AI-assisted matching with Ollama
+
+Use Ollama 0.35 or later with a decision model such as `nimble` or `tev1`. Ordinary chat models do not support the required `/v1/systemone` endpoint. Download the model on the machine running Ollama:
+
+```sh
+ollama pull nimble
+```
+
+In **Settings → Metadata providers → AI-assisted matching**, select **Ollama (local)**, enter its URL and the downloaded model name shown by `ollama list`, save, and use **Test saved connection**. No API key is required. Selecting Ollama never falls back to the paid TypeSafe service. Connection failures retain ordinary matching and the existing tag-based related-title order.
+
+For Velvarr running natively on the same machine, use `http://localhost:11434`. For Velvarr in Docker Desktop on a Mac with Ollama running natively, use `http://host.docker.internal:11434` and set `VELVARR_ALLOW_HTTP=1` in Velvarr's runtime environment. `localhost` inside a container refers to that container. For a different host, use Ollama's reachable private address and follow its [network configuration guidance](https://docs.ollama.com/faq#how-do-i-configure-ollama-server).
+
+Alternatively, set `VELVARR_JUDGMENT_PROVIDER=ollama`, `OLLAMA_BASE_URL`, and `OLLAMA_MODEL` in the runtime environment. **Use environment settings** clears the stored selection, URL, and model. Existing TypeSafe deployments retain their behavior until Ollama is explicitly selected.
+
+The existing matching rules remain unchanged: AI can flag a possible title match for administrator review, never mark it available or grant playback. Local tag suggestions use bounded batches because decision models limit the number of choices; large tag lists can require multiple inference calls. Related-title ranking only reorders existing candidates. Models have different accuracy and latency, so test representative naming variants and mismatches before choosing one.
 
 ## Backup and recovery
 
