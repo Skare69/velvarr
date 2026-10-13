@@ -3667,7 +3667,7 @@ interface FixtureShelf {
   }[];
   /** Per-source partial-failure evidence; coexists with items. */
   errors?: { provider: string; code: string; message: string }[];
-  error?: { code: string };
+  error?: { code: string; message: string };
 }
 
 // Facet tiles: projected to the pinned wire fields for set comparison.
@@ -5566,6 +5566,36 @@ test("followed rail names the provider when one performer's filmography fails", 
       (shelf.items ?? []).map((item) => refOf(item)?.id),
       [TPDB_MOVIE6],
     );
+
+    // The survivor's only title carries a hidden tag: nothing visible
+    // remains and no side rejected outright, yet the rail must still name
+    // the failing provider — never a generic internal error.
+    const hidden = await call("PATCH", "/api/me/preferences", {
+      cookie: member2,
+      body: { hiddenTags: [{ name: "Fixture Tag A", tpdb: TAG_A }] },
+    });
+    assert.equal(hidden.status, 200);
+    try {
+      resetMetaCache();
+      const hiddenPage = await call("GET", "/api/discover", {
+        cookie: member2,
+      });
+      assert.equal(hiddenPage.status, 200);
+      const hiddenShelf = (await shelvesOf(hiddenPage)).find(
+        (s) => s.id === "followed-titles",
+      );
+      assert.ok(hiddenShelf, "the error-only rail still renders");
+      assert.equal(hiddenShelf.items, undefined);
+      assert.equal(hiddenShelf.errors, undefined);
+      assert.match(hiddenShelf.error?.code ?? "", /unavailable/);
+      assert.match(hiddenShelf.error?.message ?? "", /TPDB/);
+    } finally {
+      const restored = await call("PATCH", "/api/me/preferences", {
+        cookie: member2,
+        body: { hiddenTags: [] },
+      });
+      assert.equal(restored.status, 200);
+    }
   } finally {
     tpdbFx.failPaths = [];
   }

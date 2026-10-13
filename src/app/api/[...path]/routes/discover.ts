@@ -148,12 +148,13 @@ export async function followedShelf(
     browse: { view: "following", params: {} },
   };
   if (merged.length === 0) {
-    // Every side the account actually follows failed: the error-only shape,
-    // never a quiet empty list.
-    const firstFailure = sides.find(
-      (side): side is PromiseRejectedResult => side.status === "rejected",
-    );
-    return { ...base, error: shelfError(firstFailure?.reason) };
+    // Every side the account actually follows failed, or a partial side's
+    // survivors are all hidden: the error-only shape carries the collected
+    // failure — never a rejected-sides-only lookup, which misses a
+    // fulfilled side's page failure and degrades to a generic error.
+    // errors is non-empty here, else we returned null above.
+    const first = errors[0]!;
+    return { ...base, error: { code: first.code, message: first.message } };
   }
   return {
     ...base,
