@@ -281,32 +281,42 @@ function notConfigured(provider: "tpdb" | "stashdb"): AppError {
 
 // gqlgen (stash-box) answers a failed resolver with HTTP 200, partial data
 // and a non-empty errors array: { data: { findScene: null }, errors: [...] }.
-// A null/absent dataKey beside errors is an outage, never an authoritative
-// absence — it is named here, before the body can be cached, so the next
-// read re-requests instead of replaying the error for the whole TTL. A null
-// dataKey WITHOUT errors stays the documented absence signal for find*
+// A null/missing data object — a failed non-null root field zeroes the whole
+// object (queryScenes, queryTags are non-null types) and a request-level
+// error omits it — and a null dataKey beside errors are outages, never
+// authoritative absence: named here, before the body can be cached, so the
+// next read re-requests instead of replaying the error for the whole TTL. A
+// null dataKey WITHOUT errors stays the documented absence signal for find*
 // queries. Errors beside a POPULATED dataKey are failures elsewhere in the
 // document: the requested record resolved, so the partial payload is used.
+function stashGraphQlFailureError(errors: unknown): AppError {
+  const first = Array.isArray(errors)
+    ? (errors[0] as { message?: unknown } | undefined)
+    : undefined;
+  const detail =
+    typeof first?.message === "string" && first.message !== ""
+      ? `: ${first.message}`
+      : "";
+  return new AppError(
+    502,
+    "upstream_bad_response",
+    `StashDB reported a GraphQL failure${detail}`,
+  );
+}
+
 function rejectStashGraphQlFailure(parsed: unknown, dataKey: string): void {
   if (parsed === null || typeof parsed !== "object") return;
   const body = parsed as {
     data?: Record<string, unknown> | null;
     errors?: unknown;
   };
-  if (body.data === null || body.data === undefined) return;
+  if (body.data === null || body.data === undefined) {
+    throw stashGraphQlFailureError(body.errors);
+  }
   const value = body.data[dataKey];
   if (value !== null && value !== undefined) return;
   if (Array.isArray(body.errors) && body.errors.length > 0) {
-    const first = body.errors[0] as { message?: unknown } | undefined;
-    const detail =
-      typeof first?.message === "string" && first.message !== ""
-        ? `: ${first.message}`
-        : "";
-    throw new AppError(
-      502,
-      "upstream_bad_response",
-      `StashDB reported a GraphQL failure${detail}`,
-    );
+    throw stashGraphQlFailureError(body.errors);
   }
 }
 
@@ -336,11 +346,12 @@ async function stashQuery(
     validate: (parsed) => rejectStashGraphQlFailure(parsed, dataKey),
   });
   // HTTP-level failures (401 auth, 422 schema, 5xx outage) already surfaced
-  // by the transport with upstreamStatus. A null dataKey beside GraphQL
-  // errors already surfaced as upstream_bad_response before caching; what
-  // reaches here is a clean body, partial data whose errors sit beside a
-  // populated dataKey, or a null dataKey with no errors — the documented
-  // authoritative-absence signal for find* queries.
+  // by the transport with upstreamStatus. A null/missing data object and a
+  // null dataKey beside GraphQL errors already surfaced as
+  // upstream_bad_response before caching; what reaches here is a clean body,
+  // partial data whose errors sit beside a populated dataKey, or a null
+  // dataKey with no errors — the documented authoritative-absence signal for
+  // find* queries.
   if (
     body === null ||
     typeof body !== "object" ||
