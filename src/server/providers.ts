@@ -1593,9 +1593,21 @@ interface TagListing {
 
 // Process-lifetime listing memo, keyed by provider: the walk is one bounded
 // burst of paged reads whose answer feeds every free-text expansion, and
-// published vocabularies change slowly. Incomplete walks memoize too —
-// retrying per request would re-pay the burst for the same capped answer.
-const tagListingMemo = new Map<CatalogProvider, TagListing>();
+// published vocabularies change slowly. Entries carry their read time and
+// are re-walked once older than the window: a tag the provider publishes,
+// renames or deletes after the first walk must reach expansions that still
+// claim complete, and a Velvarr container runs for weeks. Incomplete walks
+// memoize too, under the same window — retrying per request would re-pay
+// the burst for the same capped answer. The 10-minute page cache and
+// metaInFlight keep a re-walk cheap. ponytail: fixed one-hour window on
+// the wall clock (worst-case staleness ~70min with the page cache);
+// per-provider windows or conditional GETs only if a real vocabulary
+// churns faster.
+const TAG_LISTING_TTL_MS = 60 * 60_000;
+const tagListingMemo = new Map<
+  CatalogProvider,
+  { at: number; listing: TagListing }
+>();
 
 /** Shared StashDB tag-row parsing for the flat [Tag] {id, name} shapes
  * (searchTag, queryTags): validated, deduplicated by id. */
@@ -1620,13 +1632,16 @@ function stashTagRows(rows: unknown[]): { id: string; name: string }[] {
  * match with prefix and fuzzy distance on name/aliases, TPDB's `q` is
  * documented only as a "search query" — which guarantees neither mid-word
  * substrings nor every row below its cap. `complete` is false when the walk
- * hit its row cap; callers must then treat the rows as possibly missing
+ * hit its row cap or ended on a rows-less page the provider's own end
+ * signal contradicts; callers must then treat the rows as possibly missing
  * matches. */
 async function catalogTagListing(
   provider: CatalogProvider,
 ): Promise<TagListing> {
   const memo = tagListingMemo.get(provider);
-  if (memo !== undefined) return memo;
+  if (memo !== undefined && Date.now() - memo.at < TAG_LISTING_TTL_MS) {
+    return memo.listing;
+  }
   const rows: { id: string; name: string }[] = [];
   let complete = true;
   if (provider === "tpdb") {
@@ -1685,7 +1700,16 @@ async function catalogTagListing(
       }
       const batch = stashTagRows(res.tags);
       rows.push(...batch);
-      if (batch.length === 0 || rows.length >= count) break;
+      // A rows-less page while `count` still claims more is a walk the
+      // provider did not finish: stop and report the rows as possibly
+      // incomplete (the TPDB loop's rule for a rows-less page beside a
+      // next link). A misreported count must never read as a complete
+      // expansion.
+      if (batch.length === 0) {
+        complete = false;
+        break;
+      }
+      if (rows.length >= count) break;
       if (rows.length >= TAG_EXPANSION_MAX_ROWS) {
         complete = false;
         break;
@@ -1693,7 +1717,7 @@ async function catalogTagListing(
     }
   }
   const listing: TagListing = { rows: dedupeBy(rows, (t) => t.id), complete };
-  tagListingMemo.set(provider, listing);
+  tagListingMemo.set(provider, { at: Date.now(), listing });
   return listing;
 }
 
