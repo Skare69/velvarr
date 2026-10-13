@@ -6027,6 +6027,96 @@ test("availability: cached sweep serves repeated calls; removed title reads miss
   resetSweepCache();
 });
 
+test("a Whisparr URL change keeps imported titles available", async () => {
+  resetSweepCache();
+  const probeId = "2a2b3c4d-0000-0000-0000-0000000000c4";
+  const probeItem = "4".repeat(32);
+
+  const req = await call("POST", "/api/requests", {
+    cookie: member,
+    body: { media: { provider: "tpdb", kind: "movie", id: probeId } },
+  });
+  assert.equal(req.status, 201);
+  const created = (await req.json()) as { request: { id: string } };
+  const reqId = created.request.id;
+  await call("PATCH", `/api/requests/${reqId}`, {
+    cookie: owner,
+    body: { decision: "approved" },
+  });
+  const acq = getAcquisitionByReference({
+    provider: "tpdb",
+    kind: "movie",
+    id: probeId,
+  });
+  assert.ok(acq);
+  recordAcquisitionObservation(acq.id, {
+    state: "imported",
+    item: { whisparrId: 502, path: `/data/whisparr/${probeItem}.mkv` },
+  });
+  fx.items.push({
+    Id: probeItem,
+    Name: "URL Move Probe Movie",
+    libraryId: MOVIES_LIB,
+  });
+  const removeProbe = () => {
+    const at = fx.items.findIndex((item) => item.Id === probeItem);
+    if (at !== -1) fx.items.splice(at, 1);
+  };
+
+  const before = await call("GET", `/api/availability/tpdb/movie/${probeId}`, {
+    cookie: member,
+  });
+  assert.equal((await outcomeOf(before)).outcome, "available");
+
+  // The settings card re-sends delivery and pathMappings on every save: the
+  // route preserves only what the body carries. Mirror that contract here.
+  const shape = (await (
+    await call("GET", "/api/admin/integrations", { cookie: owner })
+  ).json()) as {
+    whisparr: { delivery: unknown; pathMappings: unknown };
+  };
+  const whisparrFields = {
+    delivery: shape.whisparr.delivery,
+    pathMappings: shape.whisparr.pathMappings,
+  };
+
+  // The same-origin URL move rotates the Whisparr identity; the imported
+  // row's observed facts must ride along, or the title reads awaiting_scan.
+  const move = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: {
+      jellyfinUrl,
+      jellyfinExternalUrl: jellyfinUrl,
+      whisparrUrl: `${whisparrUrl}/wh`,
+      ...whisparrFields,
+    },
+  });
+  assert.equal(move.status, 200);
+  resetSweepCache();
+  const after = await call("GET", `/api/availability/tpdb/movie/${probeId}`, {
+    cookie: member,
+  });
+  assert.equal(
+    (await outcomeOf(after)).outcome,
+    "available",
+    "an imported title stays available across a URL change",
+  );
+
+  // Restore the working config and the fixture for later tests.
+  const restore = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: {
+      jellyfinUrl,
+      jellyfinExternalUrl: jellyfinUrl,
+      whisparrUrl,
+      ...whisparrFields,
+    },
+  });
+  assert.equal(restore.status, 200);
+  removeProbe();
+  resetSweepCache();
+});
+
 // --- M4: hazard 5 — foreign origin rejected on EVERY mutating route ---
 // setup/inspect, setup, login (CSRF test), POST /api/requests and
 // PATCH /api/requests/:id (request lifecycle test) are covered above; this

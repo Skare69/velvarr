@@ -171,6 +171,8 @@ type Statements = {
   countRequestsByAccount: StatementSync;
   hasEligibleRequester: StatementSync;
   insertAcquisition: StatementSync;
+  insertCarriedImported: StatementSync;
+  repairImportedFacts: StatementSync;
   getAcquisition: StatementSync;
   getAcquisitionByIdentity: StatementSync;
   latestAcquisitionForReference: StatementSync;
@@ -538,6 +540,48 @@ function S(): Statements {
       ),
       insertAcquisition: d.prepare(
         "INSERT OR IGNORE INTO acquisitions (id, instance_id, provider, kind, external_id, state, due_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ),
+      // An imported row carried to a new identity keeps its observed facts;
+      // due_at stays NULL so the row is never scheduled again.
+      insertCarriedImported: d.prepare(
+        `INSERT OR IGNORE INTO acquisitions
+           (id, instance_id, provider, kind, external_id, state, due_at,
+            created_at, updated_at, last_observed_at, whisparr_id, whisparr_path,
+            whisparr_title, whisparr_monitored, whisparr_progress, whisparr_timeleft)
+         VALUES (?, ?, ?, ?, ?, 'imported', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ),
+      // Heals imported rows carried without their observed facts: only rows
+      // with no last observation are touched, so the run is idempotent. The
+      // facts come from the newest observed imported row of a retired
+      // identity for the same media.
+      repairImportedFacts: d.prepare(
+        `UPDATE acquisitions SET
+           last_observed_at = src.last_observed_at,
+           whisparr_id = src.whisparr_id,
+           whisparr_path = src.whisparr_path,
+           whisparr_title = src.whisparr_title,
+           whisparr_monitored = src.whisparr_monitored,
+           whisparr_progress = src.whisparr_progress,
+           whisparr_timeleft = src.whisparr_timeleft,
+           updated_at = ?
+         FROM (
+           SELECT instance_id, provider, kind, external_id,
+                  last_observed_at, whisparr_id, whisparr_path, whisparr_title,
+                  whisparr_monitored, whisparr_progress, whisparr_timeleft,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY provider, kind, external_id
+                    ORDER BY updated_at DESC, id DESC
+                  ) AS rn
+           FROM acquisitions
+           WHERE state = 'imported' AND last_observed_at IS NOT NULL
+         ) AS src
+         WHERE acquisitions.state = 'imported'
+           AND acquisitions.last_observed_at IS NULL
+           AND acquisitions.provider = src.provider
+           AND acquisitions.kind = src.kind
+           AND acquisitions.external_id = src.external_id
+           AND acquisitions.instance_id <> src.instance_id
+           AND src.rn = 1`,
       ),
       getAcquisition: d.prepare("SELECT * FROM acquisitions WHERE id = ?"),
       getAcquisitionByIdentity: d.prepare(
@@ -963,7 +1007,10 @@ export function getConfig(): IntegrationConfig | null {
  * would replay the whole approval history against the new endpoint —
  * re-POSTing titles Whisparr no longer holds and searching them again. The
  * carried row is a new row of the new identity; rows of retired identities
- * are never reused or scheduled. */
+ * are never reused or scheduled. The carried row keeps the prior row's
+ * observed facts (path, title, id, last observation): without them every
+ * availability check reads "awaiting scan" forever, because 'imported' is
+ * never scheduled for re-observation. */
 function backfillApprovals(
   instanceId: string,
   state: "unsent" | "blocked",
@@ -977,17 +1024,36 @@ function backfillApprovals(
       row.external_id,
     ) as AcquisitionRow | undefined;
     const carried = prior?.state === "imported" ? "imported" : state;
-    S().insertAcquisition.run(
-      randomUUID(),
-      instanceId,
-      row.provider,
-      row.kind,
-      row.external_id,
-      carried,
-      carried === "unsent" ? now : null,
-      now,
-      now,
-    );
+    if (carried === "imported" && prior) {
+      S().insertCarriedImported.run(
+        randomUUID(),
+        instanceId,
+        row.provider,
+        row.kind,
+        row.external_id,
+        now,
+        now,
+        prior.last_observed_at,
+        prior.whisparr_id,
+        prior.whisparr_path,
+        prior.whisparr_title,
+        prior.whisparr_monitored,
+        prior.whisparr_progress,
+        prior.whisparr_timeleft,
+      );
+    } else {
+      S().insertAcquisition.run(
+        randomUUID(),
+        instanceId,
+        row.provider,
+        row.kind,
+        row.external_id,
+        carried,
+        carried === "unsent" ? now : null,
+        now,
+        now,
+      );
+    }
   }
 }
 
@@ -1410,6 +1476,9 @@ export function initializeStorage(): void {
       whisparr.delivery?.enabled ? "unsent" : "blocked",
       Date.now(),
     );
+    // Heals rows an earlier build carried as imported without their observed
+    // facts. Idempotent: only fact-less rows are touched.
+    S().repairImportedFacts.run(Date.now());
   });
 }
 

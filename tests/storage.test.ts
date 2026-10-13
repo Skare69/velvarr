@@ -1679,7 +1679,12 @@ test("a URL change carries imported approvals forward and still delivers never-d
   assert.ok(importedRow);
   storage.recordAcquisitionObservation(importedRow.id, {
     state: "imported",
-    item: { monitored: true },
+    item: {
+      whisparrId: 42,
+      path: "/data/whisparr/movie.mkv",
+      title: "Carried Movie",
+      monitored: true,
+    },
   });
 
   // Approved but never dispatched: delivery must still happen after the move.
@@ -1693,12 +1698,102 @@ test("a URL change carries imported approvals forward and still delivers never-d
   const carried = storage.getAcquisitionByReference(MOVIE);
   assert.ok(carried);
   assert.equal(carried.state, "imported", "imported survives the URL change");
+  assert.equal(carried.whisparrId, 42, "whisparrId survives the URL change");
+  assert.equal(
+    carried.whisparrPath,
+    "/data/whisparr/movie.mkv",
+    "the path survives the URL change",
+  );
+  assert.equal(
+    carried.whisparrTitle,
+    "Carried Movie",
+    "the title survives the URL change",
+  );
+  assert.equal(
+    carried.whisparrMonitored,
+    true,
+    "monitored survives the URL change",
+  );
+  assert.ok(carried.lastObservedAt, "lastObservedAt survives the URL change");
+  assert.equal(
+    carried.dueAt,
+    null,
+    "a carried imported row is never rescheduled",
+  );
 
   const due = storage.listDueAcquisitions(Date.now() + 60_000);
   assert.deepEqual(
     due.map((a) => [a.media.id, a.state]),
     [[SCENE.id, "unsent"]],
     "only the never-dispatched approval is due after the change",
+  );
+});
+
+test("boot repair restores facts a URL change dropped from a carried imported row", () => {
+  freshDir();
+  storage.bootstrap(deliveryConfig(true), ownerUser(), "jf-owner-token");
+  const owner = storage.getAccount(ownerUser().id) as Account;
+
+  const done = storage.createRequest(owner.id, MOVIE);
+  storage.decideRequest(owner, done.id, "approved");
+  const observed = storage.getAcquisitionByReference(MOVIE);
+  assert.ok(observed);
+  storage.recordAcquisitionObservation(observed.id, {
+    state: "imported",
+    item: {
+      whisparrId: 42,
+      path: "/data/whisparr/movie.mkv",
+      title: "Carried Movie",
+      monitored: true,
+    },
+  });
+
+  const moved = deliveryConfig(true);
+  moved.whisparr = { ...moved.whisparr!, url: "http://127.0.0.1:6970" };
+  storage.saveConfig(moved);
+  const carried = storage.getAcquisitionByReference(MOVIE);
+  assert.ok(carried);
+
+  // Simulate a build that carried the state without the observed facts.
+  storage.closeStorage();
+  const raw = new DatabaseSync(join(currentDir, "velvarr.sqlite"));
+  raw
+    .prepare(
+      "UPDATE acquisitions SET last_observed_at = NULL, whisparr_id = NULL, whisparr_path = NULL, whisparr_title = NULL, whisparr_monitored = NULL WHERE id = ?",
+    )
+    .run(carried.id);
+  raw.close();
+
+  storage.initializeStorage();
+  const repaired = storage.getAcquisitionByReference(MOVIE);
+  assert.ok(repaired);
+  assert.equal(repaired.state, "imported");
+  assert.equal(repaired.whisparrId, 42, "repair restores whisparrId");
+  assert.equal(
+    repaired.whisparrPath,
+    "/data/whisparr/movie.mkv",
+    "repair restores the path",
+  );
+  assert.equal(
+    repaired.whisparrTitle,
+    "Carried Movie",
+    "repair restores the title",
+  );
+  assert.equal(repaired.whisparrMonitored, true, "repair restores monitored");
+  assert.ok(repaired.lastObservedAt, "repair restores lastObservedAt");
+  assert.equal(
+    repaired.dueAt,
+    null,
+    "repair never reschedules an imported row",
+  );
+
+  // Idempotent: a second boot leaves the repaired row untouched.
+  const updatedAt = repaired.updatedAt;
+  storage.initializeStorage();
+  assert.equal(
+    storage.getAcquisitionByReference(MOVIE)?.updatedAt,
+    updatedAt,
+    "a second boot must not touch the repaired row",
   );
 });
 
