@@ -1367,6 +1367,7 @@ export function TitlesView() {
                 type="button"
                 className="btn"
                 aria-label={`${hiddenCount} personal hidden tags active — manage in Preferences`}
+                data-prefs-opener="hidden-tags"
                 onClick={() =>
                   window.dispatchEvent(new Event(OPEN_PREFERENCES))
                 }
@@ -1606,6 +1607,7 @@ export function TitlesView() {
           <button
             type="button"
             className="btn"
+            data-prefs-opener="drawer-note"
             onClick={() => window.dispatchEvent(new Event(OPEN_PREFERENCES))}
           >
             manage them in Preferences
