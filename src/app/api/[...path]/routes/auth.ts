@@ -81,14 +81,15 @@ function clientIp(request: Request): string {
 }
 
 // Login limiter wiring, shared by every route that authenticates a name:
-// the gate is checked read-only before the attempt and the attempt's
-// per-account slot is reserved in the same synchronous step, so parallel
-// guesses each hold a slot before any upstream round-trip starts. A
-// credential rejection ("upstream_auth") keeps the reserved slot, charges
-// the global spray cap, and leaves a warn audit line with the attempted
-// name and the reported client ip (never the password); a success or a
-// non-credential error (upstream outage, malformed fields) refunds the
-// slot — only real guesses consume budget. Callers that
+// the gate is checked read-only before the attempt; in the same
+// synchronous step the attempt reserves the per-account slot always and,
+// for non-admitted names, a global spray slot. A credential rejection
+// ("upstream_auth") keeps both charges; for admitted names it also charges
+// the global spray cap via recordLoginFailure, and it leaves a warn audit
+// line with the attempted name and the JSON-encoded reported client ip
+// (never the password); a success or a non-credential error (upstream
+// outage, malformed fields) refunds both slots — only real guesses consume
+// budget. Callers that
 // authenticate an admitted Velvarr account pass admitted=true so a
 // rotating-name sprayer filling the global bucket cannot lock the
 // household out; setup paths keep the cap fully (no accounts exist before
@@ -100,7 +101,7 @@ async function guardedAuthentication<T>(
   ip = "unknown",
 ): Promise<T> {
   assertLoginAllowed(name, admitted);
-  const refund = reserveLoginAttempt(name);
+  const refund = reserveLoginAttempt(name, admitted);
   try {
     const result = await attempt();
     refund();
@@ -109,9 +110,9 @@ async function guardedAuthentication<T>(
     if (e instanceof AppError && e.code === "upstream_auth") {
       // JSON.stringify keeps an attacker-chosen name on one log line.
       console.warn(
-        `[auth] failed sign-in attempt: account=${JSON.stringify(name)} ip=${ip}`,
+        `[auth] failed sign-in attempt: account=${JSON.stringify(name)} ip=${JSON.stringify(ip)}`,
       );
-      recordLoginFailure();
+      if (admitted) recordLoginFailure();
     } else refund();
     throw e;
   }

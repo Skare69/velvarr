@@ -500,15 +500,18 @@ test("guardMutation enforces exact configured origin and safe transport", () => 
 });
 
 // One failed login, the way routes/auth.ts runs it: the attempt reserves
-// its account slot before the upstream call, and a credential rejection
-// keeps that slot and feeds the global spray cap. A full global cap
-// surfaces 429 to the route, but the account charge stands either way.
-function failedLogin(name: string): void {
-  security.reserveLoginAttempt(name); // refund dropped: this was a guess
-  try {
-    security.recordLoginFailure();
-  } catch {
-    // global spray cap full — the reservation's charge already landed
+// its slots before the upstream call. A non-admitted guess holds its global
+// spray slot from the reservation; an admitted name is exempt from the
+// reservation and charges the cap on the rejection instead. A credential
+// rejection never refunds.
+function failedLogin(name: string, admitted = false): void {
+  security.reserveLoginAttempt(name, admitted); // refund dropped: this was a guess
+  if (admitted) {
+    try {
+      security.recordLoginFailure();
+    } catch {
+      // global spray cap full — nothing left to record
+    }
   }
 }
 
@@ -582,7 +585,7 @@ test("login limiter: the spray cap binds strangers, admitted names ride past it"
   security.resetLoginBuckets();
   // The per-account bucket still binds an admitted name even with admitted
   // set: brute force on a real account stays throttled.
-  for (let i = 0; i < 5; i++) failedLogin("locked-owner");
+  for (let i = 0; i < 5; i++) failedLogin("locked-owner", true);
   assert.throws(
     () => security.assertLoginAllowed("locked-owner", true),
     (e: { code: string }) => e.code === "too_many_attempts",
@@ -623,11 +626,14 @@ test("login limiter: the spray cap binds strangers, admitted names ride past it"
   // The old global-first charge skipped the account charge once the spray
   // cap was full, leaving admitted names unbounded.
   security.assertLoginAllowed("brute-target", true);
-  for (let i = 0; i < 5; i++) failedLogin("brute-target");
+  // These guesses go through login with hasAccountNamed=true, so the helper
+  // must state admitted: the reservation skips the full global bucket and
+  // the rejection feeds it, exactly as the route runs it.
+  for (let i = 0; i < 5; i++) failedLogin("brute-target", true);
   // The sixth guess is refused by its own account bucket, not the spray
   // cap: global full no longer means unlimited guesses.
   assert.throws(
-    () => failedLogin("brute-target"),
+    () => failedLogin("brute-target", true),
     (e: { code: string }) => e.code === "too_many_attempts",
   );
   assert.throws(
@@ -637,6 +643,57 @@ test("login limiter: the spray cap binds strangers, admitted names ride past it"
   // An untouched admitted name is exempt from the spray cap only, not
   // unlocked: a full global bucket locks no admitted name by itself.
   security.assertLoginAllowed("brute-bystander", true);
+});
+
+test("login limiter: reserve→refund cycles on distinct names leave the bucket map bounded", () => {
+  // Regression guard for the f29b9d2 leak: a non-credential outcome refunded
+  // the count but left an account:<name> bucket in the map forever, and
+  // consumeBucket's insert path skipped the MAX_BUCKETS sweep. A cheap
+  // invalid-credentials path (a 201..512-character password rejected before
+  // any upstream call) drove the map ~309 bytes per attempt with no cap
+  // charge; the refund must delete a bucket that reaches zero.
+  security.resetLoginBuckets();
+  const before = security.loginBucketCount();
+  for (let i = 0; i < 2000; i++) {
+    security.reserveLoginAttempt(`spray-${i}`)();
+  }
+  assert.equal(
+    security.loginBucketCount(),
+    before,
+    "a reserve→refund cycle must not leave a bucket behind",
+  );
+});
+
+test("login limiter: a rotating-name concurrent burst stops at GLOBAL_LIMIT (300)", async () => {
+  // The spray cap must bind a burst of rotating names, not just a sequence:
+  // the global slot lands in the same synchronous step as the reservation,
+  // before any upstream round-trip, so one burst cannot slip past the
+  // read-only gate's check-then-await.
+  security.resetLoginBuckets();
+  const results = await Promise.allSettled(
+    Array.from({ length: 320 }, async (_, i) => {
+      security.reserveLoginAttempt(`rot-${i}`);
+      return true;
+    }),
+  );
+  const passed = results.filter((r) => r.status === "fulfilled");
+  const refused = results.filter(
+    (r) =>
+      r.status === "rejected" &&
+      r.reason instanceof AppError &&
+      r.reason.code === "too_many_attempts",
+  );
+  assert.equal(
+    passed.length,
+    300,
+    `the burst must stop at GLOBAL_LIMIT (300), got ${passed.length}`,
+  );
+  assert.equal(refused.length, 20, "the surplus guesses must be refused");
+  assert.throws(
+    () => security.assertLoginAllowed("rot-unserved"),
+    (e: { code: string }) => e.code === "too_many_attempts",
+    "the global bucket must be what stopped the burst",
+  );
 });
 
 test("session cookie flags follow request transport and clear correctly", () => {

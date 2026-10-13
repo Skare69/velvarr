@@ -49,6 +49,7 @@ function consumeBucket(key: string, limit: number, now: number): void {
   const current = buckets.get(key);
   if (!current || now - current.windowStart >= WINDOW_MS) {
     buckets.set(key, { count: 1, windowStart: now });
+    sweepExpiredBuckets(now);
     return;
   }
   if (current.count >= limit) {
@@ -59,10 +60,13 @@ function consumeBucket(key: string, limit: number, now: number): void {
     );
   }
   current.count += 1;
-  if (buckets.size > MAX_BUCKETS) {
-    for (const [k, b] of buckets) {
-      if (now - b.windowStart >= WINDOW_MS) buckets.delete(k);
-    }
+  sweepExpiredBuckets(now);
+}
+
+function sweepExpiredBuckets(now: number): void {
+  if (buckets.size <= MAX_BUCKETS) return;
+  for (const [k, b] of buckets) {
+    if (now - b.windowStart >= WINDOW_MS) buckets.delete(k);
   }
 }
 
@@ -210,33 +214,54 @@ export function resetLoginBuckets(): void {
   buckets.clear();
 }
 
-// Reserves one attempt slot in the account bucket before the attempt runs.
+// Test hook: size probe for the bounded-map test (a reserve→refund cycle on
+// a distinct name must not leave a bucket behind).
+export function loginBucketCount(): number {
+  return buckets.size;
+}
+
+// Reserves one attempt slot before the attempt runs. A non-admitted name
+// (no Velvarr account yet) pays the global spray cap first, then the
+// account bucket; a full global cap refuses it with no account charge
+// leaked. An admitted name skips the global cap and pays only the account
+// bucket, regardless of the global bucket's state — a sprayer who fills
+// the global cap cannot unlock unlimited guesses against known names.
 // The reservation lands in the same synchronous step as the gate, so every
-// in-flight guess holds a slot and parallel guesses cannot all reach
-// upstream at once (a charge that only landed after the upstream
-// round-trip let a whole burst through). The returned refund covers the
-// outcomes that were not guesses — a success, an upstream outage, a
-// malformed field; a credential rejection keeps the charge. The account
-// bucket is charged regardless of the global bucket's state, so a sprayer
-// who fills the global cap cannot unlock unlimited guesses against known
-// admitted names.
-export function reserveLoginAttempt(name: string): () => void {
+// in-flight guess holds its slots and parallel guesses cannot all reach
+// upstream at once. The returned refund covers the outcomes that were not
+// guesses — a success, an upstream outage, a malformed field; a credential
+// rejection keeps the charges. The refund decrements every bucket it
+// charged, including the global slot, and deletes a bucket from the map
+// when its count reaches 0, so reserve→refund cycles on distinct names
+// leave the map bounded.
+export function reserveLoginAttempt(
+  name: string,
+  admitted = false,
+): () => void {
+  const now = Date.now();
+  const globalCharged = !admitted;
+  if (globalCharged) consumeBucket("global", GLOBAL_LIMIT, now);
   const key = `account:${name.trim().toLowerCase()}`;
-  consumeBucket(key, ACCOUNT_LIMIT, Date.now());
+  consumeBucket(key, ACCOUNT_LIMIT, now);
   // ponytail: a refund landing after a window rollover frees one slot in
-  // the fresh window; only non-guess outcomes refund, so no guess ever
-  // gets capacity back.
+  // each fresh window (global and account); only non-guess outcomes refund,
+  // so no guess ever gets capacity back.
   return () => {
-    const bucket = buckets.get(key);
-    if (bucket && bucket.count > 0) bucket.count -= 1;
+    for (const k of globalCharged ? ["global", key] : [key]) {
+      const bucket = buckets.get(k);
+      if (bucket && bucket.count > 0) {
+        bucket.count -= 1;
+        if (bucket.count === 0) buckets.delete(k);
+      }
+    }
   };
 }
 
 // Charges one failed authentication against the global spray cap. The
-// process-wide cap has no name dimension: the account slot was already
-// paid by reserveLoginAttempt before the attempt. Charging the cap on
-// every credential rejection keeps an active brute force feeding it even
-// once the name's account bucket is full.
+// route calls this only for ADMITTED names' credential rejections: their
+// reservation skipped the global cap, so this is the one charge. A
+// non-admitted guess already holds a global slot from its reservation;
+// charging here too would double-charge.
 export function recordLoginFailure(): void {
   consumeBucket("global", GLOBAL_LIMIT, Date.now());
 }

@@ -7801,7 +7801,12 @@ test("failed sign-in attempts leave an audit line with the reported client ip", 
   }
   const line = lines.find((entry) => entry.includes("failed sign-in attempt"));
   assert.ok(line, "a credential rejection must leave an audit line");
-  assert.ok(line.includes("ip=203.0.113.7"), "first forwarded hop wins");
+  // The ip moved to the account field's encoding: JSON.stringify keeps a
+  // proxy-appended or client-forged value on one line and inside one field.
+  assert.ok(
+    line.includes(`ip=${JSON.stringify("203.0.113.7")}`),
+    "first forwarded hop wins, JSON-encoded",
+  );
   assert.ok(
     line.includes(`account=${JSON.stringify("member")}`),
     "the attempted name is logged injection-safe",
@@ -7809,5 +7814,38 @@ test("failed sign-in attempts leave an audit line with the reported client ip", 
   assert.ok(
     !line.includes("pass-guess-9"),
     "the password stays out of the log",
+  );
+});
+
+test("audit line encodes a hostile X-Forwarded-For value", async () => {
+  // CWE-117: appending proxies (nginx $proxy_add_x_forwarded_for) keep the
+  // client's value first, so a raw ip field let
+  // `X-Forwarded-For: 10.0.0.5 account="owner"` forge fields into the line.
+  // The ip is JSON-encoded exactly like the account field.
+  resetLoginBuckets();
+  const lines: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (line?: unknown) => {
+    lines.push(String(line));
+  };
+  const forwarded = '10.0.0.5 account="owner"';
+  try {
+    const res = await call("POST", "/api/login", {
+      headers: { "x-forwarded-for": forwarded },
+      body: { username: "member", password: "pass-guess-9" },
+    });
+    assert.equal(res.status, 502);
+  } finally {
+    console.warn = originalWarn;
+  }
+  const line = lines.find((entry) => entry.includes("failed sign-in attempt"));
+  assert.ok(line, "a credential rejection must leave an audit line");
+  assert.ok(
+    line.includes(`ip=${JSON.stringify(forwarded)}`),
+    "the forwarded value must be JSON-encoded on the line",
+  );
+  assert.ok(
+    !line.includes("ip=10.0.0.5 account="),
+    "a forwarded value must not add raw fields to the line",
   );
 });
