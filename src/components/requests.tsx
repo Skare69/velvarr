@@ -125,6 +125,13 @@ function RequestCard({
   const summary = useCatalogSummary(r.media, providers);
   const acquisition = r.acquisition ?? null;
   const phase = acquisition ? acquisitionPhase(acquisition) : null;
+  // Imported work reads "In library", not "Approved": the cancel button
+  // hides on this same fact, so the decision label read as a stuck request.
+  // The list carries no Jellyfin verdict — Whisparr's import is the fact.
+  const statusChip =
+    phase === "library"
+      ? { label: "In library", state: "available" }
+      : { label: GROUP_LABEL[r.decision], state: r.decision };
   let pill: { label: string; tone: string } | null = null;
   if (acquisition) {
     if (phase === "paused") pill = { label: "Paused", tone: "paused" };
@@ -190,8 +197,8 @@ function RequestCard({
       <dl className="request-facts">
         <dt>Status</dt>
         <dd className="flex flex-wrap gap-2">
-          <span className="chip state-badge" data-state={r.decision}>
-            {GROUP_LABEL[r.decision]}
+          <span className="chip state-badge" data-state={statusChip.state}>
+            {statusChip.label}
           </span>
           {pill && (
             <span className="chip state-badge" data-state={pill.tone}>
