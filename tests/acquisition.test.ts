@@ -57,6 +57,9 @@ let knobs = {
   holdAdd: null as Promise<void> | null,
   pathOverride: null as string | null,
   findStatus: 0,
+  tpdbUnknown: null as string | null,
+  tpdbLookupStatus: 500,
+  termDown: false,
 };
 let onAdd: (() => void) | null = null;
 let storedItems = new Map<string, number>();
@@ -105,7 +108,26 @@ async function handle(
   if (req.method === "GET" && path.startsWith("/api/v3/movie/lookup/")) {
     if (!knobs.lookupOk) return json(200, []);
     const m = /[?&]tpdbId=([0-9a-f-]+)/.exec(path);
+    // eros: an id the metadata source does not know 500s on the typed form
+    // (MovieNotFoundException is unmapped by WhisparrErrorPipeline) and
+    // answers [] on the term form, which catches the same exception.
+    if (m && m[1] === knobs.tpdbUnknown)
+      return json(knobs.tpdbLookupStatus, {
+        message: `Movie with IMDBId ${m[1]} was not found, it may have been removed from TMDb.`,
+        description: "NzbDrone.Core.Exceptions.MovieNotFoundException: miss",
+      });
     return json(200, m ? [dtoFor(m[1]!, 0)] : []);
+  }
+  if (req.method === "GET" && path.startsWith("/api/v3/movie/lookup?")) {
+    if (knobs.termDown) return json(503, { message: "term down" });
+    const term = decodeURIComponent(/[?&]term=([^&]+)/.exec(path)?.[1] ?? "");
+    const id = term.startsWith("tpdb:")
+      ? term.slice("tpdb:".length)
+      : term.startsWith("tpdbid:")
+        ? term.slice("tpdbid:".length)
+        : null;
+    if (id !== null && id === knobs.tpdbUnknown) return json(200, []);
+    return json(200, id !== null ? [dtoFor(id, 0)] : []);
   }
   if (req.method === "GET" && path.startsWith("/api/v3/queue")) {
     return json(200, { records: knobs.inQueue ? [{ movieId: 1 }] : [] });
@@ -183,6 +205,9 @@ function freshDb(): void {
     pathOverride: null,
     holdAdd: null,
     findStatus: 0,
+    tpdbUnknown: null,
+    tpdbLookupStatus: 500,
+    termDown: false,
   };
   storedItems = new Map();
   nextId = 1;
@@ -441,6 +466,98 @@ test("an identity the lookup cannot resolve fails with a reason instead of loopi
     probe(id).lastError,
     failed.lastError,
     "the absence recheck does not clobber the dispatch reason",
+  );
+});
+
+test("a TPDB id the metadata source cannot resolve fails instead of looping as uncertain", async () => {
+  const owner = boot();
+  approve(owner.id, MOVIE_A);
+  const id = workId(MOVIE_A);
+
+  // eros answers the typed lookup with 500 for an id its metadata source
+  // does not know (MovieNotFoundException is unmapped) and [] on the term
+  // form, which catches the same exception. The stored read works, so the
+  // two reads together are a definitive answer, not an outage.
+  knobs.tpdbUnknown = EXT_A;
+  const first = await acquisition.runDueWork();
+  assert.equal(first.failed, 1);
+  assert.equal(first.uncertain, 0);
+  assert.equal(first.errors, 0);
+  assert.equal(postCount(), 0, "an unresolvable identity is never POSTed");
+  const failed = probe(id);
+  assert.equal(failed.state, "failed");
+  assert.ok(failed.lastError);
+
+  // The loop is over: the recheck observes by identity only — one stored
+  // read — and never hits the metadata lookup again.
+  const before = calls.length;
+  const second = await acquisition.runDueWork(later());
+  assert.equal(second.absent, 1);
+  assert.equal(postCount(), 0);
+  assert.equal(
+    calls.slice(before).some((c) => c.path.includes("/movie/lookup")),
+    false,
+    "a failed row's recheck never hits the metadata lookup again",
+  );
+  assert.equal(probe(id).state, "failed");
+  assert.equal(
+    probe(id).lastError,
+    failed.lastError,
+    "the absence recheck does not clobber the dispatch reason",
+  );
+});
+
+test("a lookup 404 right after a working stored read fails as unresolvable", async () => {
+  const owner = boot();
+  approve(owner.id, MOVIE_A);
+  const id = workId(MOVIE_A);
+
+  knobs.tpdbUnknown = EXT_A;
+  knobs.tpdbLookupStatus = 404;
+  const summary = await acquisition.runDueWork();
+  assert.equal(summary.failed, 1);
+  assert.equal(summary.uncertain, 0);
+  assert.equal(postCount(), 0);
+  const failed = probe(id);
+  assert.equal(failed.state, "failed");
+  assert.ok(failed.lastError);
+});
+
+test("an outage across both lookups stays uncertain instead of failing", async () => {
+  const owner = boot();
+  approve(owner.id, MOVIE_A);
+  const id = workId(MOVIE_A);
+
+  // The stored read works but the term form errors too: no proven answer,
+  // so the row must stay uncertain and keep retrying.
+  knobs.tpdbUnknown = EXT_A;
+  knobs.termDown = true;
+  const summary = await acquisition.runDueWork();
+  assert.equal(summary.uncertain, 1);
+  assert.equal(summary.failed, 0);
+  assert.equal(postCount(), 0);
+  assert.equal(probe(id).state, "uncertain");
+  assert.ok(probe(id).lastError);
+});
+
+test("a stored-read outage stays uncertain and never reaches the lookup", async () => {
+  const owner = boot();
+  approve(owner.id, MOVIE_A);
+  const id = workId(MOVIE_A);
+
+  knobs.tpdbUnknown = EXT_A;
+  knobs.findStatus = 503;
+  const summary = await acquisition.runDueWork();
+  assert.equal(summary.uncertain, 1);
+  assert.equal(summary.failed, 0);
+  assert.equal(postCount(), 0);
+  const rec = probe(id);
+  assert.equal(rec.state, "uncertain");
+  assert.ok(rec.lastError);
+  assert.equal(
+    calls.some((c) => c.path.includes("/movie/lookup")),
+    false,
+    "the metadata lookup never runs while the stored read is down",
   );
 });
 

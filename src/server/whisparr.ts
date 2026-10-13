@@ -473,9 +473,49 @@ function assertResolved(
   return matches[0]!;
 }
 
+/** Typed TPDB movie lookup with one term-form second read. Whisparr (eros)
+ * answers the typed form with HTTP 500 for an id its movie metadata source
+ * does not know — MovieNotFoundException extends NzbDroneException, which
+ * WhisparrErrorPipeline does not map — while the term form
+ * (/api/v3/movie/lookup?term=tpdb:<id>, SearchForNewTpdbMovie) catches that
+ * same exception and answers []. A successful empty term read is therefore
+ * Whisparr's own "no such movie" answer: assertResolved turns it into the
+ * permanent identity_mismatch instead of an endless uncertain loop, and a
+ * term read that finds the identity lets delivery proceed on the same pass.
+ * ponytail: the term form also answers [] when the metadata API itself
+ * answers 404 (Whisparr catches both into a miss); telling those apart
+ * needs a Whisparr change. */
+async function lookupTpdbMovie(
+  whisparr: WhisparrEndpoint,
+  id: string,
+): Promise<unknown> {
+  try {
+    return await requestJson<unknown>(
+      whisparr.url,
+      `/api/v3/movie/lookup/tpdb?tpdbId=${encodeURIComponent(id)}`,
+      whisparr.apiKey,
+      { service: "whisparr" },
+    );
+  } catch (e) {
+    // Only a proven HTTP rejection is worth one second read: timeouts,
+    // network faults, and 401/403 credential faults are not identity
+    // answers and must stay uncertain without extra upstream calls.
+    if (!(e instanceof AppError)) throw e;
+    const status = e.upstreamStatus;
+    if (status === undefined || status === 401 || status === 403) throw e;
+    return await requestJson<unknown>(
+      whisparr.url,
+      `/api/v3/movie/lookup?term=${encodeURIComponent(`tpdb:${id}`)}`,
+      whisparr.apiKey,
+      { service: "whisparr" },
+    );
+  }
+}
+
 /** Resolve a MediaReference to a Whisparr-resolvable item without mutating
- * anything. TPDB movies use the typed tpdbId lookup; StashDB scenes use the
- * term lookup with the stash: prefix. The scene-wrapper lookup path is not
+ * anything. TPDB movies use the typed tpdbId lookup, with one term-form
+ * second read on a proven lookup failure; StashDB scenes use the term
+ * lookup with the stash: prefix. The scene-wrapper lookup path is not
  * used, so wrapper ids can never leak in as stored item ids. */
 export async function resolveWhisparrItem(
   config: IntegrationConfig,
@@ -485,12 +525,7 @@ export async function resolveWhisparrItem(
   const { kind, id } = requireMediaReference(ref);
   const dto =
     kind === "movie"
-      ? await requestJson<unknown>(
-          whisparr.url,
-          `/api/v3/movie/lookup/tpdb?tpdbId=${encodeURIComponent(id)}`,
-          whisparr.apiKey,
-          { service: "whisparr" },
-        )
+      ? await lookupTpdbMovie(whisparr, id)
       : await requestJson<unknown>(
           whisparr.url,
           `/api/v3/movie/lookup?term=${encodeURIComponent(`stash:${id}`)}`,
