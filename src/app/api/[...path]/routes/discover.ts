@@ -667,7 +667,7 @@ export async function discover(ctx: AuthContext): Promise<Response> {
         title: "Recently added",
         source: "jellyfin",
         kind: "library",
-        browse: { view: "library", params: {} },
+        browse: { view: "library", params: { sort: "dateAdded" } },
       },
       recentlyAdded,
     ),

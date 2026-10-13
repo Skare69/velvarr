@@ -976,6 +976,96 @@ test("cross-library merge refills per-library chunks for deep pages", async () =
   );
 });
 
+test("listLibraryItems sort=dateAdded orders by DateCreated, not SortName", async () => {
+  // Fixture order is the server's DateCreated-desc stream (what
+  // sortBy=DateCreated asks for); SortName would put Alpha first, so the
+  // name order proves the requested ordering won.
+  const items = [
+    datedItem(0x3c1, "Zulu", "2026-09-03T10:00:00.000Z"),
+    datedItem(0x3c2, "Mike", "2026-09-02T10:00:00.000Z"),
+    datedItem(0x3c3, "Alpha", "2026-09-01T10:00:00.000Z"),
+  ];
+  await withFixture(itemsByParentHandler({ [LIB_A]: items }), async (fx) => {
+    const config = jellyfinConfig(fx.origin, [LIB_A]);
+    const grants = account([LIB_A]);
+    const scoped = await listLibraryItems(config, TOKEN, grants, {
+      start: 0,
+      limit: 24,
+      search: "",
+      libraryId: LIB_A,
+      sort: "dateAdded",
+    });
+    assert.deepEqual(
+      scoped.items.map((i) => i.name),
+      ["Zulu", "Mike", "Alpha"],
+    );
+    const itemsCalls = fx.log.filter(
+      (r) => r.method === "GET" && pathOf(r.url) === `/users/${ME_ID}/items`,
+    );
+    assert.equal(itemsCalls.length, 1);
+    const query = queryOf(itemsCalls[0]?.url ?? "");
+    assert.equal(query.get("sortBy"), "DateCreated");
+    assert.equal(query.get("sortOrder"), "Descending");
+    // Without the sort the default stays SortName/Ascending.
+    await listLibraryItems(config, TOKEN, grants, {
+      start: 0,
+      limit: 24,
+      search: "",
+      libraryId: LIB_A,
+    });
+    const afterCalls = fx.log.filter(
+      (r) => r.method === "GET" && pathOf(r.url) === `/users/${ME_ID}/items`,
+    );
+    assert.equal(afterCalls.length, 2);
+    assert.equal(queryOf(afterCalls[1]?.url ?? "").get("sortBy"), "SortName");
+  });
+});
+
+test("cross-library dateAdded merge keeps one global DateCreated order across pages", async () => {
+  // Per-library streams arrive DateCreated-desc (the dateAdded query's own
+  // upstream request); the merge must interleave them into one global order.
+  const byParent: Record<string, unknown[]> = {
+    [LIB_A]: [
+      datedItem(0x3d1, "A New", "2026-09-04T10:00:00.000Z"),
+      datedItem(0x3d2, "A Old", "2026-09-01T10:00:00.000Z"),
+    ],
+    [LIB_B]: [
+      datedItem(0x3d3, "B New", "2026-09-03T10:00:00.000Z"),
+      datedItem(0x3d4, "B Old", "2026-09-02T10:00:00.000Z"),
+    ],
+  };
+  await withFixture(itemsByParentHandler(byParent), async (fx) => {
+    const config = jellyfinConfig(fx.origin, [LIB_A, LIB_B]);
+    const grants = account([LIB_A, LIB_B]);
+    const page0 = await listLibraryItems(config, TOKEN, grants, {
+      start: 0,
+      limit: 2,
+      search: "",
+      sort: "dateAdded",
+    });
+    assert.deepEqual(
+      page0.items.map((i) => i.name),
+      ["A New", "B New"],
+    );
+    const page1 = await listLibraryItems(config, TOKEN, grants, {
+      start: 2,
+      limit: 2,
+      search: "",
+      sort: "dateAdded",
+    });
+    assert.deepEqual(
+      page1.items.map((i) => i.name),
+      ["B Old", "A Old"],
+    );
+    for (const r of fx.log.filter(
+      (x) => pathOf(x.url) === `/users/${ME_ID}/items`,
+    )) {
+      assert.equal(queryOf(r.url).get("sortBy"), "DateCreated");
+      assert.equal(queryOf(r.url).get("sortOrder"), "Descending");
+    }
+  });
+});
+
 // --- item detail and membership proof ---
 
 const ITEM_DTO = {

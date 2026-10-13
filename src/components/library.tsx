@@ -36,6 +36,9 @@ export function LibraryView() {
   const setP = useParamsSetter();
   const search = params.get("search") ?? "";
   const libraryId = params.get("libraryId") ?? "";
+  // Only the Recently added entry point sets this today; the grid has no
+  // sort control, so the value rides the URL and dies with it.
+  const sort = params.get("sort") === "dateAdded" ? "dateAdded" : null;
   const start = Math.max(0, intOr(params.get("start"), 0));
   const limitRaw = intOr(params.get("limit"), 24);
   const limit = limitRaw >= 1 && limitRaw <= 60 ? limitRaw : 24;
@@ -71,6 +74,7 @@ export function LibraryView() {
     search,
   });
   if (libraryId) gridQs.set("libraryId", libraryId);
+  if (sort) gridQs.set("sort", sort);
   const {
     data: pageData,
     error: gridError,
@@ -81,6 +85,7 @@ export function LibraryView() {
     limit,
     search,
     libraryId,
+    sort,
   ]);
 
   const items = pageData?.items ?? [];

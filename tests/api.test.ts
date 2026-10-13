@@ -1715,6 +1715,7 @@ test("request and body validation bounds", async () => {
     "start=-1",
     `search=${"x".repeat(201)}`,
     "start=100001",
+    "sort=bogus",
   ]) {
     const res = await call("GET", `/api/library?${query}`, { cookie: member });
     await errorShape(res);
@@ -3899,6 +3900,12 @@ test("discover: mixed new releases, honest trending, facets, grants, not-configu
     ITEM_MOVIE,
   ]);
   assert.equal(JSON.stringify(library).includes(ITEM_SHOW), false);
+  // The shelf's arrow lands on the library view pre-sorted by date added —
+  // the same ordering the shelf itself shows.
+  assert.deepEqual(library?.browse, {
+    view: "library",
+    params: { sort: "dateAdded" },
+  });
 
   // Requests shelf: storage role-filters; member (requester) sees own only.
   assert.ok((requests?.items?.length ?? 0) > 0);

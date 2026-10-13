@@ -32,6 +32,11 @@ export async function libraryPage(
   const search = url.searchParams.get("search") ?? "";
   if (search.length > 200)
     throw new AppError(400, "invalid_query", "Invalid search.");
+  // Allowlist: dateAdded is the only non-default ordering; anything else is
+  // a malformed URL, never a silent fallback to SortName.
+  const sortParam = url.searchParams.get("sort") ?? "";
+  if (sortParam !== "" && sortParam !== "dateAdded")
+    throw new AppError(400, "invalid_query", "Invalid sort.");
   const grants = new Set(ctx.account.libraryIds);
   let libraryId: string | undefined;
   const requested = url.searchParams.get("libraryId");
@@ -56,6 +61,7 @@ export async function libraryPage(
     limit,
     search,
     ...(libraryId !== undefined ? { libraryId } : {}),
+    ...(sortParam === "dateAdded" ? { sort: "dateAdded" as const } : {}),
   });
   return json(page);
 }
