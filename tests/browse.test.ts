@@ -833,6 +833,7 @@ test("resolveIncludeCriteria joins singleton expansions with anchored ids in the
       anyOf: [],
       localTermIndexes: [1],
       freeTextNative: true,
+      provablyEmpty: false,
     },
   );
   // Anchored ids alone: the all-of path with nothing free riding native.
@@ -843,6 +844,7 @@ test("resolveIncludeCriteria joins singleton expansions with anchored ids in the
       anyOf: [],
       localTermIndexes: [0],
       freeTextNative: false,
+      provablyEmpty: false,
     },
   );
   // A singleton duplicating an anchored id travels once.
@@ -868,6 +870,7 @@ test("resolveIncludeCriteria rides the smallest group as any-of and keeps the re
       anyOf: [uuid(4), uuid(5)],
       localTermIndexes: [0],
       freeTextNative: true,
+      provablyEmpty: false,
     },
   );
   // Equal-size groups keep the first: the smallest pick is stable.
@@ -902,6 +905,7 @@ test("resolveIncludeCriteria routes a union past the native id cap to local filt
       anyOf: [],
       localTermIndexes: [0],
       freeTextNative: false,
+      provablyEmpty: false,
     },
   );
   // The same overload with an anchored id: the anchored id still travels
@@ -920,6 +924,7 @@ test("resolveIncludeCriteria routes a union past the native id cap to local filt
       anyOf: [],
       localTermIndexes: [0],
       freeTextNative: false,
+      provablyEmpty: false,
     },
   );
   // No terms at all: nothing rides, nothing re-checks — the function is
@@ -929,6 +934,7 @@ test("resolveIncludeCriteria routes a union past the native id cap to local filt
     anyOf: [],
     localTermIndexes: [],
     freeTextNative: false,
+    provablyEmpty: false,
   });
 });
 
@@ -936,7 +942,6 @@ test("resolveIncludeCriteria keeps the whole group local when any term expands i
   for (const bad of [
     { complete: false, dropped: false, ids: [uuid(2)] }, // capped listing walk
     { complete: true, dropped: true, ids: [uuid(2)] }, // uuid-less match
-    { complete: true, dropped: false, ids: [] }, // empty: never proof of absence
   ]) {
     assert.deepEqual(
       resolveIncludeCriteria([uuid(9)], [ready([uuid(1)]), bad]),
@@ -945,6 +950,7 @@ test("resolveIncludeCriteria keeps the whole group local when any term expands i
         anyOf: [],
         localTermIndexes: [0, 1],
         freeTextNative: false,
+        provablyEmpty: false,
       },
     );
   }
@@ -954,7 +960,63 @@ test("resolveIncludeCriteria keeps the whole group local when any term expands i
     anyOf: [],
     localTermIndexes: [],
     freeTextNative: false,
+    provablyEmpty: false,
   });
+});
+
+test("resolveIncludeCriteria reads a complete empty expansion as a provably empty side", () => {
+  // A complete, fresh listing walk (card 926308ec bounds the listing's
+  // age) that holds no tag for the term and no uuid-less match grounds
+  // the absence: no published tag contains the term, so no title can
+  // carry it and the AND can never match on this side.
+  assert.deepEqual(
+    resolveIncludeCriteria([], [{ complete: true, dropped: false, ids: [] }]),
+    {
+      allOf: [],
+      anyOf: [],
+      localTermIndexes: [0],
+      freeTextNative: false,
+      provablyEmpty: true,
+    },
+  );
+  // Anchored ids change nothing: the AND still cannot match; the anchored
+  // ids still travel the inert allOf field.
+  assert.deepEqual(
+    resolveIncludeCriteria(
+      [uuid(9)],
+      [{ complete: true, dropped: false, ids: [] }],
+    ),
+    {
+      allOf: [uuid(9)],
+      anyOf: [],
+      localTermIndexes: [0],
+      freeTextNative: false,
+      provablyEmpty: true,
+    },
+  );
+  // One absent term among several kills the whole AND, whichever slot it
+  // sits in: the other terms' expansions cannot rescue it.
+  assert.equal(
+    resolveIncludeCriteria(
+      [],
+      [{ complete: true, dropped: false, ids: [] }, ready([uuid(3)])],
+    ).provablyEmpty,
+    true,
+  );
+  assert.equal(
+    resolveIncludeCriteria(
+      [],
+      [ready([uuid(3)]), { complete: true, dropped: false, ids: [] }],
+    ).provablyEmpty,
+    true,
+  );
+  // uuid-less matches exist, so titles could still carry the term on this
+  // side: not absence — the local scan stays.
+  assert.equal(
+    resolveIncludeCriteria([], [{ complete: true, dropped: true, ids: [] }])
+      .provablyEmpty,
+    false,
+  );
 });
 
 test("softCeilingFor degrades only a native free-text term that still re-checks locally", () => {
@@ -1067,7 +1129,7 @@ test("a free-text include expands on each provider's tags and travels as a nativ
   );
 });
 
-test("a free-text term that expands on no TPDB tag still scans the movie side locally instead of skipping it", async () => {
+test("a free-text term that expands on no TPDB tag drops the movie side and keeps the scene side", async () => {
   const STASH_XYZ = uuid(201);
   let moviesCalled = 0;
   const movieUrls: string[] = [];
@@ -1108,18 +1170,19 @@ test("a free-text term that expands on no TPDB tag still scans the movie side lo
         },
         [],
       );
-      // An empty expansion is never proof the side is empty: the movie side
-      // runs with no native tag criterion and really scans, its local
-      // substring predicate dropping the untagged row. (The old behavior
-      // skipped the side and answered an exact zero with no upstream read.)
-      // The scene side carries its expansion natively.
-      assert.equal(moviesCalled, 1);
-      assert.doesNotMatch(movieUrls[0]!, /tags%5B|tags\[/);
+      // Moved pin: this test held that "an empty expansion is never proof
+      // the side is empty" — the movie side scanned unfiltered while its
+      // local predicate dropped every row, costing up to 40 /movies reads
+      // per page view. The complete freshness-bounded TPDB listing (card
+      // 926308ec) grounds the absence: no published tag contains the
+      // term, so the movie side is provably empty and skipped before any
+      // /movies read. The scene side carries its expansion natively.
+      assert.equal(moviesCalled, 0);
+      assert.deepEqual(movieUrls, []);
       assert.deepEqual(
         page.items.map((d) => d.reference.provider),
         ["stashdb"],
       );
-      // Exact only because the movie scan truly exhausted its listing.
       assert.equal(page.total, 1);
       assert.equal(page.totalCountKnown, true);
       assert.deepEqual(page.errors, []);
@@ -1728,34 +1791,79 @@ test("the memoized tag listing expires and the re-walk picks up newly published 
   }
 });
 
-test("an empty expansion on an endless scene source stays a named 422, never a provably-empty page", async () => {
+test("a complete fresh listing with no match answers the side provably empty without a scan", async () => {
+  // The pin this test replaces (0081f6b: "an empty expansion is never
+  // proof the side is empty — the side scans into the 422 ceiling")
+  // predates the freshness-bounded listing walk (card 926308ec): the
+  // expansion now reads a COMPLETE listing re-walked within its TTL
+  // window, so an empty id list with no uuid-less match is grounded
+  // absence — no published tag contains the term, so no title can carry
+  // it. The side answers exact zero before any upstream scan instead of
+  // paying 40 pages per side per page view for a typo and ending in a
+  // 422 that blames breadth.
+  let sceneCalls = 0;
   await runBrowse(
     scriptedUpstream({
-      // No tag anywhere contains the term: the expansion is complete and
-      // empty, which proves nothing — the scene side scans.
       tagRows: [],
       moviePages: [{ rows: [], next: null, total: 0 }],
-      // The scene source keeps claiming more pages, so the local scan hits
-      // the documented ceiling instead of exhausting into an exact total.
+      // The scene listing is complete: one non-matching tag, and the walk
+      // stops because the rows cover the claimed count.
+      stashQueryTagPages: [
+        { count: 1, rows: [{ id: uuid(201), name: "Drama" }] },
+      ],
+      // The source keeps claiming more pages, so only a scan could ever
+      // notice — and no scan happens.
+      scenes: {
+        count: 100000,
+        rows: [stashRow(uuid(9), "Untagged", "2024-06-01")],
+      },
+      onScenesRequest: () => {
+        sceneCalls += 1;
+      },
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "scene",
+          include: [{ name: "zzqx" }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      assert.equal(sceneCalls, 0);
+      assert.deepEqual(page.items, []);
+      assert.equal(page.total, 0);
+      assert.equal(page.totalCountKnown, true);
+      assert.equal(page.hasMore, false);
+    },
+  );
+});
+
+test("an incomplete listing keeps the local scan and the hard 422 ceiling", async () => {
+  // The provably-empty answer needs a COMPLETE walk: a rows-less page
+  // while the count still claims more leaves the expansion incomplete,
+  // the absence is not grounded, and the side scans unfiltered into the
+  // documented ceiling — the honesty point 0081f6b pinned, kept.
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [{ rows: [], next: null, total: 0 }],
+      // Page 1 is rows-less while count claims 5 tags: incomplete walk.
+      stashQueryTagPages: [{ count: 5, rows: [] }],
       scenes: {
         count: 100000,
         rows: [stashRow(uuid(9), "Untagged", "2024-06-01")],
       },
     }),
     async () => {
-      // No exact zero: the side really scans, and when the endless source
-      // meets the documented ceiling the named 422 is the answer — never a
-      // fake empty page. (The old behavior skipped a side whose search
-      // found nothing and answered total 0, totalCountKnown true without
-      // any upstream read.) Under the reconciled soft-ceiling contract a
-      // single-term local scan keeps the hard ceiling; only a multi-term
-      // AND riding its native any-of union degrades to the named partial
-      // page.
       await assert.rejects(
         browseTitles(
           {
             type: "scene",
-            include: [{ name: "zzzz" }],
+            include: [{ name: "zzqx" }],
             exclude: [],
             studioMode: "exact",
             page: 1,
@@ -1765,6 +1873,52 @@ test("an empty expansion on an endless scene source stays a named 422, never a p
         ),
         appError(422, "query_too_broad"),
       );
+    },
+  );
+});
+
+test("one provably empty side drops while the other side still streams", async () => {
+  // All tab, term "drama": the TPDB listing is complete and holds no
+  // matching tag, so the movie side is provably empty and skipped before
+  // any /movies read; the StashDB side expands natively and streams.
+  const movieUrls: string[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [], // complete empty TPDB tag vocabulary
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(1), "Movie", "2024-01-01")],
+          next: null,
+          total: 1,
+        },
+      ],
+      stashQueryTagRows: [{ id: uuid(201), name: "Drama" }],
+      scenes: {
+        count: 1,
+        rows: [
+          stashRow(uuid(5), "Drama scene", "2024-06-01", [
+            { id: uuid(201), name: "Drama" },
+          ]),
+        ],
+      },
+      onMovieRequest: (_page, qs) => movieUrls.push(qs.toString()),
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "all",
+          include: [{ name: "drama" }],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      assert.deepEqual(movieUrls, []);
+      assert.equal(page.items.length, 1);
+      assert.equal(page.total, 1);
+      assert.equal(page.totalCountKnown, true);
     },
   );
 });
@@ -3099,7 +3253,7 @@ test("a filmography free-text include keeps the hard ceiling error", async () =>
   );
 });
 
-test("a free-text term beside an anchored tag keeps the hard ceiling error", async () => {
+test("an anchored tag beside a matchless free-text term answers provably empty", async () => {
   const TAG_ANCHOR = { id: 15, uuid: uuid(105), name: "Anchor Tag" };
   let moviesCalled = 0;
   await runBrowse(
@@ -3107,10 +3261,61 @@ test("a free-text term beside an anchored tag keeps the hard ceiling error", asy
       tagRows: [TAG_ANCHOR],
       moviePages: [
         {
-          // Every row carries the anchored tag but none carries a tag
-          // containing the free term: the native all-of keeps the pages
-          // flowing while the local free term filters everything, so the
-          // stream runs to its ceiling.
+          // Every row carries the anchored tag, but the complete listing
+          // holds no tag containing the free term.
+          rows: [tpdbRow(uuid(9), "Anchor only", "2024-01-01", [TAG_ANCHOR])],
+          next: "x",
+          total: 10000,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: () => {
+        moviesCalled += 1;
+      },
+    }),
+    async () => {
+      // Moved pin: this test held the hard 422 here — the free term
+      // filtered locally beside the native anchor and the stream ran to
+      // its 40-page ceiling. The complete freshness-bounded listing now
+      // proves the AND can never match: no published TPDB tag contains
+      // "nevermatches", so the side answers exact zero before any scan.
+      const page = await browseTitles(
+        {
+          type: "movie",
+          include: [
+            { name: TAG_ANCHOR.name, tpdb: TAG_ANCHOR.uuid },
+            { name: "nevermatches" },
+          ],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      assert.equal(moviesCalled, 0);
+      assert.deepEqual(page.items, []);
+      assert.equal(page.total, 0);
+      assert.equal(page.totalCountKnown, true);
+      assert.equal(page.hasMore, false);
+    },
+  );
+});
+
+test("an anchored tag beside a multi-match free-text term keeps the hard ceiling error", async () => {
+  // The ceiling contract the test above moved: when the free term DOES
+  // match published tags — several, so it re-checks locally beside the
+  // native anchor — absence is not provable, and the endless source
+  // meets the documented 40-page ceiling.
+  const TAG_ANCHOR = { id: 15, uuid: uuid(105), name: "Anchor Tag" };
+  const TAG_XYZ_A = { id: 16, uuid: uuid(106), name: "XYZ Alpha" };
+  const TAG_XYZ_B = { id: 17, uuid: uuid(107), name: "XYZ Beta" };
+  let moviesCalled = 0;
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [TAG_ANCHOR, TAG_XYZ_A, TAG_XYZ_B],
+      moviePages: [
+        {
           rows: [tpdbRow(uuid(9), "Anchor only", "2024-01-01", [TAG_ANCHOR])],
           next: "x",
           total: 10000,
@@ -3128,7 +3333,7 @@ test("a free-text term beside an anchored tag keeps the hard ceiling error", asy
             type: "movie",
             include: [
               { name: TAG_ANCHOR.name, tpdb: TAG_ANCHOR.uuid },
-              { name: "nevermatches" },
+              { name: "xyz" },
             ],
             exclude: [],
             studioMode: "exact",

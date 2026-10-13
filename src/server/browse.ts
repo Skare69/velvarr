@@ -16,8 +16,10 @@
 // never a fake empty page or fake end — narrow the filters. One exception:
 // a multi-term free-text AND split between a native tag criterion and the
 // local re-check degrades to a named partial page instead
-// (Stream.softCeiling). Raise MAX_SCAN_PAGES only when real browsing
-// measurably needs it.
+// (Stream.softCeiling). A second: a side whose free-text expansion is
+// provably empty (complete freshness-bounded listing, no match, no
+// uuid-less rows) answers exact zero before any scan. Raise
+// MAX_SCAN_PAGES only when real browsing measurably needs it.
 
 // Stryker disable all — the mutation window re-opens below the parse/adapters
 // block and covers the pure merge/plan logic only (mergeStreams, nativeQuery,
@@ -343,10 +345,13 @@ type ResolvedIncludes = {
  * Free-text includes expand on THIS side's complete published tag listing
  * (expandCatalogTagTerm), anchored ids or not. Every term's expansion must
  * be complete and native — no capped walk, no uuid-less rows — before
- * anything free travels: a partial criterion would silently drop titles,
- * and an empty expansion is never proof the side is empty, so the side is
- * never skipped for one; anything incomplete keeps the WHOLE free group on
- * the local substring re-check with the side's approximate totals. Of a
+ * anything free travels: a partial criterion would silently drop titles.
+ * Anything incomplete keeps the WHOLE free group on the local substring
+ * re-check with the side's approximate totals; a complete, freshness-
+ * bounded expansion that holds no tag for a term (and no uuid-less match)
+ * proves the side's AND can never match, and the side is skipped as exact
+ * absence (undefined) instead of scanning unfiltered pages into the 422
+ * ceiling. The rest of a
  * complete group set, the most selective valid pre-filter travels: every
  * singleton group joins the anchored ids in the all-of criterion (an AND
  * match must carry each of those tags), and with no singleton and no
@@ -407,6 +412,11 @@ async function includeIdsForSide(
     expansions.push(await expandCatalogTagTerm(side, sel.name));
   }
   const criteria = resolveIncludeCriteria(allOf, expansions);
+  // Grounded absence (complete fresh listing, no uuid-less match, empty
+  // ids): the side is skipped — exact zero via the plans.length === 0
+  // path when no side survives — instead of a 40-page unfiltered scan
+  // ending in query_too_broad. An All browse keeps the surviving side.
+  if (criteria.provablyEmpty) return undefined;
   return {
     allOf: criteria.allOf,
     anyOf: criteria.anyOf,
