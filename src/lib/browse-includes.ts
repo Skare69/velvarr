@@ -122,7 +122,9 @@ export function resolveIncludeCriteria(
 }
 
 /** The plan shape softCeilingFor reads (structural slice of browseTitles'
- * inline plan objects). */
+ * inline plan objects). `localInclude` carries only the free-text terms
+ * that re-check locally: uuid-less anchored chips and every other local
+ * filter keep the hard 422, so they never enter it. */
 export type SoftCeilingPlan = {
   localInclude: readonly unknown[];
   freeTextNative: boolean;
@@ -133,9 +135,10 @@ export type SoftCeilingPlan = {
  * re-check — the native pre-filter kept the scanned pages productive, so
  * the matches found are a real partial answer. Filmography scans (no
  * native tag criterion), anchored+free mixes where every free term
- * re-checks locally, and every other local filter keep the hard 422;
- * hidden or exclude starvation on such a stream still degrades (the pages
- * were productive). */
+ * re-checks locally, uuid-less anchored chips beside a native criterion,
+ * and every other local filter keep the hard 422; hidden or exclude
+ * starvation on such a stream still degrades (the pages were
+ * productive). */
 export function softCeilingFor(plan: SoftCeilingPlan): boolean {
   return plan.localInclude.length > 0 && plan.freeTextNative;
 }

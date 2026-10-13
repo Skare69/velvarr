@@ -3144,6 +3144,60 @@ test("a free-text term beside an anchored tag keeps the hard ceiling error", asy
   );
 });
 
+test("a uuid-less anchored tag beside a native free-text term keeps the hard ceiling error", async () => {
+  const LEGACY_NUM = { id: 305, name: "Legacy" }; // uuid-less: anchors locally
+  const PREMIUM = { id: 11, uuid: uuid(101), name: "Premium" };
+  const STASH_TAG = uuid(201);
+  let moviesCalled = 0;
+  const movieUrls: string[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [LEGACY_NUM, PREMIUM],
+      stashTagRows: [{ id: STASH_TAG, name: "Legacy" }],
+      moviePages: [
+        {
+          // Every row carries the native Premium tag but never the
+          // uuid-less Legacy label: the singleton free term keeps the
+          // pages flowing on the wire while the local anchored chip
+          // filters everything, so the stream runs to its ceiling.
+          rows: [tpdbRow(uuid(9), "Premium only", "2024-01-01", [PREMIUM])],
+          next: "x",
+          total: 10000,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: (_page, _qs, url) => {
+        moviesCalled += 1;
+        movieUrls.push(url);
+      },
+    }),
+    async () => {
+      await assert.rejects(
+        browseTitles(
+          {
+            type: "movie",
+            include: [
+              { name: "Legacy", stashdb: STASH_TAG },
+              { name: "Premium" },
+            ],
+            exclude: [],
+            studioMode: "exact",
+            page: 1,
+            perPage: 10,
+          },
+          [],
+        ),
+        appError(422, "query_too_broad"),
+      );
+      // ponytail ceiling: exactly MAX_SCAN_PAGES upstream pages, no runaway.
+      assert.equal(moviesCalled, 40);
+      // The singleton free term rode the native criterion; only the
+      // uuid-less chip filtered locally.
+      assert.match(movieUrls[0]!, /tags%5B/);
+    },
+  );
+});
+
 test("a free-text AND starved by hidden tags still degrades at the ceiling", async () => {
   const TAG_XYZ_A = { id: 11, uuid: uuid(101), name: "XYZ Special" };
   const TAG_XYZ_B = { id: 12, uuid: uuid(102), name: "XYZ Thing" };

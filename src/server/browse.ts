@@ -314,11 +314,16 @@ function visiblePredicate(
  * the free-text terms (several AND together, which one upstream tag
  * criterion cannot express) and anchored chips whose exact-label
  * counterpart row is uuid-less (matched by exact label, never a native
- * criterion). */
+ * criterion). `localFree` holds only the free-text part of `localInclude`
+ * (uuid-less anchored chips excluded): the soft ceiling counts productive
+ * native pre-filtering, which only a free-text local term beside a native
+ * criterion provides — a uuid-less chip filters an unfiltered scan, so it
+ * keeps the hard ceiling. */
 type ResolvedIncludes = {
   allOf: string[];
   anyOf: string[];
   localInclude: CatalogTagSelection[];
+  localFree: CatalogTagSelection[];
   /** True when at least one free-text term rides the native tag criterion
    * (a singleton expansion in `allOf`, or the `anyOf` group): at the scan
    * ceiling such a stream degrades softly — its pages were productive and
@@ -388,6 +393,7 @@ async function includeIdsForSide(
       allOf,
       anyOf: [],
       localInclude: [...free, ...local],
+      localFree: free,
       freeTextNative: false,
     };
   }
@@ -405,6 +411,7 @@ async function includeIdsForSide(
     allOf: criteria.allOf,
     anyOf: criteria.anyOf,
     localInclude: [...criteria.localTermIndexes.map((i) => free[i]!), ...local],
+    localFree: criteria.localTermIndexes.map((i) => free[i]!),
     freeTextNative: criteria.freeTextNative,
   };
 }
@@ -1029,6 +1036,7 @@ export async function browseTitles(
     excludeIds: string[];
     localFiltered: boolean;
     localInclude: CatalogTagSelection[];
+    localFree: CatalogTagSelection[];
     localYear?: number;
     performerIds?: string[];
   }[] = [];
@@ -1051,6 +1059,7 @@ export async function browseTitles(
         tpdbIncludes.localInclude.length > 0 ||
         (filmography && query.include.length > 0),
       localInclude: filmography ? query.include : tpdbIncludes.localInclude,
+      localFree: filmography ? query.include : tpdbIncludes.localFree,
       localYear: undefined,
     });
   }
@@ -1079,6 +1088,7 @@ export async function browseTitles(
         stashIncludes.localInclude.length > 0 ||
         query.year !== undefined,
       localInclude: stashIncludes.localInclude,
+      localFree: stashIncludes.localFree,
       localYear: query.year,
       performerIds:
         query.performerStarred === true ? starredPerformerIds : undefined,
@@ -1153,7 +1163,10 @@ export async function browseTitles(
         ),
         query.perPage,
         plan.localFiltered,
-        softCeilingFor(plan),
+        softCeilingFor({
+          localInclude: plan.localFree,
+          freeTextNative: plan.freeTextNative,
+        }),
       ),
   );
   streams.push(...unresolved);
