@@ -6,6 +6,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import fc from "fast-check";
 
 // Every test process gets its own throwaway dir: an exported VELVARR_DATA_DIR
 // only picks the parent of that dir, never the dir itself, so concurrent test
@@ -36,3 +37,18 @@ export function rmTempDir(dir: string | undefined): void {
 // Test files that pin their own data dir (api, acquisition, storage) remove it
 // in their own after() hooks, storage closed first; this covers the fallback.
 process.on("exit", () => rmTempDir(created));
+
+// --- property-based fuzzing tier (fast-check) ---
+// Gate tier (default): fixed seed 42, 200 runs per property, inside the
+// normal test command — every run and every mutant sees the same inputs.
+// Deep tier: FC_RUNS=<n> switches to a random seed for reviews; a failure
+// there is a finding card (seed + replay path + shrunk input), not a red
+// gate. numRuns must be a safe integer >= 1: NaN would run zero iterations.
+const runs = Number(process.env.FC_RUNS ?? 200);
+if (!Number.isSafeInteger(runs) || runs < 1) {
+  throw new Error(`bad FC_RUNS: ${process.env.FC_RUNS}`);
+}
+fc.configureGlobal({
+  numRuns: runs,
+  seed: process.env.FC_RUNS === undefined ? 42 : undefined,
+});

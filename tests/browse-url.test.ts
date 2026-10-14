@@ -9,8 +9,11 @@ import {
   starredPatch,
   typePatch,
 } from "../src/lib/browse-url.ts";
-import { browseSortsFor } from "../src/lib/sorts.ts";
+import { browseSortsFor, SORT_KEYS } from "../src/lib/sorts.ts";
 import { parseBrowseQuery, planBrowseSides } from "../src/server/browse.ts";
+import { AppError } from "../src/server/http.ts";
+import { CATALOG_YEAR_MAX, CATALOG_YEAR_MIN } from "../src/lib/contracts.ts";
+import fc from "fast-check";
 
 test("BROWSE_KEYS is the 16 canonical browse keys, performerStarred included", () => {
   assert.deepEqual([...BROWSE_KEYS].sort(), [
@@ -307,4 +310,167 @@ test("mirror: patched queries always pass parseBrowseQuery + planBrowseSides", (
     // qualifies (browse.ts sceneWanted is false there).
     if (target === "all") assert.ok(plan.sides.includes("stashdb"));
   }
+});
+
+// --- property tests (fast-check, global seed 42) ---
+
+// DATE_OPS is not exported from src/server/browse.ts; inlined from its
+// definition there (const DATE_OPS, ~line 88).
+const DATE_OPS = ["<", "<=", "=", ">", ">="] as const;
+
+test("property: parseBrowseQuery never throws non-AppError on arbitrary junk params", () => {
+  // Oracle: total function — every input either returns or throws AppError.
+  const junkKeys = ["x", "1", "type ", "sort", "year", "perPage", "date"];
+  fc.assert(
+    fc.property(
+      fc.dictionary(
+        fc.constantFrom(...BROWSE_KEYS, ...junkKeys),
+        fc.string({ maxLength: 40 }),
+        {
+          maxKeys: 6,
+        },
+      ),
+      (map) => {
+        try {
+          parseBrowseQuery(new URLSearchParams(map));
+        } catch (err) {
+          assert.ok(
+            err instanceof AppError,
+            `expected AppError, got ${String(err)}`,
+          );
+        }
+      },
+    ),
+  );
+});
+
+test("property: canonical query round trips through parseBrowseQuery unchanged", () => {
+  // Oracle: serialization is canonical — parse(serialize(parse(q))) === parse(q).
+  const isoDate = fc
+    .tuple(
+      fc.integer({ min: 1600, max: 2800 }),
+      fc.integer({ min: 1, max: 12 }),
+      fc.integer({ min: 1, max: 28 }),
+    )
+    .map(
+      ([y, m, d]) =>
+        `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`,
+    );
+  // id fields: lowercase uuid; only studioTpdb also accepts a TPDB site
+  // slug (mirrors SITE_SLUG_RE and the key check in parseId,
+  // src/server/browse.ts).
+  const idOrSlug = fc.option(
+    fc.oneof(fc.uuid(), fc.stringMatching(/^[a-z0-9][a-z0-9-]{0,63}$/)),
+    { nil: undefined },
+  );
+  const idUuid = fc.option(fc.uuid(), { nil: undefined });
+  // Labels stay [a-z0-9]: punctuation-only labels normalize to nothing and
+  // are rejected by parseTagSelections; spaces would break the trim round trip.
+  const selection = fc.record({
+    name: fc.stringMatching(/^[a-z0-9]{1,20}$/),
+    tpdb: fc.option(fc.uuid(), { nil: undefined }),
+    stashdb: fc.option(fc.uuid(), { nil: undefined }),
+  });
+  const selectionList = fc.array(selection, { maxLength: 3 });
+
+  fc.assert(
+    fc.property(
+      fc.record({
+        type: fc.option(fc.constantFrom("all", "movie", "scene"), {
+          nil: undefined,
+        }),
+        studioMode: fc.option(fc.constantFrom("exact", "withChildren"), {
+          nil: undefined,
+        }),
+        sort: fc.option(fc.constantFrom(...SORT_KEYS), { nil: undefined }),
+        direction: fc.option(fc.constantFrom("asc", "desc"), {
+          nil: undefined,
+        }),
+        date: fc.option(isoDate, { nil: undefined }),
+        dateOperation: fc.option(fc.constantFrom(...DATE_OPS), {
+          nil: undefined,
+        }),
+        year: fc.option(
+          fc.integer({ min: CATALOG_YEAR_MIN, max: CATALOG_YEAR_MAX }),
+          { nil: undefined },
+        ),
+        page: fc.integer({ min: 1, max: 1000 }),
+        perPage: fc.integer({ min: 1, max: 100 }),
+        q: fc.option(
+          fc.string({ minLength: 1, maxLength: 40 }).map((s) => s.trim()),
+          { nil: undefined },
+        ),
+        performerStarred: fc.option(fc.constant("1"), { nil: undefined }),
+        studioTpdb: idOrSlug,
+        studioStashdb: idUuid,
+        performerTpdb: idUuid,
+        performerStashdb: idUuid,
+        include: fc.option(selectionList, { nil: undefined }),
+        exclude: fc.option(selectionList, { nil: undefined }),
+      }),
+      (g) => {
+        fc.pre(g.direction === undefined || g.sort !== undefined);
+        fc.pre((g.date === undefined) === (g.dateOperation === undefined));
+        fc.pre(g.q === undefined || g.q !== "");
+        const params = new URLSearchParams();
+        if (g.type !== undefined) params.set("type", g.type);
+        if (g.studioMode !== undefined) params.set("studioMode", g.studioMode);
+        if (g.sort !== undefined) params.set("sort", g.sort);
+        if (g.direction !== undefined) params.set("direction", g.direction);
+        if (g.date !== undefined) params.set("date", g.date);
+        if (g.dateOperation !== undefined)
+          params.set("date_operation", g.dateOperation);
+        if (g.year !== undefined) params.set("year", String(g.year));
+        params.set("page", String(g.page));
+        params.set("perPage", String(g.perPage));
+        if (g.q !== undefined) params.set("q", g.q);
+        if (g.performerStarred !== undefined)
+          params.set("performerStarred", g.performerStarred);
+        for (const k of [
+          "studioTpdb",
+          "studioStashdb",
+          "performerTpdb",
+          "performerStashdb",
+        ] as const) {
+          const v = g[k];
+          if (v !== undefined) params.set(k, v);
+        }
+        if (g.include !== undefined)
+          params.set("include", JSON.stringify(g.include));
+        if (g.exclude !== undefined)
+          params.set("exclude", JSON.stringify(g.exclude));
+
+        const p1 = parseBrowseQuery(params);
+        const out = new URLSearchParams();
+        out.set("type", p1.type);
+        out.set("studioMode", p1.studioMode);
+        out.set("page", String(p1.page));
+        out.set("perPage", String(p1.perPage));
+        if (p1.q !== undefined) out.set("q", p1.q);
+        if (p1.include.length > 0)
+          out.set("include", JSON.stringify(p1.include));
+        if (p1.exclude.length > 0)
+          out.set("exclude", JSON.stringify(p1.exclude));
+        for (const k of [
+          "studioTpdb",
+          "studioStashdb",
+          "performerTpdb",
+          "performerStashdb",
+        ] as const) {
+          const v = p1[k];
+          if (v !== undefined) out.set(k, v);
+        }
+        if (p1.performerStarred) out.set("performerStarred", "1");
+        if (p1.date !== undefined && p1.dateOperation !== undefined) {
+          out.set("date", p1.date);
+          out.set("date_operation", p1.dateOperation);
+        }
+        if (p1.sort !== undefined) out.set("sort", p1.sort);
+        if (p1.direction !== undefined) out.set("direction", p1.direction);
+        if (p1.year !== undefined) out.set("year", String(p1.year));
+        const p2 = parseBrowseQuery(out);
+        assert.deepStrictEqual(p2, p1);
+      },
+    ),
+  );
 });

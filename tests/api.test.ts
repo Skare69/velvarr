@@ -53,6 +53,8 @@ import { routes as libraryRoutes } from "../src/app/api/[...path]/routes/library
 import { routes as adminRoutes } from "../src/app/api/[...path]/routes/admin.ts";
 import { routes as discoverRoutes } from "../src/app/api/[...path]/routes/discover.ts";
 import { allowArtworkFixture } from "./fixture.ts";
+import fc from "fast-check";
+import { readJson } from "../src/app/api/[...path]/parse.ts";
 
 test("route tables never shadow: every request shape matches at most one def", () => {
   const all: RouteDef[] = [
@@ -1338,6 +1340,34 @@ before(async () => {
         claimToken?: string,
       ) => unknown;
     });
+});
+
+// Oracle: readJson either resolves to a plain object or rejects with an
+// AppError — never anything else, for any request body.
+test("readJson: every body yields a plain object or an AppError", async () => {
+  const arbitraryBody = fc.oneof(
+    fc.uint8Array({ minLength: 0, maxLength: 2000 }),
+    fc.uint8Array({ minLength: 32769, maxLength: 36000 }),
+    fc
+      .jsonValue()
+      .map((value) => new TextEncoder().encode(JSON.stringify(value))),
+  );
+  await fc.assert(
+    fc.asyncProperty(arbitraryBody, async (bytes) => {
+      const request = new Request("http://127.0.0.1/t", {
+        method: "POST",
+        body: bytes,
+      });
+      try {
+        const parsed = await readJson(request);
+        assert.strictEqual(typeof parsed, "object");
+        assert.notStrictEqual(parsed, null);
+        assert.strictEqual(Array.isArray(parsed), false);
+      } catch (error) {
+        assert.ok(error instanceof AppError, `non-AppError: ${String(error)}`);
+      }
+    }),
+  );
 });
 
 after(() => {

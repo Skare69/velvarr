@@ -46,6 +46,11 @@ import type {
 } from "../src/server/providers.ts";
 import type { CatalogDetail } from "../src/lib/contracts.ts";
 import { normalizeFacetName } from "../src/lib/contracts.ts";
+import {
+  stashFuzzyDate,
+  type ImageUrlCheck,
+} from "../src/server/provider-rows.ts";
+import fc from "fast-check";
 
 // One shared fixture upstream per file; every test starts with a cold cache
 // so cached reads never mask a scripted upstream change.
@@ -1484,6 +1489,122 @@ test("artwork gate: loopback only with the named test-fixture origin", () => {
   }
 });
 
+test("property: isProviderImageUrl SSRF invariants over generated URL parts", () => {
+  // Oracle: any accepted URL is https on a safe allowlist host without
+  // credentials or fragment; verdicts are total, shaped, and deterministic.
+  const prev = process.env.VELVARR_TEST_ARTWORK_ORIGIN;
+  try {
+    delete process.env.VELVARR_TEST_ARTWORK_ORIGIN;
+
+    const LOOPBACK_POOL = [
+      "127.0.0.1",
+      "127.8.8.8",
+      "localhost",
+      "[::1]",
+      "[fe80::1]",
+      "[fc00::1]",
+      "10.1.2.3",
+      "172.16.0.9",
+      "192.168.5.5",
+      "169.254.9.9",
+      "0.0.0.0",
+      "127.attacker.example",
+      "attacker.example",
+    ];
+    const SAFE_POOL = [
+      "cdn.theporndb.net",
+      "thumb.theporndb.net",
+      "stashdb.org",
+      "www.stashdb.org",
+      "stashdb.org.",
+      "cdn.theporndb.net:443",
+    ];
+
+    // Local classifier: literal IPv4 private/loopback/link-local ranges,
+    // IPv6 ::1 / fc00::/7 / fe80::/10, or the name "localhost".
+    const ipv4 = (h: string): number[] | null => {
+      const parts = h.split(".");
+      if (parts.length !== 4) return null;
+      const octets = parts.map((p) => (/^\d+$/.test(p) ? Number(p) : -1));
+      if (octets.some((o) => o < 0 || o > 255)) return null;
+      return octets;
+    };
+    const isPrivateHost = (host: string): boolean => {
+      const h =
+        host
+          .toLowerCase()
+          .replace(/^\[|\]$/g, "")
+          .split("%")[0] ?? "";
+      if (h === "localhost") return true;
+      const v4 = ipv4(h);
+      if (v4 !== null) {
+        const [a = -1, b = -1] = v4;
+        return (
+          a === 127 ||
+          a === 10 ||
+          a === 192 ||
+          a === 169 ||
+          a === 0 ||
+          (a === 172 && b >= 16 && b <= 31)
+        );
+      }
+      return (
+        h === "::1" ||
+        /^fc[0-9a-f]{2}:/.test(h) ||
+        /^fd[0-9a-f]{2}:/.test(h) ||
+        /^fe[89ab][0-9a-f]:/.test(h)
+      );
+    };
+
+    const urlArb = fc
+      .record({
+        scheme: fc.constantFrom("https://", "http://", "ftp://"),
+        userinfo: fc.option(fc.constant("user:pass@"), { nil: "" }),
+        host: fc.constantFrom(...SAFE_POOL, ...LOOPBACK_POOL),
+        port: fc.option(fc.constantFrom(":80", ":8443"), { nil: "" }),
+        path: fc.option(
+          fc.constantFrom("/a.jpg", "/x/y.jpg", "/", "/..%2f..%2fetc"),
+          { nil: "" },
+        ),
+        query: fc.option(fc.constant("?q=1"), { nil: "" }),
+        hash: fc.option(fc.constant("#frag"), { nil: "" }),
+      })
+      .map((p) =>
+        [p.scheme, p.userinfo, p.host, p.port, p.path, p.query, p.hash].join(
+          "",
+        ),
+      );
+    const garbageArb = fc.string({ maxLength: 80 });
+
+    fc.assert(
+      fc.property(fc.oneof(urlArb, garbageArb), (u) => {
+        const verdict: ImageUrlCheck = isProviderImageUrl(u); // must not throw
+        if (verdict.ok) {
+          assert.ok("service" in verdict && !("reason" in verdict));
+          assert.ok(u.startsWith("https://"), `accepted non-https: ${u}`);
+          const parsed = new URL(u);
+          assert.equal(parsed.username, "");
+          assert.equal(parsed.password, "");
+          assert.equal(parsed.hash, "");
+          assert.equal(
+            isPrivateHost(parsed.hostname),
+            false,
+            `accepted private host: ${u}`,
+          );
+        } else {
+          assert.ok("reason" in verdict && !("service" in verdict));
+        }
+        // Determinism: a rejected URL stays rejected on a second call.
+        assert.deepEqual(isProviderImageUrl(u), verdict);
+      }),
+      { numRuns: 200 },
+    );
+  } finally {
+    if (prev === undefined) delete process.env.VELVARR_TEST_ARTWORK_ORIGIN;
+    else process.env.VELVARR_TEST_ARTWORK_ORIGIN = prev;
+  }
+});
+
 test("artwork fetch: enforces content type, byte cap, and never sends credentials", async () => {
   const fixture = await startFixture((req, res) => {
     assert.equal(req.headers.authorization, undefined);
@@ -1871,6 +1992,150 @@ test("cross-provider identity uses only explicit provider URLs; scenes stay unli
   assert.equal(
     crossProviderLink(mediaDetail("scene")).unlinkedReason,
     expectedMediaReason,
+  );
+});
+
+// Property: cross-provider link output is total, xor-shaped, and honors the
+// provider-opposite/lowercase-uuid contract; movies and scenes never link.
+test("property: crossProviderLink emits exactly one of linked/unlinkedReason with the opposite provider", () => {
+  const mixCase = (uuid: string): string =>
+    [...uuid]
+      .map((c) =>
+        /[0-9a-f]/.test(c) && c !== "-" ? (c < "8" ? c.toUpperCase() : c) : c,
+      )
+      .join("");
+  const linkArb = fc.oneof(
+    // Valid counterpart performer/studio uuid URLs, sometimes uppercase hex.
+    fc
+      .record({
+        host: fc.constantFrom(
+          "theporndb.net",
+          "www.theporndb.net",
+          "stashdb.org",
+          "www.stashdb.org",
+        ),
+        bucket: fc.constantFrom("performers", "studios"),
+        id: fc.uuid(),
+        upper: fc.boolean(),
+        slash: fc.option(fc.constant("/"), { nil: "" }),
+      })
+      .map(
+        (p) =>
+          `https://${p.host}/${p.bucket}/${p.upper ? mixCase(p.id) : p.id}${p.slash}`,
+      ),
+    fc
+      .string({ minLength: 1, maxLength: 40 })
+      .map(
+        (s) =>
+          `https://theporndb.net/sites/${s.replace(/[^a-z0-9-]/g, "a") || "site"}`,
+      ),
+    // Junk arms that must never satisfy the link regexes.
+    fc.uuid().map((id) => `http://x.example/p/${id}`),
+    fc.uuid().map((id) => `/performers/${id}`),
+    fc.uuid().map((id) => `https://stashdb.org/performers/not-a-uuid-${id}`),
+    fc.string({ maxLength: 60 }),
+  );
+
+  fc.assert(
+    fc.property(
+      fc.record({
+        provider: fc.constantFrom("tpdb", "stashdb"),
+        kind: fc.constantFrom("performer", "studio", "movie", "scene"),
+        id: fc.uuid(),
+      }),
+      fc.array(linkArb, { maxLength: 6 }),
+      ({ provider, kind, id }, urls) => {
+        const detail: CatalogDetail = {
+          reference: { provider, kind, id },
+          title: "Generated",
+          credits: [],
+          tags: [],
+          related: [],
+          links: urls.map((url) => ({ url })),
+          aliases: [],
+        };
+        const out = crossProviderLink(detail); // pure, must not throw
+        const hasLinked = out.linked !== undefined;
+        const hasReason = out.unlinkedReason !== undefined;
+        assert.notEqual(hasLinked, hasReason); // exactly one of the two
+        if (kind === "movie" || kind === "scene") {
+          assert.equal(hasLinked, false);
+          return;
+        }
+        if (out.linked !== undefined) {
+          assert.equal(
+            out.linked.provider,
+            provider === "tpdb" ? "stashdb" : "tpdb",
+          );
+          assert.equal(out.linked.kind, kind);
+          // A /sites/<slug> link keeps its slug as the id (identity-links.ts
+          // studio branch); a uuid link yields a lowercased uuid. Both forms
+          // are lowercase path-safe tokens; performer links are uuid-only.
+          assert.match(
+            out.linked.id,
+            out.linked.kind === "studio"
+              ? /^[a-z0-9][a-z0-9-]{0,63}$/
+              : /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+          );
+        }
+      },
+    ),
+    { numRuns: 200 },
+  );
+});
+
+// Property: stashFuzzyDate accepts only {date: ISO, accuracy: DAY|MONTH|YEAR}
+// and returns the same date with a lowercased accuracy; everything else is
+// undefined and it never throws.
+test("property: stashFuzzyDate canonicalizes valid records, rejects everything else", () => {
+  const isoDate = fc
+    .record({
+      year: fc.integer({ min: 1600, max: 2800 }),
+      month: fc.integer({ min: 1, max: 12 }),
+      day: fc.integer({ min: 1, max: 28 }),
+    })
+    .map(
+      ({ year, month, day }) =>
+        `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
+    );
+  const validArb = fc.record({
+    date: isoDate,
+    accuracy: fc.constantFrom("DAY", "MONTH", "YEAR"),
+  });
+  const junkArb = fc.oneof(
+    fc.constantFrom(null, undefined, 42, "x", true),
+    fc.array(fc.integer(), { maxLength: 3 }),
+    fc.record({ date: fc.string({ maxLength: 20 }) }),
+    fc.record({
+      date: isoDate,
+      accuracy: fc
+        .string({ maxLength: 10 })
+        .filter((s) => !["DAY", "MONTH", "YEAR"].includes(s)),
+    }),
+  );
+
+  fc.assert(
+    fc.property(fc.oneof(validArb, junkArb), (v) => {
+      const out = stashFuzzyDate(v); // must not throw
+      if (
+        v !== null &&
+        typeof v === "object" &&
+        "date" in v &&
+        "accuracy" in v &&
+        typeof v.date === "string" &&
+        (v.accuracy === "DAY" ||
+          v.accuracy === "MONTH" ||
+          v.accuracy === "YEAR")
+      ) {
+        assert.deepEqual(out, {
+          date: v.date,
+          accuracy: v.accuracy.toLowerCase(),
+        });
+      } else {
+        assert.equal(out, undefined);
+      }
+    }),
+    { numRuns: 200 },
   );
 });
 
