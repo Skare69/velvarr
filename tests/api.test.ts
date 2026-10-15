@@ -4474,6 +4474,52 @@ test("the discovery cache serves fresh hits warm and rebuilds stale entries", as
   clearDiscoverCache();
 });
 
+test("a failed new-releases build is never cached: recovery serves without a clear", async () => {
+  // Both layers cold: the metaCache sits under the discover cache and a
+  // warm entry would skip the upstream fixture (see the TTL test above).
+  clearDiscoverCache();
+  resetMetaCache();
+  // Fail deep rather than counting calls: the whole build must reject, so
+  // every read on both sides dies (same discipline as the both-down test).
+  tpdbFx.fail = 5;
+  stashdbFx.fail = 5;
+  try {
+    const outage = await call("GET", "/api/discover/shelf?id=new-releases", {
+      cookie: member,
+    });
+    assert.equal(outage.status, 200);
+    const outageBody = (await outage.json()) as {
+      shelf: { error?: { code: string }; items?: unknown[] };
+    };
+    assert.equal(
+      outageBody.shelf.error?.code,
+      "provider_unavailable",
+      "the outage renders as the shelf's own error",
+    );
+    assert.equal(outageBody.shelf.items, undefined);
+    // The failure must not be cached: once the fixture recovers, the very
+    // next read rebuilds — no clearDiscoverCache() in between.
+    tpdbFx.fail = 0;
+    stashdbFx.fail = 0;
+    const recovered = await call("GET", "/api/discover/shelf?id=new-releases", {
+      cookie: member,
+    });
+    assert.equal(recovered.status, 200);
+    const recoveredBody = (await recovered.json()) as {
+      shelf: { error?: unknown; items?: unknown[] };
+    };
+    assert.equal(recoveredBody.shelf.error, undefined);
+    assert.ok(
+      (recoveredBody.shelf.items?.length ?? 0) > 0,
+      "the recovered build serves items",
+    );
+  } finally {
+    tpdbFx.fail = 0;
+    stashdbFx.fail = 0;
+    clearDiscoverCache();
+  }
+});
+
 test("a followed rail whose filmography is fully hidden answers a null shelf", async () => {
   const hidden = await call("PATCH", "/api/me/preferences", {
     cookie: member,

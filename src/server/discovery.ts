@@ -62,7 +62,10 @@ function fingerprint(hiddenTags: CatalogTagSelection[]): string {
 }
 
 export function releasesCacheKey(today: string, fp: string): string {
-  return `discover:releases:${today}:${fp}`;
+  // v2: rows written before the throw-through fix cached the settled
+  // {status, ...} wrapper this module no longer reads; the bump keeps a
+  // deploy from misparsing them (they age out via the 1h prune).
+  return `discover:releases2:${today}:${fp}`;
 }
 
 export function trendingCacheKey(fp: string): string {
@@ -111,61 +114,39 @@ async function readThrough<T>(
   }
 }
 
-type SerializedReason = { status?: number; code: string; message: string };
-
-type SerializedSettled =
-  | { status: "fulfilled"; value: BrowsePage }
-  | { status: "rejected"; reason: SerializedReason };
-
-function serializeReason(reason: unknown): SerializedReason {
-  if (reason instanceof AppError) {
-    return {
-      ...(reason.upstreamStatus !== undefined
-        ? { status: reason.upstreamStatus }
-        : {}),
-      code: reason.code,
-      message: reason.message,
-    };
-  }
-  return { code: "internal", message: String(reason) };
-}
-
 export async function cachedReleases(
   hiddenTags: CatalogTagSelection[],
   today: string,
 ): Promise<PromiseSettledResult<BrowsePage>> {
-  const key = releasesCacheKey(today, fingerprint(hiddenTags));
-  const settled = (await readThrough<SerializedSettled>(key, async () => {
-    const result = await Promise.allSettled([
-      browseTitles(
-        parseBrowseQuery(
-          new URLSearchParams({
-            type: "all",
-            sort: "recency",
-            direction: "desc",
-            date: today,
-            date_operation: "<=",
-            page: "1",
-            perPage: String(SHELF_ITEMS + MORE_PREVIEWS),
-          }),
-        ),
-        hiddenTags,
+  // The build may throw: a failure propagates out of readThrough, so an
+  // outage is never written to discover_cache and never served stale —
+  // same contract as cachedTrending/cachedFollowed. Only the caller sees
+  // the settled shape.
+  try {
+    return {
+      status: "fulfilled",
+      value: await readThrough<BrowsePage>(
+        releasesCacheKey(today, fingerprint(hiddenTags)),
+        () =>
+          browseTitles(
+            parseBrowseQuery(
+              new URLSearchParams({
+                type: "all",
+                sort: "recency",
+                direction: "desc",
+                date: today,
+                date_operation: "<=",
+                page: "1",
+                perPage: String(SHELF_ITEMS + MORE_PREVIEWS),
+              }),
+            ),
+            hiddenTags,
+          ),
       ),
-    ]);
-    return result[0]!.status === "fulfilled"
-      ? { status: "fulfilled", value: result[0].value }
-      : { status: "rejected", reason: serializeReason(result[0].reason) };
-  })) as SerializedSettled;
-  return settled.status === "fulfilled"
-    ? { status: "fulfilled", value: settled.value }
-    : {
-        status: "rejected",
-        reason: new AppError(
-          settled.reason.status ?? 502,
-          settled.reason.code,
-          settled.reason.message,
-        ),
-      };
+    };
+  } catch (e) {
+    return { status: "rejected", reason: e };
+  }
 }
 
 export async function cachedTrending(
@@ -217,7 +198,13 @@ export function startDiscoveryLoop(): void {
       let releases = "ok";
       let trending = "ok";
       try {
-        await cachedReleases([], today);
+        const settledReleases = await cachedReleases([], today);
+        if (settledReleases.status === "rejected") {
+          releases =
+            settledReleases.reason instanceof AppError
+              ? settledReleases.reason.code
+              : String(settledReleases.reason);
+        }
       } catch (e) {
         releases = e instanceof Error ? e.message : String(e);
       }
