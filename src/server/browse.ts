@@ -1261,6 +1261,7 @@ export async function searchBrowseTags(
       "Enter at least 2 characters to search.",
     );
   }
+  if (q.length > 200) throw new AppError(400, "invalid_query", "Invalid q.");
   const providers: CatalogProvider[] = ["tpdb", "stashdb"];
   const settled = await Promise.allSettled(
     providers.map((p) => searchCatalogTags(p, q)),

@@ -7535,6 +7535,18 @@ test("browse is the unified visible-catalog surface and counts the caller's hidd
         "every picker label carries a provider-native reference",
       );
     }
+
+    // Term length: the same 200-character cap the sibling member searches
+    // apply (catalog q, library search), before any provider or AI call.
+    const longTerm = await call(
+      "GET",
+      `/api/browse/tags?q=${"a".repeat(201)}`,
+      { cookie: member },
+    );
+    assert.equal(longTerm.status, 400);
+    const longShape = await errorShape(longTerm);
+    assert.equal(longShape.code, "invalid_query");
+    assert.equal(longShape.message, "Invalid q.");
   } finally {
     const restored = await call("PATCH", "/api/me/preferences", {
       cookie: member,
