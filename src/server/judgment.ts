@@ -16,6 +16,8 @@ const SAME_WORK_P = 0.7;
  * state fixes both performer errors of the blind prompt (0.44 FN -> 0.90,
  * 0.90 FP -> 0.12) while sequels and word-sharing distractors stay below
  * 0.2; the studio-prefix variant needs the 0.7 gate (0.73). */
+// Prompt copy is pinned by the calibration evals noted above, not by unit tests.
+// Stryker disable all
 const SAME_WORK_INSTRUCTIONS =
   "Do these two catalog records name the same work — the same movie or scene, " +
   "possibly under different punctuation, an alternate subtitle, or a transliterated spelling? " +
@@ -24,6 +26,7 @@ const SAME_WORK_INSTRUCTIONS =
   "title contains a DIFFERENT performer's name is a different work. A studio, network, or " +
   "site name prefixed before the title does not make it a different work. Answer no for " +
   "remakes, sequels, different works, or unrelated titles.";
+// Stryker restore all
 
 export type WorkIdentity = {
   title: string;
@@ -268,10 +271,16 @@ export async function sameWork(
       {
         state: { requested: a, candidate: b },
         questions: {
-          sameWork: noul(SAME_WORK_INSTRUCTIONS, {
-            true: "Both records name the same work.",
-            false: "These are different works.",
-          }),
+          sameWork: noul(
+            SAME_WORK_INSTRUCTIONS,
+            // Stryker disable all -- the answer labels never reach the wire
+            // payload (a noul question serializes type and instructions only).
+            {
+              true: "Both records name the same work.",
+              false: "These are different works.",
+            },
+            // Stryker restore all
+          ),
         },
       },
       // One attempt: local inference retains its 30 s allowance; cloud

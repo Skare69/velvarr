@@ -41,6 +41,7 @@ import {
 
 export const DISCOVER_CACHE_TTL_MS = 5 * 60_000;
 
+// Stryker disable next-line ArithmeticOperator -- consumed only by the warm loop below.
 const PRUNE_MAX_AGE_MS = 60 * 60_000;
 
 // In-process join: concurrent misses for one key share a single build.
@@ -183,6 +184,8 @@ export async function cachedFollowed(
   );
 }
 
+// Stryker disable all -- scheduling and logging glue whose building blocks
+// (cachedReleases/cachedTrending/prune) are tested directly.
 export function startDiscoveryLoop(): void {
   const g = globalThis as typeof globalThis & {
     __velvarrDiscoveryLoopStarted?: boolean;
@@ -238,3 +241,4 @@ export function startDiscoveryLoop(): void {
   const timer = setInterval(run, DISCOVER_CACHE_TTL_MS);
   timer.unref?.();
 }
+// Stryker restore all

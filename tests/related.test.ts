@@ -648,6 +648,45 @@ test("outage, incomplete, and out-of-range jev answers all preserve the determin
 
 // --- related performers (co-appearance evidence) ---
 
+test("canRefine mirrors backend configuredness and shortlist size without a paid call", async () => {
+  await withFx(async () => {
+    // A configured backend advertises the refine affordance even without
+    // rank=jev, and advertising it spends no judgment call.
+    const calls: string[] = [];
+    const restore = stubTypeSafe(() => {
+      throw new Error("no judgment call without rank=jev");
+    }, calls);
+    try {
+      const unranked = await relatedTitles(movieRef(SOURCE_ID), [], {
+        providers: { typesafeApiKey: TS_KEY },
+      });
+      assert.equal(unranked.canRefine, true);
+      assert.equal(unranked.ranking, "tags");
+      assert.deepEqual(ids(unranked.items), TAG_ORDER);
+      assert.deepEqual(calls, []);
+
+      // A one-item shortlist offers nothing to refine.
+      listing = [
+        movieRow(SOURCE_ID, "Source Title", [ROMANCE, COMEDY], STUDIO_ID),
+        movieRow(MOVIE_ONE, "One Shared", [ROMANCE]),
+      ];
+      searchTagReply = { searchTag: [] };
+      resetMetaCache();
+      const single = await relatedTitles(movieRef(SOURCE_ID), [], {
+        providers: { typesafeApiKey: TS_KEY },
+      });
+      assert.deepEqual(ids(single.items), [MOVIE_ONE]);
+      assert.equal(single.canRefine, false);
+
+      // Without a configured backend there is no refiner to advertise.
+      const plain = await relatedTitles(movieRef(SOURCE_ID), [], {});
+      assert.equal(plain.canRefine, false);
+    } finally {
+      restore();
+    }
+  });
+});
+
 const performerRef = (provider: "tpdb" | "stashdb", id: string) =>
   ({ provider, kind: "performer", id }) as const;
 

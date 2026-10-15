@@ -4,7 +4,9 @@ import { join } from "node:path";
 /**
  * Mutation testing over the pure decision logic: the src/lib modules plus the
  * pure parts of src/server (planBrowseSides/mergeStreams in browse.ts via
- * in-file disable markers, related.ts whole). Effect-heavy adapters stay out.
+ * in-file disable markers, related.ts whole, judgment.ts and discovery.ts
+ * whole — their effect glue is covered by the faked-fetch suites below or
+ * carries in-file disable markers). Effect-heavy adapters stay out.
  * The command runner runs a hand-picked list of the suites that kill
  * mutants in the mutate set (not all of `bun run test`), so a mutant only
  * survives when that list cannot catch it.
@@ -22,14 +24,14 @@ const config = {
   // (measured: 5–27 flaky failures at default fan-out, green at ≤4 suites).
   commandRunner: {
     command:
-      "node --experimental-strip-types --import ./tests/setup.ts --test --test-concurrency=1 tests/status.test.ts tests/tags.test.ts tests/related.test.ts tests/browse.test.ts tests/browse-items.test.ts tests/providers.test.ts tests/api.test.ts tests/approvals.test.ts tests/decisions.test.ts tests/names.test.ts tests/update.test.ts tests/browse-url.test.ts tests/person.test.ts tests/api-get.test.ts tests/sorts.test.ts",
+      "node --experimental-strip-types --import ./tests/setup.ts --test --test-concurrency=1 tests/status.test.ts tests/tags.test.ts tests/related.test.ts tests/browse.test.ts tests/browse-items.test.ts tests/providers.test.ts tests/api.test.ts tests/approvals.test.ts tests/decisions.test.ts tests/names.test.ts tests/update.test.ts tests/browse-url.test.ts tests/person.test.ts tests/api-get.test.ts tests/sorts.test.ts tests/ollama.test.ts tests/judgment.test.ts tests/discovery.test.ts",
   },
   // The command runner only reports an exit code, so per-test coverage is
   // impossible; Stryker runs every mutant against the whole scoped command.
   coverageAnalysis: "off",
-  // One mutant run = the scoped suite (net ~7.4 s on the Linux worker).
+  // One mutant run = the scoped suite (net ~13.1 s on the Linux worker).
   // Stryker's per-run budget is timeoutFactor × net + timeoutMS (default
-  // factor 1.5: about 1.5 × 7.4 s + 60 s here); timeoutMS is the fixed
+  // factor 1.5: about 1.5 × 13.1 s + 60 s here); timeoutMS is the fixed
   // slack on top of the measured net time, never the sole kill clock.
   timeoutMS: 60000,
   concurrency: 8,
@@ -38,6 +40,8 @@ const config = {
     "src/server/browse.ts",
     "src/server/related.ts",
     "src/server/update.ts",
+    "src/server/judgment.ts",
+    "src/server/discovery.ts",
   ],
   // TypeScript 7 (typescript-go) dropped the JS config API Stryker's tsconfig
   // preprocessor needs. Pointing at a nonexistent file skips its rewrite,
@@ -49,16 +53,16 @@ const config = {
   // No `incremental` here: with the command runner a stale cache replayed
   // statuses from an older command (one replay reported decisions.ts at 0%
   // that the current suite kills completely). The honest cost is the full
-  // run: ~22 min at 1478 tested (2026-10-12, Linux worker, concurrency 8).
+  // run: ~64 min at 2022 tested (2026-10-15, Linux worker, concurrency 8).
   reporters: ["clear-text", "progress"],
   // stryker.log (cwd) captures the run including worker deaths, but its
   // per-mutant detail covers killed mutants only — the survived diffs are
   // console-only, so capture stdout when hunting survivors.
   fileLogLevel: "trace",
-  // break is the measured clean-run score (86.23, 2026-10-12, after the
-  // browse include-criteria decisions moved into src/lib/browse-includes.ts)
-  // floored to one decimal; a regression below it fails the run, and the
-  // margin is under two mutants.
+  // break is the measured clean-run score (88.23, 2026-10-15, after
+  // judgment.ts and discovery.ts joined the mutate set and the ollama,
+  // judgment, related and discovery suites joined this command) floored to
+  // one decimal; a regression below it fails the run.
   // status.ts and browse-includes.ts are fully killed: the badge and
   // acquisition-line tests pin every status branch, the sorts suite pins
   // the capability table, and tests/browse.test.ts pins the include
@@ -75,9 +79,23 @@ const config = {
   // a returned boolean), src/server/update.ts's payload-guard chain (a
   // non-string tag_name/html_url or an || → && rewrite dies in the same
   // caught TypeError and the two error-message copy strings never surface),
-  // and api-get.ts's FIFO-cap edges (has/clear/eviction
-  // conditionals asserted only loosely by the queue-order tests).
-  thresholds: { high: 85, low: 75, break: 86.2 },
+  // api-get.ts's FIFO-cap edges (has/clear/eviction
+  // conditionals asserted only loosely by the queue-order tests),
+  // and in the newest files: judgment.ts's client-cache rebuild
+  // (a same-config rebuild is externally identical), the per-backend
+  // failure-gate cap and its `<=` boundary (the cap needs 2000 distinct
+  // backends; the boundary needs an exact-millisecond hit), the redundant
+  // error-guard re-routes that any caller already funnels (judgmentBackend's
+  // `|| settings.error` after `!configured`, suggestTags's and
+  // rankRelatedTitles's null-backend guards behind their own catches, the
+  // rank answer-shape conjuncts that all converge on the same voided
+  // rerank), the wire-invisible `? "ollama"` key placeholder and local
+  // fetch `init?.headers` (the SDK always passes init), the sameWork catch
+  // re-routes (the faked-fetch suite answers false on this path either way),
+  // the URL/env trims that validateBaseUrl and the WHATWG URL parser
+  // normalize anyway, and discovery.ts's shelf literals that providers.ts
+  // normalizes plus the TTL `<` boundary (exact-equality unreachable).
+  thresholds: { high: 85, low: 75, break: 88.2 },
 };
 
 export default config;
