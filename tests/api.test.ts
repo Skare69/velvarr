@@ -886,7 +886,7 @@ interface InjectedSceneRow {
   urls: never[];
   images: never[];
   studio: { id: string; name: string };
-  tags: never[];
+  tags: { id: string; name: string }[];
   performers: never[];
 }
 
@@ -4260,9 +4260,13 @@ test("discover rails hold three pages and preview the next four past the cap", a
   resetMetaCache();
   const extraId = (prefix: string, n: number) =>
     `${prefix}-0000-0000-0000-${String(n).padStart(12, "0")}`;
-  extraTpdbMovies = Array.from({ length: 34 }, (_, i) =>
-    tpdbMovieRow(extraId("6e6f7071", 800 + i)),
-  );
+  extraTpdbMovies = Array.from({ length: 34 }, (_, i) => ({
+    ...tpdbMovieRow(extraId("6e6f7071", 800 + i)),
+    site: {
+      name: `Fixture Movie Studio ${String(i).padStart(2, "0")}`,
+      uuid: extraId("6e6f7071", 850 + i),
+    },
+  }));
   extraStashScenes = Array.from({ length: 34 }, (_, i) => ({
     id: extraId("7f708182", 900 + i),
     title: `Fixture Scene ${i}`,
@@ -4270,8 +4274,16 @@ test("discover rails hold three pages and preview the next four past the cap", a
     duration: 600,
     urls: [],
     images: [],
-    studio: { id: extraId("7f708182", 950 + i), name: `Fixture Studio ${i}` },
-    tags: [],
+    studio: {
+      id: extraId("7f708182", 950 + i),
+      name: `Fixture Studio ${String(i).padStart(2, "0")}`,
+    },
+    tags: [
+      {
+        id: extraId("7f708182", 970 + i),
+        name: `Fixture Genre ${String(i).padStart(2, "0")}`,
+      },
+    ],
     performers: [],
   }));
   try {
@@ -4297,22 +4309,27 @@ test("discover rails hold three pages and preview the next four past the cap", a
         assert.equal(preview.media, undefined, `${id} preview kind`);
       }
     }
-    // Sources without a tail stay silent: no `more` key at all.
-    for (const id of [
-      "jellyfin-recent",
-      "velvarr-requests",
-      "studios",
-      "genres",
-    ]) {
+    // Sources without a tail stay silent: no `more` key at all. The facet
+    // rails see the same deep pool as every other rail (their tiles derive
+    // from the releases page), so they fill to the cap and carry previews
+    // too; the dedupes legitimately shrink the tail (the published
+    // studio pair collapses into one tile, TAG_A pairs its stash twin).
+    for (const id of ["studios", "genres"]) {
+      const shelf = byId.get(id);
+      assert.equal(shelf?.error, undefined, id);
+      assert.equal(shelf?.items?.length, 28, `${id} fills the rail`);
+      assert.ok((shelf?.more?.length ?? 0) >= 1, `${id} previews its tail`);
+      for (const preview of shelf?.more ?? []) {
+        assert.equal(typeof preview.name, "string", `${id} preview name`);
+      }
+    }
+    for (const id of ["jellyfin-recent", "velvarr-requests"]) {
       assert.equal(
         byId.get(id)?.more,
         undefined,
         `${id} has nothing past the rail`,
       );
     }
-    // Facet rails keep their compact directory scale: the cap rise is a
-    // poster-rail contract, not a facet one.
-    assert.ok((byId.get("studios")?.items?.length ?? 0) <= 12, "studios cap");
   } finally {
     extraTpdbMovies = [];
     extraStashScenes = [];

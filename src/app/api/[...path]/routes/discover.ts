@@ -50,7 +50,6 @@ export function sourceError(
 
 export const SHELF_ITEMS = 28;
 export const MORE_PREVIEWS = 4;
-export const FACET_ITEMS = 12;
 export const FOLLOWED_PAGE = 12;
 export const SEARCH_PER_PAGE = 6;
 export const FOLLOW_SHELF_PERFORMERS = 5;
@@ -262,9 +261,9 @@ export function browseShelf(
 // render; a failed or absent read keeps the known name/reference as a
 // name-only tile — never an invented logo, and an enrich failure never sinks
 // the shelf.
-// ponytail: bounded recent/trending snapshot (FACET_ITEMS unique ids, no
-// popularity invented); a full directory listing only if a browse surface
-// ever needs one.
+// ponytail: bounded recent/trending snapshot (SHELF_ITEMS + MORE_PREVIEWS
+// unique ids, no popularity invented); a full directory listing only if a
+// browse surface ever needs one.
 export function genreFacets(
   items: CatalogDetail[],
 ): Pick<FacetItem, "id" | "name" | "imageUrl">[] {
@@ -280,19 +279,22 @@ export function genreFacets(
       if (item.imageUrl !== undefined) art.get(tag.id)?.push(item.imageUrl);
     }
   }
-  return [...names].slice(0, FACET_ITEMS).map(([id, name], i) => {
-    const carriers = art.get(id) ?? [];
-    const imageUrl =
-      carriers.length > 0 ? carriers[i % carriers.length] : undefined;
-    return { id, name, ...(imageUrl !== undefined ? { imageUrl } : {}) };
-  });
+  return [...names]
+    .slice(0, SHELF_ITEMS + MORE_PREVIEWS)
+    .map(([id, name], i) => {
+      const carriers = art.get(id) ?? [];
+      const imageUrl =
+        carriers.length > 0 ? carriers[i % carriers.length] : undefined;
+      return { id, name, ...(imageUrl !== undefined ? { imageUrl } : {}) };
+    });
 }
 
 export function studioFacets(
   provider: CatalogProvider,
   items: CatalogDetail[],
-  // The shelf caps; the directory passes Infinity and lists every studio.
-  cap: number = FACET_ITEMS,
+  // The directory passes Infinity and lists every studio; the shelf
+  // enriches rail depth plus the preview tail.
+  cap: number = SHELF_ITEMS + MORE_PREVIEWS,
 ): Promise<CatalogDetail[]> {
   const known = new Map<
     string,
@@ -449,15 +451,15 @@ export async function facetShelf(
             })),
     })),
   );
-  // Alternate the providers' tiles so the cap leaves room for both sides.
+  // Alternate the providers' tiles so the rail leaves room for both sides.
   const candidates: FacetItem[] = [];
-  for (let i = 0; i < FACET_ITEMS; i++) {
+  for (let i = 0; i < SHELF_ITEMS + MORE_PREVIEWS; i++) {
     for (const { tiles } of perSource) {
       const tile = tiles[i];
       if (tile !== undefined) candidates.push(tile);
     }
   }
-  const emitted = candidates.slice(0, FACET_ITEMS);
+  const emitted = candidates.slice(0, SHELF_ITEMS + MORE_PREVIEWS);
   let items = emitted;
   if (shelf === "studios") {
     items = await dedupePublishedStudios(emitted);
@@ -484,8 +486,20 @@ export async function facetShelf(
     title: shelf === "studios" ? "Studios" : "Genres",
     source: "velvarr",
     kind: "facets",
-    items,
+    ...railOf(items, facetPreview),
     browse: { view: "facets", params: { kind: shelf } },
+  };
+}
+
+/** A facet tile previews as the art it renders: a studio's brand mark over
+ * its poster, a genre's artwork. A deduped or unenriched tile may have
+ * neither — the preview then names the facet, never faking art. */
+function facetPreview(tile: FacetItem): ShelfMorePreview {
+  const art =
+    tile.facet === "studio" ? (tile.logoUrl ?? tile.imageUrl) : tile.imageUrl;
+  return {
+    name: tile.name,
+    ...(art !== undefined ? { imageUrl: art } : {}),
   };
 }
 
