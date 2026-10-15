@@ -765,9 +765,14 @@ export function CardStatusBadge({
 
 /* ---------- Shared catalog presentation ---------- */
 
-/** Provider artwork may only reach the DOM through the same-origin proxy. */
+/** Provider artwork may only reach the DOM through the same-origin proxy.
+ * Root-relative paths (Jellyfin's /api/images) are already same-origin, so
+ * they pass through unwrapped — the proxy only takes provider hosts. */
 export function imgSrc(url: string | undefined): string | undefined {
-  return url ? `/api/catalog/image?url=${encodeURIComponent(url)}` : undefined;
+  if (!url) return undefined;
+  return url.startsWith("/")
+    ? url
+    : `/api/catalog/image?url=${encodeURIComponent(url)}`;
 }
 
 export function duration(seconds: number | undefined): string | null {

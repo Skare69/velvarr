@@ -235,7 +235,9 @@ function CatalogTile({
 function MoreTile({ shelf }: { shelf: Shelf }) {
   if (!shelf.browse || !shelf.more?.length) return null;
   return (
-    <div className="discovery-tile discovery-tile-more">
+    <div
+      className={`discovery-tile discovery-tile-more discovery-tile-more-${shelf.kind}`}
+    >
       <Link
         href={browseHref(shelf)}
         prefetch={false}

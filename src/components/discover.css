@@ -446,8 +446,23 @@
 
 /* ---------- See More tile ---------- */
 
+/* Default size matches the portrait poster rails (catalog + library). Rails
+   whose cards are not portrait carry a kind class that re-sizes the tile to
+   that rail's card: facets 250px at 2:1, requests 330px x 176px. */
 .discovery-tile-more {
   width: 160px;
+}
+.discovery-tile-more-facets {
+  width: 250px;
+}
+.discovery-tile-more-facets .discovery-more {
+  aspect-ratio: 2 / 1;
+}
+.discovery-tile-more-requests {
+  width: 330px;
+}
+.discovery-tile-more-requests .discovery-more {
+  aspect-ratio: 330 / 176;
 }
 .discovery-more {
   position: relative;
@@ -523,6 +538,13 @@
   }
   .discovery-tile-more {
     width: 122px;
+  }
+  /* Kind-sized See More tiles keep their rail's mobile card size. */
+  .discovery-tile-more-facets {
+    width: 200px;
+  }
+  .discovery-tile-more-requests {
+    width: 330px;
   }
   /* Facets keep a 2:1 tile; ~200px wide keeps two tiles plus a peek in row. */
   .discovery-tile-facet {
