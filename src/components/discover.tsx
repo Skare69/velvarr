@@ -19,8 +19,10 @@ import type {
   CatalogReference,
   FacetItem,
   LibraryItem,
+  MediaReference,
   RequestListItem,
   Shelf,
+  ShelfMorePreview,
 } from "../lib/contracts";
 import {
   CardStatusBadge,
@@ -225,6 +227,59 @@ function CatalogTile({
         <MovieCard item={item} onOpen={onOpen} />
       )}
     </div>
+  );
+}
+
+/** The rail's last tile: pics of the next entries, which are NOT loaded
+ * here — the link opens the shelf's browse view where they live. */
+function MoreTile({ shelf }: { shelf: Shelf }) {
+  if (!shelf.browse || !shelf.more?.length) return null;
+  return (
+    <div className="discovery-tile discovery-tile-more">
+      <Link
+        href={browseHref(shelf)}
+        prefetch={false}
+        className="discovery-more"
+        aria-label={`See more of ${shelf.title}`}
+      >
+        {shelf.more.map((p, i) => (
+          <MoreCell key={i} preview={p} />
+        ))}
+        <span className="discovery-more-veil" aria-hidden="true">
+          <span className="discovery-more-go">
+            <Icon name="arrow-right" />
+          </span>
+          <span className="discovery-more-label">See More</span>
+        </span>
+      </Link>
+    </div>
+  );
+}
+
+function MoreCell({ preview }: { preview: ShelfMorePreview }) {
+  return preview.media ? (
+    <RequestPreviewArt media={preview.media} />
+  ) : (
+    <ItemImage
+      name={preview.name ?? ""}
+      src={
+        preview.imageUrl !== undefined ? imgSrc(preview.imageUrl) : undefined
+      }
+      className="discovery-more-art"
+    />
+  );
+}
+
+/** Request previews resolve name/art through the shared summary cache,
+ * exactly like a request tile does. */
+function RequestPreviewArt({ media }: { media: MediaReference }) {
+  const art = useCatalogSummary(media);
+  return (
+    <ItemImage
+      name={art?.title ?? ""}
+      src={art?.imageUrl !== undefined ? imgSrc(art.imageUrl) : undefined}
+      className="discovery-more-art"
+    />
   );
 }
 
@@ -481,6 +536,7 @@ function ShelfSection({
           />,
         );
     }
+    tiles.push(<MoreTile key={`${shelf.id}-more`} shelf={shelf} />);
     body = (
       <div
         ref={rail.ref}

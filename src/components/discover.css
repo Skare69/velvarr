@@ -444,6 +444,60 @@
   margin-top: 0.25rem;
 }
 
+/* ---------- See More tile ---------- */
+
+.discovery-tile-more {
+  width: 160px;
+}
+.discovery-more {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-auto-rows: 1fr;
+  gap: 2px;
+  aspect-ratio: 2 / 3;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--color-panel);
+  border: 1px solid var(--color-edge);
+}
+.discovery-more-art,
+.discovery-more-art img,
+.discovery-more-art .img-fallback {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.discovery-more-veil {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: color-mix(in oklab, var(--color-ink) 55%, transparent);
+}
+.discovery-more-go {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  color: var(--color-ink);
+}
+.discovery-more-go svg {
+  width: 18px;
+  height: 18px;
+}
+.discovery-more-label {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--color-canvas);
+}
+
 /* ---------- Small screens ---------- */
 
 /* A phone gets ~440px of height between the topbar and the bottom nav, so a
@@ -467,6 +521,9 @@
   .discovery-tile-poster {
     width: 122px;
   }
+  .discovery-tile-more {
+    width: 122px;
+  }
   /* Facets keep a 2:1 tile; ~200px wide keeps two tiles plus a peek in row. */
   .discovery-tile-facet {
     width: 200px;
@@ -481,7 +538,8 @@
    border/box-shadow transitions declared above. */
 .discovery-request-card,
 .discovery-facet,
-.discovery-art-card {
+.discovery-art-card,
+.discovery-more {
   transition:
     transform 180ms ease,
     border-color 160ms,
@@ -489,10 +547,15 @@
 }
 .discovery-request-card:hover,
 .discovery-facet:hover,
-.discovery-art-card:hover {
+.discovery-art-card:hover,
+.discovery-more:hover {
   transform: scale(1.04);
   position: relative;
   z-index: 1;
+}
+.discovery-more:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }
 
 /* The Genres/Studios overview: the rail's facet tiles in a wrapped grid. */

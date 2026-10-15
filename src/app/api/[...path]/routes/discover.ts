@@ -9,6 +9,7 @@ import type {
   Shelf,
   ShelfError,
   ShelfItems,
+  ShelfMorePreview,
   SourceError,
 } from "../../../../lib/contracts.ts";
 import { normalizeFacetName } from "../../../../lib/contracts.ts";
@@ -47,12 +48,37 @@ export function sourceError(
   return { provider, ...shelfError(err) };
 }
 
-export const SHELF_ITEMS = 12;
+export const SHELF_ITEMS = 28;
+export const MORE_PREVIEWS = 4;
+export const FACET_ITEMS = 12;
+export const FOLLOWED_PAGE = 12;
 export const SEARCH_PER_PAGE = 6;
 export const FOLLOW_SHELF_PERFORMERS = 5;
 
+/** The rail keeps the first SHELF_ITEMS candidates; the See More card
+ * previews the next MORE_PREVIEWS — omitted, never empty, when the
+ * source had nothing past the rail. */
+function railOf<T>(
+  items: T[],
+  preview: (item: T) => ShelfMorePreview,
+): { items: T[]; more?: ShelfMorePreview[] } {
+  const tail = items
+    .slice(SHELF_ITEMS, SHELF_ITEMS + MORE_PREVIEWS)
+    .map(preview);
+  return {
+    items: items.slice(0, SHELF_ITEMS),
+    ...(tail.length > 0 ? { more: tail } : {}),
+  };
+}
+
+const catalogPreview = (item: CatalogDetail): ShelfMorePreview => ({
+  name: item.title,
+  ...(item.imageUrl !== undefined ? { imageUrl: item.imageUrl } : {}),
+});
+
 // First page of each followed performer's title filmography, merged within
-// ONE provider and capped at SHELF_ITEMS. Partial failure is reported, not
+// ONE provider and capped at FOLLOW_SHELF_PERFORMERS * FOLLOWED_PAGE. Partial
+// failure is reported, not
 // dropped: the first failed page rides back as `failure` beside the
 // survivors, so the shelf can name the provider. Throwing is reserved for a
 // side with nothing to show — every page failed.
@@ -74,7 +100,7 @@ export async function followedTitles(
             kind: "movie",
             performer: follow.reference.id,
             page: 1,
-            perPage: SHELF_ITEMS,
+            perPage: FOLLOWED_PAGE,
           })
         : searchCatalog({
             provider: "stashdb",
@@ -83,7 +109,7 @@ export async function followedTitles(
             sort: "date",
             direction: "desc",
             page: 1,
-            perPage: SHELF_ITEMS,
+            perPage: FOLLOWED_PAGE,
           })
       ).then((page) => page.items),
     ),
@@ -106,7 +132,7 @@ export async function followedTitles(
   );
   if (items.length === 0 && firstFailure) throw firstFailure.reason;
   return {
-    items: items.slice(0, SHELF_ITEMS),
+    items: items.slice(0, FOLLOW_SHELF_PERFORMERS * FOLLOWED_PAGE),
     ...(firstFailure ? { failure: firstFailure.reason } : {}),
   };
 }
@@ -158,7 +184,7 @@ export async function followedShelf(
   }
   return {
     ...base,
-    items: dedupeTitles(merged).slice(0, SHELF_ITEMS),
+    ...railOf(dedupeTitles(merged), catalogPreview),
     ...(errors.length > 0 ? { errors } : {}),
   };
 }
@@ -181,10 +207,13 @@ export function dedupeTitles(items: CatalogDetail[]): CatalogDetail[] {
 
 export function shelfOf(
   base: Omit<Shelf, "items" | "error">,
-  result: PromiseSettledResult<ShelfItems>,
+  result: PromiseSettledResult<{
+    items: ShelfItems;
+    more?: ShelfMorePreview[];
+  }>,
 ): Shelf {
   return result.status === "fulfilled"
-    ? { ...base, items: result.value }
+    ? { ...base, ...result.value }
     : // An errored shelf carries no items at all: never an empty list that
       // could render as a quiet success.
       { ...base, error: shelfError(result.reason) };
@@ -214,9 +243,11 @@ export function browseShelf(
       };
     }
   }
+  const rail = railOf(page.items, catalogPreview);
   return {
     ...base,
-    items: page.items,
+    items: rail.items,
+    ...(rail.more ? { more: rail.more } : {}),
     ...(page.errors.length > 0 ? { errors: page.errors } : {}),
   };
 }
@@ -231,7 +262,7 @@ export function browseShelf(
 // render; a failed or absent read keeps the known name/reference as a
 // name-only tile — never an invented logo, and an enrich failure never sinks
 // the shelf.
-// ponytail: bounded recent/trending snapshot (SHELF_ITEMS unique ids, no
+// ponytail: bounded recent/trending snapshot (FACET_ITEMS unique ids, no
 // popularity invented); a full directory listing only if a browse surface
 // ever needs one.
 export function genreFacets(
@@ -249,7 +280,7 @@ export function genreFacets(
       if (item.imageUrl !== undefined) art.get(tag.id)?.push(item.imageUrl);
     }
   }
-  return [...names].slice(0, SHELF_ITEMS).map(([id, name], i) => {
+  return [...names].slice(0, FACET_ITEMS).map(([id, name], i) => {
     const carriers = art.get(id) ?? [];
     const imageUrl =
       carriers.length > 0 ? carriers[i % carriers.length] : undefined;
@@ -261,7 +292,7 @@ export function studioFacets(
   provider: CatalogProvider,
   items: CatalogDetail[],
   // The shelf caps; the directory passes Infinity and lists every studio.
-  cap: number = SHELF_ITEMS,
+  cap: number = FACET_ITEMS,
 ): Promise<CatalogDetail[]> {
   const known = new Map<
     string,
@@ -420,13 +451,13 @@ export async function facetShelf(
   );
   // Alternate the providers' tiles so the cap leaves room for both sides.
   const candidates: FacetItem[] = [];
-  for (let i = 0; i < SHELF_ITEMS; i++) {
+  for (let i = 0; i < FACET_ITEMS; i++) {
     for (const { tiles } of perSource) {
       const tile = tiles[i];
       if (tile !== undefined) candidates.push(tile);
     }
   }
-  const emitted = candidates.slice(0, SHELF_ITEMS);
+  const emitted = candidates.slice(0, FACET_ITEMS);
   let items = emitted;
   if (shelf === "studios") {
     items = await dedupePublishedStudios(emitted);
@@ -595,7 +626,7 @@ export async function discover(ctx: AuthContext): Promise<Response> {
         date: today,
         date_operation: "<=",
         page: "1",
-        perPage: String(SHELF_ITEMS),
+        perPage: String(SHELF_ITEMS + MORE_PREVIEWS),
       }),
     ),
     hiddenTags,
@@ -612,16 +643,28 @@ export async function discover(ctx: AuthContext): Promise<Response> {
         sort: "trending",
         direction: "desc",
         page: 1,
-        perPage: SHELF_ITEMS,
+        perPage: SHELF_ITEMS + MORE_PREVIEWS,
       },
       hiddenTags,
-    ).then((page) => page.items),
-    listRecentlyAddedItems(ctx.config, ctx.token, ctx.account, SHELF_ITEMS),
+    ).then((page) => railOf(page.items, catalogPreview)),
+    listRecentlyAddedItems(
+      ctx.config,
+      ctx.token,
+      ctx.account,
+      SHELF_ITEMS + MORE_PREVIEWS,
+    ).then((items) =>
+      railOf(items, (it) => ({
+        name: it.name,
+        ...(it.image ? { imageUrl: it.image } : {}),
+      })),
+    ),
     // storage is sync; defer so its failures settle like the rest. Capped
     // like every other shelf: a bulk performer request can file a hundred
     // intents at once, and a rail is not a list view. The rows carry the
     // shared acquisition state so the rail's badge tells the truth.
-    Promise.resolve().then(() => listRequestItems(ctx).slice(0, SHELF_ITEMS)),
+    Promise.resolve().then(() =>
+      railOf(listRequestItems(ctx), (r) => ({ media: r.media })),
+    ),
   ]);
   // The followed rail needs none of the shelves above and the facet rails
   // need only New releases, so neither waits for the slower shelves.

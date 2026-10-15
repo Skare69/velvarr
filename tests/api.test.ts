@@ -3897,6 +3897,12 @@ interface FixtureShelf {
   /** Per-source partial-failure evidence; coexists with items. */
   errors?: { provider: string; code: string; message: string }[];
   error?: { code: string; message: string };
+  /** See More previews: the next entries past the rail, not loaded. */
+  more?: {
+    name?: string;
+    imageUrl?: string;
+    media?: { provider: string; kind: string; id: string };
+  }[];
 }
 
 // Facet tiles: projected to the pinned wire fields for set comparison.
@@ -4243,6 +4249,73 @@ test("discover: mixed new releases, honest trending, facets, grants, not-configu
         assert.equal("linked" in tile, false, `${id}:${tile.id}`);
       }
     }
+  }
+});
+
+test("discover rails hold three pages and preview the next four past the cap", async () => {
+  // A pool past the rail cap: the rail keeps SHELF_ITEMS entries and the
+  // See More card previews exactly the next four — while shelves whose
+  // source has nothing past the rail omit `more` entirely (never an empty
+  // array pretending a preview exists).
+  resetMetaCache();
+  const extraId = (prefix: string, n: number) =>
+    `${prefix}-0000-0000-0000-${String(n).padStart(12, "0")}`;
+  extraTpdbMovies = Array.from({ length: 34 }, (_, i) =>
+    tpdbMovieRow(extraId("6e6f7071", 800 + i)),
+  );
+  extraStashScenes = Array.from({ length: 34 }, (_, i) => ({
+    id: extraId("7f708182", 900 + i),
+    title: `Fixture Scene ${i}`,
+    date: "2024-05-06",
+    duration: 600,
+    urls: [],
+    images: [],
+    studio: { id: extraId("7f708182", 950 + i), name: `Fixture Studio ${i}` },
+    tags: [],
+    performers: [],
+  }));
+  try {
+    const ok = await call("GET", "/api/discover", { cookie: member });
+    assert.equal(ok.status, 200);
+    const byId = new Map(
+      (await shelvesOf(ok)).map((shelf) => [shelf.id, shelf]),
+    );
+    for (const id of ["new-releases", "trending"]) {
+      const shelf = byId.get(id);
+      assert.equal(shelf?.error, undefined, id);
+      assert.equal(shelf?.items?.length, 28, `${id} fills the rail`);
+      const more = shelf?.more ?? [];
+      assert.equal(more.length, 4, `${id} previews the next four`);
+      for (const preview of more) {
+        assert.equal(typeof preview.name, "string", `${id} preview name`);
+        assert.equal(
+          preview.imageUrl === undefined ||
+            typeof preview.imageUrl === "string",
+          true,
+          `${id} preview art`,
+        );
+        assert.equal(preview.media, undefined, `${id} preview kind`);
+      }
+    }
+    // Sources without a tail stay silent: no `more` key at all.
+    for (const id of [
+      "jellyfin-recent",
+      "velvarr-requests",
+      "studios",
+      "genres",
+    ]) {
+      assert.equal(
+        byId.get(id)?.more,
+        undefined,
+        `${id} has nothing past the rail`,
+      );
+    }
+    // Facet rails keep their compact directory scale: the cap rise is a
+    // poster-rail contract, not a facet one.
+    assert.ok((byId.get("studios")?.items?.length ?? 0) <= 12, "studios cap");
+  } finally {
+    extraTpdbMovies = [];
+    extraStashScenes = [];
   }
 });
 

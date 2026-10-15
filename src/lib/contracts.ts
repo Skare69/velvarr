@@ -385,6 +385,17 @@ export interface FacetItem {
   linked?: { provider: CatalogProvider; id: string };
 }
 
+/** One See More card preview: the next entry past the rail's items, NOT
+ * loaded as a card. Catalog/library/facet sources carry name and art
+ * directly; request sources carry only the reference, which the client
+ * resolves through its catalog summary cache. Absent fields stay absent —
+ * never faked. */
+export type ShelfMorePreview = {
+  name?: string;
+  imageUrl?: string;
+  media?: MediaReference;
+};
+
 /** One Discover rail: one wire shape for the discover response, the discover
  * view and every shelf builder. An errored shelf carries `error` and NO
  * `items` key. */
@@ -399,6 +410,9 @@ export interface Shelf {
   items?: CatalogDetail[] | LibraryItem[] | RequestListItem[] | FacetItem[];
   /** Per-source partial-failure evidence; items may coexist with it. */
   errors?: SourceError[];
+  /** Pics of the next entries past `items` (≤4) for the rail's See More
+   * card. Absent when the source had nothing past the rail. */
+  more?: ShelfMorePreview[];
   error?: ShelfError;
 }
 
