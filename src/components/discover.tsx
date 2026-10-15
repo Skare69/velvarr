@@ -65,7 +65,7 @@ function sourceLabel(s: Shelf["source"]): string {
  * (view=titles|following plus browse keys) through verbatim — the server owns
  * the composition, the URL owns the state. Filters from another surface never
  * leak in. */
-function browseHref(shelf: Shelf): string {
+function browseHref(shelf: Pick<Shelf, "browse">): string {
   const browse = shelf.browse;
   if (!browse) return "/";
   return `/?${new URLSearchParams({ view: browse.view, ...browse.params })}`;
@@ -444,6 +444,41 @@ function LibraryTile({ item }: { item: LibraryItem }) {
 
 /* ---------- One shelf: header + body by kind ---------- */
 
+/** Shared by ShelfSection and LazyShelf: the title (a browse link when the
+ * shelf carries browse params) plus optional rail nav. One markup, one
+ * styling contract. */
+function ShelfHeader({
+  title,
+  browse,
+  nav,
+}: {
+  title: string;
+  browse?: Shelf["browse"];
+  nav?: ReactNode;
+}) {
+  return (
+    <div className="discovery-shelf-head">
+      <h3 className="discovery-shelf-title">
+        {browse ? (
+          <Link
+            className="discovery-shelf-link"
+            href={browseHref({ browse } as Shelf)}
+            prefetch={false}
+          >
+            {title}
+            <span className="discovery-browse-icon">
+              <Icon name="arrow-right" />
+            </span>
+          </Link>
+        ) : (
+          title
+        )}
+      </h3>
+      {nav}
+    </div>
+  );
+}
+
 function ShelfSection({
   shelf,
   busy,
@@ -552,25 +587,11 @@ function ShelfSection({
 
   return (
     <section className="discovery-shelf" aria-busy={busy || undefined}>
-      <div className="discovery-shelf-head">
-        <h3 className="discovery-shelf-title">
-          {shelf.browse ? (
-            <Link
-              className="discovery-shelf-link"
-              href={browseHref(shelf)}
-              prefetch={false}
-            >
-              {shelf.title}
-              <span className="discovery-browse-icon">
-                <Icon name="arrow-right" />
-              </span>
-            </Link>
-          ) : (
-            shelf.title
-          )}
-        </h3>
-        {hasRail && rail.nav}
-      </div>
+      <ShelfHeader
+        title={shelf.title}
+        browse={shelf.browse}
+        nav={hasRail ? rail.nav : undefined}
+      />
       {/* A source that failed while its sibling filled the rail still gets
           named — partial success never reads as complete. */}
       {!shelf.error && (shelf.errors?.length ?? 0) > 0 && (
@@ -586,6 +607,104 @@ function ShelfSection({
         </div>
       )}
       {body}
+    </section>
+  );
+}
+
+/* ---------- Lazy per-slider loading ---------- */
+
+/** True once the element comes near the viewport; latches (never flips back)
+ * so a shelf that loaded stays fetched while the user scrolls past. */
+const NEAR_VIEW_ROOT_MARGIN = "300px";
+
+function useNearView<T extends HTMLElement>(): [
+  React.RefObject<T | null>,
+  boolean,
+] {
+  const ref = useRef<T | null>(null);
+  const [near, setNear] = useState(false);
+
+  useEffect(() => {
+    if (near || typeof IntersectionObserver === "undefined") {
+      // No IO support: fetch immediately rather than never.
+      setNear(true);
+      return;
+    }
+    const el = ref.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setNear(true);
+          io.disconnect();
+        }
+      },
+      { rootMargin: NEAR_VIEW_ROOT_MARGIN },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [near]);
+
+  return [ref, near];
+}
+
+/** One slider: the stub renders its header immediately, the body fetches
+ * `/api/discover/shelf` only when scrolled near. Each slider owns its
+ * skeleton, its busy state, and its retry — nothing blocks on the slowest
+ * shelf, and a shelf that fails names itself without taking the page down. */
+function LazyShelf({
+  stub,
+  tick,
+  onOpen,
+}: {
+  stub: Shelf;
+  tick: number;
+  onOpen: (r: CatalogReference) => void;
+}) {
+  const [ref, near] = useNearView<HTMLElement>();
+  const url = near
+    ? `/api/discover/shelf?id=${encodeURIComponent(stub.id)}`
+    : null;
+  const { data, error, err, revalidating, reload } = useApiGet<{
+    shelf: Shelf | null;
+  }>(url, [stub.id, tick]);
+
+  // Server says the shelf is empty for this account (empty followed
+  // filmography): render nothing, as the composed page did.
+  if (data && data.shelf === null) return null;
+
+  if (data?.shelf) {
+    return (
+      <ShelfSection
+        shelf={data.shelf}
+        busy={revalidating}
+        onRetry={reload}
+        onOpen={onOpen}
+      />
+    );
+  }
+
+  if ((error || err) && !data?.shelf) {
+    return (
+      <section className="discovery-shelf">
+        <ShelfHeader title={stub.title} browse={stub.browse} />
+        <ErrorPanel
+          title={`${stub.title} is unavailable`}
+          message={error ?? err!.message}
+          onRetry={reload}
+        />
+      </section>
+    );
+  }
+
+  return (
+    <section
+      ref={ref}
+      className="discovery-shelf"
+      aria-busy={near || undefined}
+    >
+      <ShelfHeader title={stub.title} browse={stub.browse} />
+      <RailSkeleton count={5} />
     </section>
   );
 }
@@ -672,24 +791,29 @@ export function FacetsView() {
 
 export function DiscoverShelves() {
   const setP = useParamsSetter();
-  // The page rides useApiGet's per-tab cache: cleared on sign-out and on any
-  // 401, and revalidated on every mount, so no snapshot outlives its account.
-  // While a revalidation runs, `busy` (fed from `revalidating`; `loading`
-  // implies `revalidating`) shows the refresh over the cached shelves.
+  // The page fetches STUBS only — the server answers in one cheap local read
+  // (saved order over present shelves), no upstream fetches. Each slider
+  // builds its own items through /api/discover/shelf when it scrolls near,
+  // so one slow provider cannot hold the whole page.
+  // The stub list still rides useApiGet's per-tab cache: cleared on sign-out
+  // and on any 401, and revalidated on every mount, so no snapshot outlives
+  // its account.
+  const [tick, setTick] = useState(0);
   const {
     data: page,
     error,
     loading,
-    revalidating,
     reload,
-  } = useApiGet<DiscoverPage>("/api/discover", []);
+  } = useApiGet<DiscoverPage>("/api/discover", [tick]);
 
-  // Preference changes (hidden tags, shelf order) land as this event; the
-  // page refetches instead of showing yesterday's decisions.
+  // Preference changes (hidden tags, shelf order, follows) land as this
+  // event; the saved ORDER lives in the stub list, so the stubs refetch —
+  // and every mounted slider refetches through its own tick dep.
   useEffect(() => {
-    window.addEventListener(PREFERENCES_CHANGED, reload);
-    return () => window.removeEventListener(PREFERENCES_CHANGED, reload);
-  }, [reload]);
+    const bump = () => setTick((t) => t + 1);
+    window.addEventListener(PREFERENCES_CHANGED, bump);
+    return () => window.removeEventListener(PREFERENCES_CHANGED, bump);
+  }, []);
 
   // Catalog cards open the detail over the matching surface view; the
   // destination view mounts the shared detail for provider+kind+id.
@@ -724,7 +848,7 @@ export function DiscoverShelves() {
   if (!page) return null;
   return (
     <section aria-label="Discover">
-      {/* A failed reload keeps the loaded shelves by design (useApiGet only
+      {/* A failed reload keeps the loaded stubs by design (useApiGet only
           drops cache-hit data); the panel says they are stale instead of
           reading as current. */}
       {error !== null && (
@@ -734,19 +858,13 @@ export function DiscoverShelves() {
           onRetry={reload}
         />
       )}
-      {/* The server's shelf order IS the composition — it resolves each
+      {/* The server's stub order IS the composition — it resolves each
           account's saved order (personal content preferences) over the
           default, and only shelves present in this response are rendered.
           The API is authoritative: no client re-sort, no preferences fetch
-          here. Personal shelves refetch on PREFERENCES_CHANGED above. */}
-      {page.shelves.map((s) => (
-        <ShelfSection
-          key={s.id}
-          shelf={s}
-          busy={revalidating}
-          onRetry={reload}
-          onOpen={openDetail}
-        />
+          here. Each slider loads and fails on its own (LazyShelf). */}
+      {page.shelves.map((stub) => (
+        <LazyShelf key={stub.id} stub={stub} tick={tick} onOpen={openDetail} />
       ))}
     </section>
   );

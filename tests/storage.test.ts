@@ -1017,10 +1017,43 @@ test("v1 database migrates in place preserving config, accounts, sessions, and g
     raw.prepare("PRAGMA user_version").get() as { user_version: number }
   ).user_version;
   raw.close();
-  assert.equal(version, 11, "v1 database must migrate to schema 11");
+  assert.equal(version, 12, "v1 database must migrate to the current schema");
   // A v1 database never contained the removal tables (current migration 5
   // creates none), so nothing here can assert about them; the schema-10 test
-  // below owns the claim that migration 11 drops them.
+  // below owns the claim that migration 11 drops them. Migration 12 is a
+  // plain additive table (discover_cache), covered by the cache test below.
+});
+
+test("migration 12 adds the discover cache; put/get/prune/clear round-trip", () => {
+  // freshDir() re-points VELVARR_DATA_DIR; the path itself is unused here.
+  freshDir();
+  storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+
+  // Absent key reads as undefined, never as a row-shaped object.
+  assert.equal(storage.getDiscoverCache("discover:releases:none"), undefined);
+
+  const now = Date.now();
+  storage.putDiscoverCache("discover:releases:a", '{"v":1}', now);
+  storage.putDiscoverCache("discover:trending:a", '{"v":2}', now);
+  const hit = storage.getDiscoverCache("discover:releases:a");
+  assert.deepEqual(hit, { payload: '{"v":1}', fetchedAt: now });
+
+  // INSERT OR REPLACE: same key overwrites, no duplicate rows.
+  storage.putDiscoverCache("discover:releases:a", '{"v":3}', now + 5);
+  assert.deepEqual(storage.getDiscoverCache("discover:releases:a"), {
+    payload: '{"v":3}',
+    fetchedAt: now + 5,
+  });
+
+  // prune deletes only rows older than the window; fresh rows survive.
+  storage.putDiscoverCache("discover:releases:old", "{}", now - 60_000);
+  assert.equal(storage.pruneDiscoverCache(30_000), 1);
+  assert.equal(storage.getDiscoverCache("discover:releases:old"), undefined);
+  assert.ok(storage.getDiscoverCache("discover:releases:a"));
+  assert.ok(storage.getDiscoverCache("discover:trending:a"));
+  // An at least full sweep clears everything.
+  storage.clearDiscoverCache();
+  assert.equal(storage.getDiscoverCache("discover:trending:a"), undefined);
 });
 
 test("a schema-10 database migrates to 11: every removal object is dropped, rows are kept", () => {
@@ -1153,6 +1186,10 @@ test("a schema-10 database migrates to 11: every removal object is dropped, rows
       "INSERT INTO removal_audit (id, execution_id, requester_id, approver_id, provider, kind, external_id, level, attempt_token, outcome, created_at) VALUES ('ra1', 're1', ?, ?, 'tpdb', 'movie', ?, 'drop', 'att1', 'done', ?)",
     )
     .run(ownerUser().id, ownerUser().id, MOVIE.id, now);
+  // The rewind must shed what migrations after 10 add: migration 12's
+  // discover_cache exists in the bootstrapped database but never existed at
+  // version 10, and replaying its CREATE TABLE must succeed.
+  raw.exec("DROP TABLE IF EXISTS discover_cache;");
   raw.exec("PRAGMA user_version = 10");
   raw.close();
   storage.closeStorage();
@@ -1186,8 +1223,8 @@ test("a schema-10 database migrates to 11: every removal object is dropped, rows
   );
   assert.equal(
     versionRow.user_version,
-    11,
-    "schema 10 database must migrate to schema 11",
+    12,
+    "schema 10 database must migrate to the current schema",
   );
   assert.ok(
     grantRow !== null &&
@@ -3244,6 +3281,7 @@ test("schema 9 preferences survive the schema 10 upgrade: hidden tags kept, orde
     ALTER TABLE accounts_schema9 RENAME TO accounts;
     CREATE UNIQUE INDEX accounts_single_owner ON accounts (is_owner)
       WHERE is_owner = 1;
+    DROP TABLE IF EXISTS discover_cache;
     PRAGMA user_version = 9;
   `);
   raw.close();

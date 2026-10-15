@@ -15,6 +15,16 @@ import { rmTempDir } from "./setup.ts";
 import { Buffer } from "node:buffer";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resetMetaCache } from "../src/server/providers.ts";
+import {
+  DISCOVER_CACHE_TTL_MS,
+  releasesCacheKey,
+} from "../src/server/discovery.ts";
+import {
+  clearDiscoverCache,
+  getDiscoverCache,
+  getConfig,
+  putDiscoverCache,
+} from "../src/server/storage.ts";
 import { resetSweepCache } from "../src/server/jellyfin.ts";
 import { resetUpdateCache } from "../src/server/update.ts";
 import { resetLoginBuckets } from "../src/server/security.ts";
@@ -3940,9 +3950,41 @@ interface FixtureCategory {
   error?: { code: string };
 }
 
-async function shelvesOf(res: Response): Promise<FixtureShelf[]> {
+async function shelvesOf(
+  res: Response,
+  cookie: string,
+): Promise<FixtureShelf[]> {
   const body = (await res.json()) as { shelves: FixtureShelf[] };
-  return body.shelves;
+  // The list endpoint answers with stubs (ids only); each shelf body comes
+  // from its own fetch, in stub order. A null shelf (an empty followed
+  // filmography) renders no rail, so it is skipped.
+  const shelves: FixtureShelf[] = [];
+  for (const stub of body.shelves) {
+    const shelfRes = await call("GET", `/api/discover/shelf?id=${stub.id}`, {
+      cookie,
+    });
+    assert.equal(shelfRes.status, 200, stub.id);
+    const shelfBody = (await shelfRes.json()) as {
+      shelf: FixtureShelf | null;
+    };
+    if (shelfBody.shelf !== null) shelves.push(shelfBody.shelf);
+  }
+  return shelves;
+}
+
+/** Mirrors discovery.ts's documented fingerprint shape so the cache tests
+ * can address the documented key; a mismatch fails the stale-entry test. */
+function discoverFingerprint(hiddenTags: unknown): string {
+  const stored = getConfig()?.providers;
+  // credential() semantics: stored first (?? — an empty stored string means
+  // unconfigured), env fallback.
+  const tpdb = stored?.tpdbApiToken ?? process.env.TPDB_API_TOKEN;
+  const stashdb = stored?.stashdbApiKey ?? process.env.STASHDB_API_KEY;
+  return JSON.stringify([
+    hiddenTags,
+    typeof tpdb === "string" && tpdb.trim() !== "",
+    typeof stashdb === "string" && stashdb.trim() !== "",
+  ]);
 }
 
 async function searchOf(res: Response): Promise<{
@@ -3960,7 +4002,7 @@ test("discover: mixed new releases, honest trending, facets, grants, not-configu
 
   const ok = await call("GET", "/api/discover", { cookie: member });
   assert.equal(ok.status, 200);
-  const shelves = await shelvesOf(ok);
+  const shelves = await shelvesOf(ok, member);
   // Mixed new releases, trending, then library/requests, then the two
   // unified facet shelves. This account follows nobody, so no
   // followed-titles rail exists (proven below via /api/follows).
@@ -4151,12 +4193,13 @@ test("discover: mixed new releases, honest trending, facets, grants, not-configu
   // visible per-source warning — a degraded page, never an error page and
   // never a quiet success. First-contact: the earlier discover cached these
   // shelves.
+  clearDiscoverCache();
   resetMetaCache();
   tpdbFx.fail = 1;
   const outage = await call("GET", "/api/discover", { cookie: member });
   assert.equal(outage.status, 200, "shelf failure must not fail the page");
   const outById = new Map(
-    (await shelvesOf(outage)).map((shelf) => [shelf.id, shelf]),
+    (await shelvesOf(outage, member)).map((shelf) => [shelf.id, shelf]),
   );
   const outNew = outById.get("new-releases");
   assert.equal(outNew?.error, undefined, "partial failure is not an error");
@@ -4187,6 +4230,7 @@ test("discover: mixed new releases, honest trending, facets, grants, not-configu
   // that could read as a quiet success. Fail deep rather than counting
   // calls: a page is truly source-less only when every read on both sides
   // dies, however many each side legitimately issues.
+  clearDiscoverCache();
   resetMetaCache();
   tpdbFx.fail = 5;
   stashdbFx.fail = 5;
@@ -4194,7 +4238,7 @@ test("discover: mixed new releases, honest trending, facets, grants, not-configu
     const bothDown = await call("GET", "/api/discover", { cookie: member });
     assert.equal(bothDown.status, 200, "shelf failure must not fail the page");
     const bothById = new Map(
-      (await shelvesOf(bothDown)).map((shelf) => [shelf.id, shelf]),
+      (await shelvesOf(bothDown, member)).map((shelf) => [shelf.id, shelf]),
     );
     for (const id of ["new-releases", "trending", "studios", "genres"]) {
       const shelf = bothById.get(id);
@@ -4213,13 +4257,16 @@ test("discover: mixed new releases, honest trending, facets, grants, not-configu
   // tiles, never invented links and never an empty list that could read as
   // a quiet success.
   const key = process.env.STASHDB_API_KEY;
+  clearDiscoverCache();
   delete process.env.STASHDB_API_KEY;
   const unconfigured = await call("GET", "/api/discover", { cookie: member });
+  // The list is stubs only: the shelf bodies — and their provider reads —
+  // come from the per-shelf fetches, so the unconfigured window must stay
+  // open until those have run.
+  const unShelves = await shelvesOf(unconfigured, member);
   process.env.STASHDB_API_KEY = key;
   assert.equal(unconfigured.status, 200);
-  const unById = new Map(
-    (await shelvesOf(unconfigured)).map((shelf) => [shelf.id, shelf]),
-  );
+  const unById = new Map(unShelves.map((shelf) => [shelf.id, shelf]));
   const unTrending = unById.get("trending");
   assert.equal(unTrending?.error?.code, "provider_not_configured");
   assert.equal(unTrending?.items, undefined);
@@ -4256,7 +4303,9 @@ test("discover rails hold three pages and preview the next four past the cap", a
   // A pool past the rail cap: the rail keeps SHELF_ITEMS entries and the
   // See More card previews exactly the next four — while shelves whose
   // source has nothing past the rail omit `more` entirely (never an empty
-  // array pretending a preview exists).
+  // array pretending a preview exists). Both cache layers start cold: the
+  // injected pool must reach the shelves, not a cached candidate list.
+  clearDiscoverCache();
   resetMetaCache();
   const extraId = (prefix: string, n: number) =>
     `${prefix}-0000-0000-0000-${String(n).padStart(12, "0")}`;
@@ -4290,7 +4339,7 @@ test("discover rails hold three pages and preview the next four past the cap", a
     const ok = await call("GET", "/api/discover", { cookie: member });
     assert.equal(ok.status, 200);
     const byId = new Map(
-      (await shelvesOf(ok)).map((shelf) => [shelf.id, shelf]),
+      (await shelvesOf(ok, member)).map((shelf) => [shelf.id, shelf]),
     );
     for (const id of ["new-releases", "trending"]) {
       const shelf = byId.get(id);
@@ -4333,6 +4382,139 @@ test("discover rails hold three pages and preview the next four past the cap", a
   } finally {
     extraTpdbMovies = [];
     extraStashScenes = [];
+  }
+});
+
+test("discover stubs carry no items and follow the presence rules", async () => {
+  assert.equal((await call("GET", "/api/discover")).status, 401);
+  const res = await call("GET", "/api/discover", { cookie: member });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { shelves: Record<string, unknown>[] };
+  for (const stub of body.shelves) {
+    assert.equal("items" in stub, false, String(stub.id));
+    assert.equal("errors" in stub, false, String(stub.id));
+    assert.equal("error" in stub, false, String(stub.id));
+  }
+  // Registry order; this account follows nobody, so no followed-titles
+  // stub exists.
+  assert.deepEqual(
+    body.shelves.map((stub) => stub.id),
+    [
+      "new-releases",
+      "trending",
+      "jellyfin-recent",
+      "velvarr-requests",
+      "studios",
+      "genres",
+    ],
+  );
+});
+
+test("the shelf endpoint 404s unknown, missing, and not-present ids as unknown_shelf", async () => {
+  const nope = await call("GET", "/api/discover/shelf?id=nope", {
+    cookie: member,
+  });
+  assert.equal(nope.status, 404);
+  assert.equal((await errorShape(nope)).code, "unknown_shelf");
+  const missing = await call("GET", "/api/discover/shelf", { cookie: member });
+  assert.equal(missing.status, 404);
+  await errorShape(missing);
+  // No follows on this account: the followed rail is not present at all.
+  const unfollowed = await call(
+    "GET",
+    "/api/discover/shelf?id=followed-titles",
+    { cookie: member },
+  );
+  assert.equal(unfollowed.status, 404);
+  assert.equal((await errorShape(unfollowed)).code, "unknown_shelf");
+});
+
+test("the discovery cache serves fresh hits warm and rebuilds stale entries", async () => {
+  // Both layers must start cold: providers.ts's in-process metaCache sits
+  // UNDER the discover cache, and a warm metaCache entry would skip the
+  // upstream fixture entirely.
+  clearDiscoverCache();
+  resetMetaCache();
+  const before = tpdbFx.calls;
+  const first = await call("GET", "/api/discover/shelf?id=new-releases", {
+    cookie: member,
+  });
+  assert.equal(first.status, 200);
+  const afterFirst = tpdbFx.calls;
+  assert.ok(afterFirst > before, "a cold build fetches upstream");
+  const second = await call("GET", "/api/discover/shelf?id=new-releases", {
+    cookie: member,
+  });
+  assert.equal(second.status, 200);
+  assert.equal(tpdbFx.calls, afterFirst, "a fresh hit skips upstream");
+
+  // Age the entry past the TTL; the next read rebuilds. The key uses the
+  // documented fingerprint shape (hiddenTags + provider configured-ness).
+  const prefs = await call("GET", "/api/me/preferences", { cookie: member });
+  const prefsBody = (await prefs.json()) as { hiddenTags: unknown[] };
+  const cacheKey = releasesCacheKey(
+    new Date().toISOString().slice(0, 10),
+    discoverFingerprint(prefsBody.hiddenTags),
+  );
+  const entry = getDiscoverCache(cacheKey);
+  assert.ok(entry, "the shelf read populated the documented cache key");
+  putDiscoverCache(
+    cacheKey,
+    entry!.payload,
+    Date.now() - DISCOVER_CACHE_TTL_MS - 1000,
+  );
+  // The cold build re-warmed the metaCache; drop it again so the aged
+  // entry's rebuild genuinely reaches the upstream fixture.
+  resetMetaCache();
+  const third = await call("GET", "/api/discover/shelf?id=new-releases", {
+    cookie: member,
+  });
+  assert.equal(third.status, 200);
+  assert.ok(tpdbFx.calls > afterFirst, "a stale entry rebuilds upstream");
+  clearDiscoverCache();
+});
+
+test("a followed rail whose filmography is fully hidden answers a null shelf", async () => {
+  const hidden = await call("PATCH", "/api/me/preferences", {
+    cookie: member,
+    body: { hiddenTags: [{ name: "Fixture Tag A", tpdb: TAG_A }] },
+  });
+  assert.equal(hidden.status, 200);
+  const follow = await call("POST", "/api/follows", {
+    cookie: member,
+    body: {
+      performer: {
+        provider: "tpdb",
+        kind: "performer",
+        id: TPDB_PERFORMER,
+      },
+      name: "Fixture Performer",
+    },
+  });
+  assert.equal(follow.status, 201);
+  try {
+    // Every title the rail could carry is hidden: the stub stays, the shelf
+    // itself is null.
+    clearDiscoverCache();
+    const res = await call("GET", "/api/discover/shelf?id=followed-titles", {
+      cookie: member,
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { shelf: unknown };
+    assert.equal(body.shelf, null);
+  } finally {
+    clearDiscoverCache();
+    const unfollowed = await call(
+      "DELETE",
+      `/api/follows/tpdb/${TPDB_PERFORMER}`,
+      { cookie: member },
+    );
+    assert.equal(unfollowed.status, 204);
+    const restored = await call("PATCH", "/api/me/preferences", {
+      cookie: member,
+      body: { hiddenTags: [] },
+    });
+    assert.equal(restored.status, 200);
   }
 });
 
@@ -5769,7 +5951,7 @@ test("discover appends ONE followed rail across providers and isolates a provide
   // member2 follows one TPDB and one StashDB performer (from the tests above).
   const ok = await call("GET", "/api/discover", { cookie: member2 });
   assert.equal(ok.status, 200);
-  const shelves = await shelvesOf(ok);
+  const shelves = await shelvesOf(ok, member2);
   assert.deepEqual(
     shelves.map((shelf) => shelf.id),
     [
@@ -5813,10 +5995,11 @@ test("discover appends ONE followed rail across providers and isolates a provide
   // no longer lands on the intended calls; these two paths pin the isolation
   // contract while facet counterpart reads ride unaffected paths.
   tpdbFx.failPaths = ["/movies", `/performers/${TPDB_PERFORMER}/movies`];
+  clearDiscoverCache();
   try {
     const outage = await call("GET", "/api/discover", { cookie: member2 });
     assert.equal(outage.status, 200, "shelf failure must not fail the page");
-    const outShelves = await shelvesOf(outage);
+    const outShelves = await shelvesOf(outage, member2);
     const byId = new Map(outShelves.map((shelf) => [shelf.id, shelf]));
     // Both mixed rails keep their surviving StashDB titles beside a
     // tpdb-tagged warning, with no shelf-level error.
@@ -5874,10 +6057,11 @@ test("followed rail names the provider when one performer's filmography fails", 
   }
   resetMetaCache();
   tpdbFx.failPaths = [`/performers/${TPDB_PERFORMER}/movies`];
+  clearDiscoverCache();
   try {
     const page = await call("GET", "/api/discover", { cookie: member2 });
     assert.equal(page.status, 200, "shelf failure must not fail the page");
-    const shelf = (await shelvesOf(page)).find(
+    const shelf = (await shelvesOf(page, member2)).find(
       (s) => s.id === "followed-titles",
     );
     assert.ok(shelf, "rail exists");
@@ -5901,12 +6085,13 @@ test("followed rail names the provider when one performer's filmography fails", 
     });
     assert.equal(hidden.status, 200);
     try {
+      clearDiscoverCache();
       resetMetaCache();
       const hiddenPage = await call("GET", "/api/discover", {
         cookie: member2,
       });
       assert.equal(hiddenPage.status, 200);
-      const hiddenShelf = (await shelvesOf(hiddenPage)).find(
+      const hiddenShelf = (await shelvesOf(hiddenPage, member2)).find(
         (s) => s.id === "followed-titles",
       );
       assert.ok(hiddenShelf, "the error-only rail still renders");
@@ -5926,10 +6111,11 @@ test("followed rail names the provider when one performer's filmography fails", 
   }
 
   // All pages answer: no warning at all.
+  clearDiscoverCache();
   resetMetaCache();
   const allOk = await call("GET", "/api/discover", { cookie: member2 });
   assert.equal(allOk.status, 200);
-  const okShelf = (await shelvesOf(allOk)).find(
+  const okShelf = (await shelvesOf(allOk, member2)).find(
     (s) => s.id === "followed-titles",
   );
   assert.equal(okShelf?.error, undefined);
@@ -7077,7 +7263,7 @@ test("discover honors a personal shelf order; contents, errors, and other accoun
       cookie: member2,
     });
     assert.equal(otherBefore.status, 200);
-    const otherShelvesBefore = (await shelvesOf(otherBefore)).map(
+    const otherShelvesBefore = (await shelvesOf(otherBefore, member2)).map(
       (shelf) => shelf.id,
     );
     const otherPrefsBefore = await call("GET", "/api/me/preferences", {
@@ -7110,7 +7296,7 @@ test("discover honors a personal shelf order; contents, errors, and other accoun
     // only — no fake followed-titles shelf appears, and hiddenTags stays.
     const page = await call("GET", "/api/discover", { cookie: member });
     assert.equal(page.status, 200);
-    const shelves = await shelvesOf(page);
+    const shelves = await shelvesOf(page, member);
     assert.deepEqual(
       shelves.map((shelf) => shelf.id),
       custom.filter((id) => id !== "followed-titles"),
@@ -7138,7 +7324,7 @@ test("discover honors a personal shelf order; contents, errors, and other accoun
     const other = await call("GET", "/api/discover", { cookie: member2 });
     assert.equal(other.status, 200);
     assert.deepEqual(
-      (await shelvesOf(other)).map((shelf) => shelf.id),
+      (await shelvesOf(other, member2)).map((shelf) => shelf.id),
       otherShelvesBefore,
     );
     const otherPrefs = await call("GET", "/api/me/preferences", {
@@ -7163,7 +7349,7 @@ test("discover honors a personal shelf order; contents, errors, and other accoun
     try {
       const withRail = await call("GET", "/api/discover", { cookie: member });
       assert.deepEqual(
-        (await shelvesOf(withRail)).map((shelf) => shelf.id),
+        (await shelvesOf(withRail, member)).map((shelf) => shelf.id),
         custom,
       );
     } finally {
@@ -7209,7 +7395,7 @@ test("discover honors a personal shelf order; contents, errors, and other accoun
     // not hidden-tag filtered, so the active tags cannot shift it either).
     const moved = await call("GET", "/api/discover", { cookie: member });
     assert.equal(moved.status, 200);
-    const movedShelves = await shelvesOf(moved);
+    const movedShelves = await shelvesOf(moved, member);
     assert.deepEqual(
       movedShelves.map((shelf) => shelf.id),
       reorder.filter((id) => id !== "followed-titles"),
@@ -7241,12 +7427,13 @@ test("discover honors a personal shelf order; contents, errors, and other accoun
     // An errored shelf keeps its chosen placement: trending leads even with
     // its only source unconfigured, and the failure rides the shelf itself.
     const key = process.env.STASHDB_API_KEY;
+    clearDiscoverCache();
     delete process.env.STASHDB_API_KEY;
     try {
       resetMetaCache();
       const outage = await call("GET", "/api/discover", { cookie: member });
       assert.equal(outage.status, 200);
-      const outShelves = await shelvesOf(outage);
+      const outShelves = await shelvesOf(outage, member);
       assert.equal(outShelves[0]?.id, "trending");
       assert.equal(outShelves[0]?.error?.code, "provider_not_configured");
       assert.equal(outShelves[0]?.items, undefined);
@@ -7584,7 +7771,7 @@ test("hidden tags filter discover, global search, and filmography — never enti
     // vanishes entirely: every title it could carry is hidden.
     const page = await call("GET", "/api/discover", { cookie: member });
     assert.equal(page.status, 200);
-    const shelves = await shelvesOf(page);
+    const shelves = await shelvesOf(page, member);
     const byId = new Map(shelves.map((shelf) => [shelf.id, shelf]));
     for (const item of byId.get("new-releases")?.items ?? []) {
       assert.notEqual(refOf(item)?.id, TPDB_MOVIE);
@@ -7663,6 +7850,7 @@ test("hidden tags filter discover, global search, and filmography — never enti
       "the hidden-tag filter is personal, never global",
     );
   } finally {
+    clearDiscoverCache();
     const unfollowed = await call(
       "DELETE",
       `/api/follows/tpdb/${TPDB_PERFORMER}`,
@@ -7690,13 +7878,14 @@ test("hidden tag families: a whole-word label hides longer-tagged titles on ever
   assert.equal(saved.status, 200);
   try {
     resetMetaCache();
+    clearDiscoverCache();
 
     // Discover: every TPDB movie leaves the mixed rail — under exact-only
     // matching the "Fixture Tag C" row would survive — and the StashDB
     // side still renders.
     const discover = await call("GET", "/api/discover", { cookie: member });
     assert.equal(discover.status, 200);
-    const shelves = await shelvesOf(discover);
+    const shelves = await shelvesOf(discover, member);
     const releaseRefs = (
       shelves.find((shelf) => shelf.id === "new-releases")?.items ?? []
     ).map(refOf);
@@ -7746,7 +7935,7 @@ test("hidden tag families: a whole-word label hides longer-tagged titles on ever
     });
     assert.equal(otherDiscover.status, 200);
     const otherRefs = (
-      (await shelvesOf(otherDiscover)).find(
+      (await shelvesOf(otherDiscover, member2)).find(
         (shelf) => shelf.id === "new-releases",
       )?.items ?? []
     ).map(refOf);

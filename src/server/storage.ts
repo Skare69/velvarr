@@ -41,7 +41,7 @@ import { DISCOVER_SHELVES, normalizeFacetName } from "../lib/contracts.ts";
 
 // Schema identity: application_id spells 'VLVR', user_version is the schema version.
 const APP_ID = 0x564c5652;
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 // ponytail: fixed 7-day session TTL; make it an env knob only if an operator asks.
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const BUSY_TIMEOUT_MS = 5000;
@@ -202,6 +202,10 @@ type Statements = {
   deletePerformerFollowsLinkedTo: StatementSync;
   getPreferences: StatementSync;
   updatePreferences: StatementSync;
+  getDiscoverCache: StatementSync;
+  putDiscoverCache: StatementSync;
+  pruneDiscoverCache: StatementSync;
+  clearDiscoverCache: StatementSync;
 };
 
 const MIGRATIONS: Record<number, string> = {
@@ -363,6 +367,13 @@ const MIGRATIONS: Record<number, string> = {
     DROP TABLE IF EXISTS removal_audit;
     DROP TABLE IF EXISTS removal_executions;
     DROP TABLE IF EXISTS removal_requests;
+  `,
+  12: `
+    CREATE TABLE discover_cache (
+      key TEXT PRIMARY KEY,
+      payload TEXT NOT NULL,
+      fetched_at INTEGER NOT NULL
+    );
   `,
 };
 
@@ -688,6 +699,16 @@ function S(): Statements {
       updatePreferences: d.prepare(
         "UPDATE accounts SET hidden_tags = ?, discover_order = ? WHERE id = ?",
       ),
+      getDiscoverCache: d.prepare(
+        "SELECT payload, fetched_at FROM discover_cache WHERE key = ?",
+      ),
+      putDiscoverCache: d.prepare(
+        "INSERT OR REPLACE INTO discover_cache (key, payload, fetched_at) VALUES (?, ?, ?)",
+      ),
+      pruneDiscoverCache: d.prepare(
+        "DELETE FROM discover_cache WHERE fetched_at < ?",
+      ),
+      clearDiscoverCache: d.prepare("DELETE FROM discover_cache"),
     };
   }
   return stmts;
@@ -1684,6 +1705,34 @@ export function listFollows(accountId: string): PerformerFollow[] {
   return follows.filter(
     (f) => f.linked !== null || !counterparts.has(key(f.reference)),
   );
+}
+
+/** Seerr-style shared upstream cache for provider-derived discover shelves
+ * (src/server/discovery.ts owns keys and TTL; storage only stores rows). */
+export function getDiscoverCache(
+  key: string,
+): { payload: string; fetchedAt: number } | undefined {
+  const row = S().getDiscoverCache.get(key) as
+    { payload: string; fetched_at: number } | undefined;
+  return row === undefined
+    ? undefined
+    : { payload: row.payload, fetchedAt: row.fetched_at };
+}
+
+export function putDiscoverCache(
+  key: string,
+  payload: string,
+  fetchedAt: number,
+): void {
+  S().putDiscoverCache.run(key, payload, fetchedAt);
+}
+
+export function pruneDiscoverCache(maxAgeMs: number): number {
+  return Number(S().pruneDiscoverCache.run(Date.now() - maxAgeMs).changes);
+}
+
+export function clearDiscoverCache(): void {
+  S().clearDiscoverCache.run();
 }
 
 export function listFollowsByProvider(

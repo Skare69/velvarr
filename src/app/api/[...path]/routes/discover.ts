@@ -5,6 +5,8 @@ import type {
   CatalogProvider,
   CatalogReference,
   CatalogTagSelection,
+  ContentPreferences,
+  DiscoverShelfId,
   FacetItem,
   Shelf,
   ShelfError,
@@ -15,8 +17,14 @@ import type {
 import { normalizeFacetName } from "../../../../lib/contracts.ts";
 import {
   getContentPreferences,
+  listFollows,
   listFollowsByProvider,
 } from "../../../../server/storage.ts";
+import {
+  cachedReleases,
+  cachedTrending,
+  cachedFollowed,
+} from "../../../../server/discovery.ts";
 import { AppError } from "../../../../server/http.ts";
 import { listRecentlyAddedItems } from "../../../../server/jellyfin.ts";
 import {
@@ -29,7 +37,6 @@ import {
 import {
   browseTitles,
   parseBrowseQuery,
-  searchVisibleCatalog,
   type BrowsePage,
 } from "../../../../server/browse.ts";
 import { isHiddenTitle } from "../../../../server/catalog-visibility.ts";
@@ -165,13 +172,7 @@ export async function followedShelf(
     } else errors.push(sourceError(provider, side.reason));
   });
   if (merged.length === 0 && errors.length === 0) return null;
-  const base = {
-    id: "followed-titles",
-    title: "From performers you follow",
-    source: "velvarr" as const,
-    kind: "catalog" as const,
-    browse: { view: "following", params: {} },
-  };
+  const base = FOLLOWED_SHELF_BASE;
   if (merged.length === 0) {
     // Every side the account actually follows failed, or a partial side's
     // survivors are all hidden: the error-only shape carries the collected
@@ -621,132 +622,111 @@ export async function discoveryFacets(
   return json({ kind, tiles, errors: page.errors });
 }
 
+// Discover wire split: GET /api/discover returns ordered STUBS only (id,
+// title, source, kind, description?, browse?) — no items, no errors, and no
+// upstream provider calls. GET /api/discover/shelf?id=… builds exactly the
+// one shelf discover() used to build for that id and returns
+// { shelf: Shelf | null }; null only for followed-titles with nothing to
+// show. Unknown or not-present ids fail with 404 unknown_shelf.
+type ShelfStub = Pick<Shelf, "id" | "title" | "source" | "kind"> &
+  Partial<Pick<Shelf, "description" | "browse">>;
+
 export async function discover(ctx: AuthContext): Promise<Response> {
-  // UTC server date: the shared "today" cutoff for the mixed New releases
-  // rail and its browse-all link.
+  const stubs = await shelfStubs(ctx);
+  return json({ shelves: stubs });
+}
+
+// The followed rail's shared identity: the stub list and followedShelf's
+// built shelf must carry the same title/browse, so both read this one base.
+const FOLLOWED_SHELF_BASE: ShelfStub = {
+  id: "followed-titles",
+  title: "From performers you follow",
+  source: "velvarr",
+  kind: "catalog",
+  browse: { view: "following", params: {} },
+};
+
+// One base per shelf id, keyed for both consumers: the stub list renders it
+// before the shelf loads, buildShelf spreads its items/errors onto it after
+// — a title or browse link can never drift between the two. new-releases
+// carries the shared UTC "today" cutoff, so the table is a function.
+function shelfBases(
+  today: string,
+): Record<Exclude<DiscoverShelfId, "followed-titles">, ShelfStub> {
+  return {
+    "new-releases": {
+      id: "new-releases",
+      title: "New releases",
+      description: "Newest TPDB movies and StashDB scenes",
+      source: "velvarr",
+      kind: "catalog",
+      browse: {
+        view: "titles",
+        params: {
+          type: "all",
+          sort: "recency",
+          direction: "desc",
+          date: today,
+          date_operation: "<=",
+        },
+      },
+    },
+    trending: {
+      id: "trending",
+      title: "Trending",
+      description: "Scene trends from StashDB",
+      source: "stashdb",
+      kind: "catalog",
+      browse: {
+        view: "titles",
+        params: { type: "scene", sort: "trending", direction: "desc" },
+      },
+    },
+    "jellyfin-recent": {
+      id: "jellyfin-recent",
+      title: "Recently added",
+      source: "jellyfin",
+      kind: "library",
+      browse: { view: "library", params: { sort: "dateAdded" } },
+    },
+    "velvarr-requests": {
+      id: "velvarr-requests",
+      title: "Recent requests",
+      source: "velvarr",
+      kind: "requests",
+      browse: { view: "requests", params: {} },
+    },
+    studios: {
+      id: "studios",
+      title: "Studios",
+      source: "velvarr",
+      kind: "facets",
+      browse: { view: "facets", params: { kind: "studios" } },
+    },
+    genres: {
+      id: "genres",
+      title: "Genres",
+      source: "velvarr",
+      kind: "facets",
+      browse: { view: "facets", params: { kind: "genres" } },
+    },
+  };
+}
+
+// Static per id plus today's UTC date: stubs never touch providers or
+// Jellyfin. Presence: followed-titles only when the account follows someone.
+export async function shelfStubs(ctx: AuthContext): Promise<ShelfStub[]> {
   const today = new Date().toISOString().slice(0, 10);
-  // One preferences read feeds both the hidden-tag filter and the shelf
-  // order; the shelves themselves assemble in registry order first.
-  const { hiddenTags, discoverOrder } = getContentPreferences(ctx.account.id);
-  // Built through the browse parser so the rail and its own browse link are
-  // provably the same query. Native provider filters carry the date bound;
-  // hidden tags apply before anything downstream is derived.
-  const releases = browseTitles(
-    parseBrowseQuery(
-      new URLSearchParams({
-        type: "all",
-        sort: "recency",
-        direction: "desc",
-        date: today,
-        date_operation: "<=",
-        page: "1",
-        perPage: String(SHELF_ITEMS + MORE_PREVIEWS),
-      }),
-    ),
-    hiddenTags,
-  );
-  const settled = Promise.allSettled([
-    releases,
-    // Trending is honestly a StashDB-only signal: TPDB publishes no
-    // trend data, so nothing pretends otherwise. Single source, so a
-    // failure is the shelf's own rejection.
-    searchVisibleCatalog(
-      {
-        provider: "stashdb",
-        kind: "scene",
-        sort: "trending",
-        direction: "desc",
-        page: 1,
-        perPage: SHELF_ITEMS + MORE_PREVIEWS,
-      },
-      hiddenTags,
-    ).then((page) => railOf(page.items, catalogPreview)),
-    listRecentlyAddedItems(
-      ctx.config,
-      ctx.token,
-      ctx.account,
-      SHELF_ITEMS + MORE_PREVIEWS,
-    ).then((items) =>
-      railOf(items, (it) => ({
-        name: it.name,
-        ...(it.image ? { imageUrl: it.image } : {}),
-      })),
-    ),
-    // storage is sync; defer so its failures settle like the rest. Capped
-    // like every other shelf: a bulk performer request can file a hundred
-    // intents at once, and a rail is not a list view. The rows carry the
-    // shared acquisition state so the rail's badge tells the truth.
-    Promise.resolve().then(() =>
-      railOf(listRequestItems(ctx), (r) => ({ media: r.media })),
-    ),
-  ]);
-  // The followed rail needs none of the shelves above and the facet rails
-  // need only New releases, so neither waits for the slower shelves.
-  // Appended only when this account follows someone (or a side failed): an
-  // account with no follows gets exactly the standard shelves.
-  const [[newReleases, trending, recentlyAdded, requests], facets, followed] =
-    await Promise.all([
-      settled,
-      Promise.allSettled([releases]).then(([r]) => facetShelves(r)),
-      followedShelf(ctx.account.id, hiddenTags),
-    ]);
-  const shelves: Shelf[] = [
-    browseShelf(
-      {
-        id: "new-releases",
-        title: "New releases",
-        description: "Newest TPDB movies and StashDB scenes",
-        source: "velvarr",
-        kind: "catalog",
-        browse: {
-          view: "titles",
-          params: {
-            type: "all",
-            sort: "recency",
-            direction: "desc",
-            date: today,
-            date_operation: "<=",
-          },
-        },
-      },
-      newReleases,
-    ),
-    shelfOf(
-      {
-        id: "trending",
-        title: "Trending",
-        description: "Scene trends from StashDB",
-        source: "stashdb",
-        kind: "catalog",
-        browse: {
-          view: "titles",
-          params: { type: "scene", sort: "trending", direction: "desc" },
-        },
-      },
-      trending,
-    ),
-    shelfOf(
-      {
-        id: "jellyfin-recent",
-        title: "Recently added",
-        source: "jellyfin",
-        kind: "library",
-        browse: { view: "library", params: { sort: "dateAdded" } },
-      },
-      recentlyAdded,
-    ),
-    shelfOf(
-      {
-        id: "velvarr-requests",
-        title: "Recent requests",
-        source: "velvarr",
-        kind: "requests",
-        browse: { view: "requests", params: {} },
-      },
-      requests,
-    ),
-    ...facets,
-    ...(followed === null ? [] : [followed]),
+  const { discoverOrder } = getContentPreferences(ctx.account.id);
+  const bases = shelfBases(today);
+  const stubs: ShelfStub[] = [
+    bases["new-releases"],
+    bases.trending,
+    bases["jellyfin-recent"],
+    bases["velvarr-requests"],
+    bases.studios,
+    bases.genres,
+    ...(listFollows(ctx.account.id).length > 0 ? [FOLLOWED_SHELF_BASE] : []),
   ];
   // Per-account order over the PRESENT shelves only: a shelf the account
   // cannot fill (no follows) stays absent — never a fake rail, and the
@@ -756,10 +736,104 @@ export async function discover(ctx: AuthContext): Promise<Response> {
   const rank = new Map<string, number>(
     discoverOrder.map((id, i) => [id, i] as const),
   );
-  shelves.sort(
+  stubs.sort(
     (a, b) => (rank.get(a.id) ?? rank.size) - (rank.get(b.id) ?? rank.size),
   );
-  return json({ shelves });
+  return stubs;
+}
+
+// One branch per shelf id; each returns exactly the shelf the old
+// single-request discover() built for that id (same items, errors, and
+// error semantics). Cached provider reads come from server/discovery.ts;
+// Jellyfin-recent and requests stay live (local NAS / local DB).
+export async function buildShelf(
+  id: DiscoverShelfId,
+  ctx: AuthContext,
+  prefs: ContentPreferences,
+  today: string,
+): Promise<Shelf | null> {
+  const { hiddenTags } = prefs;
+  // followedShelf builds its own shelf from the shared base above; null
+  // means an empty filmography (the rail disappears, as the stub list's
+  // presence rule anticipated).
+  if (id === "followed-titles") {
+    return cachedFollowed(ctx.account.id, hiddenTags);
+  }
+  const base = shelfBases(today)[id];
+  switch (id) {
+    case "new-releases":
+      return browseShelf(base, await cachedReleases(hiddenTags, today));
+    case "trending":
+      // Single source, so a failure is the shelf's own rejection — the
+      // settled-result shape preserves the old error semantics. The cache
+      // holds the raw candidates; the rail cap and See More preview apply
+      // per build.
+      return shelfOf(
+        base,
+        await Promise.allSettled([
+          Promise.resolve()
+            .then(() => cachedTrending(hiddenTags))
+            .then((items) => railOf(items, catalogPreview)),
+        ]).then((r) => r[0]!),
+      );
+    case "jellyfin-recent":
+      return shelfOf(
+        base,
+        await Promise.allSettled([
+          listRecentlyAddedItems(
+            ctx.config,
+            ctx.token,
+            ctx.account,
+            SHELF_ITEMS + MORE_PREVIEWS,
+          ).then((items) =>
+            railOf(items, (it) => ({
+              name: it.name,
+              ...(it.image ? { imageUrl: it.image } : {}),
+            })),
+          ),
+        ]).then((r) => r[0]!),
+      );
+    case "velvarr-requests":
+      // storage is sync; deferred so its failures settle like the rest.
+      return shelfOf(
+        base,
+        await Promise.allSettled([
+          Promise.resolve().then(() =>
+            railOf(listRequestItems(ctx), (r) => ({ media: r.media })),
+          ),
+        ]).then((r) => r[0]!),
+      );
+    case "studios":
+    case "genres": {
+      // facetShelves yields the error-only shelves when both sides of the
+      // browse page failed, preserving the old shape. Each facet rebuilds
+      // studio enrichment from the provider detail cache; acceptable —
+      // cachedReleases joins concurrent builds.
+      const shelves = await facetShelves(
+        await cachedReleases(hiddenTags, today),
+      );
+      return shelves.find((s) => s.id === id)!;
+    }
+  }
+}
+
+export async function discoverShelf(
+  request: Request,
+  ctx: AuthContext,
+): Promise<Response> {
+  const id = new URL(request.url).searchParams.get("id");
+  const present = await shelfStubs(ctx);
+  // The stub list only ever carries registry ids, so presence proves the
+  // cast; Shelf.id is a plain string on the wire.
+  const stub = present.find((s) => s.id === id);
+  if (id === null || stub === undefined) {
+    throw new AppError(404, "unknown_shelf", "Unknown discover shelf.");
+  }
+  const prefs = getContentPreferences(ctx.account.id);
+  const today = new Date().toISOString().slice(0, 10);
+  return json({
+    shelf: await buildShelf(id as DiscoverShelfId, ctx, prefs, today),
+  });
 }
 
 import { listRequestItems } from "./requests.ts";
@@ -771,6 +845,12 @@ export const routes: RouteDef[] = [
     segments: ["discover"],
     auth: "session",
     run: async (ctx) => discover(ctx),
+  },
+  {
+    method: "GET",
+    segments: ["discover", "shelf"],
+    auth: "session",
+    run: async (ctx, request) => discoverShelf(request, ctx),
   },
   {
     method: "GET",

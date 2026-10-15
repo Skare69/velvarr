@@ -25,6 +25,11 @@ export async function register(): Promise<void> {
     initializeStorage();
     recoverAbandonedWork();
     startAcquisitionLoop();
+    // Discovery warm loop: same pattern as the acquisition loop; no shutdown
+    // wiring — a killed mid-pass leaves at most a missing refresh, and the
+    // interval dies with process.exit.
+    const { startDiscoveryLoop } = await import("./server/discovery.ts");
+    startDiscoveryLoop();
     // SIGTERM (container stop) / SIGINT (ctrl-c): stop scheduling, give an
     // in-flight pass a bounded grace window, release claims, close storage.
     // once() per signal plus the coalescing inside shutdownAcquisition make
