@@ -583,49 +583,56 @@ export async function discover(ctx: AuthContext): Promise<Response> {
   // One preferences read feeds both the hidden-tag filter and the shelf
   // order; the shelves themselves assemble in registry order first.
   const { hiddenTags, discoverOrder } = getContentPreferences(ctx.account.id);
-  const [newReleases, trending, recentlyAdded, requests] =
-    await Promise.allSettled([
-      // Built through the browse parser so the rail and its own browse link
-      // are provably the same query. Native provider filters carry the date
-      // bound; hidden tags apply before anything downstream is derived.
-      browseTitles(
-        parseBrowseQuery(
-          new URLSearchParams({
-            type: "all",
-            sort: "recency",
-            direction: "desc",
-            date: today,
-            date_operation: "<=",
-            page: "1",
-            perPage: String(SHELF_ITEMS),
-          }),
-        ),
-        hiddenTags,
-      ),
-      // Trending is honestly a StashDB-only signal: TPDB publishes no
-      // trend data, so nothing pretends otherwise. Single source, so a
-      // failure is the shelf's own rejection.
-      searchVisibleCatalog(
-        {
-          provider: "stashdb",
-          kind: "scene",
-          sort: "trending",
-          direction: "desc",
-          page: 1,
-          perPage: SHELF_ITEMS,
-        },
-        hiddenTags,
-      ).then((page) => page.items),
-      listRecentlyAddedItems(ctx.config, ctx.token, ctx.account, SHELF_ITEMS),
-      // storage is sync; defer so its failures settle like the rest. Capped
-      // like every other shelf: a bulk performer request can file a hundred
-      // intents at once, and a rail is not a list view. The rows carry the
-      // shared acquisition state so the rail's badge tells the truth.
-      Promise.resolve().then(() => listRequestItems(ctx).slice(0, SHELF_ITEMS)),
-    ]);
+  // Built through the browse parser so the rail and its own browse link are
+  // provably the same query. Native provider filters carry the date bound;
+  // hidden tags apply before anything downstream is derived.
+  const releases = browseTitles(
+    parseBrowseQuery(
+      new URLSearchParams({
+        type: "all",
+        sort: "recency",
+        direction: "desc",
+        date: today,
+        date_operation: "<=",
+        page: "1",
+        perPage: String(SHELF_ITEMS),
+      }),
+    ),
+    hiddenTags,
+  );
+  const settled = Promise.allSettled([
+    releases,
+    // Trending is honestly a StashDB-only signal: TPDB publishes no
+    // trend data, so nothing pretends otherwise. Single source, so a
+    // failure is the shelf's own rejection.
+    searchVisibleCatalog(
+      {
+        provider: "stashdb",
+        kind: "scene",
+        sort: "trending",
+        direction: "desc",
+        page: 1,
+        perPage: SHELF_ITEMS,
+      },
+      hiddenTags,
+    ).then((page) => page.items),
+    listRecentlyAddedItems(ctx.config, ctx.token, ctx.account, SHELF_ITEMS),
+    // storage is sync; defer so its failures settle like the rest. Capped
+    // like every other shelf: a bulk performer request can file a hundred
+    // intents at once, and a rail is not a list view. The rows carry the
+    // shared acquisition state so the rail's badge tells the truth.
+    Promise.resolve().then(() => listRequestItems(ctx).slice(0, SHELF_ITEMS)),
+  ]);
+  // The followed rail needs none of the shelves above and the facet rails
+  // need only New releases, so neither waits for the slower shelves.
   // Appended only when this account follows someone (or a side failed): an
   // account with no follows gets exactly the standard shelves.
-  const followed = await followedShelf(ctx.account.id, hiddenTags);
+  const [[newReleases, trending, recentlyAdded, requests], facets, followed] =
+    await Promise.all([
+      settled,
+      Promise.allSettled([releases]).then(([r]) => facetShelves(r)),
+      followedShelf(ctx.account.id, hiddenTags),
+    ]);
   const shelves: Shelf[] = [
     browseShelf(
       {
@@ -681,7 +688,7 @@ export async function discover(ctx: AuthContext): Promise<Response> {
       },
       requests,
     ),
-    ...(await facetShelves(newReleases)),
+    ...facets,
     ...(followed === null ? [] : [followed]),
   ];
   // Per-account order over the PRESENT shelves only: a shelf the account

@@ -637,9 +637,13 @@ async function mergeStreams(
     // browse: keep pulling that stream until it yields a visible row or
     // genuinely runs out (a hard scan ceiling throws; a soft one ends the
     // stream with its named scan_ceiling error).
-    for (const s of streams) {
-      while (s.buffer.length === 0 && s.live) await s.fetch();
-    }
+    // Streams are independent (one per provider side), so they refill
+    // together: a mixed page waits for the slowest provider, not the sum.
+    await Promise.all(
+      streams.map(async (s) => {
+        while (s.buffer.length === 0 && s.live) await s.fetch();
+      }),
+    );
     const ready = streams.filter((s) => s.buffer.length > 0);
     if (ready.length === 0) break;
     // Unordered queries concatenate stably (TPDB movies first, then StashDB

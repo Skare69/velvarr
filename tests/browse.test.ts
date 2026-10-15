@@ -630,6 +630,50 @@ test("browse All merges movies and scenes by release recency with native AND inc
   );
 });
 
+// --- latency: provider sides fetch side by side ---
+
+test("browse All asks StashDB for scenes while TPDB is still answering movies", async () => {
+  const inner = scriptedUpstream({
+    tagRows: [],
+    moviePages: [
+      { rows: [tpdbRow(uuid(1), "Movie", "2024-01-01")], next: null, total: 1 },
+    ],
+    scenes: { count: 1, rows: [stashRow(uuid(3), "Scene", "2024-06-01")] },
+  });
+  const scenesAsked = Promise.withResolvers<void>();
+  await runBrowse(
+    (req, res, body) => {
+      const path = pathOf(req.url ?? "");
+      if (path === "/graphql" && body.includes("queryScenes")) {
+        scenesAsked.resolve();
+      }
+      if (path !== "/movies") return inner(req, res, body);
+      // The movie page answers only once StashDB has been asked. A merge
+      // that waits for TPDB before asking StashDB stalls here until the
+      // TPDB read times out, so the page loses the movie and names an error.
+      void scenesAsked.promise.then(() => inner(req, res, body));
+    },
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "all",
+          include: [],
+          exclude: [],
+          studioMode: "exact",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      assert.deepEqual(
+        page.items.map((d) => d.reference.id),
+        [uuid(3), uuid(1)],
+      );
+      assert.deepEqual(page.errors, []);
+    },
+  );
+});
+
 // --- missing counterpart disqualifies the source; never unfiltered ---
 
 test("an include without a resolvable StashDB id drops the scene source instead of running it unfiltered", async () => {
