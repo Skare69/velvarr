@@ -440,8 +440,8 @@ test("the trending build asks the provider for the trending scene page", async (
 });
 
 test("the followed cache key folds the account's follows into the key", async () => {
-  // An admitted account with one follow row: the key must carry the row's
-  // provider:id pair, not collapse to the zero-follow shape.
+  // An admitted account with two follow rows: the key must carry the rows'
+  // provider:id pairs, not collapse to the zero-follow shape.
   importAccounts([
     {
       id: "acct-follow",
@@ -462,23 +462,24 @@ test("the followed cache key folds the account's follows into the key", async ()
     {
       provider: "tpdb",
       kind: "performer",
-      id: "12341234-1234-4123-8123-123412341234",
+      id: "00000000-0000-4000-8000-000000000000",
     },
-    "Performer One",
+    "Performer Zero",
     null,
   );
-  // A second row whose id sorts before the first: storage returns
-  // newest-first, so inserting the smaller id last makes the SQL order
-  // differ from lexicographic order — exactly the disorder the key's
-  // defensive sort exists to normalize.
+  // A second row whose id sorts after the first: storage returns
+  // newest-first, so inserting the larger id last leaves the SQL order
+  // reversed against lexicographic order — exactly the disorder the key's
+  // defensive sort exists to normalize. (Small id last yields rows that are
+  // already sorted, and a dropped sort then survives.)
   followPerformer(
     "acct-follow",
     {
       provider: "tpdb",
       kind: "performer",
-      id: "00000000-0000-4000-8000-000000000000",
+      id: "12341234-1234-4123-8123-123412341234",
     },
-    "Performer Zero",
+    "Performer One",
     null,
   );
   const realFetch = globalThis.fetch;

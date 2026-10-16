@@ -53,16 +53,22 @@ const config = {
   // No `incremental` here: with the command runner a stale cache replayed
   // statuses from an older command (one replay reported decisions.ts at 0%
   // that the current suite kills completely). The honest cost is the full
-  // run: ~64 min at 2022 tested (2026-10-15, Linux worker, concurrency 8).
+  // run: ~56 min at 2027 tested (2026-10-16, Linux worker, concurrency 8).
   reporters: ["clear-text", "progress"],
   // stryker.log (cwd) captures the run including worker deaths, but its
   // per-mutant detail covers killed mutants only — the survived diffs are
   // console-only, so capture stdout when hunting survivors.
   fileLogLevel: "trace",
-  // break is the measured clean-run score (88.23, 2026-10-15, after
-  // judgment.ts and discovery.ts joined the mutate set and the ollama,
-  // judgment, related and discovery suites joined this command) floored to
-  // one decimal; a regression below it fails the run.
+  // break stays at the floor set when the score was measured at 88.23
+  // (2026-10-15, when judgment.ts and discovery.ts joined the mutate set
+  // and the ollama, judgment, related and discovery suites joined this
+  // command). It is deliberately not re-floored to each new measurement:
+  // the score drifts by ±1 mutant between runs (one exact-millisecond
+  // boundary mutant can flip either way), and a re-floored break would
+  // fail clean runs on that drift — which is how the 88.2 gate went red
+  // at v0.38.1. Current measured clean-run score: 88.70 (1794 killed,
+  // 4 timeout, 229 survived, 2027 tested, 2026-10-16, Linux worker,
+  // concurrency 8); a regression below break fails the run.
   // status.ts and browse-includes.ts are fully killed: the badge and
   // acquisition-line tests pin every status branch, the sorts suite pins
   // the capability table, and tests/browse.test.ts pins the include
@@ -79,8 +85,10 @@ const config = {
   // a returned boolean), src/server/update.ts's payload-guard chain (a
   // non-string tag_name/html_url or an || → && rewrite dies in the same
   // caught TypeError and the two error-message copy strings never surface),
-  // api-get.ts's FIFO-cap edges (has/clear/eviction
-  // conditionals asserted only loosely by the queue-order tests),
+  // api-get.ts's failure-path cache drop (the catch-path delete of a
+  // stale snapshot on a failed same-path reload) and its always-true
+  // eviction-guard branch (`oldest !== undefined`: the map is non-empty
+  // on that path),
   // and in the newest files: judgment.ts's client-cache rebuild
   // (a same-config rebuild is externally identical), the per-backend
   // failure-gate cap and its `<=` boundary (the cap needs 2000 distinct

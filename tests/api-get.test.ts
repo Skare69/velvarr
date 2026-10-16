@@ -69,6 +69,37 @@ test("an older late failure does not evict a newer cached response", async () =>
   assert.equal(cache.peek("p"), "fresh");
 });
 
+test("the FIFO cap evicts the oldest entry and a re-read moves a key to the end", async () => {
+  const cache = new ApiGetCache();
+  const CAP = 100; // must match ApiGetCache.CAP (private)
+  const fill = async (from: number, to: number) => {
+    for (let i = from; i < to; i++)
+      await cache.get(`p${i}`, () => Promise.resolve(i), false);
+  };
+
+  await fill(0, CAP);
+  assert.ok(cache.has("p0"), "at exactly CAP entries nothing is evicted yet");
+  await fill(CAP, CAP + 1); // p100 lands: size CAP+1 → the oldest (p0) goes
+  assert.equal(cache.has("p0"), false);
+  assert.ok(cache.has("p1"), "the rest of the entries stay cached");
+
+  // Re-reading p1 must move it to the end of the FIFO, so the next
+  // eviction takes p2, not the re-read p1.
+  await cache.get("p1", () => Promise.resolve("refreshed"), false);
+  await fill(CAP + 1, CAP + 2); // p101 lands: size CAP+1 → oldest goes
+  assert.ok(cache.has("p1"), "the re-read p1 survives the eviction");
+  assert.equal(cache.has("p2"), false, "the eviction took p2 instead");
+  assert.equal(cache.peek("p1"), "refreshed");
+});
+
+test("clear() drops cached entries, not just in-flight reads", async () => {
+  const cache = new ApiGetCache();
+  await cache.get("keep", () => Promise.resolve("v"), false);
+  assert.ok(cache.has("keep"));
+  cache.clear();
+  assert.equal(cache.has("keep"), false);
+});
+
 test("a response that lands after clear() is never cached", async () => {
   const cache = new ApiGetCache();
   const d = deferred<string>();
