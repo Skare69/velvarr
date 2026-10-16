@@ -185,9 +185,22 @@ test("acquisition statuses follow the facts the card displays", () => {
       progress: null,
     },
   });
+  // failed_permanent keeps the Failed filter: terminal, but still visible.
+  const failedPermanent = row({
+    decision: "approved",
+    acquisition: {
+      state: "failed_permanent",
+      lastError: "boom",
+      updatedAt: 2000,
+      observationStale: false,
+      monitored: true,
+      progress: null,
+    },
+  });
   const rows = [
     downloading,
     failed,
+    failedPermanent,
     imported,
     paused,
     pausedDownloading,
@@ -198,7 +211,7 @@ test("acquisition statuses follow the facts the card displays", () => {
   const only = (status: Parameters<typeof filterRequestRows>[2]) =>
     filterRequestRows(rows, "all", status, "recent").map((r) => r.id);
   assert.deepEqual(only("processing"), [downloading.id]);
-  assert.deepEqual(only("failed"), [failed.id]);
+  assert.deepEqual(only("failed"), [failed.id, failedPermanent.id]);
   assert.deepEqual(only("library"), [imported.id, importedUnmonitored.id]);
   assert.deepEqual(only("paused"), [
     paused.id,

@@ -60,6 +60,14 @@ test("acquisitionPhase: one precedence for pill, line, ladder and filters", () =
     "failed",
   );
   assert.equal(
+    acquisitionPhase({ state: "failed_permanent", monitored: false }),
+    "paused",
+  );
+  assert.equal(
+    acquisitionPhase({ state: "failed_permanent", monitored: true }),
+    "failed",
+  );
+  assert.equal(
     acquisitionPhase({ state: "monitoring", monitored: true }),
     null,
   );
@@ -226,6 +234,17 @@ test("acquisitionText: one line per state, on cards and catalog detail", () => {
     "Failed — HTTP 403 from Whisparr",
   );
   assert.equal(acquisitionText({ state: "failed", lastError: null }), "Failed");
+  assert.equal(
+    acquisitionText({
+      state: "failed_permanent",
+      lastError: "whisparr no longer has this identity",
+    }),
+    "Failed — whisparr no longer has this identity (will not be retried)",
+  );
+  assert.equal(
+    acquisitionText({ state: "failed_permanent", lastError: null }),
+    "Failed (will not be retried)",
+  );
   assert.equal(
     acquisitionText({ state: "blocked", lastError: null }),
     "Blocked — delivery is turned off",

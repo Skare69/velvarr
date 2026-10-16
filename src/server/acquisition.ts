@@ -150,14 +150,15 @@ async function dispatch(
     // proof this identity can never be delivered. Hold it like an outage so
     // reconciliation retries by exact identity once the fault clears.
     if (permanent !== null) {
-      // Definitive proof this identity can never be delivered
+      // Terminal — the row leaves SCHEDULABLE_STATES, so no Whisparr read
+      // ever again. Definitive proof this identity can never be delivered
       // (invalid_reference, identity_mismatch): a failure the requester can
       // read.
       storage.completeSubmission(
         record.id,
         claimToken,
         attemptToken,
-        "failed",
+        "failed_permanent",
         reasonOf(e),
       );
       summary.failed++;
@@ -363,8 +364,9 @@ async function observe(
   } else {
     // Proven upstream absence from a successful lookup (removed out of
     // band): an authoritative absence — facts cleared for callers, state
-    // and history intact. Never a blind re-add and never a deletion
-    // upstream.
+    // and history intact. Storage makes recordAbsence terminal (state
+    // failed_permanent, due_at NULL), so the row is never scheduled again.
+    // Never a blind re-add and never a deletion upstream.
     storage.recordAcquisitionObservation(
       record.id,
       { absent: true, reason: "whisparr no longer has this identity" },

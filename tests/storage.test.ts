@@ -1017,7 +1017,8 @@ test("v1 database migrates in place preserving config, accounts, sessions, and g
     raw.prepare("PRAGMA user_version").get() as { user_version: number }
   ).user_version;
   raw.close();
-  assert.equal(version, 12, "v1 database must migrate to the current schema");
+  // Schema 13 admits the terminal failed_permanent acquisition state.
+  assert.equal(version, 13, "v1 database must migrate to the current schema");
   // A v1 database never contained the removal tables (current migration 5
   // creates none), so nothing here can assert about them; the schema-10 test
   // below owns the claim that migration 11 drops them. Migration 12 is a
@@ -1239,7 +1240,7 @@ test("a schema-10 database migrates to 11: every removal object is dropped, rows
   );
   assert.equal(
     versionRow.user_version,
-    12,
+    13,
     "schema 10 database must migrate to the current schema",
   );
   assert.ok(
@@ -2187,7 +2188,10 @@ test("observations update changed facts; a proven absence is distinct from an ou
   assert.equal(absent.whisparrId, null);
   assert.equal(absent.whisparrPath, null);
   assert.equal(absent.whisparrTitle, null);
-  assert.equal(absent.state, "downloading", "absence keeps the recorded state");
+  // VELV-18: a proven absence is terminal — the row becomes failed_permanent
+  // whatever it was, so an identity Whisparr dropped costs no more reads.
+  assert.equal(absent.state, "failed_permanent", "absence is terminal");
+  assert.equal(absent.dueAt, null, "terminal rows are never scheduled");
   assert.equal(
     absent.lastObservedAt,
     healed.lastObservedAt,
@@ -2551,6 +2555,54 @@ test("a failed migration rolls back completely: version, schema, and every row s
     id: MOVIE.id,
   });
   assert.equal(catalog?.title, "Restore Target");
+});
+
+test("migration 13 admits failed_permanent and preserves acquisition rows", () => {
+  const dir = freshDir();
+  storage.closeStorage();
+  for (const suffix of ["", "-wal", "-shm"])
+    rmSync(join(dir, `velvarr.sqlite${suffix}`), { force: true });
+
+  fabricateV3(dir);
+  // fabricateV3 seeds a duplicate identity on purpose (it powers the
+  // rollback test above); resolve it so migrations run through to 13.
+  const repair = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  repair.prepare("DELETE FROM catalog_identities WHERE id = 'cat-v3-2'").run();
+  repair.close();
+  assert.equal(storage.isInitialized(), true);
+
+  const raw = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  try {
+    const versionRow = raw.prepare("PRAGMA user_version").get() as {
+      user_version: number;
+    };
+    assert.equal(versionRow.user_version, 13);
+    // The fabricated row survives the rebuild intact.
+    const row = raw
+      .prepare(
+        "SELECT state, attempt_token FROM acquisitions WHERE id = 'acq-v3-1'",
+      )
+      .get() as { state: string; attempt_token: string };
+    assert.equal(row.state, "submitting");
+    assert.equal(row.attempt_token, "attempt-v3");
+    // The rebuilt CHECK admits the terminal state (distinct external_id:
+    // acq-v3-1 owns this instance's MOVIE identity).
+    raw
+      .prepare(
+        "INSERT INTO acquisitions (id, instance_id, provider, kind, external_id, state, created_at, updated_at) VALUES ('acq-v3-perm', 'instance-v3', 'tpdb', 'movie', ?, 'failed_permanent', 1, 1)",
+      )
+      .run("33333333-3333-4333-8833-333333333333");
+    // And still guards against nonsense.
+    assert.throws(() =>
+      raw
+        .prepare(
+          "INSERT INTO acquisitions (id, instance_id, provider, kind, external_id, state, created_at, updated_at) VALUES ('acq-v3-bad', 'instance-v3', 'tpdb', 'movie', ?, 'nonsense', 1, 1)",
+        )
+        .run("44444444-4444-4333-8833-444444444444"),
+    );
+  } finally {
+    raw.close();
+  }
 });
 
 test("backup restores into a fresh data directory with everything intact; a wrong key fails safely", () => {

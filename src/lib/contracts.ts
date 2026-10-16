@@ -439,6 +439,7 @@ export type AcquisitionState =
   | "downloading"
   | "imported"
   | "failed"
+  | "failed_permanent"
   | "blocked";
 
 /** Shared durable work for one resolved identity on one logical Whisparr
@@ -491,7 +492,8 @@ export type AcquisitionProgress = {
   timeleft: string | null;
 };
 
-export type AttemptOutcome = "accepted" | "failed" | "uncertain";
+export type AttemptOutcome =
+  "accepted" | "failed" | "failed_permanent" | "uncertain";
 
 /** Result of one external acquisition check: a real observed state, a proven
  * absence from a successful check (authoritative — recorded item facts are

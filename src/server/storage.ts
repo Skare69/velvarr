@@ -41,7 +41,7 @@ import { DISCOVER_SHELVES, normalizeFacetName } from "../lib/contracts.ts";
 
 // Schema identity: application_id spells 'VLVR', user_version is the schema version.
 const APP_ID = 0x564c5652;
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 // ponytail: fixed 7-day session TTL; make it an env knob only if an operator asks.
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const BUSY_TIMEOUT_MS = 5000;
@@ -183,6 +183,7 @@ type Statements = {
   completeSubmissionAccepted: StatementSync;
   completeSubmissionUncertain: StatementSync;
   completeSubmissionFailed: StatementSync;
+  completeSubmissionFailedPermanent: StatementSync;
   requeueBlocked: StatementSync;
   recordObservation: StatementSync;
   recordObservationError: StatementSync;
@@ -375,6 +376,53 @@ const MIGRATIONS: Record<number, string> = {
       payload TEXT NOT NULL,
       fetched_at INTEGER NOT NULL
     );
+  `,
+  13: `
+    -- Additive: SQLite cannot alter a CHECK constraint, so rebuild the table
+    -- with the terminal failed_permanent state admitted. Existing 'failed'
+    -- rows keep their state and recheck cadence; nothing is rewritten.
+    CREATE TABLE acquisitions_new (
+      id TEXT PRIMARY KEY,
+      instance_id TEXT NOT NULL,
+      provider TEXT NOT NULL CHECK (provider IN ('tpdb', 'stashdb')),
+      kind TEXT NOT NULL CHECK (kind IN ('movie', 'scene')),
+      external_id TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (
+        state IN (
+          'unsent', 'submitting', 'uncertain', 'monitoring',
+          'downloading', 'imported', 'failed', 'failed_permanent', 'blocked'
+        )
+      ),
+      claim_token TEXT,
+      attempt_token TEXT,
+      claimed_at INTEGER,
+      attempt_at INTEGER,
+      due_at INTEGER,
+      submitted_at INTEGER,
+      last_observed_at INTEGER,
+      last_error_at INTEGER,
+      last_error TEXT,
+      whisparr_id INTEGER,
+      whisparr_path TEXT,
+      whisparr_title TEXT,
+      whisparr_monitored INTEGER,
+      whisparr_progress INTEGER,
+      whisparr_timeleft TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    INSERT INTO acquisitions_new
+      SELECT id, instance_id, provider, kind, external_id, state, claim_token,
+             attempt_token, claimed_at, attempt_at, due_at, submitted_at,
+             last_observed_at, last_error_at, last_error, whisparr_id,
+             whisparr_path, whisparr_title, whisparr_monitored,
+             whisparr_progress, whisparr_timeleft, created_at, updated_at
+      FROM acquisitions;
+    DROP TABLE acquisitions;
+    ALTER TABLE acquisitions_new RENAME TO acquisitions;
+    CREATE UNIQUE INDEX acquisitions_identity
+      ON acquisitions (instance_id, provider, kind, external_id);
+    CREATE INDEX acquisitions_due ON acquisitions (due_at);
   `,
 };
 
@@ -629,6 +677,11 @@ function S(): Statements {
       completeSubmissionFailed: d.prepare(
         "UPDATE acquisitions SET state = 'failed', attempt_token = NULL, due_at = ?, last_error = ?, last_error_at = ?, updated_at = ? WHERE id = ? AND claim_token = ? AND attempt_token = ?",
       ),
+      // Terminal: due_at stays NULL, so listDueAcquisitions never re-lists
+      // the row and observe() never costs another Whisparr read.
+      completeSubmissionFailedPermanent: d.prepare(
+        "UPDATE acquisitions SET state = 'failed_permanent', attempt_token = NULL, due_at = NULL, last_error = ?, last_error_at = ?, updated_at = ? WHERE id = ? AND claim_token = ? AND attempt_token = ?",
+      ),
       requeueBlocked: d.prepare(
         "UPDATE acquisitions SET state = 'unsent', due_at = ?, updated_at = ? WHERE instance_id = ? AND state = 'blocked' AND claim_token IS NULL",
       ),
@@ -647,9 +700,10 @@ function S(): Statements {
       ),
       recordAbsence: d.prepare(
         `UPDATE acquisitions SET
+           state = 'failed_permanent',
            last_error = CASE WHEN state = 'failed' THEN last_error ELSE ? END,
            last_error_at = CASE WHEN state = 'failed' THEN last_error_at ELSE ? END,
-           due_at = ?,
+           due_at = NULL,
            whisparr_id = NULL, whisparr_path = NULL, whisparr_title = NULL,
            whisparr_monitored = NULL,
            whisparr_progress = NULL, whisparr_timeleft = NULL, updated_at = ?
@@ -2476,6 +2530,16 @@ export function completeSubmission(
         attemptToken,
       );
       break;
+    case "failed_permanent":
+      res = S().completeSubmissionFailedPermanent.run(
+        error ?? "submission failed permanently",
+        now,
+        now,
+        id,
+        claimToken,
+        attemptToken,
+      );
+      break;
     default:
       throw new AppError(
         400,
@@ -2560,18 +2624,10 @@ export function recordAcquisitionObservation(
     if (!nonemptyString(observation.reason, 2000)) {
       throw new AppError(400, "invalid_observation", "observation is invalid");
     }
-    // Proven absence from a successful lookup: the recorded facts are now
-    // known false, so they are cleared; state and lastObservedAt (the last
-    // real observation) stay, keeping this distinct from an unknown check.
-    res = S().recordAbsence.run(
-      observation.reason,
-      now,
-      now + RECHECK_DELAY_MS,
-      now,
-      id,
-      claim,
-      claim,
-    );
+    // Proven absence from a successful lookup is terminal: the recorded
+    // facts are known false, so they are cleared; the row becomes
+    // failed_permanent and is never scheduled again.
+    res = S().recordAbsence.run(observation.reason, now, now, id, claim, claim);
   } else {
     if (!nonemptyString(observation.reason, 2000)) {
       throw new AppError(400, "invalid_observation", "observation is invalid");

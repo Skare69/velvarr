@@ -430,12 +430,19 @@ test("a rejected add is failed once and never blind-retried", async () => {
   assert.equal(second.delivered, 0);
   assert.equal(second.absent, 1);
   assert.equal(postCount(), 1, "no blind retry of a failed add");
-  assert.equal(probe(id).state, "failed");
+  // VELV-18: the proven absence from that final recheck is terminal, and
+  // the recordAbsence CASE keeps the dispatch reason.
+  assert.equal(probe(id).state, "failed_permanent");
   assert.equal(
     probe(id).lastError,
     reason,
     "the absence recheck does not clobber the dispatch reason",
   );
+  assert.equal(probe(id).dueAt, null, "terminal rows are never scheduled");
+
+  // And after that the row is never listed again.
+  const third = await acquisition.runDueWork(later());
+  assert.equal(third.considered, 0);
 });
 
 test("an identity the lookup cannot resolve fails with a reason instead of looping as uncertain", async () => {
@@ -451,22 +458,26 @@ test("an identity the lookup cannot resolve fails with a reason instead of loopi
   assert.equal(first.failed, 1);
   assert.equal(first.uncertain, 0);
   assert.equal(postCount(), 0, "an unresolvable identity is never POSTed");
+  // VELV-18: a permanent outcome is terminal (failed_permanent, due_at
+  // NULL), so the row never re-enters the scheduler.
   const failed = probe(id);
-  assert.equal(failed.state, "failed");
+  assert.equal(failed.state, "failed_permanent");
   assert.ok(failed.lastError);
 
-  // A later pass rechecks by identity and keeps saying so, rather than
-  // drifting back to uncertain or blind-retrying the add.
+  // Terminal pin: pass 2 lists nothing, reads nothing, and the row keeps
+  // its reason with no due date.
   const second = await acquisition.runDueWork(later());
   assert.equal(second.uncertain, 0);
-  assert.equal(second.absent, 1);
+  assert.equal(second.considered, 0);
+  assert.equal(second.absent, 0);
   assert.equal(postCount(), 0);
-  assert.equal(probe(id).state, "failed");
+  assert.equal(probe(id).state, "failed_permanent");
   assert.equal(
     probe(id).lastError,
     failed.lastError,
-    "the absence recheck does not clobber the dispatch reason",
+    "the terminal state keeps the dispatch reason",
   );
+  assert.equal(probe(id).dueAt, null, "terminal rows are never scheduled");
 });
 
 test("a TPDB id the metadata source cannot resolve fails instead of looping as uncertain", async () => {
@@ -484,27 +495,24 @@ test("a TPDB id the metadata source cannot resolve fails instead of looping as u
   assert.equal(first.uncertain, 0);
   assert.equal(first.errors, 0);
   assert.equal(postCount(), 0, "an unresolvable identity is never POSTed");
+  // VELV-18: the permanent outcome is terminal, not a re-armed failed row.
   const failed = probe(id);
-  assert.equal(failed.state, "failed");
+  assert.equal(failed.state, "failed_permanent");
   assert.ok(failed.lastError);
 
-  // The loop is over: the recheck observes by identity only — one stored
-  // read — and never hits the metadata lookup again.
-  const before = calls.length;
+  // VELV-18: the loop is over entirely — pass 2 considers nothing at all,
+  // so neither the metadata lookup nor a stored read ever runs again.
   const second = await acquisition.runDueWork(later());
-  assert.equal(second.absent, 1);
+  assert.equal(second.considered, 0);
+  assert.equal(second.absent, 0);
   assert.equal(postCount(), 0);
-  assert.equal(
-    calls.slice(before).some((c) => c.path.includes("/movie/lookup")),
-    false,
-    "a failed row's recheck never hits the metadata lookup again",
-  );
-  assert.equal(probe(id).state, "failed");
+  assert.equal(probe(id).state, "failed_permanent");
   assert.equal(
     probe(id).lastError,
     failed.lastError,
-    "the absence recheck does not clobber the dispatch reason",
+    "the terminal state keeps the dispatch reason",
   );
+  assert.equal(probe(id).dueAt, null, "terminal rows are never scheduled");
 });
 
 test("a lookup 404 right after a working stored read fails as unresolvable", async () => {
@@ -519,7 +527,8 @@ test("a lookup 404 right after a working stored read fails as unresolvable", asy
   assert.equal(summary.uncertain, 0);
   assert.equal(postCount(), 0);
   const failed = probe(id);
-  assert.equal(failed.state, "failed");
+  // VELV-18: an unresolvable lookup is a permanent outcome, so terminal.
+  assert.equal(failed.state, "failed_permanent");
   assert.ok(failed.lastError);
 });
 
@@ -576,14 +585,18 @@ test("a proven absence clears the monitored flag", async () => {
   assert.equal(probe(id).whisparrMonitored, true);
 
   // The identity disappears: the next pass records a proven absence, which
-  // clears the recorded facts (including monitored) but keeps the state.
+  // clears the recorded facts (including monitored). VELV-18: absence is
+  // terminal — the row becomes failed_permanent and is never scheduled again.
   storedItems.delete(EXT_A);
   const absent = await acquisition.runDueWork(later());
   assert.equal(absent.absent, 1);
   const rec = probe(id);
   assert.equal(rec.whisparrMonitored, null);
-  assert.equal(rec.state, "monitoring");
+  assert.equal(rec.state, "failed_permanent");
   assert.equal(rec.lastError, "whisparr no longer has this identity");
+  assert.equal(rec.dueAt, null, "terminal rows are never scheduled");
+  const after = await acquisition.runDueWork(later());
+  assert.equal(after.considered, 0, "an absent identity costs no more reads");
 });
 
 test("an adopted item that already has a file is imported at once", async () => {
@@ -1126,12 +1139,17 @@ test("changed facts persist; a proven absence is authoritative while an outage i
   );
   assert.equal(rec.whisparrPath, null);
   assert.equal(rec.whisparrId, null);
-  assert.equal(rec.state, "monitoring", "absence keeps state and history");
+  // VELV-18: absence is terminal — failed_permanent, history (the last real
+  // observation) intact, never scheduled again.
+  assert.equal(rec.state, "failed_permanent", "absence is terminal");
+  assert.equal(rec.dueAt, null, "terminal rows are never scheduled");
   assert.equal(
     rec.lastObservedAt,
     observedAt,
     "absence never overwrites the last real observation",
   );
+  const after = await acquisition.runDueWork(later());
+  assert.equal(after.considered, 0, "an absent identity costs no more reads");
 });
 
 // --- shutdown ---------------------------------------------------------

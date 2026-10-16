@@ -31,7 +31,8 @@ export function acquisitionPhase(a: {
   if (a.state === "imported") return "library";
   if (a.monitored === false) return "paused";
   if (a.state === "downloading") return "processing";
-  if (a.state === "failed") return "failed";
+  // failed_permanent shows the same failed face everywhere; only the worker's scheduling differs (terminal, no recheck).
+  if (a.state === "failed" || a.state === "failed_permanent") return "failed";
   return null;
 }
 
@@ -97,6 +98,10 @@ export function acquisitionText(a: {
         : "Being reconciled — the last check was inconclusive";
     case "failed":
       return a.lastError ? `Failed — ${a.lastError}` : "Failed";
+    case "failed_permanent":
+      return a.lastError
+        ? `Failed — ${a.lastError} (will not be retried)`
+        : "Failed (will not be retried)";
     case "blocked":
       return "Blocked — delivery is turned off";
   }
