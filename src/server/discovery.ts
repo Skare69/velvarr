@@ -104,6 +104,7 @@ function followsFingerprint(accountId: string): string {
 async function readThrough<T>(
   key: string,
   build: () => Promise<T>,
+  cacheable: (value: T) => boolean = () => true,
 ): Promise<T> {
   const existing = inFlight.get(key);
   if (existing !== undefined) return existing as Promise<T>;
@@ -115,9 +116,14 @@ async function readThrough<T>(
     ) {
       return JSON.parse(hit.payload) as T;
     }
-    // A failed build propagates: never written, never served stale.
+    // A failed build propagates: never written, never served stale. A
+    // degraded build (source errors beside results) returns but is not
+    // written: the next miss rebuilds, so recovery lands on the next
+    // request instead of after a full TTL.
     const value = await build();
-    putDiscoverCache(key, JSON.stringify(value), Date.now());
+    if (cacheable(value)) {
+      putDiscoverCache(key, JSON.stringify(value), Date.now());
+    }
     return value;
   })();
   inFlight.set(key, pass);
@@ -156,6 +162,10 @@ export async function cachedReleases(
             ),
             hiddenTags,
           ),
+        // A partial page (one source down) is honest for this caller but
+        // poisoned as a cache entry: only error-free pages cache, so the
+        // rail rebuilds live and recovery is immediate.
+        (page) => page.errors.length === 0,
       ),
     };
   } catch (e) {
@@ -194,6 +204,12 @@ export async function cachedFollowed(
       fingerprint(hiddenTags),
     ),
     () => followedShelf(accountId, hiddenTags),
+    // A shelf carrying source errors (partial `errors` or the error-only
+    // shape) degrades live instead of pinning the outage for a TTL; null
+    // is an empty filmography, not a degradation.
+    (shelf) =>
+      shelf === null ||
+      (shelf.error === undefined && shelf.errors === undefined),
   );
 }
 

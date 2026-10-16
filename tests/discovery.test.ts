@@ -363,6 +363,92 @@ test("one hidden-tag set maps to one build across orderings and duplicates", asy
   }
 });
 
+test("a partial provider outage answers with errors but writes no cache row", async () => {
+  const realFetch = globalThis.fetch;
+  // StashDB fails, TPDB answers empty: the build fulfills with the dead
+  // side named in errors — the degraded shape the old code cached for a
+  // full TTL. resetMetaCache makes the build genuinely reach this stub.
+  resetMetaCache();
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input).includes("/graphql")) throw new Error("stashdb down");
+    return jsonReply({ data: [], links: {}, meta: {} });
+  }) as typeof fetch;
+  try {
+    await withEnv(
+      {
+        TPDB_API_TOKEN: TPDB_TOKEN,
+        STASHDB_API_KEY: STASH_TOKEN,
+        TPDB_BASE_URL: DISCARD,
+        STASHDB_BASE_URL: DISCARD,
+      },
+      async () => {
+        const today = "2026-10-16";
+        const settled = await cachedReleases([], today);
+        assert.ok(settled.status === "fulfilled");
+        assert.deepEqual(
+          settled.value.errors.map((e) => e.provider),
+          ["stashdb"],
+        );
+        assert.deepEqual(settled.value.items, []);
+        assert.equal(
+          getDiscoverCache(
+            releasesCacheKey(
+              today,
+              fingerprint([], { tpdb: TPDB_TOKEN, stashdb: STASH_TOKEN }),
+            ),
+          ),
+          undefined,
+          "a degraded page is returned but never written to discover_cache",
+        );
+
+        // Same contract on the followed rail: the stashdb follow's side
+        // fails, the shelf degrades with the named error, nothing caches.
+        resetMetaCache();
+        importAccounts([
+          {
+            id: "acct-partial",
+            name: "Partial",
+            isDisabled: false,
+            enableRemoteAccess: false,
+            enableMediaPlayback: false,
+            isAdministrator: false,
+          },
+        ]);
+        updateAccount("acct-partial", {
+          enabled: true,
+          role: "requester",
+          libraryIds: [],
+        });
+        followPerformer(
+          "acct-partial",
+          {
+            provider: "stashdb",
+            kind: "performer",
+            id: "22345678-1234-4123-8123-123412341234",
+          },
+          "Performer Two",
+          null,
+        );
+        const shelf = await cachedFollowed("acct-partial", []);
+        assert.ok(shelf !== null && shelf.error !== undefined);
+        assert.equal(shelf.error.code, "upstream_unavailable");
+        assert.equal(
+          getDiscoverCache(
+            followedKey(
+              "acct-partial",
+              fingerprint([], { tpdb: TPDB_TOKEN, stashdb: STASH_TOKEN }),
+            ),
+          ),
+          undefined,
+          "a degraded shelf is returned but never written to discover_cache",
+        );
+      },
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("the trending build returns the provider page items through the cache", async () => {
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL) => {

@@ -4204,37 +4204,43 @@ test("discover: mixed new releases, honest trending, facets, grants, not-configu
 
   // One source failing: the mixed rail keeps the survivor's titles beside a
   // visible per-source warning — a degraded page, never an error page and
-  // never a quiet success. First-contact: the earlier discover cached these
-  // shelves.
+  // never a quiet success. The outage holds for the whole phase (fail deep,
+  // like the both-sides phase below): a degraded page is no longer cached,
+  // so every shelf build re-runs it, and a counted failure would recover
+  // mid-phase.
   clearDiscoverCache();
   resetMetaCache();
-  tpdbFx.fail = 1;
-  const outage = await call("GET", "/api/discover", { cookie: member });
-  assert.equal(outage.status, 200, "shelf failure must not fail the page");
-  const outById = new Map(
-    (await shelvesOf(outage, member)).map((shelf) => [shelf.id, shelf]),
-  );
-  const outNew = outById.get("new-releases");
-  assert.equal(outNew?.error, undefined, "partial failure is not an error");
-  assert.ok((outNew?.items?.length ?? 0) > 0, "survivor side still renders");
-  for (const item of outNew?.items ?? []) {
-    assert.equal(refOf(item)?.provider, "stashdb", "survivor side only");
-  }
-  assert.equal(outNew?.errors?.length, 1);
-  assert.equal(outNew?.errors?.[0]?.provider, "tpdb");
-  assert.match(outNew?.errors?.[0]?.code ?? "", /unavailable/);
-  for (const id of ["trending", "jellyfin-recent", "velvarr-requests"]) {
-    const shelf = outById.get(id);
-    assert.equal(shelf?.error, undefined, id);
-    assert.ok((shelf?.items?.length ?? 0) > 0, id);
-  }
-  for (const id of ["studios", "genres"]) {
-    const shelf = outById.get(id);
-    assert.equal(shelf?.error, undefined, id);
-    // With the TPDB side down, every surviving tile is stash-side.
-    for (const tile of (shelf?.items ?? []) as FacetTile[]) {
-      assert.equal(tile.provider, "stashdb", `${id}:${tile.id}`);
+  tpdbFx.fail = 5;
+  try {
+    const outage = await call("GET", "/api/discover", { cookie: member });
+    assert.equal(outage.status, 200, "shelf failure must not fail the page");
+    const outById = new Map(
+      (await shelvesOf(outage, member)).map((shelf) => [shelf.id, shelf]),
+    );
+    const outNew = outById.get("new-releases");
+    assert.equal(outNew?.error, undefined, "partial failure is not an error");
+    assert.ok((outNew?.items?.length ?? 0) > 0, "survivor side still renders");
+    for (const item of outNew?.items ?? []) {
+      assert.equal(refOf(item)?.provider, "stashdb", "survivor side only");
     }
+    assert.equal(outNew?.errors?.length, 1);
+    assert.equal(outNew?.errors?.[0]?.provider, "tpdb");
+    assert.match(outNew?.errors?.[0]?.code ?? "", /unavailable/);
+    for (const id of ["trending", "jellyfin-recent", "velvarr-requests"]) {
+      const shelf = outById.get(id);
+      assert.equal(shelf?.error, undefined, id);
+      assert.ok((shelf?.items?.length ?? 0) > 0, id);
+    }
+    for (const id of ["studios", "genres"]) {
+      const shelf = outById.get(id);
+      assert.equal(shelf?.error, undefined, id);
+      // With the TPDB side down, every surviving tile is stash-side.
+      for (const tile of (shelf?.items ?? []) as FacetTile[]) {
+        assert.equal(tile.provider, "stashdb", `${id}:${tile.id}`);
+      }
+    }
+  } finally {
+    tpdbFx.fail = 0;
   }
 
   // Both sources failing: the mixed rail collapses to an error shelf, the
