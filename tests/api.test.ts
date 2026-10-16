@@ -1,6 +1,6 @@
 // API regression tests: privilege, CSRF, session, library denial, outage honesty.
 // Runs handlers directly against local fixture servers. No real network, no real providers.
-import { test, before, after } from "node:test";
+import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   createServer,
@@ -30,7 +30,12 @@ import { resetUpdateCache } from "../src/server/update.ts";
 import { resetLoginBuckets } from "../src/server/security.ts";
 import { countPendingApprovals } from "../src/lib/approvals.ts";
 import type { RouteDef } from "../src/app/api/[...path]/admission.ts";
-import { resetSessionCache } from "../src/app/api/[...path]/admission.ts";
+import {
+  RATE_BURST,
+  RATE_REFILL_PER_MINUTE,
+  resetRateBuckets,
+  resetSessionCache,
+} from "../src/app/api/[...path]/admission.ts";
 import { routes as authRoutes } from "../src/app/api/[...path]/routes/auth.ts";
 import { routes as requestRoutes } from "../src/app/api/[...path]/routes/requests.ts";
 import { routes as followRoutes } from "../src/app/api/[...path]/routes/follows.ts";
@@ -8426,4 +8431,44 @@ test("audit line encodes a hostile X-Forwarded-For value", async () => {
     !line.includes("ip=10.0.0.5 account="),
     "a forwarded value must not add raw fields to the line",
   );
+});
+
+// --- per-account rate budget (charged in dispatch, admission.ts) ---
+
+beforeEach(() => {
+  resetRateBuckets();
+});
+
+test("rate budget: a same-account flood of provider reads trips 429 rate_limited", async (t) => {
+  // Fake clock: the boundary is exact because no refill can land mid-flood.
+  t.mock.timers.enable({ apis: ["Date"] });
+  const path = `/api/availability/tpdb/movie/${TPDB_MOVIE}`;
+  for (let i = 0; i < RATE_BURST; i++) {
+    const res = await call("GET", path, { cookie: member });
+    assert.equal(res.status, 200, `burst request ${i + 1} must pass`);
+  }
+  const flooded = await call("GET", path, { cookie: member });
+  const error = await errorShape(flooded, 429);
+  assert.equal(error.code, "rate_limited");
+  // The budget is per account: the member's drained bucket never blocks
+  // another account's provider reads.
+  const other = await call("GET", path, { cookie: owner });
+  assert.equal(other.status, 200);
+});
+
+test("rate budget: the bucket refills with elapsed time, not only on restart", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const path = `/api/availability/tpdb/movie/${TPDB_MOVIE}`;
+  for (let i = 0; i <= RATE_BURST; i++) {
+    await call("GET", path, { cookie: member2 });
+  }
+  // Half a refill window grants exactly RATE_REFILL_PER_MINUTE / 2 tokens;
+  // the next request after them must find the bucket empty again.
+  t.mock.timers.tick(30_000);
+  for (let i = 0; i < RATE_REFILL_PER_MINUTE / 2; i++) {
+    const res = await call("GET", path, { cookie: member2 });
+    assert.equal(res.status, 200, `refilled request ${i + 1} must pass`);
+  }
+  const drained = await call("GET", path, { cookie: member2 });
+  await errorShape(drained, 429);
 });

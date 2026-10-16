@@ -4,7 +4,7 @@
 // the origin-CSRF gate runs here before matching, and matching is exact
 // (method + segment count + literal/:param), so no entry can shadow another.
 import type { AuthContext, RouteDef } from "./admission.ts";
-import { requireAdmin, requireSession } from "./admission.ts";
+import { chargeRateBudget, requireAdmin, requireSession } from "./admission.ts";
 import { guardMutation } from "../../../server/security.ts";
 import { AppError } from "../../../server/http.ts";
 import { json } from "./admission.ts";
@@ -104,6 +104,10 @@ async function dispatch(request: Request, method: string): Promise<Response> {
       def.auth === "admin"
         ? await requireAdmin(request)
         : await requireSession(request);
+    // The per-account rate budget is charged here, at the one dispatch point
+    // admission already funnels through, synchronously before the handler:
+    // a parallel burst cannot all pass on a stale token count.
+    chargeRateBudget(ctx.account.id);
     return await def.run(ctx, request, paramsOf(def, segments.slice(1)));
   } catch (err) {
     return errorResponse(err, method, new URL(request.url).pathname);

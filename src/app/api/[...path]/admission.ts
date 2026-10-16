@@ -149,6 +149,55 @@ export async function requireAdmin(request: Request): Promise<AuthContext> {
   return ctx;
 }
 
+// --- per-account rate budget ---
+// One household shares the TPDB/StashDB credentials: an unbounded loop of
+// provider reads from one member session (or a stolen one) can drain the
+// shared quota and starve discovery and search for every other account. A
+// token bucket per account id, charged at dispatch before the handler runs,
+// bounds the request rate; the providers' own throttles stay the only bound
+// inside one request (a single filtered browse may still fan out to its scan
+// ceiling). In-memory per process like every limiter here; a restart resets.
+export const RATE_BURST = 60;
+export const RATE_REFILL_PER_MINUTE = 30;
+const RATE_BUCKETS_CAP = 256;
+const rateBuckets = new Map<string, { tokens: number; at: number }>();
+
+/** Test hook: the buckets are module-global, so a flood test would otherwise
+ * leak a drained budget into every later test on the same account. */
+export function resetRateBuckets(): void {
+  rateBuckets.clear();
+}
+
+export function chargeRateBudget(accountId: string): void {
+  const now = Date.now();
+  let bucket = rateBuckets.get(accountId);
+  if (bucket) {
+    bucket.tokens = Math.min(
+      RATE_BURST,
+      // A wall-clock step backwards must not turn a full bucket negative.
+      Math.max(bucket.tokens, 0) +
+        ((now - bucket.at) / 60_000) * RATE_REFILL_PER_MINUTE,
+    );
+    bucket.at = now;
+  } else {
+    bucket = { tokens: RATE_BURST, at: now };
+  }
+  if (bucket.tokens < 1) {
+    throw new AppError(
+      429,
+      "rate_limited",
+      "Too many requests; slow down and try again shortly.",
+    );
+  }
+  bucket.tokens -= 1;
+  // Re-insert so the FIFO cap evicts idle accounts, never live ones.
+  rateBuckets.delete(accountId);
+  rateBuckets.set(accountId, bucket);
+  while (rateBuckets.size > RATE_BUCKETS_CAP) {
+    rateBuckets.delete(rateBuckets.keys().next().value!);
+  }
+}
+
 // The route declaration contract: admission is part of the route type, so a
 // new route cannot ship without declaring none|session|admin. `segments`
 // exclude the `/api` prefix; a segment starting with `:` captures one
