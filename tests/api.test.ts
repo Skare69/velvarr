@@ -1517,6 +1517,73 @@ test("setup inspect validates secret, authenticates, returns real selection", as
   assert.equal(JSON.stringify(body).includes(fx.adminKey), false);
 });
 
+test("setup secret guesses are bounded per source", async () => {
+  // The setup secret is the only credential on a not-yet-bootstrapped
+  // instance: without a charge before the comparison, every guess of
+  // VELVARR_SETUP_SECRET is free at network speed.
+  resetLoginBuckets();
+  const wrong = {
+    ...inspectBody(),
+    setupSecret: "wrong-secret-wrong-secret-wrong-secret!",
+  };
+  try {
+    for (let guess = 0; guess < 5; guess += 1) {
+      await errorShape(
+        await call("POST", "/api/setup/inspect", { body: { ...wrong } }),
+        403,
+      );
+    }
+    // Both secret-carrying routes share the per-source bucket: the sixth
+    // guess on either is refused 429 before the comparison runs.
+    await errorShape(
+      await call("POST", "/api/setup/inspect", { body: { ...wrong } }),
+      429,
+    );
+    const error = await errorShape(
+      await call("POST", "/api/setup", {
+        body: { ...wrong, libraryIds: [MOVIES_LIB] },
+      }),
+      429,
+    );
+    assert.equal(error.code, "too_many_attempts");
+  } finally {
+    resetLoginBuckets();
+  }
+});
+
+test("a correct setup secret works after the limiter window rolls over", async () => {
+  resetLoginBuckets();
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  const wrong = {
+    ...inspectBody(),
+    setupSecret: "wrong-secret-wrong-secret-wrong-secret!",
+  };
+  try {
+    for (let guess = 0; guess < 5; guess += 1) {
+      await errorShape(
+        await call("POST", "/api/setup/inspect", { body: { ...wrong } }),
+        403,
+      );
+    }
+    now += 5 * 60_000 + 1; // the login limiter's fixed window length
+    const ok = await call("POST", "/api/setup/inspect", {
+      body: inspectBody(),
+    });
+    assert.equal(ok.status, 200);
+    // A passed check refunds its slot, so the owner's own traffic never
+    // burns the budget: the next correct call inside the same window works.
+    const again = await call("POST", "/api/setup/inspect", {
+      body: inspectBody(),
+    });
+    assert.equal(again.status, 200);
+  } finally {
+    Date.now = realNow;
+    resetLoginBuckets();
+  }
+});
+
 test("setup commit is atomic, one-time, and race cannot overwrite config", async () => {
   const missingLibs = await call("POST", "/api/setup", {
     body: { ...inspectBody(), libraryIds: [] },

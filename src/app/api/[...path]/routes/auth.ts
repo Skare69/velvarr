@@ -118,6 +118,31 @@ async function guardedAuthentication<T>(
   }
 }
 
+// The setup secret is the only credential on a not-yet-bootstrapped
+// instance, so a wrong guess must cost what a wrong password costs: the
+// same login limiter, keyed by the reported source address instead of an
+// account name (no accounts exist before setup). The read-only gate
+// answers 429 when the per-source bucket is exhausted; the reservation
+// holds a per-source slot plus a global spray slot in the same synchronous
+// step, so parallel guesses cannot all pass uncounted. A wrong secret
+// keeps both charges; a correct one refunds them like any non-guess.
+function guardedSetupSecret(request: Request, check: () => void): void {
+  const ip = clientIp(request);
+  assertLoginAllowed(ip, false);
+  const refund = reserveLoginAttempt(ip, false);
+  try {
+    check();
+    refund();
+  } catch (e) {
+    if (e instanceof AppError && e.code === "setup_secret_invalid") {
+      console.warn(
+        `[auth] failed setup-secret attempt: ip=${JSON.stringify(ip)}`,
+      );
+    } else refund();
+    throw e;
+  }
+}
+
 // Authenticates the explicitly selected user, proves the admin integration key
 // enumerates the same server, and fetches real accessible libraries. Retains nothing.
 export async function verifySetupSelection(fields: SetupFields): Promise<{
@@ -161,7 +186,7 @@ export async function setupInspect(request: Request): Promise<Response> {
       "Setup is already complete.",
     );
   const body = await readJson(request);
-  verifySetupSecret(body.setupSecret);
+  guardedSetupSecret(request, () => verifySetupSecret(body.setupSecret));
   const fields = setupFields(body);
   const selection = await guardedAuthentication(
     fields.username,
@@ -183,7 +208,7 @@ export async function setupCommit(request: Request): Promise<Response> {
       "Setup is already complete.",
     );
   const body = await readJson(request);
-  verifySetupSecret(body.setupSecret);
+  guardedSetupSecret(request, () => verifySetupSecret(body.setupSecret));
   const fields = setupFields(body);
   const libraryIds = fieldIds(body, "libraryIds");
   if (libraryIds.length === 0)
