@@ -638,24 +638,23 @@ export const routes: RouteDef[] = [
     method: "GET",
     segments: ["catalog", "search"],
     auth: "session",
-    metered: true,
     run: async (ctx, request) => catalogSearch(request, ctx),
   },
   {
-    // Artwork proxy: upstream bytes are cached in server memory for a day
-    // and revalidated client-side, so it costs no provider API quota and
-    // stays uncharged — metering it would drain the bucket on every page
-    // load's poster fetches.
+    // Artwork proxy: a page load fires one request per tile and the bytes
+    // are cached in server memory for a day and revalidated client-side, so
+    // it never touches the provider APIs and stays exempt from the budget —
+    // charging it locked a member out after a few F5s.
     method: "GET",
     segments: ["catalog", "image"],
     auth: "session",
+    exemptFromBudget: true,
     run: async (_ctx, request) => catalogImage(request),
   },
   {
     method: "GET",
     segments: ["catalog", ":provider", ":kind", ":id", "related"],
     auth: "session",
-    metered: true,
     run: async (ctx, request, p) =>
       relatedRoute(ctx, p.provider!, p.kind!, p.id!, new URL(request.url)),
   },
@@ -663,7 +662,6 @@ export const routes: RouteDef[] = [
     method: "GET",
     segments: ["catalog", ":provider", ":kind", ":id", "tags"],
     auth: "session",
-    metered: true,
     run: async (ctx, _request, p) =>
       performerTagsRoute(ctx, p.provider!, p.kind!, p.id!),
   },
@@ -671,7 +669,6 @@ export const routes: RouteDef[] = [
     method: "GET",
     segments: ["catalog", ":provider", ":kind", ":id"],
     auth: "session",
-    metered: true,
     run: async (ctx, _request, p) =>
       catalogDetail(ctx, p.provider!, p.kind!, p.id!),
   },

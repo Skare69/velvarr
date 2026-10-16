@@ -525,6 +525,7 @@ export const routes: RouteDef[] = [
     method: "GET",
     segments: ["admin", "users", ":id", "avatar"],
     auth: "admin",
+    exemptFromBudget: true,
     run: async (ctx, _request, p) => userAvatar(ctx, p.id!),
   },
   {

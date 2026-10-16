@@ -386,6 +386,7 @@ export const routes: RouteDef[] = [
     method: "GET",
     segments: ["users", ":id", "avatar"],
     auth: "session",
+    exemptFromBudget: true,
     // Staff already see requester names, so they get the matching avatar;
     // requester-role accounts can only ever read their own — no enumeration.
     run: async (ctx, _request, p) => {
@@ -399,6 +400,7 @@ export const routes: RouteDef[] = [
     method: "GET",
     segments: ["me", "avatar"],
     auth: "session",
+    exemptFromBudget: true,
     // The id comes from the session, never the URL: an account can only ever
     // read its own avatar. ponytail: untagged URL, so a changed Jellyfin
     // avatar can take the hour's max-age to show; carry the tag on /api/me

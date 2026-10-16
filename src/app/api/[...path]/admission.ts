@@ -153,9 +153,10 @@ export async function requireAdmin(request: Request): Promise<AuthContext> {
 // One household shares the TPDB/StashDB credentials: an unbounded loop of
 // provider reads from one member session (or a stolen one) can drain the
 // shared quota and starve discovery and search for every other account. A
-// token bucket per account id, charged at dispatch on `metered` routes
-// (those that read the provider APIs) before the handler runs, bounds the
-// request rate; the providers' own throttles stay the only bound
+// token bucket per account id, charged at dispatch for every session and
+// admin request before the handler runs (artwork routes excepted, see
+// RouteDef), bounds the request rate; the providers' own throttles stay the
+// only bound
 // inside one request (a single filtered browse may still fan out to its scan
 // ceiling). In-memory per process like every limiter here; a restart resets.
 export const RATE_BURST = 60;
@@ -203,11 +204,13 @@ export function chargeRateBudget(accountId: string): void {
 // new route cannot ship without declaring none|session|admin. `segments`
 // exclude the `/api` prefix; a segment starting with `:` captures one
 // path parameter. Matching is exact (method + count + literal/:param), so no
-// entry can shadow another. `metered` marks routes whose handlers read the
-// shared TPDB/StashDB APIs: those are the only requests the per-account
-// budget bounds. Local reads (shell, requests, follows, library, artwork
-// proxies, admin) stay uncharged, so a normal page load with its dozens of
-// poster images can never drain the bucket.
+// entry can shadow another. Every session and admin route charges the
+// per-account budget at dispatch, as the audit installed it. The only
+// exception is `exemptFromBudget`: artwork routes (poster, still and avatar
+// bytes from Jellyfin or the memory-cached provider artwork proxy). A page
+// load fires one artwork request per tile — dozens — and they never touch
+// the shared provider APIs, so charging them locked a member out after a
+// few F5s. Anything that reads TPDB/StashDB stays charged.
 export type RouteDef = {
   method: "GET" | "POST" | "PATCH" | "DELETE";
   segments: string[];
@@ -217,5 +220,5 @@ export type RouteDef = {
     request: Request,
     params: Record<string, string>,
   ) => Promise<Response>;
-  metered?: boolean;
+  exemptFromBudget?: boolean;
 };

@@ -850,14 +850,12 @@ export const routes: RouteDef[] = [
     method: "GET",
     segments: ["discover", "shelf"],
     auth: "session",
-    metered: true,
     run: async (ctx, request) => discoverShelf(request, ctx),
   },
   {
     method: "GET",
     segments: ["discovery", "facets"],
     auth: "session",
-    metered: true,
     run: async (ctx, request) => discoveryFacets(request, ctx),
   },
 ];

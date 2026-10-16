@@ -8554,29 +8554,35 @@ test("rate budget: the bucket refills with elapsed time, not only on restart", a
   await errorShape(drained, 429);
 });
 
-test("rate budget: unmetered page-load traffic never drains the provider bucket", async (t) => {
-  // One discover page load fires the shell reads plus dozens of artwork and
-  // local fetches (the lazy carousels alone fetch a poster per tile). None
-  // of that spends the bucket, or a few F5s answer 429 rate_limited; only
-  // provider reads are metered.
+test("rate budget: artwork never charges the bucket; local reads still do", async (t) => {
+  // One discover page load fires a poster or avatar request per tile —
+  // dozens of artwork bytes that never touch the shared provider APIs.
+  // They must not spend the bucket, or a few F5s answer 429 rate_limited.
+  // Every other session request still charges the one shared bucket: the
+  // flood and refill tests above pin the audited boundary on provider
+  // reads, this one pins it on local reads too.
   t.mock.timers.enable({ apis: ["Date"] });
   for (let i = 0; i <= RATE_BURST; i += 1) {
-    const me = await call("GET", "/api/me", { cookie: member });
-    assert.equal(me.status, 200, `me request ${i + 1} must pass`);
-    const requests = await call("GET", "/api/requests", { cookie: member });
-    assert.equal(requests.status, 200, `requests request ${i + 1} must pass`);
+    const art = await call("GET", `/api/images/${ITEM_MOVIE}`, {
+      cookie: member,
+    });
+    assert.equal(art.status, 200, `artwork request ${i + 1} must pass`);
   }
-  // The bucket is untouched: the first metered read still passes.
-  const meteredPath = `/api/availability/tpdb/movie/${TPDB_MOVIE}`;
-  const first = await call("GET", meteredPath, { cookie: member });
+  const first = await call("GET", "/api/me", { cookie: member });
   assert.equal(first.status, 200);
-  // A flood of metered reads trips the limiter at the same boundary as
-  // before, so the audit bound holds on metered routes only.
   for (let i = 1; i < RATE_BURST; i += 1) {
-    const res = await call("GET", meteredPath, { cookie: member });
-    assert.equal(res.status, 200, `metered request ${i + 1} must pass`);
+    const res = await call("GET", "/api/me", { cookie: member });
+    assert.equal(res.status, 200, `charged request ${i + 1} must pass`);
   }
-  const flooded = await call("GET", meteredPath, { cookie: member });
-  const error = await errorShape(flooded, 429);
-  assert.equal(error.code, "rate_limited");
+  const floodedLocal = await call("GET", "/api/me", { cookie: member });
+  const localError = await errorShape(floodedLocal, 429);
+  assert.equal(localError.code, "rate_limited");
+  // The bucket is per account and spans routes: the drained local read
+  // refuses provider reads too, at the same boundary.
+  const across = await call(
+    "GET",
+    `/api/availability/tpdb/movie/${TPDB_MOVIE}`,
+    { cookie: member },
+  );
+  await errorShape(across, 429);
 });

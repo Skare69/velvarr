@@ -246,21 +246,18 @@ export const routes: RouteDef[] = [
     method: "GET",
     segments: ["browse"],
     auth: "session",
-    metered: true,
     run: async (ctx, request) => browseRoute(request, ctx),
   },
   {
     method: "GET",
     segments: ["browse", "tags"],
     auth: "session",
-    metered: true,
     run: async (_ctx, request) => browseTagsRoute(request),
   },
   {
     method: "GET",
     segments: ["availability", ":provider", ":kind", ":id"],
     auth: "session",
-    metered: true,
     run: async (ctx, _request, p) =>
       availability(ctx, p.provider!, p.kind!, p.id!),
   },
@@ -268,7 +265,6 @@ export const routes: RouteDef[] = [
     method: "GET",
     segments: ["search"],
     auth: "session",
-    metered: true,
     run: async (ctx, request) => globalSearch(request, ctx),
   },
 ];

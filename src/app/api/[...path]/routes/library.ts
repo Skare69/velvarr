@@ -165,6 +165,7 @@ export const routes: RouteDef[] = [
     method: "GET",
     segments: ["images", ":id"],
     auth: "session",
+    exemptFromBudget: true,
     run: async (ctx, request, p) => libraryImage(ctx, request, p.id!),
   },
 ];
