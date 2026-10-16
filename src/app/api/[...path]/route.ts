@@ -106,8 +106,10 @@ async function dispatch(request: Request, method: string): Promise<Response> {
         : await requireSession(request);
     // The per-account rate budget is charged here, at the one dispatch point
     // admission already funnels through, synchronously before the handler:
-    // a parallel burst cannot all pass on a stale token count.
-    chargeRateBudget(ctx.account.id);
+    // a parallel burst cannot all pass on a stale token count. Only metered
+    // routes pay: images and local reads must stay free, or one page load's
+    // poster fetches drain the bucket and F5 starts answering 429.
+    if (def.metered) chargeRateBudget(ctx.account.id);
     return await def.run(ctx, request, paramsOf(def, segments.slice(1)));
   } catch (err) {
     return errorResponse(err, method, new URL(request.url).pathname);

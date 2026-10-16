@@ -8553,3 +8553,30 @@ test("rate budget: the bucket refills with elapsed time, not only on restart", a
   const drained = await call("GET", path, { cookie: member2 });
   await errorShape(drained, 429);
 });
+
+test("rate budget: unmetered page-load traffic never drains the provider bucket", async (t) => {
+  // One discover page load fires the shell reads plus dozens of artwork and
+  // local fetches (the lazy carousels alone fetch a poster per tile). None
+  // of that spends the bucket, or a few F5s answer 429 rate_limited; only
+  // provider reads are metered.
+  t.mock.timers.enable({ apis: ["Date"] });
+  for (let i = 0; i <= RATE_BURST; i += 1) {
+    const me = await call("GET", "/api/me", { cookie: member });
+    assert.equal(me.status, 200, `me request ${i + 1} must pass`);
+    const requests = await call("GET", "/api/requests", { cookie: member });
+    assert.equal(requests.status, 200, `requests request ${i + 1} must pass`);
+  }
+  // The bucket is untouched: the first metered read still passes.
+  const meteredPath = `/api/availability/tpdb/movie/${TPDB_MOVIE}`;
+  const first = await call("GET", meteredPath, { cookie: member });
+  assert.equal(first.status, 200);
+  // A flood of metered reads trips the limiter at the same boundary as
+  // before, so the audit bound holds on metered routes only.
+  for (let i = 1; i < RATE_BURST; i += 1) {
+    const res = await call("GET", meteredPath, { cookie: member });
+    assert.equal(res.status, 200, `metered request ${i + 1} must pass`);
+  }
+  const flooded = await call("GET", meteredPath, { cookie: member });
+  const error = await errorShape(flooded, 429);
+  assert.equal(error.code, "rate_limited");
+});
