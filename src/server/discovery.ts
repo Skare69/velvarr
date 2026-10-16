@@ -5,11 +5,11 @@
 // never the answers. Per-user views (Jellyfin recent, requests, shelf order)
 // stay live and never touch this module.
 //
-// ponytail: the hiddenTags fingerprint is order-sensitive (JSON of the raw
-// array) — two semantically identical selections with different order miss
-// the cache and rebuild; fine at 5min TTL. The warm job only covers the
-// shared (empty hiddenTags) releases + trending entries; per-account
-// followed entries are read-through only and go cold after the 1h prune.
+// The hiddenTags fingerprint is canonical (folded label + ids, sorted and
+// deduped), so one tag set maps to one key however the account orders it.
+// The warm job only covers the shared (empty hiddenTags) releases + trending
+// entries; per-account followed entries are read-through only and go cold
+// after the 1h prune or the 500-row cap.
 
 import {
   browseTitles,
@@ -25,10 +25,11 @@ import {
   pruneDiscoverCache,
   putDiscoverCache,
 } from "./storage.ts";
-import type {
-  CatalogDetail,
-  CatalogTagSelection,
-  Shelf,
+import {
+  normalizeFacetName,
+  type CatalogDetail,
+  type CatalogTagSelection,
+  type Shelf,
 } from "../lib/contracts.ts";
 // Exception to "no runtime imports from route modules": followedShelf lives
 // in routes/discover.ts today; importing it mirrors how routes import server
@@ -59,7 +60,19 @@ function fingerprint(hiddenTags: CatalogTagSelection[]): string {
   const configuredTpdb = typeof tpdb === "string" && tpdb.trim() !== "";
   const configuredStashdb =
     typeof stashdb === "string" && stashdb.trim() !== "";
-  return JSON.stringify([hiddenTags, configuredTpdb, configuredStashdb]);
+  // Canonical: one tag set is one key. Each selection folds to its
+  // normalized label plus provider ids — the same pairing tagMatches and
+  // mergeTagCounts use — and the set is sorted and deduped, so reordering
+  // or re-saving the same tags reuses the cached build instead of forcing
+  // a new shared-quota provider run and a new discover_cache row.
+  const entries = hiddenTags.map((t) =>
+    JSON.stringify([normalizeFacetName(t.name), t.tpdb ?? "", t.stashdb ?? ""]),
+  );
+  return JSON.stringify([
+    [...new Set(entries)].sort(),
+    configuredTpdb,
+    configuredStashdb,
+  ]);
 }
 
 export function releasesCacheKey(today: string, fp: string): string {

@@ -1056,6 +1056,22 @@ test("migration 12 adds the discover cache; put/get/prune/clear round-trip", () 
   assert.equal(storage.getDiscoverCache("discover:trending:a"), undefined);
 });
 
+test("pruneDiscoverCache caps the table at the newest maxRows rows", () => {
+  freshDir();
+  storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  const now = Date.now();
+  for (let i = 0; i < 4; i++) {
+    storage.putDiscoverCache(`discover:cap:${i}`, "{}", now + i);
+  }
+  // The window deletes nothing (every row is fresh); the cap keeps only
+  // the newest 2 — age alone never bounds row cardinality.
+  assert.equal(storage.pruneDiscoverCache(60_000, 2), 2);
+  assert.equal(storage.getDiscoverCache("discover:cap:0"), undefined);
+  assert.equal(storage.getDiscoverCache("discover:cap:1"), undefined);
+  assert.ok(storage.getDiscoverCache("discover:cap:2"));
+  assert.ok(storage.getDiscoverCache("discover:cap:3"));
+});
+
 test("a schema-10 database migrates to 11: every removal object is dropped, rows are kept", () => {
   const dir = freshDir();
   storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");

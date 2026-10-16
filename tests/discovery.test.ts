@@ -20,6 +20,7 @@ import {
   releasesCacheKey,
   trendingCacheKey,
 } from "../src/server/discovery.ts";
+import { normalizeFacetName } from "../src/lib/contracts.ts";
 import { AppError } from "../src/server/http.ts";
 import { resetMetaCache } from "../src/server/providers.ts";
 import {
@@ -38,7 +39,9 @@ const DISCARD = "http://127.0.0.1:9";
 
 /** Mirrors discovery.ts's documented fingerprint shape (api.test.ts keeps
  * the same mirror for the releases key); a mismatch fails the
- * key-addressed assertions, so a fingerprint mutation cannot hide. */
+ * key-addressed assertions, so a fingerprint mutation cannot hide. The
+ * hiddenTags half is canonical — folded label + ids per selection, sorted
+ * and deduped — mirroring fingerprint() exactly. */
 function fingerprint(
   hiddenTags: unknown[],
   env: { tpdb?: string; stashdb?: string } = {},
@@ -50,8 +53,16 @@ function fingerprint(
   const stashdb =
     stored?.stashdbApiKey ??
     (env.stashdb !== undefined ? env.stashdb : process.env.STASHDB_API_KEY);
+  const entries = hiddenTags.map((t) => {
+    const sel = t as { name: string; tpdb?: string; stashdb?: string };
+    return JSON.stringify([
+      normalizeFacetName(sel.name),
+      sel.tpdb ?? "",
+      sel.stashdb ?? "",
+    ]);
+  });
   return JSON.stringify([
-    hiddenTags,
+    [...new Set(entries)].sort(),
     typeof tpdb === "string" && tpdb.trim() !== "",
     typeof stashdb === "string" && stashdb.trim() !== "",
   ]);
@@ -282,6 +293,69 @@ test("concurrent misses share one build; a failed build rejects with the provide
         assert.match(reason.message, /^tpdb: .+; stashdb: .+$/);
         // The failed build propagates out of readThrough: an outage is
         // never written to discover_cache and never served stale.
+      },
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("one hidden-tag set maps to one build across orderings and duplicates", async () => {
+  const realFetch = globalThis.fetch;
+  let builds = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input).includes("/graphql")) return jsonReply(EMPTY_STASH_PAGE);
+    builds += 1;
+    return jsonReply({ data: [], links: {}, meta: {} });
+  }) as typeof fetch;
+  try {
+    await withEnv(
+      {
+        TPDB_API_TOKEN: TPDB_TOKEN,
+        STASHDB_API_KEY: STASH_TOKEN,
+        TPDB_BASE_URL: DISCARD,
+        STASHDB_BASE_URL: DISCARD,
+      },
+      async () => {
+        // Each layer must start cold per call: requestJson's 10-minute
+        // metaCache would otherwise serve a reordered set's rebuild without
+        // a wire call and hide the very miss this test hunts.
+        resetMetaCache();
+        const today = "2026-10-16";
+        const horror = {
+          name: "Cardinality Probe Horror",
+          stashdb: "00000000-0000-4000-8000-00000000000a",
+        };
+        const scifi = {
+          name: "Cardinality Probe Sci Fi",
+          tpdb: "00000000-0000-4000-8000-00000000000b",
+        };
+        const first = await cachedReleases([scifi, horror], today);
+        assert.equal(first.status, "fulfilled");
+        const afterFirst = builds;
+        assert.ok(afterFirst >= 1, "a cold build reaches the provider");
+        // The same set in another order is the same key: served from the
+        // cache, no second provider build, no second cache row.
+        resetMetaCache();
+        const reordered = await cachedReleases([horror, scifi], today);
+        assert.equal(reordered.status, "fulfilled");
+        assert.equal(builds, afterFirst, "a reordered set must not rebuild");
+        // A duplicated selection is the same set too.
+        resetMetaCache();
+        const duped = await cachedReleases([horror, scifi, scifi], today);
+        assert.equal(duped.status, "fulfilled");
+        assert.equal(
+          builds,
+          afterFirst,
+          "a duplicated selection is the same set",
+        );
+        // The shared build sits at the documented key of either ordering.
+        assert.ok(
+          getDiscoverCache(
+            releasesCacheKey(today, fingerprint([scifi, horror])),
+          ),
+          "the documented key holds the shared build",
+        );
       },
     );
   } finally {

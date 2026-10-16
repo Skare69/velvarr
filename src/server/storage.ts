@@ -205,6 +205,7 @@ type Statements = {
   getDiscoverCache: StatementSync;
   putDiscoverCache: StatementSync;
   pruneDiscoverCache: StatementSync;
+  capDiscoverCache: StatementSync;
   clearDiscoverCache: StatementSync;
 };
 
@@ -707,6 +708,9 @@ function S(): Statements {
       ),
       pruneDiscoverCache: d.prepare(
         "DELETE FROM discover_cache WHERE fetched_at < ?",
+      ),
+      capDiscoverCache: d.prepare(
+        "DELETE FROM discover_cache WHERE key NOT IN (SELECT key FROM discover_cache ORDER BY fetched_at DESC, key DESC LIMIT ?)",
       ),
       clearDiscoverCache: d.prepare("DELETE FROM discover_cache"),
     };
@@ -1727,8 +1731,16 @@ export function putDiscoverCache(
   S().putDiscoverCache.run(key, payload, fetchedAt);
 }
 
-export function pruneDiscoverCache(maxAgeMs: number): number {
-  return Number(S().pruneDiscoverCache.run(Date.now() - maxAgeMs).changes);
+/** Age-prunes, then caps the table at the newest `maxRows` rows (default
+ * 500): age alone never bounds cardinality — every distinct hidden-tag set
+ * builds its own rows. Ties on fetched_at break by key, so the kept set is
+ * deterministic. Returns total deleted rows. */
+export function pruneDiscoverCache(maxAgeMs: number, maxRows = 500): number {
+  const aged = Number(
+    S().pruneDiscoverCache.run(Date.now() - maxAgeMs).changes,
+  );
+  const capped = Number(S().capDiscoverCache.run(maxRows).changes);
+  return aged + capped;
 }
 
 export function clearDiscoverCache(): void {

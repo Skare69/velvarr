@@ -15,6 +15,7 @@ import { rmTempDir } from "./setup.ts";
 import { Buffer } from "node:buffer";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resetMetaCache } from "../src/server/providers.ts";
+import { normalizeFacetName } from "../src/lib/contracts.ts";
 import {
   DISCOVER_CACHE_TTL_MS,
   releasesCacheKey,
@@ -3978,15 +3979,22 @@ async function shelvesOf(
 }
 
 /** Mirrors discovery.ts's documented fingerprint shape so the cache tests
- * can address the documented key; a mismatch fails the stale-entry test. */
+ * can address the documented key; a mismatch fails the stale-entry test.
+ * The hiddenTags half is canonical — folded label + ids per selection,
+ * sorted and deduped — mirroring fingerprint() exactly. */
 function discoverFingerprint(hiddenTags: unknown): string {
   const stored = getConfig()?.providers;
   // credential() semantics: stored first (?? — an empty stored string means
   // unconfigured), env fallback.
   const tpdb = stored?.tpdbApiToken ?? process.env.TPDB_API_TOKEN;
   const stashdb = stored?.stashdbApiKey ?? process.env.STASHDB_API_KEY;
+  const entries = (
+    hiddenTags as { name: string; tpdb?: string; stashdb?: string }[]
+  ).map((t) =>
+    JSON.stringify([normalizeFacetName(t.name), t.tpdb ?? "", t.stashdb ?? ""]),
+  );
   return JSON.stringify([
-    hiddenTags,
+    [...new Set(entries)].sort(),
     typeof tpdb === "string" && tpdb.trim() !== "",
     typeof stashdb === "string" && stashdb.trim() !== "",
   ]);
