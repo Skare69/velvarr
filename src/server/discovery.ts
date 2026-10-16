@@ -101,6 +101,21 @@ function followsFingerprint(accountId: string): string {
   return rows.sort().join(",");
 }
 
+// Source codes that describe a fixed or bounded state rather than an
+// outage, per browse.ts: an absent token (provider_not_configured) and a
+// soft scan ceiling ("a bounded (if matchless) answer, not an outage").
+// Allowlist polarity: any code not listed — upstream_unavailable and
+// upstream_timeout today, any new transient code tomorrow — keeps the
+// build out of discover_cache, so recovery lands on the next request.
+const NON_OUTAGE_SOURCE_CODES: Record<string, true> = {
+  provider_not_configured: true,
+  scan_ceiling: true,
+};
+
+function sourceOutage(errors: ReadonlyArray<{ code: string }>): boolean {
+  return errors.some((e) => NON_OUTAGE_SOURCE_CODES[e.code] !== true);
+}
+
 async function readThrough<T>(
   key: string,
   build: () => Promise<T>,
@@ -117,9 +132,9 @@ async function readThrough<T>(
       return JSON.parse(hit.payload) as T;
     }
     // A failed build propagates: never written, never served stale. A
-    // degraded build (source errors beside results) returns but is not
-    // written: the next miss rebuilds, so recovery lands on the next
-    // request instead of after a full TTL.
+    // build carrying a source outage returns but is not written: the
+    // next miss rebuilds, so recovery lands on the next request instead
+    // of after a full TTL.
     const value = await build();
     if (cacheable(value)) {
       putDiscoverCache(key, JSON.stringify(value), Date.now());
@@ -162,10 +177,10 @@ export async function cachedReleases(
             ),
             hiddenTags,
           ),
-        // A partial page (one source down) is honest for this caller but
-        // poisoned as a cache entry: only error-free pages cache, so the
-        // rail rebuilds live and recovery is immediate.
-        (page) => page.errors.length === 0,
+        // A page whose sources are in outage degrades live instead of
+        // pinning the outage for a TTL. Config-state and scan-ceiling
+        // errors are fixed facts: a one-token deployment still caches.
+        (page) => !sourceOutage(page.errors),
       ),
     };
   } catch (e) {
@@ -204,12 +219,16 @@ export async function cachedFollowed(
       fingerprint(hiddenTags),
     ),
     () => followedShelf(accountId, hiddenTags),
-    // A shelf carrying source errors (partial `errors` or the error-only
-    // shape) degrades live instead of pinning the outage for a TTL; null
-    // is an empty filmography, not a degradation.
+    // A shelf whose sources are in outage degrades live instead of
+    // pinning the outage for a TTL. null is an empty filmography, and
+    // config-state or scan-ceiling errors are fixed facts that cache
+    // like any clean build — the error-only shape repeats the first
+    // error's code.
     (shelf) =>
       shelf === null ||
-      (shelf.error === undefined && shelf.errors === undefined),
+      ((shelf.error === undefined ||
+        NON_OUTAGE_SOURCE_CODES[shelf.error.code] === true) &&
+        !sourceOutage(shelf.errors ?? [])),
   );
 }
 

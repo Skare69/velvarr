@@ -442,6 +442,48 @@ test("a partial provider outage answers with errors but writes no cache row", as
           undefined,
           "a degraded shelf is returned but never written to discover_cache",
         );
+
+        // Config-state errors are fixed facts, not outages: a one-token
+        // deployment still caches. StashDB unconfigured (the key deleted),
+        // TPDB healthy: the fulfilled page names provider_not_configured
+        // and MUST land in discover_cache.
+        await withEnv(
+          {
+            TPDB_API_TOKEN: TPDB_TOKEN,
+            STASHDB_API_KEY: undefined,
+            TPDB_BASE_URL: DISCARD,
+            STASHDB_BASE_URL: DISCARD,
+          },
+          async () => {
+            const today = "2026-10-17";
+            const unconfigured = await cachedReleases([], today);
+            assert.ok(unconfigured.status === "fulfilled");
+            assert.deepEqual(
+              unconfigured.value.errors.map((e) => [e.provider, e.code]),
+              [["stashdb", "provider_not_configured"]],
+            );
+            assert.ok(
+              getDiscoverCache(
+                releasesCacheKey(today, fingerprint([], { tpdb: TPDB_TOKEN })),
+              ),
+              "absence by config is not an outage: the page caches",
+            );
+            // The followed rail's error-only shape repeats the first
+            // error's code, so the same rule caches it.
+            const shelf = await cachedFollowed("acct-partial", []);
+            assert.ok(shelf !== null && shelf.error !== undefined);
+            assert.equal(shelf.error.code, "provider_not_configured");
+            assert.ok(
+              getDiscoverCache(
+                followedKey(
+                  "acct-partial",
+                  fingerprint([], { tpdb: TPDB_TOKEN }),
+                ),
+              ),
+              "the provider_not_configured error-only shelf caches",
+            );
+          },
+        );
       },
     );
   } finally {
