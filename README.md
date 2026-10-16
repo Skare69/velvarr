@@ -74,6 +74,16 @@ bun run dev     # http://127.0.0.1:6699
 
 Each failed sign-in writes one warning line to the server log: `[auth] failed sign-in attempt: account="<name>" ip="<address>"`. The password is never logged. The address is the first `X-Forwarded-For` entry, or `unknown` when no proxy sends the header. A client can set this header, so trust the address only when your proxy replaces `X-Forwarded-For` instead of appending to it.
 
+## Phone access
+
+Velvarr is an installable app: served over HTTPS, the browser's menu offers **Add to home screen** and Velvarr opens in its own window, with build assets cached by a service worker so reloads are fast (live data and `/api` are never cached). The install prompt needs a secure origin; the low-effort answer is [Tailscale](https://tailscale.com):
+
+1. Enable MagicDNS and HTTPS certificates in the Tailscale admin console.
+2. On the machine running Velvarr: `tailscale serve --bg 6699`.
+3. Open `https://<machine>.<tailnet>.ts.net` on the phone and use **Add to home screen**.
+
+`tailscale serve` terminates TLS with certificates the household's browsers already trust and sets `X-Forwarded-Proto: https`, which marks the session cookie `Secure`. Optionally pin `VELVARR_ORIGIN=https://<machine>.<tailnet>.ts.net` to make that origin the only one allowed to mutate, independent of proxy headers. On plain HTTP the worker does not register; everything else works.
+
 ## Local AI-assisted matching with Ollama
 
 Use Ollama 0.35 or later with a decision model such as `nimble` or `tev1`. Ordinary chat models do not support the required `/v1/systemone` endpoint. Download the model on the machine running Ollama:

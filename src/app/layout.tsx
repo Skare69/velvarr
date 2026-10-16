@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Credit } from "../components/shared.tsx";
+import { PwaRegistration } from "../components/pwa.tsx";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -22,6 +23,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="min-h-screen bg-canvas text-ink antialiased">
+        <PwaRegistration />
         {children}
         <footer className="app-footer">
           <Credit />
