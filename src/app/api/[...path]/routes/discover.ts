@@ -55,6 +55,18 @@ export function sourceError(
   return { provider, ...shelfError(err) };
 }
 
+// One named entry per provider, first group wins: the partial-failure wire
+// shape browse pages and followedShelf already speak, and the UI keys error
+// rows by provider.
+function mergeErrors(...groups: SourceError[][]): SourceError[] {
+  const seen = new Set<string>();
+  return groups.flat().filter((error) => {
+    if (seen.has(error.provider)) return false;
+    seen.add(error.provider);
+    return true;
+  });
+}
+
 export const SHELF_ITEMS = 28;
 export const MORE_PREVIEWS = 4;
 export const FOLLOWED_PAGE = 12;
@@ -348,6 +360,7 @@ export function facetShelves(
 ): Promise<Shelf[]> {
   let error: ShelfError | undefined;
   let items: CatalogDetail[] = [];
+  let pageErrors: SourceError[] = [];
   if (newReleases.status === "rejected") {
     // shelfError keeps the upstream code (not configured vs outage); the
     // message names the shelf's own truth: no snapshot from either side.
@@ -358,6 +371,7 @@ export function facetShelves(
   } else {
     const page = newReleases.value;
     items = page.items;
+    pageErrors = page.errors;
     if (items.length === 0 && page.errors.length > 0) {
       const down = new Set(page.errors.map((entry) => entry.provider));
       if (down.has("tpdb") && down.has("stashdb")) {
@@ -395,20 +409,21 @@ export function facetShelves(
     }))
     .filter((source) => source.items.length > 0);
   return Promise.all([
-    facetShelf("studios", sources),
-    facetShelf("genres", sources),
+    facetShelf("studios", sources, pageErrors),
+    facetShelf("genres", sources, pageErrors),
   ]);
 }
 
 /** Cross-provider studio dedupe: a TPDB tile dies only when a StashDB tile
  * published that exact studio as its counterpart — never by name: two
  * same-named studios without a published link stay two tiles. Survivors get
- * their own counterparts resolved (settled). */
+ * their own counterparts resolved (settled); rejected lookups ride back as
+ * named errors beside the survivors. */
 async function dedupePublishedStudios(
   tiles: FacetItem[],
-): Promise<FacetItem[]> {
+): Promise<{ tiles: FacetItem[]; errors: SourceError[] }> {
   const stashTiles = tiles.filter((tile) => tile.provider === "stashdb");
-  await resolveLinked(stashTiles);
+  const pairingErrors = await resolveLinked(stashTiles);
   const publishedTpdb = new Set(
     stashTiles.flatMap((tile) =>
       tile.linked !== undefined ? [tile.linked.id.toLowerCase()] : [],
@@ -420,13 +435,19 @@ async function dedupePublishedStudios(
           tile.provider !== "tpdb" || !publishedTpdb.has(tile.id.toLowerCase()),
       )
     : tiles;
-  await resolveLinked(survivors);
-  return survivors;
+  const survivorErrors = await resolveLinked(survivors);
+  return {
+    tiles: survivors,
+    errors: mergeErrors(pairingErrors, survivorErrors),
+  };
 }
 
 export async function facetShelf(
   shelf: "studios" | "genres",
   sources: { provider: CatalogProvider; items: CatalogDetail[] }[],
+  // The browse page's own per-source failures: the dead side contributed no
+  // rows, so its outage must ride beside the survivor's tiles.
+  pageErrors: SourceError[] = [],
 ): Promise<Shelf> {
   const perSource = await Promise.all(
     sources.map(async ({ provider, items }) => ({
@@ -462,8 +483,11 @@ export async function facetShelf(
   }
   const emitted = candidates.slice(0, SHELF_ITEMS + MORE_PREVIEWS);
   let items = emitted;
+  let linkedErrors: SourceError[] = [];
   if (shelf === "studios") {
-    items = await dedupePublishedStudios(emitted);
+    const deduped = await dedupePublishedStudios(emitted);
+    items = deduped.tiles;
+    linkedErrors = deduped.errors;
   } else {
     // Categories dedupe by exact normalized name: the first-seen tile stays
     // and the dropped side's id becomes its linked.
@@ -480,8 +504,11 @@ export async function facetShelf(
       }
     }
     // Counterparts for everything the local dedupe could not pair.
-    await resolveLinked(items);
+    linkedErrors = await resolveLinked(items);
   }
+  // Partial success stays named: a dead page side and rejected counterpart
+  // lookups both speak, deduped to the one-entry-per-provider shape.
+  const errors = mergeErrors(pageErrors, linkedErrors);
   return {
     id: shelf,
     title: shelf === "studios" ? "Studios" : "Genres",
@@ -489,6 +516,7 @@ export async function facetShelf(
     kind: "facets",
     ...railOf(items, facetPreview),
     browse: { view: "facets", params: { kind: shelf } },
+    ...(errors.length > 0 ? { errors } : {}),
   };
 }
 
@@ -505,8 +533,12 @@ function facetPreview(tile: FacetItem): ShelfMorePreview {
 }
 
 // Resolves each tile's cross-provider counterpart, settled: a rejection or
-// an absent counterpart just leaves `linked` off the tile.
-export async function resolveLinked(tiles: FacetItem[]): Promise<void> {
+// an absent counterpart just leaves `linked` off the tile — and a rejection
+// is returned as the OTHER side's named outage, never read as absence
+// (tagCounterpart throws on upstream failure for exactly this).
+export async function resolveLinked(
+  tiles: FacetItem[],
+): Promise<SourceError[]> {
   const missing = tiles.filter((tile) => tile.linked === undefined);
   const settled = await Promise.allSettled(
     missing.map((tile) =>
@@ -519,9 +551,19 @@ export async function resolveLinked(tiles: FacetItem[]): Promise<void> {
         : tagCounterpart(tile.provider, tile.name),
     ),
   );
+  const errors: SourceError[] = [];
   settled.forEach((result, i) => {
     const tile = missing[i];
-    if (tile === undefined || result.status !== "fulfilled") return;
+    if (tile === undefined) return;
+    if (result.status === "rejected") {
+      errors.push(
+        sourceError(
+          tile.provider === "tpdb" ? "stashdb" : "tpdb",
+          result.reason,
+        ),
+      );
+      return;
+    }
     const ref = result.value;
     if (ref === undefined) return;
     if ("native" in ref) {
@@ -534,6 +576,7 @@ export async function resolveLinked(tiles: FacetItem[]): Promise<void> {
     }
     tile.linked = { provider: ref.provider, id: ref.id };
   });
+  return errors;
 }
 
 // The facet directory behind the discover shelf headline arrows. Genres:
@@ -617,9 +660,11 @@ export async function discoveryFacets(
       ),
     })),
   );
-  const tiles = await dedupePublishedStudios(perSource.flatMap((s) => s.tiles));
+  const { tiles, errors: linkedErrors } = await dedupePublishedStudios(
+    perSource.flatMap((s) => s.tiles),
+  );
   tiles.sort((a, b) => a.name.localeCompare(b.name));
-  return json({ kind, tiles, errors: page.errors });
+  return json({ kind, tiles, errors: mergeErrors(page.errors, linkedErrors) });
 }
 
 // Discover wire split: GET /api/discover returns ordered STUBS only (id,

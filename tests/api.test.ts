@@ -4421,6 +4421,38 @@ test("discover: mixed new releases, honest trending, facets, grants, not-configu
     tpdbFx.fail = 0;
   }
 
+  // One source failing, mirrored: the StashDB side is down. The facet rails
+  // keep the TPDB tiles but must name the dead side — a half-filled rail is
+  // a degraded page, never a quiet success (the shelves used to drop the
+  // page's per-source errors here).
+  clearDiscoverCache();
+  resetMetaCache();
+  stashdbFx.fail = 9;
+  try {
+    for (const id of ["studios", "genres"]) {
+      const res = await call("GET", `/api/discover/shelf?id=${id}`, {
+        cookie: member,
+      });
+      assert.equal(res.status, 200, "shelf failure must not fail the page");
+      // Named boundary cast: the suite's json() convention (no validator).
+      const body = (await res.json()) as { shelf: FixtureShelf | null };
+      const shelf = body.shelf;
+      assert.equal(shelf?.error, undefined, `${id}: partial is not an error`);
+      assert.ok(
+        (shelf?.items?.length ?? 0) > 0,
+        `${id}: survivor side still renders`,
+      );
+      for (const tile of (shelf?.items ?? []) as FacetTile[]) {
+        assert.equal(tile.provider, "tpdb", `${id}:${tile.id}`);
+      }
+      assert.equal(shelf?.errors?.length, 1, `${id}: the dead side is named`);
+      assert.equal(shelf?.errors?.[0]?.provider, "stashdb");
+      assert.match(shelf?.errors?.[0]?.code ?? "", /unavailable/);
+    }
+  } finally {
+    stashdbFx.fail = 0;
+  }
+
   // Both sources failing: the mixed rail collapses to an error shelf, the
   // single-source trending shelf reports its own outage, and the facet
   // rails carry one error each with no items — never a half-filled rail
