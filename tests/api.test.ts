@@ -135,6 +135,22 @@ const TPDB_MOVIE4 = "2a2b3c4d-0000-0000-0000-000000000004";
 // acquisition belong to that test alone, so no other case's observation
 // facts can leak in or out (recordObservation merges, never replaces).
 const TPDB_MOVIE_YEAR = "2a2b3c4d-0000-0000-0000-0000000000c2";
+// Dedicated to the availability verdicts test: its "available" and "denied"
+// reads need an acquisition the test approves itself, so the verdicts never
+// depend on a row another test wrote (recordObservation merges, never
+// replaces — a shared acquisition would leak facts across tests).
+const TPDB_MOVIE_AVAIL = "2a2b3c4d-0000-0000-0000-00000000000b";
+// Dedicated to the scan-lag test for the same reason: its monitoring,
+// imported and absent observations must land on its own acquisition.
+const TPDB_MOVIE_SCAN = "2a2b3c4d-0000-0000-0000-00000000000a";
+// Filed by the discover-order test as member2: the staff-view proof needs a
+// row from another account, and the admin user-rows test pins the owner's
+// count at a true zero before its own filings. Fresh id: never filed
+// elsewhere, so the filing cannot collide with an active intent.
+const TPDB_MOVIE_RAIL = "2a2b3c4d-0000-0000-0000-000000000016";
+// Filed by the discover rail test as member2, so its velvarr-requests shelf
+// has a row without reading the lifecycle test's rows.
+const TPDB_MOVIE10 = "2a2b3c4d-0000-0000-0000-000000000017";
 // Only used by the performer-filmography bulk test: TPDB_MOVIE3 already
 // carries approved intents from earlier tests, and an active-intent row
 // would collide with the bulk's new pending intent and show up in the
@@ -889,6 +905,10 @@ async function tpdbHandler(
     return json(res, 200, { data: tpdbMovieRow(TPDB_MOVIE_YEAR) });
   if (p === `/movies/${TPDB_MOVIE4}`)
     return json(res, 200, { data: tpdbMovieRow(TPDB_MOVIE4) });
+  if (p === `/movies/${TPDB_MOVIE_AVAIL}`)
+    return json(res, 200, { data: tpdbMovieRow(TPDB_MOVIE_AVAIL) });
+  if (p === `/movies/${TPDB_MOVIE_SCAN}`)
+    return json(res, 200, { data: tpdbMovieRow(TPDB_MOVIE_SCAN) });
   json(res, 404, {});
 }
 
@@ -1184,6 +1204,76 @@ async function errorShape(
       typeof body.error.message === "string",
   );
   return body.error as { code: string; message: string };
+}
+
+/**
+ * Standalone boot for tests that must pass alone (--test-name-pattern):
+ * setup commit, account import, the standing grants, provider env and the
+ * Whisparr integration, in the same shapes the file-order tests create
+ * them. A no-op once the suite has initialized, so the full file runs
+ * unchanged.
+ */
+async function boot(): Promise<void> {
+  // Providers read credentials and base at call time; point them at the
+  // fixtures. Same values the catalog-search and studio-search tests arm.
+  process.env.TPDB_API_TOKEN = tpdbToken;
+  process.env.TPDB_BASE_URL = tpdbUrl;
+  process.env.STASHDB_API_KEY = stashdbKey;
+  process.env.STASHDB_BASE_URL = stashdbUrl;
+  const status = (await (await call("GET", "/api/status")).json()) as {
+    initialized: boolean;
+  };
+  if (status.initialized) return;
+  const owner = cookieOf(
+    await call("POST", "/api/setup", {
+      body: { ...inspectBody(), libraryIds: [MOVIES_LIB, SHOWS_LIB] },
+    }),
+  );
+  assert.match(owner, /^velvarr_session=/);
+  assert.equal(
+    (await call("POST", "/api/admin/users/import", { cookie: owner })).status,
+    200,
+  );
+  fx.grants.set(MEMBER_ID, [MOVIES_LIB]);
+  fx.grants.set(NOGRANT_ID, []);
+  const enables: [
+    string,
+    { enabled: boolean; role: string; libraryIds: string[] },
+  ][] = [
+    [MEMBER_ID, { enabled: true, role: "requester", libraryIds: [MOVIES_LIB] }],
+    [MEMBER2_ID, { enabled: true, role: "requester", libraryIds: [SHOWS_LIB] }],
+    [NOGRANT_ID, { enabled: true, role: "requester", libraryIds: [] }],
+  ];
+  for (const [id, body] of enables) {
+    assert.equal(
+      (
+        await call("PATCH", `/api/admin/users/${id}`, {
+          cookie: owner,
+          body,
+        })
+      ).status,
+      200,
+    );
+  }
+  // The standing Whisparr integration, with the pathMappings the
+  // availability path-correlation logic reads.
+  assert.equal(
+    (
+      await call("PATCH", "/api/admin/integrations", {
+        cookie: owner,
+        body: {
+          jellyfinUrl,
+          jellyfinExternalUrl: jellyfinUrl,
+          whisparrUrl,
+          whisparrApiKey: whisparrKey,
+          pathMappings: [
+            { whisparrPrefix: "/data/whisparr", jellyfinPrefix: "/media" },
+          ],
+        },
+      })
+    ).status,
+    200,
+  );
 }
 
 // --- tests ---
@@ -3752,19 +3842,41 @@ test("requests: lifecycle, autoApprove, privacy, roles, origin", async () => {
 });
 
 test("availability: distinct verdicts under the caller's own token", async () => {
+  await boot();
+  const member = await loginAs("member");
+  const owner = await loginAs("owner");
+  const nogrants = await loginAs("nogrants");
   assert.equal(
     (await call("GET", `/api/availability/tpdb/movie/${TPDB_MOVIE}`)).status,
     401,
   );
 
-  // Worker-equivalent: persist observed Whisparr facts on the shared
+  // Approvals belong to this test: every verdict reads an acquisition the
+  // test filed and approved itself, on its own movie id where an
+  // observation would otherwise merge into another test's row.
+  const approve = async (id: string) => {
+    const req = await call("POST", "/api/requests", {
+      cookie: member,
+      body: { media: { provider: "tpdb", kind: "movie", id } },
+    });
+    assert.equal(req.status, 201, id);
+    const reqBody = (await req.json()) as { request: { id: string } };
+    await call("PATCH", `/api/requests/${reqBody.request.id}`, {
+      cookie: owner,
+      body: { decision: "approved" },
+    });
+    const acquired = getAcquisitionByReference({
+      provider: "tpdb",
+      kind: "movie",
+      id,
+    });
+    assert.ok(acquired, id);
+    return acquired;
+  };
+
+  // Worker-equivalent: persist observed Whisparr facts on the test's own
   // acquisition; the availability route must read them, never call Whisparr.
-  const acq = getAcquisitionByReference({
-    provider: "tpdb",
-    kind: "movie",
-    id: TPDB_MOVIE,
-  });
-  assert.ok(acq);
+  const acq = await approve(TPDB_MOVIE_AVAIL);
   recordAcquisitionObservation(acq.id, {
     state: "monitoring",
     item: {
@@ -3777,7 +3889,7 @@ test("availability: distinct verdicts under the caller's own token", async () =>
   // available: exact path correspondence, granted library, playable source.
   const available = await call(
     "GET",
-    `/api/availability/tpdb/movie/${TPDB_MOVIE}`,
+    `/api/availability/tpdb/movie/${TPDB_MOVIE_AVAIL}`,
     { cookie: member },
   );
   assert.equal(available.status, 200);
@@ -3790,11 +3902,10 @@ test("availability: distinct verdicts under the caller's own token", async () =>
 
   // denied: no granted libraries for this caller.
   fx.grants.set(NOGRANT_ID, []);
-  const noGrantCookie = nogrants; // shared session from the autoApprove test above.
   const denied = await call(
     "GET",
-    `/api/availability/tpdb/movie/${TPDB_MOVIE}`,
-    { cookie: noGrantCookie },
+    `/api/availability/tpdb/movie/${TPDB_MOVIE_AVAIL}`,
+    { cookie: nogrants },
   );
   assert.equal(
     ((await denied.json()) as { outcome: string }).outcome,
@@ -3802,23 +3913,7 @@ test("availability: distinct verdicts under the caller's own token", async () =>
   );
 
   // ambiguous: title-only similarity is never upgraded to a guess.
-  const acq3Req = await call("POST", "/api/requests", {
-    cookie: member,
-    body: { media: { provider: "tpdb", kind: "movie", id: TPDB_MOVIE3 } },
-  });
-  assert.equal(acq3Req.status, 201);
-  const acq3Id = ((await acq3Req.json()) as { request: { id: string } }).request
-    .id;
-  await call("PATCH", `/api/requests/${acq3Id}`, {
-    cookie: owner,
-    body: { decision: "approved" },
-  });
-  const acq3 = getAcquisitionByReference({
-    provider: "tpdb",
-    kind: "movie",
-    id: TPDB_MOVIE3,
-  });
-  assert.ok(acq3);
+  const acq3 = await approve(TPDB_MOVIE3);
   recordAcquisitionObservation(acq3.id, {
     state: "monitoring",
     item: { title: "Alpha Movie" },
@@ -3834,15 +3929,7 @@ test("availability: distinct verdicts under the caller's own token", async () =>
   );
 
   // missing: known identity, nothing on the media server.
-  const m4Req = await call("POST", "/api/requests", {
-    cookie: member,
-    body: { media: { provider: "tpdb", kind: "movie", id: TPDB_MOVIE4 } },
-  });
-  const m4Id = ((await m4Req.json()) as { request: { id: string } }).request.id;
-  await call("PATCH", `/api/requests/${m4Id}`, {
-    cookie: owner,
-    body: { decision: "approved" },
-  });
+  await approve(TPDB_MOVIE4);
   const missing = await call(
     "GET",
     `/api/availability/tpdb/movie/${TPDB_MOVIE4}`,
@@ -6223,7 +6310,34 @@ test("the autoApprove grant approves bulk requests and attaches the shared acqui
 });
 
 test("discover appends ONE followed rail across providers and isolates a provider outage", async () => {
-  // member2 follows one TPDB and one StashDB performer (from the tests above).
+  await boot();
+  const member2 = await loginAs("member2");
+  // Own rows: the two follows this test reads are created (and removed at
+  // the end) here, and the velvarr-requests shelf carries a row the test
+  // files itself — nothing may depend on what earlier tests left behind.
+  for (const [provider, id] of [
+    ["tpdb", TPDB_PERFORMER],
+    ["stashdb", STASH_PERFORMER],
+  ] as const) {
+    // Delete first: a suite run and a standalone run start from the same
+    // state, so the creates below always file fresh 201s.
+    await call("DELETE", `/api/follows/${provider}/${id}`, { cookie: member2 });
+  }
+  for (const [provider, id, name] of [
+    ["tpdb", TPDB_PERFORMER, "Fixture Performer"],
+    ["stashdb", STASH_PERFORMER, "Fixture Stash Performer"],
+  ] as const) {
+    const created = await call("POST", "/api/follows", {
+      cookie: member2,
+      body: { performer: { provider, kind: "performer", id }, name },
+    });
+    assert.equal(created.status, 201);
+  }
+  const railReq = await call("POST", "/api/requests", {
+    cookie: member2,
+    body: { media: { provider: "tpdb", kind: "movie", id: TPDB_MOVIE10 } },
+  });
+  assert.equal(railReq.status, 201);
   const ok = await call("GET", "/api/discover", { cookie: member2 });
   assert.equal(ok.status, 200);
   const shelves = await shelvesOf(ok, member2);
@@ -6560,7 +6674,10 @@ test("global search: a full first page reports hasMore, not the page length", as
 
 // --- M3: studioMode — accepted only for StashDB scene + studio filter ---
 test("studioMode: withChildren reaches provider; every other combo is a 400 before upstream", async () => {
-  // StashDB env points at the fixture (set by the studio-search test above).
+  // StashDB env points at the fixture (boot arms it; nothing here may
+  // depend on the studio-search test having run).
+  await boot();
+  const member = await loginAs("member");
   const ok = await call(
     "GET",
     `/api/catalog/search?provider=stashdb&kind=scene&studio=${STASH_STUDIO}&studioMode=withChildren`,
@@ -6625,6 +6742,11 @@ function tagKeys(query: string): string[] {
 
 // --- M4: scan lag (hazard 9) — awaiting_scan is distinct from missing ---
 test("scan lag: imported-but-unscanned is awaiting_scan; outage and denial stay truthful", async () => {
+  await boot();
+  const member = await loginAs("member");
+  const owner = await loginAs("owner");
+  const nogrants = await loginAs("nogrants");
+
   // An identity that was never acquired stays missing.
   const never = await call(
     "GET",
@@ -6633,12 +6755,23 @@ test("scan lag: imported-but-unscanned is awaiting_scan; outage and denial stay 
   );
   assert.equal((await outcomeOf(never)).outcome, "missing");
 
-  // Worker-equivalent: persist observed Whisparr facts on the shared
-  // acquisition for TPDB_MOVIE4 (approved earlier, never observed).
+  // This test's own acquisition: filed and approved here, on a movie id no
+  // other test touches, so the observations below (which merge into the
+  // row) are this test's alone.
+  const req = await call("POST", "/api/requests", {
+    cookie: member,
+    body: { media: { provider: "tpdb", kind: "movie", id: TPDB_MOVIE_SCAN } },
+  });
+  assert.equal(req.status, 201);
+  const reqBody = (await req.json()) as { request: { id: string } };
+  await call("PATCH", `/api/requests/${reqBody.request.id}`, {
+    cookie: owner,
+    body: { decision: "approved" },
+  });
   const acq = getAcquisitionByReference({
     provider: "tpdb",
     kind: "movie",
-    id: TPDB_MOVIE4,
+    id: TPDB_MOVIE_SCAN,
   });
   assert.ok(acq);
   const observation = {
@@ -6654,7 +6787,7 @@ test("scan lag: imported-but-unscanned is awaiting_scan; outage and denial stay 
   recordAcquisitionObservation(acq.id, observation);
   const monitoring = await call(
     "GET",
-    `/api/availability/tpdb/movie/${TPDB_MOVIE4}`,
+    `/api/availability/tpdb/movie/${TPDB_MOVIE_SCAN}`,
     { cookie: member },
   );
   assert.equal((await outcomeOf(monitoring)).outcome, "missing");
@@ -6663,7 +6796,7 @@ test("scan lag: imported-but-unscanned is awaiting_scan; outage and denial stay 
   recordAcquisitionObservation(acq.id, { ...observation, state: "imported" });
   const lagging = await call(
     "GET",
-    `/api/availability/tpdb/movie/${TPDB_MOVIE4}`,
+    `/api/availability/tpdb/movie/${TPDB_MOVIE_SCAN}`,
     { cookie: member },
   );
   const lagBody = await outcomeOf(lagging);
@@ -6673,9 +6806,13 @@ test("scan lag: imported-but-unscanned is awaiting_scan; outage and denial stay 
   // Catalog detail surfaces THIS test's own record: imported with honest
   // freshness labeling. TPDB_MOVIE's monitoring state belongs to another
   // test and must not leak in here.
-  const detail = await call("GET", `/api/catalog/tpdb/movie/${TPDB_MOVIE4}`, {
-    cookie: member,
-  });
+  const detail = await call(
+    "GET",
+    `/api/catalog/tpdb/movie/${TPDB_MOVIE_SCAN}`,
+    {
+      cookie: member,
+    },
+  );
   const detailBody = (await detail.json()) as AcquisitionDetailBody;
   assert.equal(detailBody.acquisition?.state, "imported");
   assert.equal(detailBody.acquisition?.observationStale, false);
@@ -6686,7 +6823,7 @@ test("scan lag: imported-but-unscanned is awaiting_scan; outage and denial stay 
   fx.fail.items = 1;
   const outage = await call(
     "GET",
-    `/api/availability/tpdb/movie/${TPDB_MOVIE4}`,
+    `/api/availability/tpdb/movie/${TPDB_MOVIE_SCAN}`,
     { cookie: member },
   );
   assert.equal((await outcomeOf(outage)).outcome, "unavailable");
@@ -6694,7 +6831,7 @@ test("scan lag: imported-but-unscanned is awaiting_scan; outage and denial stay 
   // A library-denied caller stays denied even while the item is imported.
   const denied = await call(
     "GET",
-    `/api/availability/tpdb/movie/${TPDB_MOVIE4}`,
+    `/api/availability/tpdb/movie/${TPDB_MOVIE_SCAN}`,
     { cookie: nogrants },
   );
   assert.equal((await outcomeOf(denied)).outcome, "denied");
@@ -6706,7 +6843,7 @@ test("scan lag: imported-but-unscanned is awaiting_scan; outage and denial stay 
   });
   const gone = await call(
     "GET",
-    `/api/availability/tpdb/movie/${TPDB_MOVIE4}`,
+    `/api/availability/tpdb/movie/${TPDB_MOVIE_SCAN}`,
     { cookie: member },
   );
   assert.equal((await outcomeOf(gone)).outcome, "missing");
@@ -7529,6 +7666,26 @@ test("content preferences are session-only, self-owned, and atomic on malformed 
 });
 
 test("discover honors a personal shelf order; contents, errors, and other accounts stay untouched", async () => {
+  await boot();
+  const owner = await loginAs("owner");
+  const member2 = await loginAs("member2");
+  // The staff-view proof needs a pending row from another account: file it
+  // here as member2, on this test's own movie id (the admin user-rows test
+  // pins the owner's own count at a true zero before its filings).
+  const filed = await call("POST", "/api/requests", {
+    cookie: member2,
+    body: { media: { provider: "tpdb", kind: "movie", id: TPDB_MOVIE_RAIL } },
+  });
+  assert.equal(filed.status, 201);
+  // The staff door needs a moderator: promote member here (the same grant
+  // the promotion suite sets) and re-login — a role change revokes sessions
+  // by design — so the shared session stays live for the tests below.
+  const promoted = await call("PATCH", `/api/admin/users/${MEMBER_ID}`, {
+    cookie: owner,
+    body: { enabled: true, role: "moderator", libraryIds: [MOVIES_LIB] },
+  });
+  assert.equal(promoted.status, 200);
+  member = await loginAs("member");
   try {
     // Member2's untouched view, snapshotted before member's mutations: the
     // followed rail is conditional (present only with follows), so the
@@ -7579,9 +7736,9 @@ test("discover honors a personal shelf order; contents, errors, and other accoun
 
     // Reordering never rewrites contents: the mixed rail stays velvarr-
     // sourced and the requests rail keeps the caller's role-correct view.
-    // Member is a moderator at this point (promoted in an earlier suite),
-    // so staff visibility shows the whole request history — owner filings
-    // included — not just this account's own.
+    // Member was promoted to moderator above in this test, so staff
+    // visibility shows rows from other accounts — member2's filing above —
+    // not just this account's own.
     const byId = Object.fromEntries(shelves.map((s) => [s.id, s])) as Record<
       string,
       FixtureShelf
@@ -7589,8 +7746,8 @@ test("discover honors a personal shelf order; contents, errors, and other accoun
     assert.equal(byId["new-releases"]?.source, "velvarr");
     const staffView = byId["velvarr-requests"]?.items ?? [];
     assert.ok(
-      staffView.some((record) => record.accountId === OWNER_ID),
-      "moderator rail carries the shared request history",
+      staffView.some((record) => record.accountId === MEMBER2_ID),
+      "moderator rail carries other accounts' filings",
     );
 
     // Another account keeps its own view: member's reorder leaks nothing —
