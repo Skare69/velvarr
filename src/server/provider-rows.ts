@@ -152,11 +152,22 @@ export function isProviderImageUrl(url: string): ImageUrlCheck {
   if (u.username || u.password || u.hash) {
     return { ok: false, reason: "artwork URLs must not carry credentials" };
   }
+  // The artwork cache keys on the raw URL while the fetch requests
+  // origin+pathname only, so a query string would multiply cache entries for
+  // one upstream path: ?n=1, ?n=2, ... each refetch (VELV-23 flood).
+  if (u.search !== "") {
+    return { ok: false, reason: "artwork URLs must not carry a query string" };
+  }
   if (PROVIDER_IMAGE_HOSTS[u.hostname] !== true && !loopbackFixture) {
     return {
       ok: false,
       reason: `host ${u.hostname} is not a provider artwork host`,
     };
+  }
+  // stashdb.org is also the StashDB API host, and /images/<uuid> is its only
+  // artwork path, so no other stashdb.org path may be proxied (VELV-23).
+  if (u.hostname === "stashdb.org" && !u.pathname.startsWith("/images/")) {
+    return { ok: false, reason: "stashdb.org artwork must be under /images/" };
   }
   return {
     ok: true,

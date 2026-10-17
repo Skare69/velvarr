@@ -389,10 +389,16 @@ const IMAGE_BYTE_CAP = 8 * 1024 * 1024;
  * record. Never sends provider credentials, never follows redirects (the
  * transport errors on 3xx). Successful image responses are cached in process
  * memory for a day (Seerr's default for hosts without max-age) and never
- * written to disk. */
+ * written to disk. `onMiss` runs synchronously when and only when an upstream
+ * fetch is about to start — once per coalesced burst, never on a cache hit or
+ * an in-flight join — so callers can bound their upstream fetches. */
 export async function fetchProviderArtwork(
   url: string,
-  options: { timeoutMs?: number; sizeLimit?: number } = {},
+  options: {
+    timeoutMs?: number;
+    sizeLimit?: number;
+    onMiss?: () => void;
+  } = {},
 ): Promise<{ bytes: Uint8Array; contentType: string }> {
   // Validation always runs, even on a cache hit: the cache key is only as
   // trustworthy as the gate that fed it.
@@ -412,9 +418,9 @@ export async function fetchProviderArtwork(
     contentType: string;
   }> => {
     const u = new URL(url);
-    // ponytail: requestBytes rejoins origin+pathname, dropping any query string;
-    // provider artwork URLs carry none today — a future query-bearing URL fails
-    // visibly at the CDN instead of silently changing what is served.
+    // The gate rejects query strings and fragments, so origin+pathname is
+    // the whole URL: the raw-URL cache key can never diverge from what is
+    // fetched here.
     const { bytes, contentType } = await requestBytes(
       u.origin,
       u.pathname,
@@ -449,6 +455,9 @@ export async function fetchProviderArtwork(
   }
   const inFlight = artworkInFlight.get(url);
   if (inFlight) return inFlight;
+  // Exactly one caller per coalesced burst reaches this synchronous window,
+  // so onMiss charges once per upstream fetch; hits and joins never do.
+  options.onMiss?.();
   const pending = fetchOnce()
     .then((entry) => {
       artworkCache.set(url, { at: Date.now(), ...entry });

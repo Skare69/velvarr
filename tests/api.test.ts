@@ -3177,6 +3177,89 @@ test("catalog artwork proxy: provider-only, no credentials, cacheable with reval
   assert.equal(logo.headers.get("x-content-type-options"), "nosniff");
 });
 
+test("catalog artwork proxy: query and non-image paths refused; misses charge, cached tiles stay free", async (t) => {
+  resetRateBuckets();
+  // Mock clock: no refill can land mid-test, so the boundary is exact.
+  t.mock.timers.enable({ apis: ["Date"] });
+
+  // A query string would vary the cache key while the fetch requests
+  // origin+pathname only, so ?n=1, ?n=2, ... would each refetch the same
+  // upstream path; stashdb.org is also the API host and /images/ its only
+  // artwork path. The gate refuses both before any fetch: the fixture call
+  // count below cannot move.
+  const callsBefore = tpdbFx.calls;
+  const varied = await call(
+    "GET",
+    `/api/catalog/image?url=${encodeURIComponent(
+      `${tpdbUrl}/fixture-artwork.png?n=1`,
+    )}`,
+    { cookie: member },
+  );
+  assert.equal(varied.status, 400);
+  assert.equal((await errorShape(varied, 400)).code, "invalid_artwork_url");
+  await errorShape(
+    await call(
+      "GET",
+      `/api/catalog/image?url=${encodeURIComponent(
+        "https://stashdb.org/graphql",
+      )}`,
+      { cookie: member },
+    ),
+    400,
+  );
+  await errorShape(
+    await call(
+      "GET",
+      `/api/catalog/image?url=${encodeURIComponent(
+        "https://stashdb.org/not-images/x.jpg",
+      )}`,
+      { cookie: member },
+    ),
+    400,
+  );
+  assert.equal(tpdbFx.calls, callsBefore, "refused URLs must not fetch");
+
+  // A fresh URL is an upstream miss and charges the shared bucket once;
+  // every same-URL repeat is a cache hit and stays free even after the
+  // bucket is exhausted. A fresh path guarantees a miss: earlier tests
+  // already cached /fixture-artwork.png in the process-wide artwork cache.
+  const fresh = encodeURIComponent(`${tpdbUrl}/fixture-budget-miss.png`);
+  const first = await call("GET", `/api/catalog/image?url=${fresh}`, {
+    cookie: member,
+  });
+  assert.equal(first.status, 200);
+  assert.equal(tpdbFx.calls, callsBefore + 1, "the miss fetched upstream");
+  for (let i = 0; i < RATE_BURST + 1; i += 1) {
+    const hit = await call("GET", `/api/catalog/image?url=${fresh}`, {
+      cookie: member,
+    });
+    assert.equal(hit.status, 200, `cached request ${i + 1} must stay free`);
+  }
+
+  // Distinct URLs are upstream misses and spend the bucket: after the one
+  // charged fetch, exactly RATE_BURST - 1 more pass, then 429 — a member
+  // session cannot loop this route into unbounded provider fetches.
+  for (let i = 0; i < RATE_BURST - 1; i += 1) {
+    const miss = await call(
+      "GET",
+      `/api/catalog/image?url=${encodeURIComponent(
+        `${tpdbUrl}/budget-miss-${i}.png`,
+      )}`,
+      { cookie: member },
+    );
+    assert.equal(miss.status, 200, `miss ${i + 1} must pass`);
+  }
+  const drained = await call(
+    "GET",
+    `/api/catalog/image?url=${encodeURIComponent(
+      `${tpdbUrl}/budget-miss-final.png`,
+    )}`,
+    { cookie: member },
+  );
+  assert.equal(drained.status, 429);
+  assert.equal((await errorShape(drained, 429)).code, "rate_limited");
+});
+
 test("requests: lifecycle, autoApprove, privacy, roles, origin", async () => {
   // Re-establish Whisparr (removed by the rotation test) with delivery settings.
   const readd = await call("PATCH", "/api/admin/integrations", {

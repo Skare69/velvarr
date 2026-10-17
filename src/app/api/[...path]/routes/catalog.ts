@@ -27,7 +27,12 @@ import {
   listRequests,
   upsertCatalogRecord,
 } from "../../../../server/storage.ts";
-import { type AuthContext, type RouteDef, json } from "../admission.ts";
+import {
+  chargeRateBudget,
+  type AuthContext,
+  type RouteDef,
+  json,
+} from "../admission.ts";
 import { AppError } from "../../../../server/http.ts";
 import { imageResponse } from "./library.ts";
 import {
@@ -603,7 +608,10 @@ export async function catalogDetail(
 // revalidation or another device skips the upstream fetch. No Velvarr or
 // provider credentials ever reach the image host (fetchProviderArtwork sends
 // none).
-export async function catalogImage(request: Request): Promise<Response> {
+export async function catalogImage(
+  ctx: AuthContext,
+  request: Request,
+): Promise<Response> {
   const target = new URL(request.url).searchParams.get("url");
   if (target === null || target === "") {
     throw new AppError(400, "invalid_query", "url is required.");
@@ -616,7 +624,13 @@ export async function catalogImage(request: Request): Promise<Response> {
       `Rejected artwork URL: ${check.reason}.`,
     );
   }
-  const { bytes, contentType } = await fetchProviderArtwork(target);
+  const { bytes, contentType } = await fetchProviderArtwork(target, {
+    // exemptFromBudget only skips the dispatch charge, so a page of cached
+    // tiles stays free; every upstream cache miss charges the same shared
+    // bucket here, keeping provider fetches bounded (v0.39.0 shipped the
+    // route fully exempt and let one session drive unbounded fetches).
+    onMiss: () => chargeRateBudget(ctx.account.id),
+  });
   const response = imageResponse({ bytes, contentType }, request, 604800);
   if (response.status === 304) return response;
   // Provider logos include SVG, which is active content. Nothing here is
@@ -643,13 +657,16 @@ export const routes: RouteDef[] = [
   {
     // Artwork proxy: a page load fires one request per tile and the bytes
     // are cached in server memory for a day and revalidated client-side, so
-    // it never touches the provider APIs and stays exempt from the budget —
-    // charging it locked a member out after a few F5s.
+    // the dispatch charge is skipped — charging every tile locked a member
+    // out after a few F5s. The exemption covers the cached-tile flood only:
+    // the handler charges the shared bucket on an upstream cache miss
+    // (fetchProviderArtwork's onMiss), so the route cannot drive unbounded
+    // provider fetches (v0.39.0 shipped it fully exempt).
     method: "GET",
     segments: ["catalog", "image"],
     auth: "session",
     exemptFromBudget: true,
-    run: async (_ctx, request) => catalogImage(request),
+    run: async (ctx, request) => catalogImage(ctx, request),
   },
   {
     method: "GET",

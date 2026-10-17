@@ -107,8 +107,10 @@ async function dispatch(request: Request, method: string): Promise<Response> {
     // The per-account rate budget is charged here, at the one dispatch point
     // admission already funnels through, synchronously before the handler:
     // a parallel burst cannot all pass on a stale token count. Every session
-    // and admin route charges; only artwork routes are exempt, because a
-    // page load fires one per tile and they never touch provider APIs.
+    // and admin route charges; only artwork routes are exempt at dispatch,
+    // because a page load fires one per tile — and the catalog artwork proxy
+    // charges an upstream cache miss in its handler instead, so cached tiles
+    // stay free while provider fetches stay bounded.
     if (!def.exemptFromBudget) chargeRateBudget(ctx.account.id);
     return await def.run(ctx, request, paramsOf(def, segments.slice(1)));
   } catch (err) {

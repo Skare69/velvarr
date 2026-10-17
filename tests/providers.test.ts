@@ -1273,6 +1273,26 @@ test("artwork URL gate: https + provider hosts only, derived from live records",
     false,
   );
   assert.equal(isProviderImageUrl("not a url").ok, false);
+  // stashdb.org is also the StashDB API host and /images/ its only artwork
+  // path; a query string would multiply cache keys past the fetch (VELV-23).
+  assert.deepEqual(isProviderImageUrl("https://stashdb.org/graphql"), {
+    ok: false,
+    reason: "stashdb.org artwork must be under /images/",
+  });
+  assert.equal(
+    isProviderImageUrl("https://stashdb.org/not-images/x.jpg").ok,
+    false,
+  );
+  assert.deepEqual(isProviderImageUrl("https://cdn.theporndb.net/x.jpg?n=1"), {
+    ok: false,
+    reason: "artwork URLs must not carry a query string",
+  });
+  assert.equal(
+    isProviderImageUrl(
+      "https://stashdb.org/images/d695a097-3cf5-41c6-bf00-be5c7bc185b8?n=2",
+    ).ok,
+    false,
+  );
   // A DNS name beginning "127." is an attacker-controlled hostname, not the
   // loopback literal (architecture review v0.34.0). isLoopbackHost matches
   // only literal 127.0.0.0/8 IPv4, "localhost" and "::1" — otherwise the

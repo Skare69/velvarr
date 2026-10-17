@@ -239,9 +239,11 @@ export function chargeRateBudget(accountId: string): void {
 // per-account budget at dispatch, as the audit installed it. The only
 // exception is `exemptFromBudget`: artwork routes (poster, still and avatar
 // bytes from Jellyfin or the memory-cached provider artwork proxy). A page
-// load fires one artwork request per tile — dozens — and they never touch
-// the shared provider APIs, so charging them locked a member out after a
-// few F5s. Anything that reads TPDB/StashDB stays charged.
+// load fires one artwork request per tile — dozens — and charging every tile
+// locked a member out after a few F5s. The exemption covers the cached-tile
+// flood only: a route whose upstream miss reaches TPDB/StashDB (the catalog
+// artwork proxy) charges that miss in its handler, so provider fetches stay
+// bounded. Anything else that reads TPDB/StashDB stays charged.
 export type RouteDef = {
   method: "GET" | "POST" | "PATCH" | "DELETE";
   segments: string[];
