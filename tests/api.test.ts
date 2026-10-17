@@ -29,11 +29,13 @@ import {
 import { resetSweepCache } from "../src/server/jellyfin.ts";
 import { resetUpdateCache } from "../src/server/update.ts";
 import { resetLoginBuckets } from "../src/server/security.ts";
+import { AppError } from "../src/server/http.ts";
 import { countPendingApprovals } from "../src/lib/approvals.ts";
 import type { RouteDef } from "../src/app/api/[...path]/admission.ts";
 import {
   RATE_BURST,
   RATE_REFILL_PER_MINUTE,
+  chargeRateBudget,
   resetRateBuckets,
   resetSessionCache,
 } from "../src/app/api/[...path]/admission.ts";
@@ -8585,4 +8587,26 @@ test("rate budget: artwork never charges the bucket; local reads still do", asyn
     { cookie: member },
   );
   await errorShape(across, 429);
+});
+
+test("rate budget: the FIFO cap evicts only refilled buckets, never a drained one", (t) => {
+  // Frozen clock: no refill can land mid-flood, so every live bucket holds
+  // exactly RATE_BURST - 1 and the drained one holds 0. The map is
+  // module-global and the fixture store has three accounts, so the 256-id
+  // flood calls chargeRateBudget directly with synthetic ids.
+  t.mock.timers.enable({ apis: ["Date"] });
+  const throwsRateLimited = (error: unknown) =>
+    error instanceof AppError &&
+    error.status === 429 &&
+    error.code === "rate_limited";
+  for (let i = 0; i < RATE_BURST; i++) chargeRateBudget("victim");
+  assert.throws(() => chargeRateBudget("victim"), throwsRateLimited);
+  // Fill the map to its cap: the victim's drained bucket plus 255 live ones.
+  for (let i = 0; i < 255; i++) chargeRateBudget(`live-${i}`);
+  // The 257th account finds no refilled bucket to evict and is refused
+  // instead of stealing the victim's slot.
+  assert.throws(() => chargeRateBudget("newcomer"), throwsRateLimited);
+  // The victim's drained bucket survived the flood: it still refuses with
+  // 429 instead of coming back as a fresh RATE_BURST.
+  assert.throws(() => chargeRateBudget("victim"), throwsRateLimited);
 });

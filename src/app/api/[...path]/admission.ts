@@ -170,18 +170,52 @@ export function resetRateBuckets(): void {
   rateBuckets.clear();
 }
 
+/** Refill a bucket to `now` and cap it at the burst. Shared by the charge
+ * path and the cap's eviction scan, which must compare refilled tokens —
+ * comparing stored tokens alone would treat an idle-but-drained bucket as
+ * live, or a just-recharged one as evictable. */
+function refilledTokens(
+  bucket: { tokens: number; at: number },
+  now: number,
+): number {
+  return Math.min(
+    RATE_BURST,
+    // A wall-clock step backwards must not turn a full bucket negative.
+    Math.max(bucket.tokens, 0) +
+      ((now - bucket.at) / 60_000) * RATE_REFILL_PER_MINUTE,
+  );
+}
+
 export function chargeRateBudget(accountId: string): void {
   const now = Date.now();
   let bucket = rateBuckets.get(accountId);
   if (bucket) {
-    bucket.tokens = Math.min(
-      RATE_BURST,
-      // A wall-clock step backwards must not turn a full bucket negative.
-      Math.max(bucket.tokens, 0) +
-        ((now - bucket.at) / 60_000) * RATE_REFILL_PER_MINUTE,
-    );
+    bucket.tokens = refilledTokens(bucket, now);
     bucket.at = now;
   } else {
+    if (rateBuckets.size >= RATE_BUCKETS_CAP) {
+      // The map's order is insertion, not last charge: a bucket stops
+      // moving when a charge throws, so the oldest key can be a drained
+      // one. Evicting it would hand that account a fresh burst and defeat
+      // the per-account bound. Evict only a bucket already refilled to
+      // full (idle for a whole refill window); if every slot belongs to a
+      // live account, refuse the new allocation instead.
+      let evicted = false;
+      for (const [key, candidate] of rateBuckets) {
+        if (refilledTokens(candidate, now) >= RATE_BURST) {
+          rateBuckets.delete(key);
+          evicted = true;
+          break;
+        }
+      }
+      if (!evicted) {
+        throw new AppError(
+          429,
+          "rate_limited",
+          "Too many requests; slow down and try again shortly.",
+        );
+      }
+    }
     bucket = { tokens: RATE_BURST, at: now };
   }
   if (bucket.tokens < 1) {
@@ -192,12 +226,9 @@ export function chargeRateBudget(accountId: string): void {
     );
   }
   bucket.tokens -= 1;
-  // Re-insert so the FIFO cap evicts idle accounts, never live ones.
+  // Re-insert so the cap scans past recently charged accounts first.
   rateBuckets.delete(accountId);
   rateBuckets.set(accountId, bucket);
-  while (rateBuckets.size > RATE_BUCKETS_CAP) {
-    rateBuckets.delete(rateBuckets.keys().next().value!);
-  }
 }
 
 // The route declaration contract: admission is part of the route type, so a
