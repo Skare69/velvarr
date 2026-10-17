@@ -69,6 +69,11 @@ const config = {
   // at v0.38.1. Current measured clean-run score: 88.70 (1794 killed,
   // 4 timeout, 229 survived, 2027 tested, 2026-10-16, Linux worker,
   // concurrency 8); a regression below break fails the run.
+  // A 0-survivor (100.00) result means a broken environment, not a perfect
+  // one: the accepted survivors below are the floor of a healthy run. A
+  // vacuous 100.00 was once produced by all 8 workers sharing one exported
+  // VELVARR_DATA_DIR and failing on its locks; tests/setup.ts now gives
+  // every test process its own dir.
   // status.ts and browse-includes.ts are fully killed: the badge and
   // acquisition-line tests pin every status branch, the sorts suite pins
   // the capability table, and tests/browse.test.ts pins the include

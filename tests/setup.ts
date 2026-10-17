@@ -3,16 +3,19 @@
 // pins its own (api, acquisition, storage do), so no code path can fall back
 // to the repo's ./data default — in the primary checkout that is the
 // operator's real database, which a test run would open, WAL and migrate.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Only a dir this file created may be removed: an externally pinned
-// VELVARR_DATA_DIR can point at real data (e.g. the repo's ./data default).
-const created = process.env.VELVARR_DATA_DIR
-  ? undefined
-  : mkdtempSync(join(tmpdir(), "velvarr-test-"));
-process.env.VELVARR_DATA_DIR ??= created;
+// Every test process gets its own throwaway dir: an exported VELVARR_DATA_DIR
+// only picks the parent of that dir, never the dir itself, so concurrent test
+// processes (Stryker workers, node --test file processes) can never share one
+// SQLite file and fail on each other's locks. Only a dir this file created is
+// removed at exit, so the exported dir may point at real data untouched.
+const base = process.env.VELVARR_DATA_DIR ?? tmpdir();
+mkdirSync(base, { recursive: true });
+const created = mkdtempSync(join(base, "velvarr-test-"));
+process.env.VELVARR_DATA_DIR = created;
 
 // ponytail: maxRetries/retryDelay rides out Windows AV/indexer lock grace;
 // a removal that still fails is reported, never hidden.
