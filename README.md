@@ -82,7 +82,7 @@ Velvarr is an installable app: served over HTTPS, the browser's menu offers **Ad
 2. On the machine running Velvarr: `tailscale serve --bg 6699`.
 3. Open `https://<machine>.<tailnet>.ts.net` on the phone and use **Add to home screen**.
 
-`tailscale serve` terminates TLS with certificates the household's browsers already trust and sets `X-Forwarded-Proto: https`, which marks the session cookie `Secure`. Optionally pin `VELVARR_ORIGIN=https://<machine>.<tailnet>.ts.net` to make that origin the only one allowed to mutate, independent of proxy headers. On plain HTTP the worker does not register; everything else works.
+`tailscale serve` terminates TLS with certificates the household's browsers already trust and sets `X-Forwarded-Proto: https`, which marks the session cookie `Secure`. Optionally pin `VELVARR_ORIGIN=https://<machine>.<tailnet>.ts.net` to make that origin the only one allowed to mutate, independent of proxy headers. If `VELVARR_ORIGIN` is already pinned to another address (for example your LAN origin), sign-in from the phone fails with `origin_mismatch`. Change the pin to the ts.net address, or remove the variable. Only one origin can be pinned, so LAN access and Tailscale access are mutually exclusive while a pin is set. On plain HTTP the worker does not register; everything else works.
 
 ## Local AI-assisted matching with Ollama
 
