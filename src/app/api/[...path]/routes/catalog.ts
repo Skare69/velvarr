@@ -685,9 +685,15 @@ export const routes: RouteDef[] = [
       performerTagsRoute(ctx, p.provider!, p.kind!, p.id!),
   },
   {
+    // Card preload: every RequestableCard (one per rail tile, per related
+    // item, per browse card) fires this route and /api/availability for its
+    // own reference after page load, so a cold discover or detail page
+    // sends hundreds. They charge the preload lane instead of dispatch —
+    // the meta cache bounds the upstream cost, the lane bounds the rate.
     method: "GET",
     segments: ["catalog", ":provider", ":kind", ":id"],
     auth: "session",
+    lane: "preload",
     run: async (ctx, _request, p) =>
       catalogDetail(ctx, p.provider!, p.kind!, p.id!),
   },

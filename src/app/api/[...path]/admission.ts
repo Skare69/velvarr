@@ -172,11 +172,21 @@ export const RATE_REFILL_PER_MINUTE = 30;
 // artwork proxy caps at ARTWORK_REFILL_PER_MINUTE misses per minute.
 export const ARTWORK_BURST = 400;
 export const ARTWORK_REFILL_PER_MINUTE = 200;
+// Card preloads get their own lane for the same reason: every
+// RequestableCard (one per rail tile and per related item) fires
+// /api/catalog/:p/:k/:id and /api/availability/:p/:k/:id after page load,
+// so a cold discover page of 4 provider rails × 32 tiles sends ~256 of
+// them and a detail page ~64 more — far past the dispatch burst. The burst
+// covers the biggest page twice over; the refill still caps sustained
+// distinct-id enumeration at PRELOAD_REFILL_PER_MINUTE reads per minute.
+export const PRELOAD_BURST = 600;
+export const PRELOAD_REFILL_PER_MINUTE = 120;
 const RATE_BUCKETS_CAP = 256;
 
-type RateLane = "dispatch" | "artwork";
+type RateLane = "dispatch" | "preload" | "artwork";
 const LANES: Record<RateLane, { burst: number; refill: number }> = {
   dispatch: { burst: RATE_BURST, refill: RATE_REFILL_PER_MINUTE },
+  preload: { burst: PRELOAD_BURST, refill: PRELOAD_REFILL_PER_MINUTE },
   artwork: { burst: ARTWORK_BURST, refill: ARTWORK_REFILL_PER_MINUTE },
 };
 export type { RateLane };
@@ -262,15 +272,16 @@ export function chargeRateBudget(
 // exclude the `/api` prefix; a segment starting with `:` captures one
 // path parameter. Matching is exact (method + count + literal/:param), so no
 // entry can shadow another. Every session and admin route charges the
-// per-account budget at dispatch, as the audit installed it. The only
-// exception is `exemptFromBudget`: artwork routes (poster, still and avatar
-// bytes from Jellyfin or the memory-cached provider artwork proxy). A page
-// load fires one artwork request per tile — dozens — and charging every tile
-// locked a member out after a few F5s. The exemption covers the cached-tile
-// flood only: a route whose upstream miss reaches TPDB/StashDB (the catalog
-// artwork proxy) charges that miss on the account's artwork lane in its
-// handler, so provider fetches stay bounded without page loads draining the
-// dispatch lane. Anything else that reads TPDB/StashDB stays charged.
+// per-account budget at dispatch, as the audit installed it — by default the
+// "dispatch" lane, or the route's own `lane` for routes a page load fires
+// per tile (the card preload routes: every RequestableCard asks for its
+// detail and availability after load). `exemptFromBudget` marks routes
+// charged nowhere at dispatch (Jellyfin/artwork bytes): a page load fires
+// one artwork request per tile — dozens — and charging every tile locked a
+// member out after a few F5s. The exemption covers the cached-tile flood
+// only: a route whose upstream work reaches TPDB/StashDB bounds itself —
+// the catalog artwork proxy charges each upstream miss on the artwork lane
+// in its handler. Anything else that reads TPDB/StashDB stays charged.
 export type RouteDef = {
   method: "GET" | "POST" | "PATCH" | "DELETE";
   segments: string[];
@@ -280,5 +291,7 @@ export type RouteDef = {
     request: Request,
     params: Record<string, string>,
   ) => Promise<Response>;
+  /** Charged instead of the dispatch lane for per-tile page-load routes. */
+  lane?: RateLane;
   exemptFromBudget?: boolean;
 };

@@ -34,6 +34,8 @@ import { countPendingApprovals } from "../src/lib/approvals.ts";
 import type { RouteDef } from "../src/app/api/[...path]/admission.ts";
 import {
   ARTWORK_BURST,
+  PRELOAD_BURST,
+  PRELOAD_REFILL_PER_MINUTE,
   RATE_BURST,
   RATE_REFILL_PER_MINUTE,
   chargeRateBudget,
@@ -8631,8 +8633,11 @@ beforeEach(() => {
 
 test("rate budget: a same-account flood of provider reads trips 429 rate_limited", async (t) => {
   // Fake clock: the boundary is exact because no refill can land mid-flood.
+  // The shelf read is a dispatch-lane route that reads the providers — the
+  // audited lane. Card preloads (catalog detail, availability) moved to
+  // their own lane and have their own test below.
   t.mock.timers.enable({ apis: ["Date"] });
-  const path = `/api/availability/tpdb/movie/${TPDB_MOVIE}`;
+  const path = "/api/discover/shelf?id=new-releases";
   for (let i = 0; i < RATE_BURST; i++) {
     const res = await call("GET", path, { cookie: member });
     assert.equal(res.status, 200, `burst request ${i + 1} must pass`);
@@ -8648,7 +8653,7 @@ test("rate budget: a same-account flood of provider reads trips 429 rate_limited
 
 test("rate budget: the bucket refills with elapsed time, not only on restart", async (t) => {
   t.mock.timers.enable({ apis: ["Date"] });
-  const path = `/api/availability/tpdb/movie/${TPDB_MOVIE}`;
+  const path = "/api/discover/shelf?id=new-releases";
   for (let i = 0; i <= RATE_BURST; i++) {
     await call("GET", path, { cookie: member2 });
   }
@@ -8686,13 +8691,11 @@ test("rate budget: artwork never charges the bucket; local reads still do", asyn
   const floodedLocal = await call("GET", "/api/me", { cookie: member });
   const localError = await errorShape(floodedLocal, 429);
   assert.equal(localError.code, "rate_limited");
-  // The bucket is per account and spans routes: the drained local read
-  // refuses provider reads too, at the same boundary.
-  const across = await call(
-    "GET",
-    `/api/availability/tpdb/movie/${TPDB_MOVIE}`,
-    { cookie: member },
-  );
+  // The bucket is per account and spans dispatch routes: the drained local
+  // read refuses the discover stubs too, at the same boundary. Card
+  // preloads and artwork live on their own lanes and stay usable (their
+  // tests pin that direction).
+  const across = await call("GET", "/api/discover", { cookie: member });
   await errorShape(across, 429);
 });
 
@@ -8738,4 +8741,122 @@ test("rate budget: the artwork lane is bounded on its own and never touches disp
   for (let i = 0; i < RATE_BURST; i++) chargeRateBudget("drained");
   assert.throws(() => chargeRateBudget("drained"), throwsRateLimited);
   chargeRateBudget("drained", "artwork");
+});
+
+test("rate budget: the preload lane refills on its own clock and never touches dispatch", (t) => {
+  // The preload lane carries every card's detail and availability call, so
+  // its refill — not just its burst — is user-visible: after one big page
+  // drains it, later pages keep working at the lane's own pace while
+  // dispatch keeps its full audited budget.
+  t.mock.timers.enable({ apis: ["Date"] });
+  const throwsRateLimited = (error: unknown) =>
+    error instanceof AppError &&
+    error.status === 429 &&
+    error.code === "rate_limited";
+  for (let i = 0; i < PRELOAD_BURST; i++) {
+    chargeRateBudget("surfer", "preload");
+  }
+  assert.throws(() => chargeRateBudget("surfer", "preload"), throwsRateLimited);
+  // Dispatch never felt the flood.
+  chargeRateBudget("surfer");
+  // Half a refill window grants exactly PRELOAD_REFILL_PER_MINUTE / 2
+  // preload tokens; the next request after them finds the lane empty again.
+  t.mock.timers.tick(30_000);
+  for (let i = 0; i < PRELOAD_REFILL_PER_MINUTE / 2; i++) {
+    chargeRateBudget("surfer", "preload");
+  }
+  assert.throws(() => chargeRateBudget("surfer", "preload"), throwsRateLimited);
+  // And a drained dispatch bucket leaves the preload lane untouched.
+  for (let i = 0; i < RATE_BURST; i++) chargeRateBudget("drained");
+  assert.throws(() => chargeRateBudget("drained"), throwsRateLimited);
+  chargeRateBudget("drained", "preload");
+});
+
+test("rate budget: card preloads charge the preload lane, never dispatch", async (t) => {
+  // Every RequestableCard fires /api/catalog/:p/:k/:id and
+  // /api/availability/:p/:k/:id for its own reference after page load, so a
+  // discover page sends hundreds of both. They must pass far past the
+  // dispatch burst with the dispatch lane intact, and still answer 429 at
+  // their own boundary so a member session cannot loop distinct ids
+  // through either route for unbounded provider reads.
+  t.mock.timers.enable({ apis: ["Date"] });
+  const detailPath = `/api/catalog/tpdb/movie/${TPDB_MOVIE}`;
+  const availPath = `/api/availability/tpdb/movie/${TPDB_MOVIE}`;
+  for (let i = 0; i < RATE_BURST + 5; i++) {
+    const detail = await call("GET", detailPath, { cookie: member });
+    assert.equal(detail.status, 200, `detail ${i + 1} must pass`);
+    const avail = await call("GET", availPath, { cookie: member });
+    assert.equal(avail.status, 200, `availability ${i + 1} must pass`);
+  }
+  const apiDuring = await call("GET", "/api/me", { cookie: member });
+  assert.equal(apiDuring.status, 200, "preloads must not drain dispatch");
+  // i counts charges: the pairs phase spent (RATE_BURST + 5) * 2, and the
+  // loop fills the lane to exactly PRELOAD_BURST before the probe.
+  for (let i = (RATE_BURST + 5) * 2; i < PRELOAD_BURST; i++) {
+    const detail = await call("GET", detailPath, { cookie: member });
+    assert.equal(detail.status, 200, `detail ${i + 1} must pass`);
+  }
+  const drained = await call("GET", detailPath, { cookie: member });
+  assert.equal((await errorShape(drained, 429)).code, "rate_limited");
+  // A drained preload lane leaves the dispatch lane working.
+  const apiAfter = await call("GET", "/api/me", { cookie: member });
+  assert.equal(apiAfter.status, 200);
+});
+
+test("rate budget: a cold discover and detail page load answers without 429", async (t) => {
+  // The traffic a cold browser session sends, at page scale: the shell
+  // stubs, the scrolled rails' shelf reads, then every tile's card
+  // preloads (detail + availability) and artwork bytes — then a movie
+  // detail with a rail of 32 related cards. Fixture references repeat
+  // across tiles on purpose and stay movie-only: the lanes charge per
+  // call, not per id, so repetition exercises the same arithmetic as 160
+  // distinct tiles.
+  t.mock.timers.enable({ apis: ["Date"] });
+  const tiles = [
+    `tpdb/movie/${TPDB_MOVIE}`,
+    `tpdb/movie/${TPDB_MOVIE4}`,
+    `tpdb/movie/${TPDB_MOVIE_YEAR}`,
+  ];
+  const status = async (path: string, label: string) => {
+    const res = await call("GET", path, { cookie: member });
+    assert.equal(res.status, 200, label);
+  };
+  await status("/api/discover", "shell stubs");
+  for (const id of ["new-releases", "trending", "studios", "genres"]) {
+    await status(`/api/discover/shelf?id=${id}`, `shelf ${id}`);
+  }
+  for (let i = 0; i < 128; i++) {
+    const p = tiles[i % tiles.length]!;
+    await status(`/api/catalog/${p}`, `tile ${i + 1} detail`);
+    await status(`/api/availability/${p}`, `tile ${i + 1} availability`);
+    await status(
+      `/api/catalog/image?url=${encodeURIComponent(
+        `${tpdbUrl}/page-art-${i % 6}.png`,
+      )}`,
+      `tile ${i + 1} artwork`,
+    );
+  }
+  // Open one movie: its rail payload plus 32 related cards, each with the
+  // same preload pair and artwork bytes.
+  await status(
+    `/api/catalog/tpdb/movie/${TPDB_MOVIE}/related?rank=jev`,
+    "related rail payload",
+  );
+  for (let i = 0; i < 32; i++) {
+    const p = tiles[i % tiles.length]!;
+    await status(`/api/catalog/${p}`, `related card ${i + 1} detail`);
+    await status(
+      `/api/availability/${p}`,
+      `related card ${i + 1} availability`,
+    );
+    await status(
+      `/api/catalog/image?url=${encodeURIComponent(
+        `${tpdbUrl}/page-art-${(i + 3) % 6}.png`,
+      )}`,
+      `related card ${i + 1} artwork`,
+    );
+  }
+  // No lane tripped: dispatch, preloads and artwork all finished — the
+  // page-load 429 storm the card reports stays gone.
+  await status("/api/me", "dispatch survives the whole session");
 });

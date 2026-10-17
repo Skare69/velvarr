@@ -255,9 +255,16 @@ export const routes: RouteDef[] = [
     run: async (_ctx, request) => browseTagsRoute(request),
   },
   {
+    // Card preload: the second call every RequestableCard fires after page
+    // load (see the catalog detail route). Charges the preload lane, not
+    // dispatch — a page of cards must not drain the API budget. The route's
+    // only provider read is identityHints' title-hint detail, shared with
+    // the card's detail call through the meta cache; the lane bounds
+    // distinct-id loops through either route.
     method: "GET",
     segments: ["availability", ":provider", ":kind", ":id"],
     auth: "session",
+    lane: "preload",
     run: async (ctx, _request, p) =>
       availability(ctx, p.provider!, p.kind!, p.id!),
   },
