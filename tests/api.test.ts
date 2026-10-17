@@ -33,6 +33,7 @@ import { AppError } from "../src/server/http.ts";
 import { countPendingApprovals } from "../src/lib/approvals.ts";
 import type { RouteDef } from "../src/app/api/[...path]/admission.ts";
 import {
+  ARTWORK_BURST,
   RATE_BURST,
   RATE_REFILL_PER_MINUTE,
   chargeRateBudget,
@@ -3219,9 +3220,9 @@ test("catalog artwork proxy: query and non-image paths refused; misses charge, c
   );
   assert.equal(tpdbFx.calls, callsBefore, "refused URLs must not fetch");
 
-  // A fresh URL is an upstream miss and charges the shared bucket once;
-  // every same-URL repeat is a cache hit and stays free even after the
-  // bucket is exhausted. A fresh path guarantees a miss: earlier tests
+  // A fresh URL is an upstream miss and charges the account's artwork lane
+  // once; every same-URL repeat is a cache hit and stays free even after the
+  // lane is exhausted. A fresh path guarantees a miss: earlier tests
   // already cached /fixture-artwork.png in the process-wide artwork cache.
   const fresh = encodeURIComponent(`${tpdbUrl}/fixture-budget-miss.png`);
   const first = await call("GET", `/api/catalog/image?url=${fresh}`, {
@@ -3229,17 +3230,21 @@ test("catalog artwork proxy: query and non-image paths refused; misses charge, c
   });
   assert.equal(first.status, 200);
   assert.equal(tpdbFx.calls, callsBefore + 1, "the miss fetched upstream");
-  for (let i = 0; i < RATE_BURST + 1; i += 1) {
+  for (let i = 0; i < 5; i += 1) {
     const hit = await call("GET", `/api/catalog/image?url=${fresh}`, {
       cookie: member,
     });
     assert.equal(hit.status, 200, `cached request ${i + 1} must stay free`);
   }
 
-  // Distinct URLs are upstream misses and spend the bucket: after the one
-  // charged fetch, exactly RATE_BURST - 1 more pass, then 429 — a member
-  // session cannot loop this route into unbounded provider fetches.
-  for (let i = 0; i < RATE_BURST - 1; i += 1) {
+  // Distinct URLs are upstream misses and spend the account's artwork lane,
+  // never the dispatch bucket the API routes share: past RATE_BURST misses
+  // a page's own API calls still pass (a cold discover or detail page must
+  // not 429 itself mid-load), and after ARTWORK_BURST misses the next miss
+  // answers 429 — a member session cannot loop this route into unbounded
+  // provider fetches. A fresh path guarantees a miss: earlier tests already
+  // cached /fixture-artwork.png in the process-wide artwork cache.
+  for (let i = 0; i < RATE_BURST + 5; i += 1) {
     const miss = await call(
       "GET",
       `/api/catalog/image?url=${encodeURIComponent(
@@ -3248,6 +3253,18 @@ test("catalog artwork proxy: query and non-image paths refused; misses charge, c
       { cookie: member },
     );
     assert.equal(miss.status, 200, `miss ${i + 1} must pass`);
+  }
+  const apiDuring = await call("GET", "/api/me", { cookie: member });
+  assert.equal(apiDuring.status, 200, "artwork misses must not drain dispatch");
+  for (let i = RATE_BURST + 5; i < ARTWORK_BURST - 1; i += 1) {
+    const miss = await call(
+      "GET",
+      `/api/catalog/image?url=${encodeURIComponent(
+        `${tpdbUrl}/budget-miss-${i}.png`,
+      )}`,
+      { cookie: member },
+    );
+    assert.equal(miss.status, 200, `miss ${i + 2} must pass`);
   }
   const drained = await call(
     "GET",
@@ -3258,6 +3275,13 @@ test("catalog artwork proxy: query and non-image paths refused; misses charge, c
   );
   assert.equal(drained.status, 429);
   assert.equal((await errorShape(drained, 429)).code, "rate_limited");
+  // A drained artwork lane neither blocks a cache hit nor the dispatch lane.
+  const hit = await call("GET", `/api/catalog/image?url=${fresh}`, {
+    cookie: member,
+  });
+  assert.equal(hit.status, 200, "cached tiles stay free after the lane drains");
+  const apiAfter = await call("GET", "/api/me", { cookie: member });
+  assert.equal(apiAfter.status, 200, "dispatch survives a drained art lane");
 });
 
 test("requests: lifecycle, autoApprove, privacy, roles, origin", async () => {
@@ -8692,4 +8716,26 @@ test("rate budget: the FIFO cap evicts only refilled buckets, never a drained on
   // The victim's drained bucket survived the flood: it still refuses with
   // 429 instead of coming back as a fresh RATE_BURST.
   assert.throws(() => chargeRateBudget("victim"), throwsRateLimited);
+});
+
+test("rate budget: the artwork lane is bounded on its own and never touches dispatch", (t) => {
+  // Frozen clock: no refill can land, so every boundary is exact. The
+  // artwork lane exists so a cold page's tile flood cannot drain (or be
+  // starved by) the dispatch bucket that meters the provider APIs — and it
+  // still bounds enumeration of the artwork proxy at its own burst.
+  t.mock.timers.enable({ apis: ["Date"] });
+  const throwsRateLimited = (error: unknown) =>
+    error instanceof AppError &&
+    error.status === 429 &&
+    error.code === "rate_limited";
+  for (let i = 0; i < ARTWORK_BURST; i++) {
+    chargeRateBudget("surfer", "artwork");
+  }
+  assert.throws(() => chargeRateBudget("surfer", "artwork"), throwsRateLimited);
+  // The drained artwork lane leaves the same account's dispatch budget full.
+  chargeRateBudget("surfer");
+  // And a drained dispatch bucket leaves the artwork lane untouched.
+  for (let i = 0; i < RATE_BURST; i++) chargeRateBudget("drained");
+  assert.throws(() => chargeRateBudget("drained"), throwsRateLimited);
+  chargeRateBudget("drained", "artwork");
 });

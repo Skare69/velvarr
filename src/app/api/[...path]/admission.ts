@@ -153,16 +153,38 @@ export async function requireAdmin(request: Request): Promise<AuthContext> {
 // One household shares the TPDB/StashDB credentials: an unbounded loop of
 // provider reads from one member session (or a stolen one) can drain the
 // shared quota and starve discovery and search for every other account. A
-// token bucket per account id, charged at dispatch for every session and
-// admin request before the handler runs (artwork routes excepted, see
-// RouteDef), bounds the request rate; the providers' own throttles stay the
-// only bound
+// token bucket per account id and lane, charged at dispatch for every
+// session and admin request before the handler runs (artwork routes
+// excepted, see RouteDef), bounds the request rate; the providers' own
+// throttles stay the only bound
 // inside one request (a single filtered browse may still fan out to its scan
 // ceiling). In-memory per process like every limiter here; a restart resets.
+// Two lanes, independent budgets: "dispatch" meters API calls, "artwork"
+// meters the catalog artwork proxy's upstream misses — a cold page fetches
+// one image per tile and must not drain (or starve on) the dispatch lane.
 export const RATE_BURST = 60;
 export const RATE_REFILL_PER_MINUTE = 30;
+// Artwork misses get their own lane: a cold page legitimately fetches one
+// image per tile (a discover page ≈ 5–7 rails × up to 32 tiles, a movie
+// detail ≈ 50 avatars, stills and related posters), and those misses must
+// neither drain the dispatch budget that guards the rate-limited provider
+// APIs nor be starved by it. Still bounded: sustained enumeration of the
+// artwork proxy caps at ARTWORK_REFILL_PER_MINUTE misses per minute.
+export const ARTWORK_BURST = 400;
+export const ARTWORK_REFILL_PER_MINUTE = 200;
 const RATE_BUCKETS_CAP = 256;
-const rateBuckets = new Map<string, { tokens: number; at: number }>();
+
+type RateLane = "dispatch" | "artwork";
+const LANES: Record<RateLane, { burst: number; refill: number }> = {
+  dispatch: { burst: RATE_BURST, refill: RATE_REFILL_PER_MINUTE },
+  artwork: { burst: ARTWORK_BURST, refill: ARTWORK_REFILL_PER_MINUTE },
+};
+export type { RateLane };
+
+const rateBuckets = new Map<
+  string,
+  { tokens: number; at: number; lane: RateLane }
+>();
 
 /** Test hook: the buckets are module-global, so a flood test would otherwise
  * leak a drained budget into every later test on the same account. */
@@ -170,25 +192,29 @@ export function resetRateBuckets(): void {
   rateBuckets.clear();
 }
 
-/** Refill a bucket to `now` and cap it at the burst. Shared by the charge
- * path and the cap's eviction scan, which must compare refilled tokens —
- * comparing stored tokens alone would treat an idle-but-drained bucket as
- * live, or a just-recharged one as evictable. */
+/** Refill a bucket to `now` and cap it at its lane's burst. Shared by the
+ * charge path and the cap's eviction scan, which must compare refilled
+ * tokens — comparing stored tokens alone would treat an idle-but-drained
+ * bucket as live, or a just-recharged one as evictable. */
 function refilledTokens(
-  bucket: { tokens: number; at: number },
+  bucket: { tokens: number; at: number; lane: RateLane },
   now: number,
 ): number {
+  const { burst, refill } = LANES[bucket.lane];
   return Math.min(
-    RATE_BURST,
+    burst,
     // A wall-clock step backwards must not turn a full bucket negative.
-    Math.max(bucket.tokens, 0) +
-      ((now - bucket.at) / 60_000) * RATE_REFILL_PER_MINUTE,
+    Math.max(bucket.tokens, 0) + ((now - bucket.at) / 60_000) * refill,
   );
 }
 
-export function chargeRateBudget(accountId: string): void {
+export function chargeRateBudget(
+  accountId: string,
+  lane: RateLane = "dispatch",
+): void {
   const now = Date.now();
-  let bucket = rateBuckets.get(accountId);
+  const key = `${lane}:${accountId}`;
+  let bucket = rateBuckets.get(key);
   if (bucket) {
     bucket.tokens = refilledTokens(bucket, now);
     bucket.at = now;
@@ -202,7 +228,7 @@ export function chargeRateBudget(accountId: string): void {
       // live account, refuse the new allocation instead.
       let evicted = false;
       for (const [key, candidate] of rateBuckets) {
-        if (refilledTokens(candidate, now) >= RATE_BURST) {
+        if (refilledTokens(candidate, now) >= LANES[candidate.lane].burst) {
           rateBuckets.delete(key);
           evicted = true;
           break;
@@ -216,7 +242,7 @@ export function chargeRateBudget(accountId: string): void {
         );
       }
     }
-    bucket = { tokens: RATE_BURST, at: now };
+    bucket = { tokens: LANES[lane].burst, at: now, lane };
   }
   if (bucket.tokens < 1) {
     throw new AppError(
@@ -227,8 +253,8 @@ export function chargeRateBudget(accountId: string): void {
   }
   bucket.tokens -= 1;
   // Re-insert so the cap scans past recently charged accounts first.
-  rateBuckets.delete(accountId);
-  rateBuckets.set(accountId, bucket);
+  rateBuckets.delete(key);
+  rateBuckets.set(key, bucket);
 }
 
 // The route declaration contract: admission is part of the route type, so a
@@ -242,8 +268,9 @@ export function chargeRateBudget(accountId: string): void {
 // load fires one artwork request per tile — dozens — and charging every tile
 // locked a member out after a few F5s. The exemption covers the cached-tile
 // flood only: a route whose upstream miss reaches TPDB/StashDB (the catalog
-// artwork proxy) charges that miss in its handler, so provider fetches stay
-// bounded. Anything else that reads TPDB/StashDB stays charged.
+// artwork proxy) charges that miss on the account's artwork lane in its
+// handler, so provider fetches stay bounded without page loads draining the
+// dispatch lane. Anything else that reads TPDB/StashDB stays charged.
 export type RouteDef = {
   method: "GET" | "POST" | "PATCH" | "DELETE";
   segments: string[];

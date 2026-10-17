@@ -626,10 +626,12 @@ export async function catalogImage(
   }
   const { bytes, contentType } = await fetchProviderArtwork(target, {
     // exemptFromBudget only skips the dispatch charge, so a page of cached
-    // tiles stays free; every upstream cache miss charges the same shared
-    // bucket here, keeping provider fetches bounded (v0.39.0 shipped the
-    // route fully exempt and let one session drive unbounded fetches).
-    onMiss: () => chargeRateBudget(ctx.account.id),
+    // tiles stays free; every upstream cache miss charges the account's
+    // artwork lane here, keeping provider fetches bounded without letting a
+    // cold page's tile flood drain the dispatch budget that meters the
+    // rate-limited provider APIs (v0.39.0 shared one bucket and a cold
+    // discover or detail page 429'd itself mid-load).
+    onMiss: () => chargeRateBudget(ctx.account.id, "artwork"),
   });
   const response = imageResponse({ bytes, contentType }, request, 604800);
   if (response.status === 304) return response;
@@ -659,9 +661,9 @@ export const routes: RouteDef[] = [
     // are cached in server memory for a day and revalidated client-side, so
     // the dispatch charge is skipped — charging every tile locked a member
     // out after a few F5s. The exemption covers the cached-tile flood only:
-    // the handler charges the shared bucket on an upstream cache miss
-    // (fetchProviderArtwork's onMiss), so the route cannot drive unbounded
-    // provider fetches (v0.39.0 shipped it fully exempt).
+    // the handler charges the account's artwork lane on an upstream cache
+    // miss (fetchProviderArtwork's onMiss), so the route still cannot drive
+    // unbounded provider fetches (v0.39.0 shipped it fully exempt).
     method: "GET",
     segments: ["catalog", "image"],
     auth: "session",
