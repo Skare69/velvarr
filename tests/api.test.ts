@@ -8803,6 +8803,44 @@ test("rate budget: card preloads charge the preload lane, never dispatch", async
   assert.equal(apiAfter.status, 200);
 });
 
+test("rate budget: performer and studio detail stay on the dispatch lane", async (t) => {
+  // The catalog detail route also serves performer and studio detail, and
+  // no card preloads those. One performer detail can fan out to a
+  // counterpart search plus up to ten reads, so it must be bounded by the
+  // audited dispatch budget (RATE_BURST, 30/min), not by the preload
+  // lane's page-sized 600 burst / 120 per minute.
+  t.mock.timers.enable({ apis: ["Date"] });
+  // One studio call spends a dispatch token beside the performer flood:
+  // both non-media kinds charge dispatch, so together they drain the
+  // bucket to exactly RATE_BURST before the boundary probe.
+  const studio = await call("GET", `/api/catalog/tpdb/studio/${TPDB_STUDIO}`, {
+    cookie: member,
+  });
+  assert.equal(studio.status, 200, "studio detail 1 must pass");
+  for (let i = 0; i < RATE_BURST - 1; i++) {
+    const detail = await call(
+      "GET",
+      `/api/catalog/tpdb/performer/${TPDB_PERFORMER3}`,
+      { cookie: member },
+    );
+    assert.equal(detail.status, 200, `performer detail ${i + 1} must pass`);
+  }
+  const drained = await call(
+    "GET",
+    `/api/catalog/tpdb/performer/${TPDB_PERFORMER3}`,
+    { cookie: member },
+  );
+  assert.equal((await errorShape(drained, 429)).code, "rate_limited");
+  // Dispatch is empty now, so RATE_BURST + 5 media details passing here
+  // proves movie detail still charges the preload lane, not dispatch.
+  for (let i = 0; i < RATE_BURST + 5; i++) {
+    const detail = await call("GET", `/api/catalog/tpdb/movie/${TPDB_MOVIE}`, {
+      cookie: member,
+    });
+    assert.equal(detail.status, 200, `movie detail ${i + 1} must pass`);
+  }
+});
+
 test("rate budget: a cold discover and detail page load answers without 429", async (t) => {
   // The traffic a cold browser session sends, at page scale: the shell
   // stubs, the scrolled rails' shelf reads, then every tile's card

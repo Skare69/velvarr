@@ -3,7 +3,7 @@
 // { method, segments, auth, run } — admission stays part of the route type,
 // the origin-CSRF gate runs here before matching, and matching is exact
 // (method + segment count + literal/:param), so no entry can shadow another.
-import type { AuthContext, RouteDef } from "./admission.ts";
+import type { AuthContext, RateLane, RouteDef } from "./admission.ts";
 import { chargeRateBudget, requireAdmin, requireSession } from "./admission.ts";
 import { guardMutation } from "../../../server/security.ts";
 import { AppError } from "../../../server/http.ts";
@@ -43,6 +43,19 @@ function paramsOf(def: RouteDef, segments: string[]): Record<string, string> {
     if (pat.startsWith(":")) params[pat.slice(1)] = segments[i]!;
   });
   return params;
+}
+
+// The preload lane is for RequestableCard preloads, and only movie and
+// scene tiles preload. The catalog detail route also serves performer and
+// studio detail, which no card ever fires — and one performer detail can
+// fan out to a counterpart search plus up to ten reads — so those kinds
+// keep the audited dispatch budget (RATE_BURST / 30 per minute) instead of
+// the preload lane's page-sized 600 / 120. Unknown kinds fall toward
+// dispatch, the tighter lane, before the handler rejects them.
+function laneFor(def: RouteDef, segments: string[]): RateLane {
+  if (def.lane !== "preload") return def.lane ?? "dispatch";
+  const kind = paramsOf(def, segments).kind;
+  return kind === "movie" || kind === "scene" ? "preload" : "dispatch";
 }
 
 // The only wire 401s: dead Velvarr sessions. The client (shared.tsx api())
@@ -113,7 +126,7 @@ async function dispatch(request: Request, method: string): Promise<Response> {
     // artwork proxy charges an upstream cache miss in its handler instead,
     // so cached tiles stay free while provider fetches stay bounded.
     if (!def.exemptFromBudget) {
-      chargeRateBudget(ctx.account.id, def.lane ?? "dispatch");
+      chargeRateBudget(ctx.account.id, laneFor(def, segments.slice(1)));
     }
     return await def.run(ctx, request, paramsOf(def, segments.slice(1)));
   } catch (err) {

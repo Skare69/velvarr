@@ -690,6 +690,10 @@ export const routes: RouteDef[] = [
     // own reference after page load, so a cold discover or detail page
     // sends hundreds. They charge the preload lane instead of dispatch —
     // the meta cache bounds the upstream cost, the lane bounds the rate.
+    // Media kinds only: this pattern also serves performer and studio
+    // detail (no card preloads those, and a performer detail fans out to a
+    // counterpart search plus up to ten reads), and route.ts keeps those
+    // on the audited dispatch lane.
     method: "GET",
     segments: ["catalog", ":provider", ":kind", ":id"],
     auth: "session",
