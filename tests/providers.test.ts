@@ -640,6 +640,113 @@ test("tpdb pagination continuation follows pages until the provider stops offeri
   }
 });
 
+test("tpdb paging continues when a whole page fails the row mapper", async () => {
+  const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
+  const fixture = await startFixture((req, res) => {
+    const params = queryOf(req.url ?? "");
+    const page = Number(params.get("page") ?? "1");
+    sendJson(res, 200, {
+      data:
+        page === 1
+          ? [{ id: "not-a-uuid", title: "Unmappable row" }]
+          : [
+              {
+                id: MOVIE_ID,
+                title: "Movie on page 2",
+                posters: {},
+                background: {},
+                performers: [],
+                tags: [],
+                scenes: [],
+                movies: [],
+              },
+            ],
+      links: {
+        next: page === 1 ? `${fixture.origin}/movies?page=2&per_page=1` : null,
+      },
+      meta: { current_page: page, per_page: 1, total: 2, last_page: 2 },
+    });
+  });
+  try {
+    process.env.TPDB_BASE_URL = fixture.origin;
+    const page1 = await searchCatalog({
+      provider: "tpdb",
+      kind: "movie",
+      perPage: 1,
+    });
+    assert.equal(page1.items.length, 0);
+    // Raw rows + a provider next link: an empty mapped list must not end
+    // browse, later pages can hold valid rows.
+    assert.equal(page1.hasMore, true);
+
+    const page2 = await searchCatalog({
+      provider: "tpdb",
+      kind: "movie",
+      page: 2,
+      perPage: 1,
+    });
+    assert.equal(page2.items.length, 1);
+    assert.equal(page2.items[0]?.reference.id, MOVIE_ID);
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
+test("stashdb paging continues when a whole page fails the row mapper", async () => {
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  let calls = 0;
+  const fixture = await startFixture((_req, res) => {
+    calls += 1;
+    sendJson(res, 200, {
+      data: {
+        queryScenes:
+          calls === 1
+            ? {
+                count: 2,
+                scenes: [{ id: "not-a-uuid", title: "Unmappable row" }],
+              }
+            : {
+                count: 2,
+                scenes: [
+                  {
+                    id: STASH_SCENE_ID,
+                    title: "Scene on page 2",
+                    tags: [],
+                    performers: [],
+                    urls: [],
+                  },
+                ],
+              },
+      },
+    });
+  });
+  try {
+    process.env.STASHDB_BASE_URL = fixture.origin;
+    const page1 = await searchCatalog({
+      provider: "stashdb",
+      kind: "scene",
+      perPage: 1,
+    });
+    assert.equal(page1.items.length, 0);
+    // The count is real and attests a second page: an unmappable page must
+    // not end browse.
+    assert.equal(page1.hasMore, true);
+
+    const page2 = await searchCatalog({
+      provider: "stashdb",
+      kind: "scene",
+      page: 2,
+      perPage: 1,
+    });
+    assert.equal(page2.items.length, 1);
+    assert.equal(page2.items[0]?.reference.id, STASH_SCENE_ID);
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
 // --- search row hygiene: dedupe by id (never title), drop unusable rows ---
 
 test("search deduplicates by provider id, keeps duplicate titles, drops malformed rows", async () => {

@@ -1015,9 +1015,11 @@ function parseTpdbPage(
       .filter((d): d is CatalogDetail => d !== undefined),
     (d) => `${d.reference.kind}:${d.reference.id}`,
   );
-  // rows > 0 AND a provider-issued next link: TPDB clamps beyond-end pages
-  // and emits no next link there, so this terminates even under fake totals.
-  const hasMore = items.length > 0 && typeof body.links?.next === "string";
+  // Raw rows > 0 AND a provider-issued next link: TPDB clamps beyond-end
+  // pages and emits no next link there, so this terminates even under fake
+  // totals. Raw rows, not mapped survivors: a page whose rows all fail the
+  // mapper must still continue, later pages can hold valid rows.
+  const hasMore = body.data.length > 0 && typeof body.links?.next === "string";
   const rawTotal = body.meta?.total;
   // TPDB reports min(real, 10000): anything below the cap is the provider's
   // attestation, an attested zero included; exactly 10000 stays unproven.
@@ -1450,8 +1452,9 @@ export async function searchCatalog(
     page,
     perPage,
     // StashDB counts are always real, so page*perPage < count is a true
-    // continuation signal.
-    hasMore: items.length > 0 && totalReal && page * perPage < rawCount,
+    // continuation signal. The raw count, not mapped survivors: a page whose
+    // rows all fail the mapper must still continue.
+    hasMore: totalReal && page * perPage < rawCount,
     ...(totalReal ? { total: rawCount } : {}),
     totalCountKnown: totalReal,
     items,
