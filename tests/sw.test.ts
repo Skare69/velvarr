@@ -7,7 +7,7 @@ import { test } from "node:test";
 import "./sw-self.ts";
 import "../public/sw.js";
 
-import { deleted, handlers, state, store } from "./sw-self.ts";
+import { deleted, handlers, state, store, workerLocation } from "./sw-self.ts";
 
 const ORIGIN = "https://velvarr.ts.net";
 
@@ -92,4 +92,35 @@ test("service worker caches only same-origin GET /_next/static", async () => {
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test("a second build's activation deletes the first build's cache", async () => {
+  // Simulate a release: pwa.tsx registers /sw.js?v=<version>, so the new
+  // build is a distinct worker whose activation must wipe the old cache.
+  // Dynamic import is deliberate: a static import evaluates sw.js once, so
+  // only a second, query-distinguished specifier re-runs the module with the
+  // new href (the default v=1 evaluation already happened above).
+  workerLocation.href = `${ORIGIN}/sw.js?v=2`;
+  deleted.length = 0;
+  state.skippedWaiting = 0;
+  // A variable specifier also keeps tsc from resolving the query as a module
+  // path; no bindings are used, only the side effect.
+  const secondBuild = "../public/sw.js?v=2";
+  await import(secondBuild);
+
+  const install = handlers.install;
+  const activate = handlers.activate;
+  if (typeof install !== "function" || typeof activate !== "function") {
+    throw new Error("sw.js registered no install/activate listeners");
+  }
+
+  const waits: Promise<unknown>[] = [];
+  install({});
+  activate({ waitUntil: (p: Promise<unknown>) => void waits.push(p) });
+  await Promise.all(waits);
+
+  assert.equal(state.skippedWaiting, 1);
+  // The new build keeps only its own cache (velvarr-shell-v2): both older
+  // caches go, including the first build's.
+  assert.deepEqual(deleted, ["velvarr-shell-v0", "velvarr-shell-v1"]);
 });

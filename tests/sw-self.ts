@@ -7,6 +7,12 @@ export const handlers: Record<string, (event: unknown) => void> = {};
 export const deleted: string[] = [];
 export const store: Map<string, Response> = new Map();
 export const state = { fetches: 0, skippedWaiting: 0 };
+// sw.js derives its cache name from `self.location.href` (?v=<version>), so
+// tests mutate href before (re-)importing sw.js to simulate another build.
+export const workerLocation = {
+  origin: "https://velvarr.ts.net",
+  href: "https://velvarr.ts.net/sw.js?v=1",
+};
 
 // `globalThis.self` is typed as the DOM Window global, so a plain assignment
 // cannot typecheck; defineProperty sets the real runtime global with no cast.
@@ -14,7 +20,7 @@ Object.defineProperty(globalThis, "self", {
   configurable: true,
   writable: true,
   value: {
-    location: { origin: "https://velvarr.ts.net" },
+    location: workerLocation,
     addEventListener: (type: string, handler: (event: unknown) => void) => {
       handlers[type] = handler;
     },

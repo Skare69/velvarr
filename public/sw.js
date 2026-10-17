@@ -1,7 +1,11 @@
 // Caching shell worker: installability needs a worker, speed needs one too.
 // It serves only immutable build assets; /api, documents and everything else
 // pass through untouched, so live data is never read from a cache.
-const CACHE = "velvarr-shell-v1";
+// Cache name is per build: pwa.tsx registers /sw.js?v=<package version>, so
+// every release gets a fresh cache and the activate cleanup below deletes the
+// previous release's one. Without a version (bare /sw.js) the fallback keeps
+// the worker working until the next versioned activation replaces it.
+const CACHE = `velvarr-shell-v${new URL(self.location.href).searchParams.get("v") ?? "0"}`;
 const PREFIX = "/_next/static/";
 
 self.addEventListener("install", () => {
