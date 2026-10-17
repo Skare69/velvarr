@@ -37,6 +37,15 @@
 
 **Docker** (recommended):
 
+Before the first start, create `.env.local` next to `compose.yaml` with the operator secrets (what they do: [Configuration](#configuration)). Without it the container starts, but no owner account can be created because the setup gate has no secrets to check:
+
+```sh
+printf 'VELVARR_SECRET_KEY=%s\nVELVARR_SETUP_SECRET=%s\n' \
+  "$(openssl rand -hex 32)" "$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')" > .env.local
+```
+
+In a source checkout, `bun run setup` writes the same file instead and never overwrites an existing one. **Back up `VELVARR_SECRET_KEY`**: losing it makes the stored database and every backup unreadable.
+
 ```sh
 docker compose up -d   # pulls ghcr.io/skare69/velvarr
 ```
