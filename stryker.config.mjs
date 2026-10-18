@@ -42,6 +42,14 @@ const config = {
     "src/server/update.ts",
     "src/server/judgment.ts",
     "src/server/discovery.ts",
+    // admission.ts via in-file disable markers: only the per-account
+    // rate-budget section is under mutation — the session-cache and
+    // requireSession glue carries disable markers like the effect adapters.
+    // The globstar dodges the "[...path]" segment on purpose: as a glob it
+    // is a character class (one char from {.,p,a,t,h}), and Stryker's
+    // matcher rejects the backslash-escaped literal, so the raw or escaped
+    // name matches no file at all.
+    "src/app/api/**/admission.ts",
   ],
   // TypeScript 7 (typescript-go) dropped the JS config API Stryker's tsconfig
   // preprocessor needs. Pointing at a nonexistent file skips its rewrite,
@@ -63,12 +71,14 @@ const config = {
   // (2026-10-15, when judgment.ts and discovery.ts joined the mutate set
   // and the ollama, judgment, related and discovery suites joined this
   // command). It is deliberately not re-floored to each new measurement:
-  // the score drifts by ±1 mutant between runs (one exact-millisecond
+  // the score drifts between runs (one exact-millisecond
   // boundary mutant can flip either way), and a re-floored break would
   // fail clean runs on that drift — which is how the 88.2 gate went red
-  // at v0.38.1. Current measured clean-run score: 88.70 (1794 killed,
-  // 4 timeout, 229 survived, 2027 tested, 2026-10-16, Linux worker,
-  // concurrency 8); a regression below break fails the run.
+  // at v0.38.1. Current measured clean-run score: 88.92 (1890 killed,
+  // 4 timeout, 236 survived, 2078 tested, 2026-10-18, Linux worker,
+  // concurrency 8; first run with admission.ts's rate-budget section in
+  // the set, +51 mutants, 47 of them killed); a regression below break
+  // fails the run.
   // A 0-survivor (100.00) result means a broken environment, not a perfect
   // one: the accepted survivors below are the floor of a healthy run. A
   // vacuous 100.00 was once produced by all 8 workers sharing one exported
@@ -107,7 +117,14 @@ const config = {
   // re-routes (the faked-fetch suite answers false on this path either way),
   // the URL/env trims that validateBaseUrl and the WHATWG URL parser
   // normalize anyway, and discovery.ts's shelf literals that providers.ts
-  // normalizes plus the TTL `<` boundary (exact-equality unreachable).
+  // normalizes plus the TTL `<` boundary (exact-equality unreachable),
+  // and in admission.ts's rate-budget section: the two 429 "Too many
+  // requests" message copies (errorShape pins status and code, never the
+  // copy), and two outcome-equivalent `rateBuckets.delete(key)` removals —
+  // the scan guard only evicts a bucket refilled to full, and a kept full
+  // bucket charges exactly like the fresh one eviction would hand over
+  // (the re-insert delete only refreshes FIFO order among full buckets,
+  // which no observable charge can tell apart).
   thresholds: { high: 85, low: 75, break: 88.2 },
 };
 

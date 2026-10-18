@@ -36,6 +36,7 @@ import {
   ARTWORK_BURST,
   PRELOAD_BURST,
   PRELOAD_REFILL_PER_MINUTE,
+  RATE_BUCKETS_CAP,
   RATE_BURST,
   RATE_REFILL_PER_MINUTE,
   chargeRateBudget,
@@ -8908,6 +8909,62 @@ test("rate budget: the FIFO cap evicts only refilled buckets, never a drained on
   // The victim's drained bucket survived the flood: it still refuses with
   // 429 instead of coming back as a fresh RATE_BURST.
   assert.throws(() => chargeRateBudget("victim"), throwsRateLimited);
+});
+
+test("rate budget: the cap refuses a new key while every slot holds a live preload bucket", (t) => {
+  // Frozen clock: no refill can land, so each preload bucket holds exactly
+  // PRELOAD_BURST - 100 — live on its own lane and far from evictable.
+  // The v0.39.0 scan compared refilled tokens against the dispatch burst
+  // instead of the candidate's own lane: it called a preload bucket at
+  // 500/600 tokens "full" against RATE_BURST = 60, evicted it and handed
+  // the newcomer a fresh PRELOAD_BURST — the dispatch-only fill of the
+  // test above could not see that. This pins the cross-lane comparison.
+  t.mock.timers.enable({ apis: ["Date"] });
+  for (let i = 0; i < RATE_BUCKETS_CAP; i++) {
+    for (let j = 0; j < 100; j++) {
+      chargeRateBudget(`preload-${i}`, "preload");
+    }
+  }
+  // Every slot is live on the preload lane, so the next allocation finds
+  // nothing refilled to evict and is refused instead of stealing a slot.
+  assert.throws(
+    () => chargeRateBudget("newcomer"),
+    (error: unknown) =>
+      error instanceof AppError &&
+      error.status === 429 &&
+      error.code === "rate_limited",
+  );
+  // The refusal consumed nothing: preload-0 keeps its slot and budget, so
+  // its 101st charge passes instead of coming back as a fresh burst.
+  chargeRateBudget("preload-0", "preload");
+});
+
+test("rate budget: the cap hands an idled slot to a new key instead of refusing", (t) => {
+  // Inverse of the two refusals above: a scan that never evicts would lock
+  // every new account out once RATE_BUCKETS_CAP ids have been seen. Frozen
+  // clock: 255 slots stay live at PRELOAD_BURST - 100 while preload-0
+  // idles a full refill window and refills to PRELOAD_BURST — the scan's
+  // only evictable slot.
+  t.mock.timers.enable({ apis: ["Date"] });
+  for (let i = 0; i < RATE_BUCKETS_CAP; i++) {
+    for (let j = 0; j < 100; j++) {
+      chargeRateBudget(`preload-${i}`, "preload");
+    }
+  }
+  t.mock.timers.tick(60_000);
+  // The newcomer takes the idled slot: no 429, and a working dispatch
+  // budget came with it — exactly RATE_BURST charges, then the refusal.
+  chargeRateBudget("newcomer");
+  for (let i = 0; i < RATE_BURST - 1; i++) {
+    chargeRateBudget("newcomer");
+  }
+  assert.throws(
+    () => chargeRateBudget("newcomer"),
+    (error: unknown) =>
+      error instanceof AppError &&
+      error.status === 429 &&
+      error.code === "rate_limited",
+  );
 });
 
 test("rate budget: the artwork lane is bounded on its own and never touches dispatch", (t) => {

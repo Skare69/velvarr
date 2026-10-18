@@ -13,6 +13,13 @@ import { readSessionToken } from "../../../server/security.ts";
 import { AppError } from "../../../server/http.ts";
 import { validateUser } from "../../../server/jellyfin.ts";
 
+// Stryker disable all — the session-cache and requireSession glue between
+// here and the rate-budget section is effect-heavy admission (storage,
+// Jellyfin validateUser): the api suite covers its behavior, but per-mutant
+// kill data here would only add unreachable survivors, same as the other
+// effect adapters kept out of the mutate set. The rate-budget section below
+// restores mutation for itself.
+
 export interface AuthContext {
   config: IntegrationConfig;
   account: Account;
@@ -149,6 +156,9 @@ export async function requireAdmin(request: Request): Promise<AuthContext> {
   return ctx;
 }
 
+// Stryker restore all — the per-account rate budget is under mutation
+// testing: the cap-eviction and refill logic below is pure decision logic
+// whose regression ships green (see the api suite's rate-budget tests).
 // --- per-account rate budget ---
 // One household shares the TPDB/StashDB credentials: an unbounded loop of
 // provider reads from one member session (or a stolen one) can drain the
@@ -181,7 +191,7 @@ export const ARTWORK_REFILL_PER_MINUTE = 200;
 // distinct-id enumeration at PRELOAD_REFILL_PER_MINUTE reads per minute.
 export const PRELOAD_BURST = 600;
 export const PRELOAD_REFILL_PER_MINUTE = 120;
-const RATE_BUCKETS_CAP = 256;
+export const RATE_BUCKETS_CAP = 256;
 
 type RateLane = "dispatch" | "preload" | "artwork";
 const LANES: Record<RateLane, { burst: number; refill: number }> = {
@@ -266,6 +276,8 @@ export function chargeRateBudget(
   rateBuckets.delete(key);
   rateBuckets.set(key, bucket);
 }
+
+// Stryker disable all — the RouteDef contract below is type-only.
 
 // The route declaration contract: admission is part of the route type, so a
 // new route cannot ship without declaring none|session|admin. `segments`
