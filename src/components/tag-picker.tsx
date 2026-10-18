@@ -93,7 +93,6 @@ export function TagPicker({
     const timer = setTimeout(() => setCommitted(t), 400);
     return () => clearTimeout(timer);
   }, [t]);
-  useEffect(() => setActive(0), [committed]);
 
   const capped = selected.length >= TAG_CAP;
   // useApiGet owns the stale-response guard: only the latest query's
@@ -130,19 +129,21 @@ export function TagPicker({
     !picked.has(normalizeFacetName(t))
       ? { name: t }
       : null;
-  // Exact real-tag matches go above the pinned free-text row: the default
-  // active row is index 0, so Enter must land on the actual tag when the
-  // typed term carries a real tag's name. The free-text offer itself stays
-  // in the list (efd5cfb) — only its lead position is conditional.
+  // The free-text offer leads at all times, results loaded or not: the user
+  // reads the list top-down and must find the option first even once real
+  // matches arrive (efd5cfb's pin; 5c5d7d2 briefly let exact matches take
+  // the top, which reads as the option disappearing on arrival).
   const nTerm = normalizeFacetName(t);
-  const choices =
-    freeText === null
-      ? options
-      : [
-          ...options.filter((o) => normalizeFacetName(o.name) === nTerm),
-          freeText,
-          ...options.filter((o) => normalizeFacetName(o.name) !== nTerm),
-        ];
+  const choices = freeText === null ? options : [freeText, ...options];
+  // Enter still lands on a real tag that exactly names the term (5c5d7d2's
+  // point): the default active row starts on that match — the row right
+  // after the pinned offer — and on the offer itself otherwise. While the
+  // search is in flight the list holds only the offer, so the row falls
+  // back to it.
+  const exactLead =
+    freeText !== null &&
+    options.some((o) => normalizeFacetName(o.name) === nTerm);
+  useEffect(() => setActive(exactLead ? 1 : 0), [committed, exactLead]);
   // Typing shrinks the list until the debounced search settles; a stored
   // index must never point past the rendered options.
   const activeIdx =
