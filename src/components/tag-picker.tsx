@@ -132,9 +132,19 @@ export function TagPicker({
   // The free-text offer leads at all times, results loaded or not: the user
   // reads the list top-down and must find the option first even once real
   // matches arrive (efd5cfb's pin; 5c5d7d2 briefly let exact matches take
-  // the top, which reads as the option disappearing on arrival).
+  // the top, which reads as the option disappearing on arrival). Exact
+  // real-tag matches follow the offer: the route answers in provider order,
+  // so they must be lifted past the other rows for the active row below to
+  // name one.
   const nTerm = normalizeFacetName(t);
-  const choices = freeText === null ? options : [freeText, ...options];
+  const choices =
+    freeText === null
+      ? options
+      : [
+          freeText,
+          ...options.filter((o) => normalizeFacetName(o.name) === nTerm),
+          ...options.filter((o) => normalizeFacetName(o.name) !== nTerm),
+        ];
   // Enter still lands on a real tag that exactly names the term (5c5d7d2's
   // point): the default active row starts on that match — the row right
   // after the pinned offer — and on the offer itself otherwise. While the
