@@ -2077,7 +2077,10 @@ export type TagReference =
  * only a uuid-less row matches (TPDB numeric-string ids), the reference
  * reports `native: false` — the label exists on the other provider, but its
  * id can never ride a native tag filter. No exact-label match at all →
- * undefined: the one honest absence. The read is the one-hour listing
+ * undefined: the one honest absence. A capped or contradicted walk
+ * (`complete: false`) cannot prove absence — the label may sit below the
+ * walk cap — so the provider's native exact-term search decides pairing in
+ * that case. The read is the one-hour listing
  * window, not the month-long suggestion window: an absence here
  * disqualifies a whole browse side, so it must not rest on a month-old
  * vocabulary. An upstream failure throws so callers
@@ -2089,17 +2092,26 @@ export async function tagCounterpart(
   const target = normalizeFacetName(name);
   if (target === "") return undefined; // an empty label identifies nothing
   const other: CatalogProvider = from === "tpdb" ? "stashdb" : "tpdb";
-  const { rows } = await catalogTagListing(other);
-  const nativeRow = rows.find(
-    (r) => normalizeFacetName(r.name) === target && isUuid(r.id),
-  );
+  const listing = await catalogTagListing(other);
+  const exact = (r: { name: string }) => normalizeFacetName(r.name) === target;
+  const nativeRow = listing.rows.find((r) => exact(r) && isUuid(r.id));
   if (nativeRow !== undefined) {
     return { provider: other, id: nativeRow.id, native: true };
   }
-  const labelRow = rows.find((r) => normalizeFacetName(r.name) === target);
-  return labelRow === undefined
-    ? undefined
-    : { provider: other, native: false };
+  const labelRow = listing.rows.find(exact);
+  if (labelRow !== undefined) return { provider: other, native: false };
+  // An incomplete listing hides rows below the walk cap: its absence is not
+  // evidence. The native exact-term search does not depend on the walk, so
+  // it decides; its upstream failures throw like the listing's do.
+  if (!listing.complete) {
+    const rows = await searchCatalogTags(other, name);
+    const nativeHit = rows.find((r) => exact(r) && isUuid(r.id));
+    if (nativeHit !== undefined) {
+      return { provider: other, id: nativeHit.id, native: true };
+    }
+    if (rows.some(exact)) return { provider: other, native: false };
+  }
+  return undefined;
 }
 
 /** Tag-label normalization lives in lib/contracts.ts (shared with storage

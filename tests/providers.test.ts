@@ -2239,6 +2239,67 @@ test("tagCounterpart pairs only exact normalized names and rejects on upstream f
   }
 });
 
+test("tagCounterpart falls back to the native search when the listing walk was capped", async () => {
+  // A capped or contradicted walk reports complete:false: its rows cannot
+  // prove absence, because the label may sit below the walk cap. The
+  // provider's native exact-term search does not depend on the walk, so it
+  // must decide pairing in that case (regression: d0c1a42 read the capped
+  // listing as an honest absence and dropped the whole browse side).
+  const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
+  const seenQs: string[] = [];
+  const tpdbFixture = await startFixture((req, res) => {
+    const params = queryOf(req.url ?? "");
+    const q = params.get("q");
+    if (q !== null) {
+      // The native relevance search reaches below the walk cap: the exact
+      // label lives only here, never in the listing's rows.
+      seenQs.push(q);
+      sendJson(res, 200, {
+        data:
+          q === "Deep Anal"
+            ? [{ id: 71, uuid: TPDB_TAG_A, name: "Deep Anal" }]
+            : [],
+        links: { next: null },
+      });
+      return;
+    }
+    // Term-less listing: page 1 holds only an unrelated row and keeps a
+    // next link; the next page is rows-less beside a next link — the walk's
+    // own end signal contradicts the empty page, so complete comes back
+    // false (catalogTagListing's rows-less-page rule).
+    if (params.get("page") === "1") {
+      sendJson(res, 200, {
+        data: [{ id: 80, uuid: STASH_TAG_ID, name: "Unrelated" }],
+        links: { next: "https://tpdb.example/tags?page=2" },
+      });
+      return;
+    }
+    sendJson(res, 200, {
+      data: [],
+      links: { next: "https://tpdb.example/tags?page=3" },
+    });
+  });
+  try {
+    process.env.TPDB_BASE_URL = tpdbFixture.origin;
+    // The capped listing lacks the label; the native search still pairs it.
+    assert.deepEqual(await tagCounterpart("stashdb", "Deep Anal"), {
+      provider: "tpdb",
+      id: TPDB_TAG_A,
+      native: true,
+    });
+    // The fallback is the native search, not a re-read of the capped rows:
+    // exactly one q read, with the caller's term.
+    assert.deepEqual(seenQs, ["Deep Anal"]);
+    // Absence after the fallback is honest: the native search ran and came
+    // back without the label.
+    assert.equal(await tagCounterpart("stashdb", "Missing Label"), undefined);
+    assert.deepEqual(seenQs, ["Deep Anal", "Missing Label"]);
+  } finally {
+    await tpdbFixture.close();
+    restore();
+  }
+});
+
 // --- reference validation ---
 
 test("catalog references are validated before any upstream call", async () => {
