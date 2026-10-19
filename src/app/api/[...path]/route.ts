@@ -49,9 +49,10 @@ function paramsOf(def: RouteDef, segments: string[]): Record<string, string> {
 // scene tiles preload. The catalog detail route also serves performer and
 // studio detail, which no card ever fires — and one performer detail can
 // fan out to a counterpart search plus up to ten reads — so those kinds
-// keep the audited dispatch budget (RATE_BURST / 30 per minute) instead of
-// the preload lane's page-sized 600 / 120. Unknown kinds fall toward
-// dispatch, the tighter lane, before the handler rejects them.
+// keep the dispatch budget (RATE_BURST / RATE_REFILL_PER_MINUTE) instead
+// of the preload lane's page-sized PRELOAD_BURST / PRELOAD_REFILL_PER_MINUTE.
+// Unknown kinds fall toward dispatch, the tighter lane, before the handler
+// rejects them.
 function laneFor(def: RouteDef, segments: string[]): RateLane {
   if (def.lane !== "preload") return def.lane ?? "dispatch";
   const kind = paramsOf(def, segments).kind;

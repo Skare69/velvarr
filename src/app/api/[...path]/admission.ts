@@ -172,25 +172,36 @@ export async function requireAdmin(request: Request): Promise<AuthContext> {
 // Two lanes, independent budgets: "dispatch" meters API calls, "artwork"
 // meters the catalog artwork proxy's upstream misses — a cold page fetches
 // one image per tile and must not drain (or starve on) the dispatch lane.
-export const RATE_BURST = 60;
-export const RATE_REFILL_PER_MINUTE = 30;
+// Calibration (VELV-38): Velvarr serves one or a few users on a local
+// network, so every lane is sized past what such a household can produce —
+// several of the biggest pages plus active hovering — and keeps only the
+// runaway-loop bound: a broken or stolen client still caps at its lane's
+// refill per minute, and the providers' own throttles stay the real quota
+// guard for the shared TPDB/StashDB credentials. ponytail: these numbers
+// are calibration, not a security boundary — if a real session still trips
+// a lane, raise it; dropping the limiter entirely would leave a runaway
+// client unbounded against the shared provider quota.
+export const RATE_BURST = 240;
+export const RATE_REFILL_PER_MINUTE = 120;
 // Artwork misses get their own lane: a cold page legitimately fetches one
 // image per tile (a discover page ≈ 5–7 rails × up to 32 tiles, a movie
 // detail ≈ 50 avatars, stills and related posters), and those misses must
 // neither drain the dispatch budget that guards the rate-limited provider
 // APIs nor be starved by it. Still bounded: sustained enumeration of the
 // artwork proxy caps at ARTWORK_REFILL_PER_MINUTE misses per minute.
-export const ARTWORK_BURST = 400;
-export const ARTWORK_REFILL_PER_MINUTE = 200;
+export const ARTWORK_BURST = 800;
+export const ARTWORK_REFILL_PER_MINUTE = 400;
 // Card preloads get their own lane for the same reason: every
 // RequestableCard (one per rail tile and per related item) fires
 // /api/catalog/:p/:k/:id and /api/availability/:p/:k/:id after page load,
 // so a cold discover page of 4 provider rails × 32 tiles sends ~256 of
-// them and a detail page ~64 more — far past the dispatch burst. The burst
-// covers the biggest page twice over; the refill still caps sustained
-// distinct-id enumeration at PRELOAD_REFILL_PER_MINUTE reads per minute.
-export const PRELOAD_BURST = 600;
-export const PRELOAD_REFILL_PER_MINUTE = 120;
+// them and a detail page ~64 more, and hovering a card before its preload
+// runs adds two more per card (VELV-38: the mouse-over 429s). The burst
+// covers four of the biggest pages plus the hover traffic; the refill
+// still caps sustained distinct-id enumeration at PRELOAD_REFILL_PER_MINUTE
+// reads per minute.
+export const PRELOAD_BURST = 1200;
+export const PRELOAD_REFILL_PER_MINUTE = 600;
 export const RATE_BUCKETS_CAP = 256;
 
 type RateLane = "dispatch" | "preload" | "artwork";
