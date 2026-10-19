@@ -27,7 +27,7 @@
 
 import { isHiddenTitle, tagMatches } from "./catalog-visibility.ts";
 
-import { AppError } from "./http.ts";
+import { AppError, sourceError } from "./http.ts";
 import { suggestTags, tagSuggestionsAllowed } from "./judgment.ts";
 import {
   listCatalogTags,
@@ -572,21 +572,9 @@ class Stream {
         throw err;
       }
       this.exhausted = true;
-      this.error = {
-        provider: this.base.provider,
-        code: err instanceof AppError ? err.code : "provider_error",
-        message: err instanceof Error ? err.message : String(err),
-      };
+      this.error = sourceError(this.base.provider, err);
     }
   }
-}
-
-function sourceError(provider: CatalogProvider, err: unknown): SourceError {
-  return {
-    provider,
-    code: err instanceof AppError ? err.code : "provider_error",
-    message: err instanceof Error ? err.message : String(err),
-  };
 }
 
 function allSourcesFailed(streams: Stream[]): never {

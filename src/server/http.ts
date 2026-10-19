@@ -3,6 +3,12 @@
 
 import { isIP } from "node:net";
 
+import type {
+  CatalogProvider,
+  ShelfError,
+  SourceError,
+} from "../lib/contracts.ts";
+
 export class AppError extends Error {
   status: number;
   code: string;
@@ -35,6 +41,24 @@ export function errorReason(e: unknown): string {
   const raw = e instanceof Error ? e.message : "";
   const reason = (raw.trim().slice(0, 2000) || "unknown error").slice(0, 2000);
   return e instanceof AppError ? `${e.code}: ${reason}` : reason;
+}
+
+/** The one shelf-failure wire policy: an AppError speaks for itself (its
+ * code and message are written for the client); any other throw is an
+ * internal fault whose text can echo URLs, config or stack details and
+ * never reaches the wire. */
+export function shelfError(err: unknown): ShelfError {
+  if (err instanceof AppError) return { code: err.code, message: err.message };
+  return { code: "internal", message: "Internal server error." };
+}
+
+/** The partial-source wire shape: the failed provider named on the error,
+ * its code preserved verbatim. */
+export function sourceError(
+  provider: CatalogProvider,
+  err: unknown,
+): SourceError {
+  return { provider, ...shelfError(err) };
 }
 
 export type Service = "jellyfin" | "whisparr" | "tpdb" | "stashdb";

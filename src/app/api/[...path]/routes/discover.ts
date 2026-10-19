@@ -25,7 +25,7 @@ import {
   cachedTrending,
   cachedFollowed,
 } from "../../../../server/discovery.ts";
-import { AppError } from "../../../../server/http.ts";
+import { AppError, shelfError, sourceError } from "../../../../server/http.ts";
 import { listRecentlyAddedItems } from "../../../../server/jellyfin.ts";
 import {
   getCatalogDetail,
@@ -40,20 +40,6 @@ import {
   type BrowsePage,
 } from "../../../../server/browse.ts";
 import { isHiddenTitle } from "../../../../server/catalog-visibility.ts";
-
-export function shelfError(err: unknown): ShelfError {
-  if (err instanceof AppError) return { code: err.code, message: err.message };
-  return { code: "internal", message: "Internal server error." };
-}
-
-// The partial-source wire shape: the failed provider named on the error,
-// its code preserved verbatim.
-export function sourceError(
-  provider: "tpdb" | "stashdb",
-  err: unknown,
-): SourceError {
-  return { provider, ...shelfError(err) };
-}
 
 // One named entry per provider, first group wins: the partial-failure wire
 // shape browse pages and followedShelf already speak, and the UI keys error

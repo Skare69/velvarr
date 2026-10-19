@@ -12,7 +12,7 @@ import {
   hasAuthoritativeAbsence,
   isObservationStale,
 } from "../../../../server/storage.ts";
-import { AppError } from "../../../../server/http.ts";
+import { AppError, shelfError } from "../../../../server/http.ts";
 import { resolvePlaybackAccess } from "../../../../server/jellyfin.ts";
 import {
   getCatalogDetail,
@@ -237,7 +237,7 @@ export async function globalSearch(
 /** A matched route: what to run, and the admission it needs. The auth level
  * is part of the shape, so a new branch cannot ship without declaring one;
  * the previous table enforced "remember requireSession here" by discipline. */
-import { shelfError, SEARCH_PER_PAGE } from "./discover.ts";
+import { SEARCH_PER_PAGE } from "./discover.ts";
 import { browseRoute, browseTagsRoute } from "./catalog.ts";
 import type { RouteDef } from "../admission.ts";
 
