@@ -2772,6 +2772,63 @@ test("the picker serves a month-old listing while expansion re-walks past its on
   }
 });
 
+test("a picker miss on a listing past the completeness window falls back to the native search", async () => {
+  const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
+  const TAG_A = "5e0b7c3e-9a2d-4f16-b8a4-1d5f2e3c4b5a";
+  const TAG_B = "6f1c8d4f-0b3e-4a27-c9b5-2e6a3f4d5c6b";
+  let walks = 0;
+  let nativeReads = 0;
+  const fixture = await startFixture((req, res) => {
+    const url = new URL(req.url ?? "/", "http://fixture.test");
+    if (url.pathname === "/tags") {
+      if (url.searchParams.has("page")) {
+        walks += 1;
+        return sendJson(res, 200, {
+          data: [{ id: 11, uuid: TAG_A, name: "Alpha" }],
+          links: { next: null },
+        });
+      }
+      // The native relevance search sees the tag the provider published
+      // after the memoized walk was taken.
+      nativeReads += 1;
+      return sendJson(res, 200, {
+        data: [{ id: 12, uuid: TAG_B, name: "Nova" }],
+        links: { next: null },
+      });
+    }
+    sendJson(res, 404, {});
+  });
+  const realNow = Date.now;
+  try {
+    process.env.TPDB_BASE_URL = fixture.origin;
+    assert.deepEqual(await searchCatalogTags("tpdb", "alpha"), [
+      { id: TAG_A, name: "Alpha" },
+    ]);
+    assert.equal(walks, 1);
+    assert.equal(nativeReads, 0);
+    // Two hours in: the memo is past the completeness window but well
+    // inside the suggestion window. A miss must not claim absence over the
+    // month-old copy — the native search answers, and no walk is paid.
+    Date.now = () => realNow() + 2 * 60 * 60_000;
+    assert.deepEqual(await searchCatalogTags("tpdb", "nova"), [
+      { id: TAG_B, name: "Nova" },
+    ]);
+    assert.equal(walks, 1);
+    assert.equal(nativeReads, 1);
+    // Thirty-one days in: even the suggestion window has expired, so the
+    // search re-walks, and its fresh empty answer stays honest — no native
+    // read pays for an absence the fresh walk proves.
+    Date.now = () => realNow() + 31 * 24 * 60 * 60_000;
+    assert.deepEqual(await searchCatalogTags("tpdb", "nova"), []);
+    assert.equal(walks, 2);
+    assert.equal(nativeReads, 1);
+  } finally {
+    Date.now = realNow;
+    await fixture.close();
+    restore();
+  }
+});
+
 // --- studio and tag filters produce the right upstream query ---
 
 test("studio and tag filters select provider matches, including TPDB cold UUID bookmarks", async () => {

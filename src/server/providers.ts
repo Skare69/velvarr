@@ -1622,6 +1622,9 @@ interface TagListing {
 // churns faster.
 const TAG_LISTING_TTL_MS = 60 * 60_000;
 const TAG_SUGGESTION_TTL_MS = 30 * 24 * 60 * 60_000;
+// The tag picker's empty answer must not claim absence over a memo older
+// than the completeness window: searchCatalogTags re-checks the provider
+// natively in that case, so a tag published after the walk still answers.
 const tagListingMemo = new Map<
   CatalogProvider,
   { at: number; listing: TagListing }
@@ -1656,10 +1659,10 @@ function stashTagRows(rows: unknown[]): { id: string; name: string }[] {
 async function catalogTagListing(
   provider: CatalogProvider,
   maxAgeMs: number = TAG_LISTING_TTL_MS,
-): Promise<TagListing> {
+): Promise<TagListing & { at: number }> {
   const memo = tagListingMemo.get(provider);
   if (memo !== undefined && Date.now() - memo.at < maxAgeMs) {
-    return memo.listing;
+    return { ...memo.listing, at: memo.at };
   }
   const rows: { id: string; name: string }[] = [];
   let complete = true;
@@ -1736,8 +1739,9 @@ async function catalogTagListing(
     }
   }
   const listing: TagListing = { rows: dedupeBy(rows, (t) => t.id), complete };
-  tagListingMemo.set(provider, { at: Date.now(), listing });
-  return listing;
+  const at = Date.now();
+  tagListingMemo.set(provider, { at, listing });
+  return { ...listing, at };
 }
 
 /** Free-text include expansion on one provider: every published tag whose
@@ -1774,9 +1778,13 @@ export async function expandCatalogTagTerm(
  * is exactly what the filter would match — under the month-long suggestion
  * window: typing queries nothing upstream once the listing is warm. The
  * native relevance search (TPDB /tags with `q`, StashDB searchTag) stays
- * as the fallback for a listing past the walk cap and for terms whose fold
- * is empty (non-Latin text, symbols), where folding cannot match. Ids are
- * never mapped across providers; the cap bounds the returned list. */
+ * as the fallback for a listing past the walk cap, for terms whose fold
+ * is empty (non-Latin text, symbols), and for an empty answer against a
+ * memo older than the completeness window — a miss there claims an
+ * absence the month-old copy cannot prove, while the native search sees
+ * the provider's current vocabulary. A fresh walk's miss is an honest
+ * absence and answers empty. Ids are never mapped across providers; the
+ * cap bounds the returned list. */
 export async function searchCatalogTags(
   provider: CatalogProvider,
   term: string,
@@ -1793,10 +1801,6 @@ export async function searchCatalogTags(
   if (needle !== "") {
     const listing = await catalogTagListing(provider, TAG_SUGGESTION_TTL_MS);
     if (listing.complete) {
-      // Rank before the cap: the listing is provider-ordered (StashDB name
-      // ascending), so substring hits can fill MAX.tags before the exact
-      // name appears and the picker would lose its lift candidate. Each
-      // tier keeps the listing order.
       const exact: { id: string; name: string }[] = [];
       const prefixed: typeof exact = [];
       const contained: typeof exact = [];
@@ -1807,7 +1811,10 @@ export async function searchCatalogTags(
         else if (folded.startsWith(needle)) prefixed.push(row);
         else contained.push(row);
       }
-      return [...exact, ...prefixed, ...contained].slice(0, MAX.tags);
+      const hits = [...exact, ...prefixed, ...contained].slice(0, MAX.tags);
+      if (hits.length > 0 || Date.now() - listing.at < TAG_LISTING_TTL_MS) {
+        return hits;
+      }
     }
   }
   if (provider === "tpdb") {
