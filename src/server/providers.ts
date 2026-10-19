@@ -1604,18 +1604,24 @@ interface TagListing {
 }
 
 // Process-lifetime listing memo, keyed by provider: the walk is one bounded
-// burst of paged reads whose answer feeds every free-text expansion, and
-// published vocabularies change slowly. Entries carry their read time and
-// are re-walked once older than the window: a tag the provider publishes,
-// renames or deletes after the first walk must reach expansions that still
-// claim complete, and a Velvarr container runs for weeks. Incomplete walks
-// memoize too, under the same window — retrying per request would re-pay
-// the burst for the same capped answer. The 10-minute page cache and
-// metaInFlight keep a re-walk cheap. ponytail: fixed one-hour window on
-// the wall clock (worst-case staleness ~70min with the page cache);
+// burst of paged reads whose answer feeds every free-text expansion and the
+// tag picker's search, and published vocabularies change slowly. Entries
+// carry their read time and are re-walked once older than the window: a tag
+// the provider publishes, renames or deletes after the first walk must
+// reach reads that still claim complete, and a Velvarr container runs for
+// weeks. Incomplete walks memoize too, under the same window — retrying per
+// request would re-pay the burst for the same capped answer. The 10-minute
+// page cache and metaInFlight keep a re-walk cheap. Two windows share one
+// entry: TAG_LISTING_TTL_MS bounds reads that claim completeness (expansion
+// exact totals and exact absence, counterpart side disqualification), while
+// TAG_SUGGESTION_TTL_MS bounds the tag picker's suggestion search, where a
+// month-old listing only misses tags created in that window and no absence
+// is claimed. ponytail: fixed windows on the wall clock (worst-case
+// staleness ~70min for the one-hour window with the page cache);
 // per-provider windows or conditional GETs only if a real vocabulary
 // churns faster.
 const TAG_LISTING_TTL_MS = 60 * 60_000;
+const TAG_SUGGESTION_TTL_MS = 30 * 24 * 60 * 60_000;
 const tagListingMemo = new Map<
   CatalogProvider,
   { at: number; listing: TagListing }
@@ -1649,9 +1655,10 @@ function stashTagRows(rows: unknown[]): { id: string; name: string }[] {
  * matches. */
 async function catalogTagListing(
   provider: CatalogProvider,
+  maxAgeMs: number = TAG_LISTING_TTL_MS,
 ): Promise<TagListing> {
   const memo = tagListingMemo.get(provider);
-  if (memo !== undefined && Date.now() - memo.at < TAG_LISTING_TTL_MS) {
+  if (memo !== undefined && Date.now() - memo.at < maxAgeMs) {
     return memo.listing;
   }
   const rows: { id: string; name: string }[] = [];
@@ -1761,9 +1768,15 @@ export async function expandCatalogTagTerm(
   return { ids, dropped, complete };
 }
 
-/** Tag lookup for filter pickers: provider-native {id, name} pairs for a
- * search term. TPDB /tags and StashDB searchTag; ids are never mapped across
- * providers. First page/limit only — enough to build a filter list. */
+/** Tag lookup for filter pickers. The common path serves the folded
+ * substring rule over the provider's cached complete tag listing — the
+ * same rule free-text include filtering applies, so what the picker offers
+ * is exactly what the filter would match — under the month-long suggestion
+ * window: typing queries nothing upstream once the listing is warm. The
+ * native relevance search (TPDB /tags with `q`, StashDB searchTag) stays
+ * as the fallback for a listing past the walk cap and for terms whose fold
+ * is empty (non-Latin text, symbols), where folding cannot match. Ids are
+ * never mapped across providers; the cap bounds the returned list. */
 export async function searchCatalogTags(
   provider: CatalogProvider,
   term: string,
@@ -1775,6 +1788,15 @@ export async function searchCatalogTags(
       "invalid_search",
       "Tag lookup requires a search term.",
     );
+  }
+  const needle = normalizeFacetName(q);
+  if (needle !== "") {
+    const listing = await catalogTagListing(provider, TAG_SUGGESTION_TTL_MS);
+    if (listing.complete) {
+      return listing.rows
+        .filter((row) => normalizeFacetName(row.name).includes(needle))
+        .slice(0, MAX.tags);
+    }
   }
   if (provider === "tpdb") {
     const body = await tpdbGet<TpdbListBody>(
@@ -2043,7 +2065,10 @@ export type TagReference =
  * only a uuid-less row matches (TPDB numeric-string ids), the reference
  * reports `native: false` — the label exists on the other provider, but its
  * id can never ride a native tag filter. No exact-label match at all →
- * undefined: the one honest absence. An upstream failure throws so callers
+ * undefined: the one honest absence. The read is the one-hour listing
+ * window, not the month-long suggestion window: an absence here
+ * disqualifies a whole browse side, so it must not rest on a month-old
+ * vocabulary. An upstream failure throws so callers
  * record the outage instead of reading it as absence. */
 export async function tagCounterpart(
   from: CatalogProvider,
@@ -2052,7 +2077,7 @@ export async function tagCounterpart(
   const target = normalizeFacetName(name);
   if (target === "") return undefined; // an empty label identifies nothing
   const other: CatalogProvider = from === "tpdb" ? "stashdb" : "tpdb";
-  const rows = await searchCatalogTags(other, name);
+  const { rows } = await catalogTagListing(other);
   const nativeRow = rows.find(
     (r) => normalizeFacetName(r.name) === target && isUuid(r.id),
   );

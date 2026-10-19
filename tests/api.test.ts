@@ -1046,18 +1046,30 @@ async function stashdbHandler(
             : null,
     });
   }
-  if (query.includes("searchTag")) {
-    // The counterpart lookup searches the full tag name; the suggestion
-    // path searches "Fixture". One same-normalized-name row (TAG_D, served
-    // only for the "Fixture Tag A" term) proves exact pairing; every other
-    // term answers only near-misses that must stay unlinked.
-    const vars = body.variables as { t?: unknown } | undefined;
-    const term = typeof vars?.t === "string" ? vars.t : "";
+  if (query.includes("queryTags")) {
+    // The complete listing the counterpart lookup reads for pairing (and
+    // the free-text expansion walk): TAG_D ("fixture-tag-a") is TAG_A's
+    // same-normalized-name twin; every other row is a near-miss that must
+    // stay unlinked.
     return json(res, 200, {
       data: {
-        searchTag: term.toLowerCase().includes("tag a")
-          ? [{ id: TAG_D, name: "fixture-tag-a" }]
-          : [{ id: TAG_B, name: "Fixture Stash Tag" }],
+        queryTags: {
+          count: 2,
+          tags: [
+            { id: TAG_D, name: "fixture-tag-a" },
+            { id: TAG_B, name: "Fixture Stash Tag" },
+          ],
+        },
+      },
+    });
+  }
+  if (query.includes("searchTag")) {
+    // listCatalogTags (the no-match suggestion path) searches the empty
+    // term; the counterpart lookup left searchTag for the queryTags
+    // listing above.
+    return json(res, 200, {
+      data: {
+        searchTag: [{ id: TAG_B, name: "Fixture Stash Tag" }],
       },
     });
   }

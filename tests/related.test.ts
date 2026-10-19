@@ -158,8 +158,8 @@ const stashSceneRow = () => ({
 // Mutable per-test slots; reset together with the metadata cache.
 let sourceBody: unknown = sourceDetail();
 let listing: unknown[] = defaultListing();
-let searchTagReply: unknown = {
-  searchTag: [{ id: STASH_TAG_ID, name: "romance" }],
+let queryTagsReply: unknown = {
+  queryTags: { count: 1, tags: [{ id: STASH_TAG_ID, name: "romance" }] },
 };
 let scenesReply: unknown = {
   queryScenes: { count: 1, scenes: [stashSceneRow()] },
@@ -172,7 +172,9 @@ let filmographyFailAfter = 0;
 beforeEach(() => {
   sourceBody = sourceDetail();
   listing = defaultListing();
-  searchTagReply = { searchTag: [{ id: STASH_TAG_ID, name: "romance" }] };
+  queryTagsReply = {
+    queryTags: { count: 1, tags: [{ id: STASH_TAG_ID, name: "romance" }] },
+  };
   scenesReply = { queryScenes: { count: 1, scenes: [stashSceneRow()] } };
   filmography = [];
   filmographyLinks = {};
@@ -213,8 +215,10 @@ const handler: FixtureHandler = (req, res, body) => {
   }
   if (req.method === "POST" && path === "/graphql") {
     const parsed: { query?: string } = JSON.parse(body);
-    if ((parsed.query ?? "").includes("searchTag")) {
-      return sendJson(res, 200, { data: searchTagReply });
+    // The counterpart lookup reads the complete listing (the vocabulary
+    // the pairing filters to exact normalized equality).
+    if ((parsed.query ?? "").includes("queryTags")) {
+      return sendJson(res, 200, { data: queryTagsReply });
     }
     return sendJson(res, 200, { data: scenesReply });
   }
@@ -385,8 +389,11 @@ test("a hidden tag removes exactly the titles carrying it", async () => {
 
 test("counterpart tags pair only on exact normalized equality; without a pair the stash search is skipped without an error", async () => {
   await withFx(async (fx) => {
-    searchTagReply = {
-      searchTag: [{ id: STASH_TAG_ID, name: "Unrelated Label" }],
+    queryTagsReply = {
+      queryTags: {
+        count: 1,
+        tags: [{ id: STASH_TAG_ID, name: "Unrelated Label" }],
+      },
     };
     const result = await relatedTitles(movieRef(SOURCE_ID), []);
     assert.deepEqual(ids(result.items), [
@@ -460,11 +467,11 @@ test("a failed counterpart source keeps its error next to the surviving candidat
   });
 });
 
-test("a failed counterpart tag search names the provider and keeps the source-side rail", async () => {
+test("a failed counterpart tag listing names the provider and keeps the source-side rail", async () => {
   await withFx(async (fx) => {
-    // searchTag answers data:null: the counterpart lookup fails, which is
+    // queryTags answers data:null: the counterpart lookup fails, which is
     // an outage, not absence.
-    searchTagReply = { data: null };
+    queryTagsReply = { data: null };
     const result = await relatedTitles(movieRef(SOURCE_ID), []);
     // The TPDB side still runs; the stash search is skipped because its ids
     // never resolved — but the outage stays visible.
@@ -670,7 +677,7 @@ test("canRefine mirrors backend configuredness and shortlist size without a paid
         movieRow(SOURCE_ID, "Source Title", [ROMANCE, COMEDY], STUDIO_ID),
         movieRow(MOVIE_ONE, "One Shared", [ROMANCE]),
       ];
-      searchTagReply = { searchTag: [] };
+      queryTagsReply = { queryTags: { count: 0, tags: [] } };
       resetMetaCache();
       const single = await relatedTitles(movieRef(SOURCE_ID), [], {
         providers: { typesafeApiKey: TS_KEY },

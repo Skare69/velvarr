@@ -165,10 +165,13 @@ function scriptedUpstream(options: {
   stashStatus?: number;
   /** HTTP status for the TPDB /tags listing (the counterpart tag lookup). */
   tpdbTagsStatus?: number;
-  /** HTTP status for the StashDB searchTag (the counterpart tag lookup). */
-  searchTagStatus?: number;
-  /** Rows for the StashDB searchTag (the counterpart tag lookup). The
-   * fixture honours the term: only rows whose name contains it return. */
+  /** HTTP status for the StashDB queryTags listing (the counterpart tag
+   * lookup; also the free-text expansion walk). */
+  stashQueryTagsStatus?: number;
+  /** Rows for the StashDB searchTag. The counterpart lookup left searchTag
+   * for the listing walk; searchTag now answers only listCatalogTags (the
+   * no-match suggestion path, which searches the empty term). The fixture
+   * honours the term: only rows whose name contains it return. */
   stashTagRows?: { id: string; name: string }[];
   /** Rows for the StashDB queryTags listing (the complete tag vocabulary
    * the free-text expansion walks). */
@@ -291,9 +294,19 @@ function scriptedUpstream(options: {
         return;
       }
       // queryTags is the complete tag listing the free-text expansion
-      // walks: every row, with its count (the fixture vocabulary fits one
-      // page).
+      // walks and the counterpart lookup reads: every row, with its count
+      // (the fixture vocabulary fits one page), or a scripted outage when
+      // stashQueryTagsStatus says so.
       if (gql.query.includes("queryTags")) {
+        if (
+          options.stashQueryTagsStatus !== undefined &&
+          options.stashQueryTagsStatus !== 200
+        ) {
+          sendJson(res, options.stashQueryTagsStatus, {
+            message: "upstream down",
+          });
+          return;
+        }
         // The listing walk serves its scripted pages; past the last entry
         // the last repeats.
         if (options.stashQueryTagPages) {
@@ -312,16 +325,9 @@ function scriptedUpstream(options: {
         });
         return;
       }
-      // searchTag is the counterpart tag lookup: it honours the term (the
-      // real provider filters by it), and a scripted outage when
-      // searchTagStatus says so.
-      if (
-        options.searchTagStatus !== undefined &&
-        options.searchTagStatus !== 200
-      ) {
-        sendJson(res, options.searchTagStatus, { message: "upstream down" });
-        return;
-      }
+      // searchTag answers listCatalogTags (the no-match suggestion path,
+      // which searches the empty term): every scripted row whose name
+      // contains the term.
       const term =
         typeof gql.variables.t === "string"
           ? gql.variables.t.toLowerCase()
@@ -720,7 +726,7 @@ test("an include without a resolvable StashDB id drops the scene source instead 
 
 // --- a broken counterpart lookup is an outage, never absence ---
 
-test("a failed StashDB tag search keeps the movie page but names the outage instead of an exact TPDB-only total", async () => {
+test("a failed StashDB tag listing keeps the movie page but names the outage instead of an exact TPDB-only total", async () => {
   const TPDB_TAG = { id: 11, uuid: uuid(101), name: "Unpaired" };
   const sceneCalls: number[] = [];
   await runBrowse(
@@ -737,7 +743,7 @@ test("a failed StashDB tag search keeps the movie page but names the outage inst
         count: 5,
         rows: [stashRow(uuid(3), "Unqueried", "2024-06-01")],
       },
-      searchTagStatus: 500,
+      stashQueryTagsStatus: 500,
       onScenesRequest: () => sceneCalls.push(1),
     }),
     async () => {
@@ -774,7 +780,7 @@ test("when every wanted side's include lookup fails, browse is a 502 instead of 
     scriptedUpstream({
       tagRows: [],
       tpdbTagsStatus: 500,
-      searchTagStatus: 500,
+      stashQueryTagsStatus: 500,
       moviePages: [{ rows: [], next: null, total: 0 }],
       scenes: { count: 0, rows: [] },
     }),
@@ -3695,34 +3701,31 @@ test("searchVisibleCatalog keeps paging when the exhausted stream leaves a visib
 test("searchBrowseTags merges same labels across providers and reports outages", async () => {
   const SHARED_T = uuid(302);
   const SHARED_S = uuid(303);
+  let tpdbTagsDown = true;
+  const stashRows = [
+    { id: uuid(310), name: "anal" },
+    { id: uuid(311), name: "stash only" },
+    { id: SHARED_S, name: "Shared" }, // same label as TPDB's, different casing
+  ];
   const handler: FixtureHandler = (req, res, body) => {
     const path = pathOf(req.url ?? "");
     if (path === "/tags") {
-      const q = queryOf(req.url ?? "").get("q") ?? "";
-      if (q === "shared") {
-        sendJson(res, 200, {
-          data: [{ id: SHARED_T, uuid: SHARED_T, name: "shared" }],
-          links: { next: null },
-        });
+      if (tpdbTagsDown) {
+        sendJson(res, 500, { message: "tpdb tags down" });
         return;
       }
-      sendJson(res, 500, { message: "tpdb tags down" });
+      sendJson(res, 200, {
+        data: [{ id: SHARED_T, uuid: SHARED_T, name: "shared" }],
+        links: { next: null },
+      });
       return;
     }
     if (path === "/graphql") {
-      const gql = JSON.parse(body) as {
-        query: string;
-        variables: { t?: string };
-      };
-      if (gql.query.includes("searchTag")) {
-        const rows =
-          gql.variables.t === "shared"
-            ? [{ id: SHARED_S, name: "Shared" }] // same label, different casing
-            : [
-                { id: uuid(310), name: "anal" },
-                { id: uuid(311), name: "stash only" },
-              ];
-        sendJson(res, 200, { data: { searchTag: rows } });
+      const gql = JSON.parse(body) as { query?: string };
+      if (gql.query?.includes("queryTags")) {
+        sendJson(res, 200, {
+          data: { queryTags: { count: stashRows.length, tags: stashRows } },
+        });
         return;
       }
       sendJson(res, 200, { data: { searchTag: [] } });
@@ -3731,18 +3734,20 @@ test("searchBrowseTags merges same labels across providers and reports outages",
     sendJson(res, 404, {});
   };
   await runBrowse(handler, async () => {
-    // TPDB tag lookup is down for this term; StashDB answers. The failure is
-    // visible and the healthy source's rows are kept.
+    // The TPDB listing is down; StashDB answers. The failure is visible and
+    // the healthy source's folded-substring matches are kept (the local
+    // filter replaced the provider's term-honoured search).
     const partial = await searchBrowseTags("anal");
     assert.equal(partial.errors.length, 1);
     assert.equal(partial.errors[0]!.provider, "tpdb");
     assert.deepEqual(
       partial.tags.map((t) => t.name),
-      ["anal", "stash only"],
+      ["anal"],
     );
 
     // Both sources healthy: the same label under different casing merges
     // into ONE selection carrying both native ids.
+    tpdbTagsDown = false;
     const merged = await searchBrowseTags("shared");
     assert.deepEqual(merged.errors, []);
     assert.deepEqual(merged.tags, [

@@ -24,6 +24,7 @@ import {
   identityLinkKey,
 } from "../src/server/identity-links.ts";
 import {
+  expandCatalogTagTerm,
   fetchProviderArtwork,
   getCatalogDetail,
   getProviderStatus,
@@ -2152,21 +2153,21 @@ test("tagCounterpart pairs only exact normalized names and rejects on upstream f
   const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
   let fail = false;
   const stashFixture = await startFixture((_req, res, body) => {
-    const parsed = JSON.parse(body) as {
-      query: string;
-      variables?: { t?: string };
-    };
-    assert.ok(parsed.query.includes("searchTag"));
+    const parsed = JSON.parse(body) as { query?: string };
+    assert.ok(parsed.query?.includes("queryTags"));
     if (fail) return sendJson(res, 500, {});
-    // The term search answers near-misses too; pairing filters to exact
+    // The complete listing answers every read; pairing filters to exact
     // normalized equality, so "All Sex" matches "all-sex" while "Anal"
     // matches neither "Anal Creampie" nor anything else here.
     sendJson(res, 200, {
       data: {
-        searchTag: [
-          { id: STASH_TAG_ID, name: "Anal Creampie" },
-          { id: STASH_CROSS_ID, name: "all-sex" },
-        ],
+        queryTags: {
+          count: 2,
+          tags: [
+            { id: STASH_TAG_ID, name: "Anal Creampie" },
+            { id: STASH_CROSS_ID, name: "all-sex" },
+          ],
+        },
       },
     });
   });
@@ -2186,6 +2187,9 @@ test("tagCounterpart pairs only exact normalized names and rejects on upstream f
     assert.equal(await tagCounterpart("tpdb", "Anal"), undefined);
 
     fail = true;
+    // Cold cache: the memo would otherwise answer the next read and the
+    // scripted outage would never be reached.
+    resetMetaCache();
     // Deliberate contract flip (fix(browse)): a failed lookup now throws so
     // callers record the outage instead of reading it as absence; absence
     // stays "a successful search with no exact normalized match".
@@ -2202,21 +2206,21 @@ test("tagCounterpart pairs only exact normalized names and rejects on upstream f
   const restore2 = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   const tpdbFixture = await startFixture((req, res) => {
     const params = queryOf(req.url ?? "");
-    assert.equal(params.get("per_page"), "50");
-    // The search honours its term: "all-sex" holds a uuid-less row beside
-    // the UUID row (the UUID stays the preferred native counterpart);
-    // "legacy" holds a uuid-less row only — deliberate contract flip
-    // (fix(browse)): the label exists, so the reference reports
-    // native:false with no id; undefined would claim an absence the
-    // provider never showed.
-    const rows =
-      params.get("q") === "all-sex"
-        ? [
-            { id: 305, name: "All Sex" },
-            { id: 70, uuid: TPDB_TAG_A, name: "All Sex" },
-          ]
-        : [{ id: 305, name: "Legacy" }];
-    sendJson(res, 200, { data: rows });
+    assert.equal(params.get("page"), "1");
+    // The term-less listing holds every row: "all-sex" carries a uuid-less
+    // row beside the UUID row (the UUID stays the preferred native
+    // counterpart); "legacy" holds a uuid-less row only — deliberate
+    // contract flip (fix(browse)): the label exists, so the reference
+    // reports native:false with no id; undefined would claim an absence
+    // the provider never showed.
+    sendJson(res, 200, {
+      data: [
+        { id: 70, uuid: TPDB_TAG_A, name: "All Sex" },
+        { id: 306, name: "All Sex" },
+        { id: 305, name: "Legacy" },
+      ],
+      links: { next: null },
+    });
   });
   try {
     process.env.TPDB_BASE_URL = tpdbFixture.origin;
@@ -2545,25 +2549,50 @@ test("stashdb studio search and findStudio map studios; absence stays authoritat
 
 // --- tag lookup: provider-native ids only ---
 
-test("tag lookup returns provider-native ids without cross-provider mapping", async () => {
+test("tag lookup serves the cached listing, keeps provider-native ids, and falls back to the native search for empty folds", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
+  let nativeReads = 0;
   const tpdbFixture = await startFixture((req, res) => {
     const params = queryOf(req.url ?? "");
-    assert.equal(params.get("q"), "anal");
-    assert.equal(params.get("per_page"), "50");
+    // Only a term whose fold is empty (no Latin letters or digits) still
+    // reaches the native search; every other term reads the term-less
+    // listing the picker's search is served from.
+    if (params.has("q")) {
+      nativeReads += 1;
+      assert.equal(params.get("q"), "日本");
+      sendJson(res, 200, {
+        data: [{ id: 73, uuid: TPDB_TAG_B, name: "日本語タグ" }],
+      });
+      return;
+    }
+    assert.equal(params.get("per_page"), "100");
     sendJson(res, 200, {
-      data: [{ id: 70, uuid: TPDB_TAG_A, name: "Anal" }],
+      data: [
+        { id: 70, uuid: TPDB_TAG_A, name: "Anal" },
+        {
+          id: 74,
+          uuid: "0a4b7c1e-5f2d-4e8a-9b3c-6d1e2f4a5b6c",
+          name: "Unanalyzed",
+        },
+      ],
+      links: { next: null },
     });
   });
   let tpdbTags: { id: string; name: string }[];
   try {
     process.env.TPDB_BASE_URL = tpdbFixture.origin;
     tpdbTags = await searchCatalogTags("tpdb", "anal");
-    assert.deepEqual(tpdbTags, [{ id: TPDB_TAG_A, name: "Anal" }]);
+    assert.deepEqual(tpdbTags, [
+      { id: TPDB_TAG_A, name: "Anal" },
+      { id: "0a4b7c1e-5f2d-4e8a-9b3c-6d1e2f4a5b6c", name: "Unanalyzed" },
+    ]);
     await assert.rejects(searchCatalogTags("tpdb", "   "), (err: unknown) => {
       assertProviderError(err, 400, "invalid_search");
       return true;
     });
+    const jp = await searchCatalogTags("tpdb", "日本");
+    assert.deepEqual(jp, [{ id: TPDB_TAG_B, name: "日本語タグ" }]);
+    assert.equal(nativeReads, 1);
   } finally {
     await tpdbFixture.close();
     restore();
@@ -2571,14 +2600,17 @@ test("tag lookup returns provider-native ids without cross-provider mapping", as
 
   const restore2 = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
   const stashFixture = await startFixture((_req, res, body) => {
-    const parsed = JSON.parse(body) as { variables: { t?: string } };
-    assert.equal(parsed.variables?.t, "anal");
+    const parsed = JSON.parse(body) as { query?: string };
+    assert.ok(parsed.query?.includes("queryTags"));
     sendJson(res, 200, {
       data: {
-        searchTag: [
-          { id: STASH_TAG_ID, name: "Anal Creampie" },
-          { id: "not-a-uuid", name: "Broken" }, // non-UUID dropped
-        ],
+        queryTags: {
+          count: 2,
+          tags: [
+            { id: STASH_TAG_ID, name: "Anal Creampie" },
+            { id: "not-a-uuid", name: "Broken" }, // non-UUID dropped
+          ],
+        },
       },
     });
   });
@@ -2591,6 +2623,57 @@ test("tag lookup returns provider-native ids without cross-provider mapping", as
   } finally {
     await stashFixture.close();
     restore2();
+  }
+});
+
+// --- the two listing windows: suggestions month-long, expansion one hour ---
+
+test("the picker serves a month-old listing while expansion re-walks past its one-hour window", async () => {
+  const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
+  const TAG_A = "1b7c3e9a-2d4f-4c6b-8a0e-5f1d2c3b4a5c";
+  const TAG_B = "2c8d4f0b-3e5a-4d7c-9b1f-6a2e3d4c5b6d";
+  let walks = 0;
+  let rows: { id: number; uuid?: string; name: string }[] = [
+    { id: 11, uuid: TAG_A, name: "Alpha" },
+  ];
+  const fixture = await startFixture((req, res) => {
+    const url = new URL(req.url ?? "/", "http://fixture.test");
+    if (url.pathname === "/tags") {
+      if (url.searchParams.has("page")) walks += 1;
+      return sendJson(res, 200, { data: rows, links: { next: null } });
+    }
+    sendJson(res, 404, {});
+  });
+  const realNow = Date.now;
+  try {
+    process.env.TPDB_BASE_URL = fixture.origin;
+    await searchCatalogTags("tpdb", "alpha");
+    assert.equal(walks, 1); // the search itself was the one listing walk
+    // Two hours in: the expansion-grade window has expired, so the
+    // expansion re-walks the listing — while the picker keeps serving the
+    // memo without a read.
+    Date.now = () => realNow() + 2 * 60 * 60_000;
+    const expanded = await expandCatalogTagTerm("tpdb", "alpha");
+    assert.deepEqual(expanded.ids, [TAG_A]);
+    assert.equal(walks, 2);
+    assert.deepEqual(await searchCatalogTags("tpdb", "alpha"), [
+      { id: TAG_A, name: "Alpha" },
+    ]);
+    assert.equal(walks, 2);
+    // Thirty-one days in: even the suggestion window has expired, so the
+    // next picker search re-walks — a renamed vocabulary reaches it, and
+    // the served answer is the new walk, never a stale union.
+    rows = [{ id: 12, uuid: TAG_B, name: "Beta" }];
+    Date.now = () => realNow() + 31 * 24 * 60 * 60_000;
+    assert.deepEqual(await searchCatalogTags("tpdb", "beta"), [
+      { id: TAG_B, name: "Beta" },
+    ]);
+    assert.equal(walks, 3);
+    assert.deepEqual(await searchCatalogTags("tpdb", "alpha"), []);
+  } finally {
+    Date.now = realNow;
+    await fixture.close();
+    restore();
   }
 });
 
@@ -2752,7 +2835,7 @@ test("studio and tag filters select provider matches, including TPDB cold UUID b
   }
 });
 
-test("a tag picked from a search response browses without a /tags scan", async () => {
+test("a tag picked from the cached listing browses without another /tags scan", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   let tagScans = 0;
   const fixture = await startFixture((req, res) => {
@@ -2761,6 +2844,7 @@ test("a tag picked from a search response browses without a /tags scan", async (
       if (url.searchParams.has("page")) tagScans++;
       return sendJson(res, 200, {
         data: [{ id: 194, uuid: TPDB_TAG_B, name: "Rare Tag" }],
+        links: { next: null },
       });
     }
     if (url.pathname === "/movies") {
@@ -2777,8 +2861,10 @@ test("a tag picked from a search response browses without a /tags scan", async (
     process.env.TPDB_BASE_URL = fixture.origin;
     const found = await searchCatalogTags("tpdb", "rare");
     assert.deepEqual(found, [{ id: TPDB_TAG_B, name: "Rare Tag" }]);
-    // The numeric key must come from the rows above; a cold scan would page
-    // /tags?page=N until the id is known.
+    // The search itself was the one listing walk (tagScans is paged reads
+    // only), and its rows taught the numeric filter key: browsing with the
+    // picked tag pages no further /tags reads.
+    assert.equal(tagScans, 1);
     const page = await searchCatalog({
       provider: "tpdb",
       kind: "movie",
@@ -2788,7 +2874,7 @@ test("a tag picked from a search response browses without a /tags scan", async (
       page.items.map((item) => item.reference.id),
       [MOVIE_ID],
     );
-    assert.equal(tagScans, 0);
+    assert.equal(tagScans, 1);
   } finally {
     await fixture.close();
     restore();
