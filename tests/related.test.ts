@@ -6,7 +6,10 @@
 // partial provider failure evidence, counterpart exact-name pairing, and
 // the Jev boundary: keyless makes no paid call, success reorders the exact
 // same candidates with one metadata-only request, and outage/malformed
-// answers preserve the deterministic tag order.
+// answers preserve the deterministic tag order, the StashDB scene source
+// fills its rail from the same-provider scene search and the TPDB
+// counterpart movie search, and performer-tag count ties fall back to
+// name order.
 
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
@@ -54,6 +57,12 @@ const STASH_TAG_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const SCENE_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const SCENE_UNRELATED = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const TAG_DOC = "f0f0f0f0-f0f0-4f0f-8f0f-f0f0f0f0f0f0";
+const STASH_SRC = "abababab-abab-4aba-8aba-abababababab"; // StashDB source scene
+const STASH_SCENE_A = "cdcdcdcd-cdcd-4cdc-8cdc-cdcdcdcdcdcd"; // shares "Spacer"
+const STASH_SCENE_B = "dededede-dede-4ded-8ede-dededededede"; // shares "Spacer"
+const TAG_ALPHA = "12121212-1212-4121-8121-121212121212"; // TPDB numeric 201
+const TAG_ZEBRA = "23232323-2323-4232-8232-232323232323"; // TPDB numeric 202
+const TAG_MANGO = "34343434-3434-4343-8343-343434343434"; // TPDB numeric 203
 
 // Performer co-appearance fixtures.
 const PERF_ID = "12341234-1234-4123-8123-123412341234";
@@ -70,6 +79,9 @@ const TAG_ORDER = [MOVIE_BOOST, MOVIE_TWO, MOVIE_HIDDEN, SCENE_ID, MOVIE_ONE];
 
 const movieRef = (id: string) =>
   ({ provider: "tpdb", kind: "movie", id }) as const;
+
+const sceneRef = (id: string) =>
+  ({ provider: "stashdb", kind: "scene", id }) as const;
 
 const HIDE_COMEDY: CatalogTagSelection[] = [{ name: "Comedy" }];
 
@@ -164,6 +176,9 @@ let queryTagsReply: unknown = {
 let scenesReply: unknown = {
   queryScenes: { count: 1, scenes: [stashSceneRow()] },
 };
+// The StashDB scene a stash-source test reads as its source detail
+// (data.findScene); null until a test sets it.
+let findSceneReply: unknown = { findScene: null };
 let filmography: unknown[] = [];
 let filmographyLinks: unknown = {};
 let filmographyCalls = 0;
@@ -176,6 +191,7 @@ beforeEach(() => {
     queryTags: { count: 1, tags: [{ id: STASH_TAG_ID, name: "romance" }] },
   };
   scenesReply = { queryScenes: { count: 1, scenes: [stashSceneRow()] } };
+  findSceneReply = { findScene: null };
   filmography = [];
   filmographyLinks = {};
   filmographyCalls = 0;
@@ -219,6 +235,9 @@ const handler: FixtureHandler = (req, res, body) => {
     // the pairing filters to exact normalized equality).
     if ((parsed.query ?? "").includes("queryTags")) {
       return sendJson(res, 200, { data: queryTagsReply });
+    }
+    if ((parsed.query ?? "").includes("findScene")) {
+      return sendJson(res, 200, { data: findSceneReply });
     }
     return sendJson(res, 200, { data: scenesReply });
   }
@@ -408,6 +427,84 @@ test("counterpart tags pair only on exact normalized equality; without a pair th
       ),
     );
     assert.deepEqual(result.errors, []);
+  });
+});
+
+// The StashDB scene source: the whole else-branch of the query builder.
+// Every earlier relatedTitles case reads a TPDB movie source, so these two
+// are the only guard over the same-provider scene search and the TPDB
+// counterpart movie search.
+
+test("a StashDB scene source searches StashDB scenes for its own uuid tags", async () => {
+  await withFx(async (fx) => {
+    findSceneReply = {
+      findScene: {
+        ...stashSceneRow(),
+        id: STASH_SRC,
+        title: "Source Scene",
+        // No TPDB tag carries this label: the counterpart pairing stays
+        // empty and only the same-provider search can fill the rail.
+        tags: [{ id: STASH_TAG_ID, name: "Spacer" }],
+      },
+    };
+    scenesReply = {
+      queryScenes: {
+        count: 2,
+        scenes: [
+          {
+            ...stashSceneRow(),
+            id: STASH_SCENE_A,
+            title: "Spacer One",
+            tags: [{ id: STASH_TAG_ID, name: "Spacer" }],
+          },
+          {
+            ...stashSceneRow(),
+            id: STASH_SCENE_B,
+            title: "Spacer Two",
+            tags: [{ id: STASH_TAG_ID, name: "Spacer" }],
+          },
+        ],
+      },
+    };
+    const result = await relatedTitles(sceneRef(STASH_SRC), []);
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual([...ids(result.items)].sort(), [
+      STASH_SCENE_A,
+      STASH_SCENE_B,
+    ]);
+    // No pairable label: the TPDB movie search never runs.
+    assert.ok(fx.log.every((r) => pathOf(r.url) !== "/movies"));
+  });
+});
+
+test("a StashDB scene source pairs a TPDB tag and searches TPDB movies", async () => {
+  await withFx(async (fx) => {
+    findSceneReply = {
+      findScene: {
+        ...stashSceneRow(),
+        id: STASH_SRC,
+        title: "Source Scene",
+        tags: [{ id: STASH_TAG_ID, name: "Romance" }],
+      },
+    };
+    // The same-provider search comes back empty: only the counterpart side
+    // can fill the rail.
+    scenesReply = { queryScenes: { count: 0, scenes: [] } };
+    listing = [
+      movieRow(MOVIE_TWO, "Two Shared", [ROMANCE, COMEDY]),
+      movieRow(MOVIE_ONE, "One Shared", [ROMANCE]),
+      movieRow(MOVIE_ZERO, "Nothing Shared", [
+        tpdbTag(999, TAG_DOC, "Documentary"),
+      ]),
+    ];
+    const result = await relatedTitles(sceneRef(STASH_SRC), []);
+    assert.deepEqual(result.errors, []);
+    // The zero-shared row stays out.
+    assert.deepEqual([...ids(result.items)].sort(), [MOVIE_TWO, MOVIE_ONE]);
+    // The counterpart search travels with the paired tag's numeric id.
+    const listingReq = fx.log.find((r) => pathOf(r.url) === "/movies");
+    assert.ok(listingReq);
+    assert.equal(queryOf(listingReq.url).get("tags[101]"), "1");
   });
 });
 
@@ -854,9 +951,11 @@ test("related performers refuse non-performer references", async () => {
 test("performer tags count tags across visible filmography only", async () => {
   await withFx(async () => {
     filmography = [
+      // Documentary scans before Romance: the sort, not the insertion
+      // order, must put the two-count tag first.
       movieRow(SOURCE_ID, "Film One", [
-        ROMANCE,
         tpdbTag(999, TAG_DOC, "Documentary"),
+        ROMANCE,
       ]),
       movieRow(MOVIE_TWO, "Film Two", [ROMANCE]),
       movieRow(MOVIE_HIDDEN, "Hidden Film", [COMEDY]),
@@ -875,6 +974,27 @@ test("performer tags count tags across visible filmography only", async () => {
       { name: "Documentary", count: 1, id: TAG_DOC },
     ]);
     assert.equal(result.scanned, 2);
+  });
+});
+
+test("performer tags break equal counts by name, not scan order", async () => {
+  await withFx(async () => {
+    // One film, three one-count tags in scan order Mango, Zebra, Alpha:
+    // the rail must read name-asc, neither scan order nor its reverse.
+    filmography = [
+      movieRow(SOURCE_ID, "Film One", [
+        tpdbTag(203, TAG_MANGO, "Mango"),
+        tpdbTag(202, TAG_ZEBRA, "Zebra"),
+        tpdbTag(201, TAG_ALPHA, "Alpha"),
+      ]),
+    ];
+    const result = await performerTags(performerRef("tpdb", PERF_ID), []);
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.tags, [
+      { name: "Alpha", count: 1, id: TAG_ALPHA },
+      { name: "Mango", count: 1, id: TAG_MANGO },
+      { name: "Zebra", count: 1, id: TAG_ZEBRA },
+    ]);
   });
 });
 
