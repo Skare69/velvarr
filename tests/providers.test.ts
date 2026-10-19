@@ -2626,6 +2626,40 @@ test("tag lookup serves the cached listing, keeps provider-native ids, and falls
   }
 });
 
+// The listing is provider-ordered (StashDB name ascending), so a common
+// term can fill the whole cap with substring hits ("Anal Sex", "Group Sex")
+// before the exact name ("Sex") ever appears. Ranking must run before the
+// cap: exact folded match, then prefix, then the remaining substrings.
+test("tag lookup ranks the exact name first even when substring hits fill the cap", async () => {
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  const SEX_ID = "c0c00000-0000-4000-8000-000000000001";
+  const WORK_ID = "c0c00000-0000-4000-8000-000000000002";
+  const tags = [
+    ...Array.from({ length: 60 }, (_, i) => ({
+      id: `c0c00000-0000-4000-8000-${String(i + 10).padStart(12, "0")}`,
+      name: `Row ${String(i).padStart(2, "0")} sex`,
+    })),
+    { id: SEX_ID, name: "Sex" },
+    { id: WORK_ID, name: "Sex Work" },
+  ];
+  const fixture = await startFixture((_req, res, body) => {
+    const parsed = JSON.parse(body) as { query?: string };
+    assert.ok(parsed.query?.includes("queryTags"));
+    sendJson(res, 200, { data: { queryTags: { count: tags.length, tags } } });
+  });
+  try {
+    process.env.STASHDB_BASE_URL = fixture.origin;
+    const found = await searchCatalogTags("stashdb", "sex");
+    assert.deepEqual(found[0], { id: SEX_ID, name: "Sex" });
+    assert.deepEqual(found[1], { id: WORK_ID, name: "Sex Work" });
+    assert.equal(found[2]?.name, "Row 00 sex");
+    assert.equal(found.length, 50);
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
 // --- the two listing windows: suggestions month-long, expansion one hour ---
 
 test("the picker serves a month-old listing while expansion re-walks past its one-hour window", async () => {

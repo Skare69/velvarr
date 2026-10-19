@@ -1793,9 +1793,21 @@ export async function searchCatalogTags(
   if (needle !== "") {
     const listing = await catalogTagListing(provider, TAG_SUGGESTION_TTL_MS);
     if (listing.complete) {
-      return listing.rows
-        .filter((row) => normalizeFacetName(row.name).includes(needle))
-        .slice(0, MAX.tags);
+      // Rank before the cap: the listing is provider-ordered (StashDB name
+      // ascending), so substring hits can fill MAX.tags before the exact
+      // name appears and the picker would lose its lift candidate. Each
+      // tier keeps the listing order.
+      const exact: { id: string; name: string }[] = [];
+      const prefixed: typeof exact = [];
+      const contained: typeof exact = [];
+      for (const row of listing.rows) {
+        const folded = normalizeFacetName(row.name);
+        if (!folded.includes(needle)) continue;
+        if (folded === needle) exact.push(row);
+        else if (folded.startsWith(needle)) prefixed.push(row);
+        else contained.push(row);
+      }
+      return [...exact, ...prefixed, ...contained].slice(0, MAX.tags);
     }
   }
   if (provider === "tpdb") {
