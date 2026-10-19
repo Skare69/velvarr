@@ -1064,12 +1064,18 @@ async function stashdbHandler(
     });
   }
   if (query.includes("searchTag")) {
-    // listCatalogTags (the no-match suggestion path) searches the empty
+    // listCatalogTags (the no-match suggestion path) inlines the empty
     // term; the counterpart lookup left searchTag for the queryTags
-    // listing above.
+    // listing above. A cold picker search goes native with a real term
+    // and finds nothing here, so the judged-suggestion branch stays
+    // reachable.
+    const term = (body.variables as { t?: string } | undefined)?.t;
     return json(res, 200, {
       data: {
-        searchTag: [{ id: TAG_B, name: "Fixture Stash Tag" }],
+        searchTag:
+          term === undefined || term === ""
+            ? [{ id: TAG_B, name: "Fixture Stash Tag" }]
+            : [],
       },
     });
   }

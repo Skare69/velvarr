@@ -37,6 +37,7 @@ import {
   searchCatalogTags,
   studioCounterpart,
   tagCounterpart,
+  warmCatalogTagListing,
 } from "../src/server/providers.ts";
 import type {
   CatalogSearchQuery,
@@ -2642,6 +2643,9 @@ test("tag lookup serves the cached listing, keeps provider-native ids, and falls
   let tpdbTags: { id: string; name: string }[];
   try {
     process.env.TPDB_BASE_URL = tpdbFixture.origin;
+    // Warm the listing first: the folded-substring answer is served from
+    // it, while a cold memo goes straight to the native search.
+    await warmCatalogTagListing("tpdb");
     tpdbTags = await searchCatalogTags("tpdb", "anal");
     assert.deepEqual(tpdbTags, [
       { id: TPDB_TAG_A, name: "Anal" },
@@ -2677,6 +2681,10 @@ test("tag lookup serves the cached listing, keeps provider-native ids, and falls
   });
   try {
     process.env.STASHDB_BASE_URL = stashFixture.origin;
+    // The fixture answers only the queryTags listing; warm it so the
+    // search below is served from the memo, never from a native read the
+    // fixture would refuse.
+    await warmCatalogTagListing("stashdb");
     const stashTags = await searchCatalogTags("stashdb", "anal");
     assert.deepEqual(stashTags, [{ id: STASH_TAG_ID, name: "Anal Creampie" }]);
     // provider-native ids are kept verbatim, never mapped across providers
@@ -2710,6 +2718,9 @@ test("tag lookup ranks the exact name first even when substring hits fill the ca
   });
   try {
     process.env.STASHDB_BASE_URL = fixture.origin;
+    // The cold keystroke answers natively; the ranked listing rule runs
+    // once the background warm has landed, so join it first.
+    await warmCatalogTagListing("stashdb");
     const found = await searchCatalogTags("stashdb", "sex");
     assert.deepEqual(found[0], { id: SEX_ID, name: "Sex" });
     assert.deepEqual(found[1], { id: WORK_ID, name: "Sex Work" });
@@ -2742,8 +2753,16 @@ test("the picker serves a month-old listing while expansion re-walks past its on
   const realNow = Date.now;
   try {
     process.env.TPDB_BASE_URL = fixture.origin;
-    await searchCatalogTags("tpdb", "alpha");
-    assert.equal(walks, 1); // the search itself was the one listing walk
+    // Cold memo: the keystroke answers from the native relevance search
+    // without waiting for the walk; the walk runs in the background and
+    // serves the folded-substring listing from the next keystroke on.
+    assert.deepEqual(await searchCatalogTags("tpdb", "alpha"), [
+      { id: TAG_A, name: "Alpha" },
+    ]);
+    // The background warm may finish before the native read does (fast
+    // fixture), so the walk count is pinned only once the warm is joined.
+    await warmCatalogTagListing("tpdb");
+    assert.equal(walks, 1); // the background warm was the one listing walk
     // Two hours in: the expansion-grade window has expired, so the
     // expansion re-walks the listing — while the picker keeps serving the
     // memo without a read.
@@ -2756,14 +2775,16 @@ test("the picker serves a month-old listing while expansion re-walks past its on
     ]);
     assert.equal(walks, 2);
     // Thirty-one days in: even the suggestion window has expired, so the
-    // next picker search re-walks — a renamed vocabulary reaches it, and
-    // the served answer is the new walk, never a stale union.
+    // keystroke answers natively again and the background re-warm brings
+    // the renamed vocabulary to the searches after it — never a stale
+    // union.
     rows = [{ id: 12, uuid: TAG_B, name: "Beta" }];
     Date.now = () => realNow() + 31 * 24 * 60 * 60_000;
     assert.deepEqual(await searchCatalogTags("tpdb", "beta"), [
       { id: TAG_B, name: "Beta" },
     ]);
-    assert.equal(walks, 3);
+    await warmCatalogTagListing("tpdb");
+    assert.equal(walks, 3); // the re-warm is the only new listing walk
     assert.deepEqual(await searchCatalogTags("tpdb", "alpha"), []);
   } finally {
     Date.now = realNow;
@@ -2801,11 +2822,14 @@ test("a picker miss on a listing past the completeness window falls back to the 
   const realNow = Date.now;
   try {
     process.env.TPDB_BASE_URL = fixture.origin;
+    // The cold keystroke answers natively while the walk warms the memo
+    // in the background; the walk count is pinned once the warm is joined.
     assert.deepEqual(await searchCatalogTags("tpdb", "alpha"), [
-      { id: TAG_A, name: "Alpha" },
+      { id: TAG_B, name: "Nova" },
     ]);
+    await warmCatalogTagListing("tpdb");
     assert.equal(walks, 1);
-    assert.equal(nativeReads, 0);
+    assert.equal(nativeReads, 1);
     // Two hours in: the memo is past the completeness window but well
     // inside the suggestion window. A miss must not claim absence over the
     // month-old copy — the native search answers, and no walk is paid.
@@ -2814,16 +2838,53 @@ test("a picker miss on a listing past the completeness window falls back to the 
       { id: TAG_B, name: "Nova" },
     ]);
     assert.equal(walks, 1);
-    assert.equal(nativeReads, 1);
+    assert.equal(nativeReads, 2);
     // Thirty-one days in: even the suggestion window has expired, so the
-    // search re-walks, and its fresh empty answer stays honest — no native
-    // read pays for an absence the fresh walk proves.
+    // keystroke answers natively again and the background re-warm brings
+    // the fresh listing in. The warmed walk's miss then stays honest — no
+    // native read pays for an absence the fresh walk proves.
     Date.now = () => realNow() + 31 * 24 * 60 * 60_000;
-    assert.deepEqual(await searchCatalogTags("tpdb", "nova"), []);
+    assert.deepEqual(await searchCatalogTags("tpdb", "nova"), [
+      { id: TAG_B, name: "Nova" },
+    ]);
+    assert.equal(nativeReads, 3);
+    await warmCatalogTagListing("tpdb");
     assert.equal(walks, 2);
-    assert.equal(nativeReads, 1);
+    assert.deepEqual(await searchCatalogTags("tpdb", "nova"), []);
+    assert.equal(nativeReads, 3);
   } finally {
     Date.now = realNow;
+    await fixture.close();
+    restore();
+  }
+});
+
+test("a cold tag search answers from the native search while the listing walk warms in the background", async () => {
+  const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
+  const NATIVE_ID = "3d9e501c-4f6a-4e8b-9c2d-7a3b5c6d8e9f";
+  const LISTING_ID = "4e0f612d-5a7b-4f9c-8d3e-8b4c2d3a5b6c";
+  const fixture = await startFixture((req, res) => {
+    const url = new URL(req.url ?? "/", "http://fixture.test");
+    if (url.pathname !== "/tags") return sendJson(res, 404, {});
+    // Distinct rows per endpoint: an answer built from the listing walk
+    // would name the listing row, so the native answer proves the search
+    // never waited on the walk.
+    const rows = url.searchParams.has("page")
+      ? [{ id: 21, uuid: LISTING_ID, name: "Alpha Listing" }]
+      : [{ id: 22, uuid: NATIVE_ID, name: "Alpha Native" }];
+    return sendJson(res, 200, { data: rows, links: { next: null } });
+  });
+  try {
+    process.env.TPDB_BASE_URL = fixture.origin;
+    const cold = await searchCatalogTags("tpdb", "alpha");
+    assert.deepEqual(cold, [{ id: NATIVE_ID, name: "Alpha Native" }]);
+    // The background warm landed: the same term now reads the folded
+    // substring rule off the complete listing.
+    await warmCatalogTagListing("tpdb");
+    assert.deepEqual(await searchCatalogTags("tpdb", "alpha"), [
+      { id: LISTING_ID, name: "Alpha Listing" },
+    ]);
+  } finally {
     await fixture.close();
     restore();
   }
@@ -3012,10 +3073,13 @@ test("a tag picked from the cached listing browses without another /tags scan", 
   try {
     process.env.TPDB_BASE_URL = fixture.origin;
     const found = await searchCatalogTags("tpdb", "rare");
+    // A cold search answers natively — the fixture serves the same row for
+    // the q read — and costs no listing walk.
     assert.deepEqual(found, [{ id: TPDB_TAG_B, name: "Rare Tag" }]);
-    // The search itself was the one listing walk (tagScans is paged reads
-    // only), and its rows taught the numeric filter key: browsing with the
-    // picked tag pages no further /tags reads.
+    await warmCatalogTagListing("tpdb");
+    // The background warm was the one listing walk (tagScans is paged
+    // reads only); both reads teach the numeric filter key: browsing with
+    // the picked tag pages no further /tags reads.
     assert.equal(tagScans, 1);
     const page = await searchCatalog({
       provider: "tpdb",

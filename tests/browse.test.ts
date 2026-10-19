@@ -3721,22 +3721,39 @@ test("searchBrowseTags merges same labels across providers and reports outages",
       return;
     }
     if (path === "/graphql") {
-      const gql = JSON.parse(body) as { query?: string };
+      const gql = JSON.parse(body) as {
+        query?: string;
+        variables?: { t?: string };
+      };
       if (gql.query?.includes("queryTags")) {
         sendJson(res, 200, {
           data: { queryTags: { count: stashRows.length, tags: stashRows } },
         });
         return;
       }
-      sendJson(res, 200, { data: { searchTag: [] } });
+      // A cold picker search goes native with a real term: the healthy
+      // source answers the rows a relevance search would match, so its
+      // contribution stays visible beside the tpdb outage error.
+      const term = gql.variables?.t ?? "";
+      sendJson(res, 200, {
+        data: {
+          searchTag:
+            term === ""
+              ? []
+              : stashRows.filter((r) =>
+                  r.name.toLowerCase().includes(term.toLowerCase()),
+                ),
+        },
+      });
       return;
     }
     sendJson(res, 404, {});
   };
   await runBrowse(handler, async () => {
-    // The TPDB listing is down; StashDB answers. The failure is visible and
-    // the healthy source's folded-substring matches are kept (the local
-    // filter replaced the provider's term-honoured search).
+    // The TPDB source is down; StashDB answers. The failure is visible and
+    // the healthy source's matches are kept (a cold keystroke reads the
+    // native search; the listing warm serves the folded-substring rule on
+    // later keystrokes).
     const partial = await searchBrowseTags("anal");
     assert.equal(partial.errors.length, 1);
     assert.equal(partial.errors[0]!.provider, "tpdb");

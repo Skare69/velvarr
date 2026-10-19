@@ -132,6 +132,7 @@ export function resetMetaCache(): void {
   tpdbTagNumbers.clear();
   counterpartMemo.clear();
   tagListingMemo.clear();
+  tagListingWarm.clear();
 }
 
 /** Learns the numeric filter key behind a TPDB tag uuid while rows map.
@@ -1629,6 +1630,10 @@ const tagListingMemo = new Map<
   CatalogProvider,
   { at: number; listing: TagListing }
 >();
+// The picker's cold-path background walk: at most one in flight per
+// provider, so a keystroke burst joins the first warm instead of stacking
+// walks.
+const tagListingWarm = new Map<CatalogProvider, Promise<void>>();
 
 /** Shared StashDB tag-row parsing for the flat [Tag] {id, name} shapes
  * (searchTag, queryTags): validated, deduplicated by id. */
@@ -1744,6 +1749,26 @@ async function catalogTagListing(
   return { ...listing, at };
 }
 
+/** Warms the provider's tag listing without blocking the caller: at most
+ * one walk in flight per provider, and it never rejects — a failed warm
+ * leaves the memo cold and the next picker search re-warms. The picker
+ * fires this on a cold memo so the keystroke answers from the native
+ * search while up to 50 sequential listing reads run in the background. */
+export function warmCatalogTagListing(
+  provider: CatalogProvider,
+): Promise<void> {
+  const pending = tagListingWarm.get(provider);
+  if (pending !== undefined) return pending;
+  const warm = catalogTagListing(provider)
+    .then(() => undefined)
+    .catch(() => undefined);
+  tagListingWarm.set(provider, warm);
+  void warm.finally(() => {
+    if (tagListingWarm.get(provider) === warm) tagListingWarm.delete(provider);
+  });
+  return warm;
+}
+
 /** Free-text include expansion on one provider: every published tag whose
  * FOLDED name contains the folded term, read from the provider's complete
  * tag listing. `complete: false` marks a walk that hit its row cap — the
@@ -1772,18 +1797,22 @@ export async function expandCatalogTagTerm(
   return { ids, dropped, complete };
 }
 
-/** Tag lookup for filter pickers. The common path serves the folded
+/** Tag lookup for filter pickers. A warm listing serves the folded
  * substring rule over the provider's cached complete tag listing — the
  * same rule free-text include filtering applies, so what the picker offers
  * is exactly what the filter would match — under the month-long suggestion
- * window: typing queries nothing upstream once the listing is warm. The
- * native relevance search (TPDB /tags with `q`, StashDB searchTag) stays
- * as the fallback for a listing past the walk cap, for terms whose fold
- * is empty (non-Latin text, symbols), and for an empty answer against a
- * memo older than the completeness window — a miss there claims an
- * absence the month-old copy cannot prove, while the native search sees
- * the provider's current vocabulary. A fresh walk's miss is an honest
- * absence and answers empty. Ids are never mapped across providers; the
+ * window: typing queries nothing upstream once the listing is warm. An
+ * empty answer against a memo older than the completeness window falls to
+ * the native search — a miss there claims an absence the month-old copy
+ * cannot prove, while the native search sees the provider's current
+ * vocabulary; a fresh walk's miss is an honest absence and answers empty.
+ * On a cold memo (a restart, or a listing past the window) the keystroke
+ * is answered from the native relevance search immediately while
+ * warmCatalogTagListing re-walks the listing in the background — the
+ * first search after a restart must not wait on up to 50 sequential
+ * reads. The native search stays as the fallback for a listing past the
+ * walk cap and for terms whose fold is empty (non-Latin text, symbols),
+ * where folding cannot match. Ids are never mapped across providers; the
  * cap bounds the returned list. */
 export async function searchCatalogTags(
   provider: CatalogProvider,
@@ -1799,22 +1828,29 @@ export async function searchCatalogTags(
   }
   const needle = normalizeFacetName(q);
   if (needle !== "") {
-    const listing = await catalogTagListing(provider, TAG_SUGGESTION_TTL_MS);
-    if (listing.complete) {
-      const exact: { id: string; name: string }[] = [];
-      const prefixed: typeof exact = [];
-      const contained: typeof exact = [];
-      for (const row of listing.rows) {
-        const folded = normalizeFacetName(row.name);
-        if (!folded.includes(needle)) continue;
-        if (folded === needle) exact.push(row);
-        else if (folded.startsWith(needle)) prefixed.push(row);
-        else contained.push(row);
+    const memo = tagListingMemo.get(provider);
+    if (memo !== undefined && Date.now() - memo.at < TAG_SUGGESTION_TTL_MS) {
+      if (memo.listing.complete) {
+        const exact: { id: string; name: string }[] = [];
+        const prefixed: typeof exact = [];
+        const contained: typeof exact = [];
+        for (const row of memo.listing.rows) {
+          const folded = normalizeFacetName(row.name);
+          if (!folded.includes(needle)) continue;
+          if (folded === needle) exact.push(row);
+          else if (folded.startsWith(needle)) prefixed.push(row);
+          else contained.push(row);
+        }
+        const hits = [...exact, ...prefixed, ...contained].slice(0, MAX.tags);
+        if (hits.length > 0 || Date.now() - memo.at < TAG_LISTING_TTL_MS) {
+          return hits;
+        }
       }
-      const hits = [...exact, ...prefixed, ...contained].slice(0, MAX.tags);
-      if (hits.length > 0 || Date.now() - listing.at < TAG_LISTING_TTL_MS) {
-        return hits;
-      }
+    } else {
+      // Cold memo: answer from the native search below; the background
+      // warm serves the folded-substring listing from the next keystroke
+      // on. One walk per provider — a burst of keystrokes joins it.
+      void warmCatalogTagListing(provider);
     }
   }
   if (provider === "tpdb") {
