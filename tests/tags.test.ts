@@ -7,6 +7,7 @@ import { test } from "node:test";
 
 import type { CatalogReference } from "../src/lib/contracts.ts";
 import {
+  exactBothProviderTag,
   isBrowseableTagSelection,
   mergeTagCounts,
   performerTagJump,
@@ -209,4 +210,34 @@ test("a tag selection with a non-UUID provider id is not a browse link", () => {
     }),
     true,
   );
+});
+
+// --- exactBothProviderTag: the free-text commit that is a real tag ---
+
+test("exactBothProviderTag finds the merged row by normalized label", () => {
+  const rows = [
+    { name: "Romance Pack", tpdb: TAG_ROMANCE },
+    { name: "Romance", tpdb: TAG_ROMANCE, stashdb: STASH_TAG_ID },
+  ];
+  assert.deepEqual(exactBothProviderTag(rows, "romance"), rows[1]);
+  // Separators fold: the typed term need not spell the tag exactly.
+  assert.deepEqual(exactBothProviderTag(rows, "rom-ance"), rows[1]);
+});
+
+test("exactBothProviderTag refuses single-provider rows on an exact name", () => {
+  // The card's gate: only a tag both providers publish replaces the free
+  // text — a one-sided tag would trade the other side's coverage away.
+  const rows = [
+    { name: "Romance", tpdb: TAG_ROMANCE },
+    { name: "Romance", stashdb: STASH_TAG_ID },
+  ];
+  assert.equal(exactBothProviderTag(rows, "Romance"), undefined);
+});
+
+test("exactBothProviderTag refuses a both-provider row under another name", () => {
+  const rows = [
+    { name: "Romance Pack", tpdb: TAG_ROMANCE, stashdb: STASH_TAG_ID },
+  ];
+  assert.equal(exactBothProviderTag(rows, "Romance"), undefined);
+  assert.equal(exactBothProviderTag([], "Romance"), undefined);
 });

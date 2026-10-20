@@ -70,6 +70,23 @@ export function mergeTagCounts(
   );
 }
 
+/** The loaded row proving a typed term is a real tag on BOTH providers: one
+ * merged row (searchBrowseTags groups by normalized label) carrying both
+ * provider UUIDs. The tag picker commits it instead of the label-only free
+ * text, so the selection travels as exact native ids. */
+export function exactBothProviderTag(
+  rows: CatalogTagSelection[],
+  term: string,
+): CatalogTagSelection | undefined {
+  const label = normalizeFacetName(term);
+  return rows.find(
+    (r) =>
+      r.tpdb !== undefined &&
+      r.stashdb !== undefined &&
+      normalizeFacetName(r.name) === label,
+  );
+}
+
 /** Where a performer-page tag chip's browse jump must land. With a linked
  * performer on the other provider, the jump is a union: both of her ids
  * ride (primary `id` plus `counterpart`) and browse lands on All — her TPDB

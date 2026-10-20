@@ -11,6 +11,7 @@
 
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
+  exactBothProviderTag,
   normalizeFacetName,
   type BrowseTagsResponse,
   type CatalogTagSelection,
@@ -75,7 +76,9 @@ export function TagPicker({
    * native id cap, through the local substring re-check otherwise —
    * while excludes and hidden tags always match locally: the chip
    * carries no provider id, so it can never travel as an exact native
-   * tag. */
+   * tag. When the settled search shows the term is a real tag both
+   * providers publish, committing it selects that tag instead.
+   */
   allowFreeText?: boolean;
 }) {
   const [term, setTerm] = useState("");
@@ -85,9 +88,14 @@ export function TagPicker({
   const t = term.trim();
   // The debounce commits the term; the route only ever sees settled input.
   const [committed, setCommitted] = useState<string | null>(null);
+  // A just-committed free-text chip awaiting proof that the term is a real
+  // both-provider tag (VELV-46): the term exactly as committed.
+  const awaitingFree = useRef<string | null>(null);
   useEffect(() => {
     if (t.length < 2) {
-      setCommitted(null); // the route 400s under two characters
+      // While a promotion is awaited the query must stay alive: the
+      // answer reaches the hook only while `committed` holds the term.
+      if (awaitingFree.current === null) setCommitted(null);
       return;
     }
     const timer = setTimeout(() => setCommitted(t), 400);
@@ -103,6 +111,27 @@ export function TagPicker({
       : `/api/browse/tags?q=${encodeURIComponent(committed)}`,
     [committed],
   );
+
+  // The awaited answer landed: when it carries a tag both providers
+  // publish under the term's normalized name, the just-added free-text
+  // chip becomes that real tag; otherwise it stays free text. The query
+  // is released either way (the debounce skip above ends with this).
+  useEffect(() => {
+    const term = awaitingFree.current;
+    if (term === null || loading) return;
+    awaitingFree.current = null;
+    const both =
+      error === null && data !== null
+        ? exactBothProviderTag(data.tags, term)
+        : undefined;
+    if (both === undefined) return;
+    const label = normalizeFacetName(term);
+    onChange(
+      selected.map((s) =>
+        isFreeText(s) && normalizeFacetName(s.name) === label ? both : s,
+      ),
+    );
+  }, [data, error, loading]);
 
   const picked = new Set(selected.map((s) => normalizeFacetName(s.name)));
   const take = (rows: CatalogTagSelection[] | undefined) =>
@@ -163,7 +192,21 @@ export function TagPicker({
 
   function pick(tag: CatalogTagSelection) {
     if (disabled || capped || picked.has(normalizeFacetName(tag.name))) return;
-    onChange([...selected, tag]);
+    // A free-text commit that names a tag both providers publish is that
+    // real tag instead (VELV-46): exact native ids on both sides beat a
+    // label-only selection. When the rows are not settled yet, the chip
+    // goes in as free text and the search fires now; the settled answer
+    // promotes it in the effect above. ponytail: only the latest
+    // free-text pick is promoted — rapid consecutive free-text picks
+    // keep the earlier chips free text.
+    const swap = isFreeText(tag)
+      ? exactBothProviderTag(options, tag.name)
+      : undefined;
+    if (isFreeText(tag) && swap === undefined) {
+      awaitingFree.current = tag.name;
+      setCommitted(t);
+    }
+    onChange([...selected, swap ?? tag]);
     setTerm("");
     setOpen(false);
     inputRef.current?.focus();
