@@ -2832,12 +2832,15 @@ test("a picker miss on a listing past the completeness window falls back to the 
     assert.equal(nativeReads, 1);
     // Two hours in: the memo is past the completeness window but well
     // inside the suggestion window. A miss must not claim absence over the
-    // month-old copy — the native search answers, and no walk is paid.
+    // month-old copy — the native search answers. The keystroke also
+    // re-walks the aged listing in the background (moved pin: it used to
+    // pay no walk), so the browse a pick leads to finds a fresh listing.
     Date.now = () => realNow() + 2 * 60 * 60_000;
     assert.deepEqual(await searchCatalogTags("tpdb", "nova"), [
       { id: TAG_B, name: "Nova" },
     ]);
-    assert.equal(walks, 1);
+    await warmCatalogTagListing("tpdb");
+    assert.equal(walks, 2);
     assert.equal(nativeReads, 2);
     // Thirty-one days in: even the suggestion window has expired, so the
     // keystroke answers natively again and the background re-warm brings
@@ -2849,7 +2852,7 @@ test("a picker miss on a listing past the completeness window falls back to the 
     ]);
     assert.equal(nativeReads, 3);
     await warmCatalogTagListing("tpdb");
-    assert.equal(walks, 2);
+    assert.equal(walks, 3);
     assert.deepEqual(await searchCatalogTags("tpdb", "nova"), []);
     assert.equal(nativeReads, 3);
   } finally {
@@ -2885,6 +2888,70 @@ test("a cold tag search answers from the native search while the listing walk wa
       { id: LISTING_ID, name: "Alpha Listing" },
     ]);
   } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
+test("the expansion listing walk is shared, reads pages ahead, and refreshes before its window expires", async () => {
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  const tags = Array.from({ length: 1200 }, (_, i) => ({
+    id: `d0d00000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+    name: `Tag ${i}`,
+  }));
+  let reads = 0;
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const fixture = await startFixture((_req, res, body) => {
+    const parsed = JSON.parse(body) as { variables?: { p?: number } };
+    const p = parsed.variables?.p ?? 1;
+    reads += 1;
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    // A real 20 ms hold per page: concurrency is only observable while
+    // responses are still open, which no fake clock can drive over HTTP.
+    setTimeout(() => {
+      inFlight -= 1;
+      sendJson(res, 200, {
+        data: {
+          queryTags: {
+            count: tags.length,
+            tags: tags.slice((p - 1) * 100, p * 100),
+          },
+        },
+      });
+    }, 20);
+  });
+  const realNow = Date.now;
+  const expected = tags
+    .filter((t) => t.name.toLowerCase().includes("tag 1"))
+    .map((t) => t.id);
+  try {
+    process.env.STASHDB_BASE_URL = fixture.origin;
+    // Two expansions at once (two terms, or a browse beside a counterpart
+    // lookup) join one walk: 12 pages, never 24.
+    const [a, b] = await Promise.all([
+      expandCatalogTagTerm("stashdb", "tag 1"),
+      expandCatalogTagTerm("stashdb", "Tag 1"),
+    ]);
+    assert.deepEqual(a, { ids: expected, dropped: false, complete: true });
+    assert.deepEqual(b, a);
+    assert.equal(reads, 12);
+    // Page 1's count lets the walk read ahead, within the fan-out bound.
+    assert.ok(maxInFlight > 1 && maxInFlight <= 5, `in flight ${maxInFlight}`);
+    // Forty-five minutes in: still inside the completeness window, so the
+    // expansion answers from the memo without waiting on upstream, while a
+    // background walk refreshes it ahead of expiry.
+    Date.now = () => realNow() + 45 * 60_000;
+    assert.deepEqual(await expandCatalogTagTerm("stashdb", "tag 1"), a);
+    assert.ok(reads < 24, "the memo answered before the refresh finished");
+    await warmCatalogTagListing("stashdb"); // joins the refresh in flight
+    assert.equal(reads, 24);
+    // The refreshed memo is fresh: the next read pays nothing.
+    assert.deepEqual(await expandCatalogTagTerm("stashdb", "tag 1"), a);
+    assert.equal(reads, 24);
+  } finally {
+    Date.now = realNow;
     await fixture.close();
     restore();
   }
