@@ -950,6 +950,17 @@ async function stashdbHandler(
   const body = await readBody(req);
   const query = typeof body.query === "string" ? body.query : "";
   stashdbFx.lastVars = JSON.stringify(body.variables ?? null);
+  if (query.includes("me { id name roles")) {
+    return json(res, 200, {
+      data: {
+        me: {
+          id: "fixture-stashdb-account",
+          name: "Fixture StashDB",
+          roles: ["READ"],
+        },
+      },
+    });
+  }
   if (query.includes("queryStudios")) {
     // studioCounterpart matches the exact stored URL: the one published
     // theporndb.net/studios/<uuid> pair resolves; every other URL is
@@ -2973,6 +2984,121 @@ test("provider credentials: stored config wins over environment, clear falls bac
   });
 });
 
+test("individual provider checks require admin admission and reject unsupported providers without reads", async () => {
+  if (!owner) await boot();
+  const admin = owner || (await loginAs("owner"));
+  const requester = member || (await loginAs("member"));
+  const beforeTpdb = tpdbFx.calls,
+    beforeStashdb = stashdbFx.calls;
+  assert.equal((await call("GET", "/api/admin/providers/tpdb")).status, 401);
+  assert.equal(
+    (await call("GET", "/api/admin/providers/tpdb", { cookie: requester }))
+      .status,
+    403,
+  );
+  for (const provider of ["unknown", "tmdb", "typesafe"]) {
+    const refused = await call("GET", "/api/admin/providers/" + provider, {
+      cookie: admin,
+    });
+    assert.equal((await errorShape(refused, 400)).code, "invalid_query");
+  }
+  assert.equal(tpdbFx.calls, beforeTpdb);
+  assert.equal(stashdbFx.calls, beforeStashdb);
+});
+
+test("a failed individual provider check stays scoped and never invalidates the Velvarr session", async () => {
+  if (!owner) await boot();
+  const admin = owner || (await loginAs("owner"));
+  const previousStashKey = process.env.STASHDB_API_KEY;
+  const previousStashBase = process.env.STASHDB_BASE_URL;
+  process.env.STASHDB_API_KEY = stashdbKey;
+  process.env.STASHDB_BASE_URL = stashdbUrl;
+  const beforeStashdb = stashdbFx.calls;
+  assert.equal(
+    (
+      await call("PATCH", "/api/admin/integrations", {
+        cookie: admin,
+        body: { tpdbApiToken: "wrong-provider-row-key" },
+      })
+    ).status,
+    200,
+  );
+  try {
+    const response = await call("GET", "/api/admin/providers/tpdb", {
+      cookie: admin,
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.provider, "tpdb");
+    assert.equal(body.configured, true);
+    assert.equal(body.verified, false);
+    assert.equal(body.error.code, "upstream_auth");
+    assert.equal(
+      JSON.stringify(body).includes("wrong-provider-row-key"),
+      false,
+    );
+    assert.equal(
+      stashdbFx.calls,
+      beforeStashdb,
+      "checking TPDB never contacts StashDB",
+    );
+    assert.equal((await call("GET", "/api/me", { cookie: admin })).status, 200);
+    const beforeTpdb = tpdbFx.calls;
+    const other = await call("GET", "/api/admin/providers/stashdb", {
+      cookie: admin,
+    });
+    assert.equal(other.status, 200);
+    assert.deepEqual(await other.json(), {
+      provider: "stashdb",
+      configured: true,
+      verified: true,
+      account: "Fixture StashDB",
+    });
+    assert.equal(
+      tpdbFx.calls,
+      beforeTpdb,
+      "a rejected TPDB key cannot block the StashDB check",
+    );
+  } finally {
+    if (previousStashKey === undefined) delete process.env.STASHDB_API_KEY;
+    else process.env.STASHDB_API_KEY = previousStashKey;
+    if (previousStashBase === undefined) delete process.env.STASHDB_BASE_URL;
+    else process.env.STASHDB_BASE_URL = previousStashBase;
+    assert.equal(
+      (
+        await call("PATCH", "/api/admin/integrations", {
+          cookie: admin,
+          body: { tpdbApiToken: "" },
+        })
+      ).status,
+      200,
+    );
+  }
+});
+
+test("an unconfigured provider row reports absence without contacting either provider", async () => {
+  if (!owner) await boot();
+  const admin = owner || (await loginAs("owner"));
+  const token = process.env.TPDB_API_TOKEN;
+  delete process.env.TPDB_API_TOKEN;
+  try {
+    const beforeTpdb = tpdbFx.calls,
+      beforeStashdb = stashdbFx.calls;
+    const response = await call("GET", "/api/admin/providers/tpdb", {
+      cookie: admin,
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      provider: "tpdb",
+      configured: false,
+    });
+    assert.equal(tpdbFx.calls, beforeTpdb);
+    assert.equal(stashdbFx.calls, beforeStashdb);
+  } finally {
+    if (token === undefined) delete process.env.TPDB_API_TOKEN;
+    else process.env.TPDB_API_TOKEN = token;
+  }
+});
 test("Ollama settings and model verification require admin admission and preserve integrations", async () => {
   const baselineResponse = await call("GET", "/api/admin/integrations", {
     cookie: owner,

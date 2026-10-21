@@ -1067,6 +1067,33 @@ body:has(.auth-page) {
   }
 }
 
+.provider-credentials {
+  display: grid;
+  gap: 22px;
+  margin-top: 22px;
+}
+.provider-credential + .provider-credential {
+  border-top: 1px solid var(--color-edge);
+  padding-top: 22px;
+}
+.provider-credential-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.provider-credential-controls {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 14px;
+}
+.provider-credential-input {
+  flex: 1 1 240px;
+  min-width: 0;
+}
 .library-detail {
   outline: none;
 }
