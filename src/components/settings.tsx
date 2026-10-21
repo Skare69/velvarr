@@ -1386,8 +1386,9 @@ function JudgmentCard({
   })();
   const status = (
     <div className="settings-service-status" aria-live="polite">
+      {config && !standard && <ConnectionState state={connectionState} />}
       {!editing && (
-        <span className="chip">
+        <span className={config && !standard ? "text-muted" : "chip"}>
           {config
             ? standard
               ? "Standard matching (no AI)"
@@ -1395,7 +1396,6 @@ function JudgmentCard({
             : "Loading configuration…"}
         </span>
       )}
-      {config && !standard && <ConnectionState state={connectionState} />}
     </div>
   );
 
