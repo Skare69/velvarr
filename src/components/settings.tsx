@@ -103,10 +103,6 @@ export function SettingsView() {
       </nav>
       <div hidden={section !== "connections"}>
         <div className="settings-content">
-          <div className="connection-status-grid">
-            <JellyfinCard onForbidden={forbid} />
-            <WhisparrCard onForbidden={forbid} />
-          </div>
           <IntegrationsForm onForbidden={forbid} />
         </div>
       </div>
@@ -305,15 +301,11 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
     );
 
   return (
-    <form className="panel p-5" onSubmit={(e) => void save(e)} noValidate>
-      <h3 className="font-semibold">Integrations</h3>
-      <p className="mt-1 text-sm text-muted">
-        Jellyfin server <span className="chip">{info.jellyfin.serverId}</span> ·{" "}
-        {info.jellyfin.libraryIds.length} configured librar
-        {info.jellyfin.libraryIds.length === 1 ? "y" : "ies"} (grants are not
-        changed here)
-      </p>
-
+    <form
+      className="settings-connections"
+      onSubmit={(e) => void save(e)}
+      noValidate
+    >
       {error && (
         <div className="mt-4" role="alert">
           <ErrorPanel message={error} />
@@ -325,264 +317,300 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
         </div>
       )}
 
-      <div className="mt-4 grid gap-4 sm:grid-cols-2">
-        <div>
-          <label className="label" htmlFor="int-jf-url">
-            Jellyfin URL
-          </label>
-          <input
-            id="int-jf-url"
-            type="text"
-            className="input"
-            autoComplete="off"
-            maxLength={300}
-            value={jellyfinUrl}
-            onChange={(e) => setJellyfinUrl(e.target.value)}
-          />
+      <section
+        className="panel p-5 settings-service"
+        aria-labelledby="jellyfin-settings-title"
+      >
+        <div className="settings-service-heading">
+          <h2 id="jellyfin-settings-title">Jellyfin</h2>
+          <p>Your media server, accounts, and playback connection.</p>
         </div>
-        <div>
-          <label className="label" htmlFor="int-jf-ext">
-            Jellyfin external URL
-          </label>
-          <input
-            id="int-jf-ext"
-            type="text"
-            className="input"
-            autoComplete="off"
-            maxLength={300}
-            value={externalUrl}
-            onChange={(e) => setExternalUrl(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className="label" htmlFor="int-jf-key">
-            Jellyfin API key
-          </label>
-          <input
-            id="int-jf-key"
-            type="password"
-            className="input"
-            autoComplete="off"
-            placeholder={
-              info.jellyfin.apiKeyConfigured
-                ? "Configured — leave blank to keep"
-                : "Not set"
-            }
-            value={jellyfinApiKey}
-            onChange={(e) => setJellyfinApiKey(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className="label" htmlFor="int-w-url">
-            Whisparr URL (blank removes it, with delivery settings)
-          </label>
-          <input
-            id="int-w-url"
-            type="text"
-            className="input"
-            autoComplete="off"
-            maxLength={300}
-            value={whisparrUrl}
-            onChange={(e) => setWhisparrUrl(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className="label" htmlFor="int-w-key">
-            Whisparr API key
-          </label>
-          <input
-            id="int-w-key"
-            type="password"
-            className="input"
-            autoComplete="off"
-            placeholder={
-              info.whisparr?.apiKeyConfigured
-                ? "Configured — leave blank to keep"
-                : "Not set"
-            }
-            value={whisparrApiKey}
-            onChange={(e) => setWhisparrApiKey(e.target.value)}
-          />
-        </div>
-      </div>
-
-      <fieldset className="mt-4 border-t border-edge pt-4">
-        <legend className="label">Whisparr delivery</legend>
-        <p className="mt-1 text-sm text-muted">
-          With delivery disabled, approved requests are held inside Velvarr —
-          never dropped, never sent to Whisparr until you enable this.
+        <JellyfinCard onForbidden={onForbidden} />
+        <p className="mt-3 text-sm text-muted">
+          Server <span className="chip">{info.jellyfin.serverId}</span> ·{" "}
+          {info.jellyfin.libraryIds.length} configured librar
+          {info.jellyfin.libraryIds.length === 1 ? "y" : "ies"} (grants are not
+          changed here)
         </p>
-        <div className="mt-3 grid gap-4 sm:grid-cols-2">
-          <div className="sm:col-span-2">
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                className="check"
-                checked={deliveryEnabled}
-                disabled={!hasUrl || pending}
-                onChange={(e) => setDeliveryEnabled(e.target.checked)}
-              />
-              Send approved requests to Whisparr
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="label" htmlFor="int-jf-url">
+              Jellyfin URL
             </label>
+            <input
+              id="int-jf-url"
+              type="text"
+              className="input"
+              autoComplete="off"
+              maxLength={300}
+              value={jellyfinUrl}
+              onChange={(e) => setJellyfinUrl(e.target.value)}
+            />
           </div>
           <div>
-            <label className="label" htmlFor="int-w-root">
-              Root folder
+            <label className="label" htmlFor="int-jf-ext">
+              Jellyfin external URL
             </label>
-            {rootChoices.length > 0 ? (
-              <select
-                id="int-w-root"
-                className="input"
-                value={effectiveRoot}
-                disabled={!hasUrl || pending}
-                onChange={(e) => setRootFolderPath(e.target.value)}
-              >
-                {rootChoices.map((path) => (
-                  <option key={path} value={path}>
-                    {path}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                id="int-w-root"
-                type="text"
-                className="input"
-                autoComplete="off"
-                maxLength={1024}
-                placeholder="Whisparr download root, e.g. /data/adult"
-                value={rootFolderPath}
-                disabled={!hasUrl || pending}
-                onChange={(e) => setRootFolderPath(e.target.value)}
-              />
-            )}
+            <input
+              id="int-jf-ext"
+              type="text"
+              className="input"
+              autoComplete="off"
+              maxLength={300}
+              value={externalUrl}
+              onChange={(e) => setExternalUrl(e.target.value)}
+            />
           </div>
           <div>
-            <label className="label" htmlFor="int-w-profile">
-              Quality profile
+            <label className="label" htmlFor="int-jf-key">
+              Jellyfin API key
             </label>
-            {profileChoices.length > 0 ? (
-              <select
-                id="int-w-profile"
-                className="input"
-                value={effectiveProfile}
-                disabled={!hasUrl || pending}
-                onChange={(e) => setQualityProfileId(e.target.value)}
-              >
-                {profileChoices.map((p) => (
-                  <option key={p.id} value={String(p.id)}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                id="int-w-profile"
-                type="number"
-                min={1}
-                step={1}
-                className="input"
-                value={qualityProfileId}
-                disabled={!hasUrl || pending}
-                onChange={(e) => setQualityProfileId(e.target.value)}
-              />
-            )}
-          </div>
-          <div className="sm:col-span-2">
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                className="check"
-                checked={searchOnAdd}
-                disabled={!hasUrl || pending}
-                onChange={(e) => setSearchOnAdd(e.target.checked)}
-              />
-              Search Whisparr as soon as a request is sent
-            </label>
-          </div>
-        </div>
-      </fieldset>
-
-      <fieldset className="mt-4 border-t border-edge pt-4">
-        <legend className="label">Path mappings (Whisparr → Jellyfin)</legend>
-        <p className="mt-1 text-sm text-muted">
-          Prefix pairs that line Whisparr download paths up with Jellyfin
-          library paths. Only needed when the two roots differ.
-        </p>
-        {mappings.map((m, i) => (
-          <div key={i} className="mt-2 flex flex-wrap items-end gap-2">
-            <div className="min-w-40 flex-1">
-              <label className="label" htmlFor={`map-w-${i}`}>
-                Whisparr prefix
-              </label>
-              <input
-                id={`map-w-${i}`}
-                type="text"
-                className="input"
-                autoComplete="off"
-                maxLength={1024}
-                value={m.whisparrPrefix}
-                disabled={!hasUrl || pending}
-                onChange={(e) =>
-                  setMappings((cur) =>
-                    cur.map((x, j) =>
-                      j === i ? { ...x, whisparrPrefix: e.target.value } : x,
-                    ),
-                  )
-                }
-              />
-            </div>
-            <div className="min-w-40 flex-1">
-              <label className="label" htmlFor={`map-j-${i}`}>
-                Jellyfin prefix
-              </label>
-              <input
-                id={`map-j-${i}`}
-                type="text"
-                className="input"
-                autoComplete="off"
-                maxLength={1024}
-                value={m.jellyfinPrefix}
-                disabled={!hasUrl || pending}
-                onChange={(e) =>
-                  setMappings((cur) =>
-                    cur.map((x, j) =>
-                      j === i ? { ...x, jellyfinPrefix: e.target.value } : x,
-                    ),
-                  )
-                }
-              />
-            </div>
-            <button
-              type="button"
-              className="btn"
-              disabled={!hasUrl || pending}
-              onClick={() =>
-                setMappings((cur) => cur.filter((_, j) => j !== i))
+            <input
+              id="int-jf-key"
+              type="password"
+              className="input"
+              autoComplete="off"
+              placeholder={
+                info.jellyfin.apiKeyConfigured
+                  ? "Configured — leave blank to keep"
+                  : "Not set"
               }
-            >
-              Remove
-            </button>
+              value={jellyfinApiKey}
+              onChange={(e) => setJellyfinApiKey(e.target.value)}
+            />
           </div>
-        ))}
-        <button
-          type="button"
-          className="btn mt-3"
-          disabled={!hasUrl || pending || mappings.length >= 50}
-          onClick={() =>
-            setMappings((cur) => [
-              ...cur,
-              { whisparrPrefix: "", jellyfinPrefix: "" },
-            ])
-          }
-        >
-          Add mapping
-        </button>
-      </fieldset>
+        </div>
+      </section>
+      <section
+        className="panel p-5 settings-service"
+        aria-labelledby="whisparr-settings-title"
+      >
+        <div className="settings-service-heading">
+          <h2 id="whisparr-settings-title">Whisparr</h2>
+          <p>
+            Your download connection, delivery settings, and library path
+            mappings.
+          </p>
+        </div>
+        <WhisparrCard onForbidden={onForbidden} />
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="label" htmlFor="int-w-url">
+              Whisparr URL (blank removes it, with delivery settings)
+            </label>
+            <input
+              id="int-w-url"
+              type="text"
+              className="input"
+              autoComplete="off"
+              maxLength={300}
+              value={whisparrUrl}
+              onChange={(e) => setWhisparrUrl(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="label" htmlFor="int-w-key">
+              Whisparr API key
+            </label>
+            <input
+              id="int-w-key"
+              type="password"
+              className="input"
+              autoComplete="off"
+              placeholder={
+                info.whisparr?.apiKeyConfigured
+                  ? "Configured — leave blank to keep"
+                  : "Not set"
+              }
+              value={whisparrApiKey}
+              onChange={(e) => setWhisparrApiKey(e.target.value)}
+            />
+          </div>
+        </div>
 
-      <button type="submit" className="btn btn-accent mt-4" disabled={pending}>
-        {pending ? "Saving…" : "Save integrations"}
-      </button>
+        <fieldset className="mt-4 border-t border-edge pt-4">
+          <legend className="label">Whisparr delivery</legend>
+          <p className="mt-1 text-sm text-muted">
+            With delivery disabled, approved requests are held inside Velvarr —
+            never dropped, never sent to Whisparr until you enable this.
+          </p>
+          <div className="mt-3 grid gap-4 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="check"
+                  checked={deliveryEnabled}
+                  disabled={!hasUrl || pending}
+                  onChange={(e) => setDeliveryEnabled(e.target.checked)}
+                />
+                Send approved requests to Whisparr
+              </label>
+            </div>
+            <div>
+              <label className="label" htmlFor="int-w-root">
+                Root folder
+              </label>
+              {rootChoices.length > 0 ? (
+                <select
+                  id="int-w-root"
+                  className="input"
+                  value={effectiveRoot}
+                  disabled={!hasUrl || pending}
+                  onChange={(e) => setRootFolderPath(e.target.value)}
+                >
+                  {rootChoices.map((path) => (
+                    <option key={path} value={path}>
+                      {path}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  id="int-w-root"
+                  type="text"
+                  className="input"
+                  autoComplete="off"
+                  maxLength={1024}
+                  placeholder="Whisparr download root, e.g. /data/adult"
+                  value={rootFolderPath}
+                  disabled={!hasUrl || pending}
+                  onChange={(e) => setRootFolderPath(e.target.value)}
+                />
+              )}
+            </div>
+            <div>
+              <label className="label" htmlFor="int-w-profile">
+                Quality profile
+              </label>
+              {profileChoices.length > 0 ? (
+                <select
+                  id="int-w-profile"
+                  className="input"
+                  value={effectiveProfile}
+                  disabled={!hasUrl || pending}
+                  onChange={(e) => setQualityProfileId(e.target.value)}
+                >
+                  {profileChoices.map((p) => (
+                    <option key={p.id} value={String(p.id)}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  id="int-w-profile"
+                  type="number"
+                  min={1}
+                  step={1}
+                  className="input"
+                  value={qualityProfileId}
+                  disabled={!hasUrl || pending}
+                  onChange={(e) => setQualityProfileId(e.target.value)}
+                />
+              )}
+            </div>
+            <div className="sm:col-span-2">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="check"
+                  checked={searchOnAdd}
+                  disabled={!hasUrl || pending}
+                  onChange={(e) => setSearchOnAdd(e.target.checked)}
+                />
+                Search Whisparr as soon as a request is sent
+              </label>
+            </div>
+          </div>
+        </fieldset>
+
+        <fieldset className="mt-4 border-t border-edge pt-4">
+          <legend className="label">Path mappings (Whisparr → Jellyfin)</legend>
+          <p className="mt-1 text-sm text-muted">
+            Prefix pairs that line Whisparr download paths up with Jellyfin
+            library paths. Only needed when the two roots differ.
+          </p>
+          {mappings.map((m, i) => (
+            <div key={i} className="mt-2 flex flex-wrap items-end gap-2">
+              <div className="min-w-40 flex-1">
+                <label className="label" htmlFor={`map-w-${i}`}>
+                  Whisparr prefix
+                </label>
+                <input
+                  id={`map-w-${i}`}
+                  type="text"
+                  className="input"
+                  autoComplete="off"
+                  maxLength={1024}
+                  value={m.whisparrPrefix}
+                  disabled={!hasUrl || pending}
+                  onChange={(e) =>
+                    setMappings((cur) =>
+                      cur.map((x, j) =>
+                        j === i ? { ...x, whisparrPrefix: e.target.value } : x,
+                      ),
+                    )
+                  }
+                />
+              </div>
+              <div className="min-w-40 flex-1">
+                <label className="label" htmlFor={`map-j-${i}`}>
+                  Jellyfin prefix
+                </label>
+                <input
+                  id={`map-j-${i}`}
+                  type="text"
+                  className="input"
+                  autoComplete="off"
+                  maxLength={1024}
+                  value={m.jellyfinPrefix}
+                  disabled={!hasUrl || pending}
+                  onChange={(e) =>
+                    setMappings((cur) =>
+                      cur.map((x, j) =>
+                        j === i ? { ...x, jellyfinPrefix: e.target.value } : x,
+                      ),
+                    )
+                  }
+                />
+              </div>
+              <button
+                type="button"
+                className="btn"
+                disabled={!hasUrl || pending}
+                onClick={() =>
+                  setMappings((cur) => cur.filter((_, j) => j !== i))
+                }
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="btn mt-3"
+            disabled={!hasUrl || pending || mappings.length >= 50}
+            onClick={() =>
+              setMappings((cur) => [
+                ...cur,
+                { whisparrPrefix: "", jellyfinPrefix: "" },
+              ])
+            }
+          >
+            Add mapping
+          </button>
+        </fieldset>
+      </section>
+      <div className="settings-connection-actions">
+        <p className="text-sm text-muted">
+          Save changes to both connections together. Leave configured API keys
+          blank to keep them.
+        </p>
+        <button type="submit" className="btn btn-accent" disabled={pending}>
+          {pending ? "Saving…" : "Save integrations"}
+        </button>
+      </div>
     </form>
   );
 }
@@ -610,9 +638,9 @@ function WhisparrCard({ onForbidden }: { onForbidden: () => void }) {
   }, [err, onForbidden]);
 
   return (
-    <div className="panel p-5">
+    <div className="settings-connection-status">
       <div className="flex items-center justify-between gap-3">
-        <h3 className="font-semibold">Whisparr</h3>
+        <h3 className="font-semibold">Connection status</h3>
         <button
           type="button"
           className="btn"
@@ -640,7 +668,7 @@ function WhisparrCard({ onForbidden }: { onForbidden: () => void }) {
         </div>
       ) : !status?.configured ? (
         <p className="mt-3 text-sm text-muted">
-          Not configured. Add the Whisparr URL and API key above to enable
+          Not configured. Add the Whisparr URL and API key below to enable
           read-only status.
         </p>
       ) : (
@@ -714,9 +742,9 @@ function JellyfinCard({ onForbidden }: { onForbidden: () => void }) {
   }, [err, onForbidden]);
 
   return (
-    <div className="panel p-5">
+    <div className="settings-connection-status">
       <div className="flex items-center justify-between gap-3">
-        <h3 className="font-semibold">Jellyfin</h3>
+        <h3 className="font-semibold">Connection status</h3>
         <button
           type="button"
           className="btn"
@@ -743,7 +771,7 @@ function JellyfinCard({ onForbidden }: { onForbidden: () => void }) {
         </div>
       ) : !status?.configured ? (
         <p className="mt-3 text-sm text-muted">
-          Not configured. Save the Jellyfin URL and API key above to enable the
+          Not configured. Save the Jellyfin URL and API key below to enable the
           connection check.
         </p>
       ) : (
