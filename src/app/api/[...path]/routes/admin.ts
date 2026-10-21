@@ -512,8 +512,10 @@ export async function adminProviders(_ctx: AuthContext): Promise<Response> {
   return json({ providers: [tpdb, stashdb] });
 }
 
-/** Provider rejection is status feedback. Returning HTTP 401 here would trigger
- * the client's global sign-out even though its Velvarr session is still valid. */
+/**
+ * Provider rejection is status feedback. Returning HTTP 401 here would trigger
+ * the client's global sign-out even though its Velvarr session is still valid.
+ */
 export async function adminProvider(provider: string): Promise<Response> {
   if (provider !== "tpdb" && provider !== "stashdb")
     throw new AppError(400, "invalid_query", "Unknown metadata provider.");

@@ -574,8 +574,10 @@ export type WhisparrPathMapping = {
 
 export type JudgmentProvider = "none" | "typesafe" | "ollama";
 
-/** One shared guard for the provider value in storage, the admin PATCH, and
- * the effective configuration. */
+/**
+ * One shared guard for the provider value in storage, the admin PATCH, and
+ * the effective configuration.
+ */
 export function isJudgmentProvider(value: unknown): value is JudgmentProvider {
   return value === "none" || value === "typesafe" || value === "ollama";
 }
@@ -615,9 +617,11 @@ export type IntegrationConfig = {
     stashdbApiKey?: string;
     /** TypeSafe credentials; used only when TypeSafe is selected. */
     typesafeApiKey?: string;
-    /** "none" disables AI even when credentials exist. An absent selection uses
+    /**
+     * "none" disables AI even when credentials exist. An absent selection uses
      * VELVARR_JUDGMENT_PROVIDER (default: TypeSafe); absent URL/model settings use
-     * OLLAMA_BASE_URL and OLLAMA_MODEL. Ollama needs no API key. */
+     * OLLAMA_BASE_URL and OLLAMA_MODEL. Ollama needs no API key.
+     */
     judgmentProvider?: JudgmentProvider;
     ollamaUrl?: string;
     ollamaModel?: string;
