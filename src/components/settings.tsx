@@ -14,6 +14,7 @@ import {
   type FormEvent,
 } from "react";
 import type {
+  IntegrationConfig,
   JudgmentProvider,
   WhisparrDelivery,
   WhisparrPathMapping,
@@ -871,12 +872,22 @@ type ProviderSettingsInfo = {
   providers: Record<CredentialProvider | "typesafe", ProviderConfigRow>;
   judgment: JudgmentConfig;
 };
-type SaveProviderSettings = (body: Record<string, string>) => Promise<void>;
+type ProviderSettingsPatch = Partial<
+  Omit<NonNullable<IntegrationConfig["providers"]>, "judgmentProvider"> & {
+    judgmentProvider: JudgmentProvider | "";
+  }
+>;
+type SaveProviderSettings = (body: ProviderSettingsPatch) => Promise<void>;
 type ProviderCheckRow =
-  | { provider: string; configured: false }
-  | { provider: string; configured: true; verified: true; account: string }
+  | { provider: CredentialProvider; configured: false }
   | {
-      provider: string;
+      provider: CredentialProvider;
+      configured: true;
+      verified: true;
+      account: string;
+    }
+  | {
+      provider: CredentialProvider;
       configured: true;
       verified: false;
       error: { code: string; message: string };
@@ -888,6 +899,7 @@ const CREDENTIAL_ROWS = [
     name: "TPDB",
     field: "tpdbApiToken",
     label: "API token",
+    maxLength: 1024,
     description: "Movie metadata, performers, studios, and tags.",
   },
   {
@@ -895,9 +907,30 @@ const CREDENTIAL_ROWS = [
     name: "StashDB",
     field: "stashdbApiKey",
     label: "API key",
+    maxLength: 512,
     description: "Scene metadata, performers, studios, and tags.",
   },
 ] as const;
+
+const CONNECTION_STATE_CLASSES = {
+  "Loading configuration…": "",
+  "Checking…": "",
+  "Unsaved changes": "",
+  "Not configured": "",
+  "Not checked": "",
+  Connected: "is-ok",
+  "Connection failed": "is-error",
+  "Configuration error": "is-error",
+} as const;
+type ConnectionStateLabel = keyof typeof CONNECTION_STATE_CLASSES;
+
+function ConnectionState({ state }: { state: ConnectionStateLabel }) {
+  return (
+    <span className={"connection-state " + CONNECTION_STATE_CLASSES[state]}>
+      {state}
+    </span>
+  );
+}
 
 function MetadataSettings() {
   const { refreshSession } = useSession();
@@ -974,20 +1007,16 @@ function ProviderCredentialCard({
   name,
   field,
   label,
+  maxLength,
   description,
   config,
   saving,
   onSave,
 }: {
-  id: CredentialProvider;
-  name: string;
-  field: string;
-  label: string;
-  description: string;
   config?: ProviderConfigRow;
   saving: boolean;
   onSave: SaveProviderSettings;
-}) {
+} & (typeof CREDENTIAL_ROWS)[number]) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [check, setCheck] = useState<ProviderCheckRow | null>(null);
@@ -1042,10 +1071,20 @@ function ProviderCredentialCard({
     }
   }
 
+  // Checks read persisted credentials; a replacement draft is not yet verified.
+  const unsaved = editing && draft.trim() !== "";
   const error =
     checkError ??
     (check?.configured && !check.verified ? check.error.message : null);
   const busy = saving || checking || forbidden;
+  const connectionState: ConnectionStateLabel = (() => {
+    if (checking) return "Checking…";
+    if (unsaved) return "Unsaved changes";
+    if (error) return "Connection failed";
+    if (check?.configured && check.verified) return "Connected";
+    if (!config) return "Loading configuration…";
+    return config.configured ? "Not checked" : "Not configured";
+  })();
   return (
     <section
       className="panel p-5 settings-service"
@@ -1060,7 +1099,12 @@ function ProviderCredentialCard({
           <button
             type="button"
             className="btn"
-            disabled={busy || !config}
+            disabled={busy || !config || unsaved}
+            title={
+              unsaved
+                ? "Save or cancel your changes before checking the connection."
+                : undefined
+            }
             onClick={() => void verify()}
           >
             Check connection
@@ -1083,31 +1127,8 @@ function ProviderCredentialCard({
         </div>
       </div>
       <div className="settings-service-status" aria-live="polite">
-        <span
-          className={
-            "connection-state " +
-            (checking
-              ? ""
-              : error
-                ? "is-error"
-                : check?.configured && check.verified
-                  ? "is-ok"
-                  : "")
-          }
-        >
-          {checking
-            ? "Checking…"
-            : error
-              ? "Connection failed"
-              : check?.configured && check.verified
-                ? "Connected"
-                : config
-                  ? config.configured
-                    ? "Not checked"
-                    : "Not configured"
-                  : "Loading configuration…"}
-        </span>
-        {check?.configured && check.verified && (
+        <ConnectionState state={connectionState} />
+        {!unsaved && check?.configured && check.verified && (
           <span className="text-muted">{check.account}</span>
         )}
         {config?.configured && (
@@ -1135,7 +1156,7 @@ function ProviderCredentialCard({
             className="input mt-2"
             type="password"
             autoComplete="off"
-            maxLength={512}
+            maxLength={maxLength}
             disabled={busy || !config}
             value={draft}
             onChange={(event) => {
@@ -1195,12 +1216,12 @@ function ProviderCredentialCard({
           />
         </div>
       )}
-      {error && (
+      {error && !unsaved && (
         <div className="mt-3">
           <ErrorPanel
             title={name + " connection check failed"}
             message={error}
-            onRetry={() => void verify()}
+            onRetry={busy ? undefined : () => void verify()}
           />
         </div>
       )}
@@ -1287,7 +1308,7 @@ function JudgmentCard({
   }
 
   async function apply(
-    body: Record<string, string>,
+    body: ProviderSettingsPatch,
     success: string,
     verify = false,
   ) {
@@ -1298,6 +1319,8 @@ function JudgmentCard({
       setApiKey("");
       setConnected(null);
       setEditing(false);
+      // Probe only after persistence succeeds: the endpoint reads saved settings,
+      // not the draft. A failed probe must not turn a successful save into an error.
       if (verify) await check();
       else setMessage(success);
     } catch (error) {
@@ -1353,6 +1376,14 @@ function JudgmentCard({
     }
   }
 
+  const connectionState: ConnectionStateLabel = (() => {
+    if (checking) return "Checking…";
+    if (unsaved) return "Unsaved changes";
+    if (config?.error) return "Configuration error";
+    if (connected === false) return "Connection failed";
+    if (connected) return "Connected";
+    return config?.configured ? "Not checked" : "Not configured";
+  })();
   const status = (
     <div className="settings-service-status" aria-live="polite">
       {!editing && (
@@ -1364,34 +1395,7 @@ function JudgmentCard({
             : "Loading configuration…"}
         </span>
       )}
-      {config && !standard && (
-        <span
-          className={
-            "connection-state " +
-            (checking || unsaved
-              ? ""
-              : config.error || connected === false
-                ? "is-error"
-                : connected
-                  ? "is-ok"
-                  : "")
-          }
-        >
-          {checking
-            ? "Checking…"
-            : unsaved
-              ? "Unsaved changes"
-              : config.error
-                ? "Configuration error"
-                : connected === false
-                  ? "Connection failed"
-                  : connected
-                    ? "Connected"
-                    : config.configured
-                      ? "Not checked"
-                      : "Not configured"}
-        </span>
-      )}
+      {config && !standard && <ConnectionState state={connectionState} />}
     </div>
   );
 

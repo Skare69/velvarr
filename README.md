@@ -94,7 +94,7 @@ the acquisition life cycle, each tied to its source paths.
 - **Preferences:** hidden tags and Discover shelf order for each account.
 - **Similar titles** for movies and scenes, and **Often appears with** for performers.
 - **Update notice** when a newer GitHub release is available.
-- **Optional:** Discord notifications, and AI-assisted title matching through [TypeSafe](https://typesafe.ai) or a local [Ollama](#local-ai-matching-with-ollama) decision model. AI only flags a near match for administrator review. It never marks a title as available.
+- **Optional:** Discord notifications, and AI-assisted title matching through [TypeSafe](https://typesafe.ai) or an [Ollama](#ai-matching-with-ollama) decision model. AI only flags a near match for administrator review. It never marks a title as available.
 
 ## Configuration
 
@@ -116,7 +116,7 @@ Put the variables in `.env.local`.
 | `TYPESAFE_BASE_URL`           | no              | TypeSafe cloud API root override. Unset uses the TypeSafe default. |
 | `TYPESAFE_DEFAULT_MODEL`      | no              | TypeSafe decision model override. Unset uses the TypeSafe default. |
 | `TYPESAFE_API_KEY`            | no              | TypeSafe key for AI-assisted matching. A key saved in Settings wins. Tag suggestions need a key saved in Settings. |
-| `VELVARR_JUDGMENT_PROVIDER`   | no              | `typesafe` (default) or `ollama`. A choice saved in Settings wins. Tag suggestions need a choice saved in Settings. |
+| `VELVARR_JUDGMENT_PROVIDER`   | no              | `typesafe` (default), `ollama`, or `none` to disable AI. A choice saved in Settings wins. Tag suggestions need a choice saved in Settings. |
 | `OLLAMA_BASE_URL`             | no              | Ollama API root. Default `http://localhost:11434`. |
 | `OLLAMA_MODEL`                | no              | Ollama decision model. Default `nimble`. |
 | `VELVARR_UPDATE_CHECK`        | no              | `0` disables the release check. Otherwise, the server asks `api.github.com` at most once an hour after a success and at most once every ten minutes after a failure. |
@@ -136,7 +136,7 @@ Velvarr is an installable app, but the install prompt needs HTTPS. [Tailscale](h
 - If `VELVARR_ORIGIN` holds a different address, phone sign-in fails with `origin_mismatch`. Set it to the ts.net address or remove it. Only one origin can be set.
 - The service worker caches only build assets, never `/api` or live data. It registers only on HTTPS or loopback, and never in development builds.
 
-## Local AI matching with Ollama
+## AI matching with Ollama
 
 Use Ollama 0.35 or later with a decision model such as `nimble` or `tev1`. Chat models do not support the `/v1/systemone` endpoint.
 
@@ -144,17 +144,19 @@ Use Ollama 0.35 or later with a decision model such as `nimble` or `tev1`. Chat 
 ollama pull nimble
 ```
 
-1. Open **Settings → Metadata providers → AI-assisted matching** and select **Ollama (local)**.
-2. Enter the Ollama URL and the model name from `ollama list`, then save.
-3. Select **Test saved connection**.
+1. Open **Settings → Metadata providers → AI-assisted matching**, click **Edit**, and select **Ollama**.
+2. Enter a reachable Ollama URL and the model name from `ollama list`, then **Save**. Saving checks the connection and shows **Connected** or **Connection failed** with details.
+3. Use **Check connection** to test again.
 
-Ollama URL:
+Ollama can run on the same machine or a hosted server reachable from Velvarr. Example URLs:
 
 - Velvarr runs natively on the same machine: `http://localhost:11434`.
 - Velvarr runs in Docker Desktop: `http://host.docker.internal:11434`, and set `VELVARR_ALLOW_HTTP=1`.
 - Ollama runs on a different host: use its private address. See the [Ollama network guide](https://docs.ollama.com/faq#how-do-i-configure-ollama-server).
 
-Ollama never falls back to the paid TypeSafe service. If the connection fails, matching stays exact. You can also use the `VELVARR_JUDGMENT_PROVIDER`, `OLLAMA_BASE_URL`, and `OLLAMA_MODEL` variables. Test some real title variants before you select a model.
+Ollama never falls back to the paid TypeSafe service. If the connection fails, matching stays exact. You can also use the `VELVARR_JUDGMENT_PROVIDER`, `OLLAMA_BASE_URL`, and `OLLAMA_MODEL` variables. **Use environment settings** clears the stored provider selection, URL, and model. Environment-only Ollama supports title review and related-title ranking; tag suggestions send member search terms, so they start only after the Ollama choice is saved in Settings. Test some real title variants before you select a model.
+
+Select **Standard matching (no AI)** and **Save** to disable AI calls even when TypeSafe credentials or Ollama settings are present. The settings are preserved for later reuse. TypeSafe configuration also checks its connection after saving.
 
 ## Backup and recovery
 
