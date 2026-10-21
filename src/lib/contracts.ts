@@ -572,12 +572,12 @@ export type WhisparrPathMapping = {
   jellyfinPrefix: string;
 };
 
-export type JudgmentProvider = "typesafe" | "ollama";
+export type JudgmentProvider = "none" | "typesafe" | "ollama";
 
 /** One shared guard for the provider value in storage, the admin PATCH, and
  * the effective configuration (AGENTS.md §5: fix the shared root). */
 export function isJudgmentProvider(value: unknown): value is JudgmentProvider {
-  return value === "typesafe" || value === "ollama";
+  return value === "none" || value === "typesafe" || value === "ollama";
 }
 
 /** Ollama model names reach request URLs only; the allowlist keeps storage

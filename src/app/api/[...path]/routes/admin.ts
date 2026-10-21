@@ -191,7 +191,7 @@ export function nextProviderCredentials(
     throw new AppError(
       400,
       "invalid_field",
-      "Judgment provider must be typesafe or ollama.",
+      "Judgment provider must be none, typesafe, or ollama.",
     );
   }
   if (ollamaModel && !isOllamaModel(ollamaModel)) {

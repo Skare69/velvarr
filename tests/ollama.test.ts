@@ -653,7 +653,7 @@ test("an invalid environment provider and URL degrade with a combined error", ()
     assert.equal(
       settings.error,
       'VELVARR_JUDGMENT_PROVIDER has an invalid value "bogus"; ' +
-        'judgment features stay disabled until it is "typesafe" or "ollama". ' +
+        'judgment features stay disabled until it is "none", "typesafe", or "ollama". ' +
         "A valid integration base URL is required.",
     );
   } finally {
@@ -1314,6 +1314,98 @@ test("ranking orders by score with the original order breaking ties", async () =
         result?.map((c) => c.title),
         ["c0", "c1", "c2"],
       );
+    },
+  );
+});
+
+test("standard matching disables all AI paths despite saved and environment credentials", async () => {
+  await withEnv(
+    {
+      VELVARR_JUDGMENT_PROVIDER: "ollama",
+      TYPESAFE_API_KEY: "environment-key",
+      OLLAMA_BASE_URL: "http://localhost:11434",
+      OLLAMA_MODEL: "nimble",
+    },
+    async () => {
+      const disabled: Providers = {
+        ...local,
+        judgmentProvider: "none",
+        typesafeApiKey: "stored-key",
+      };
+      let calls = 0;
+      await withFetch(
+        async () => {
+          calls++;
+          throw new Error("Standard matching must not call any AI service");
+        },
+        async () => {
+          const settings = judgmentConfiguration(disabled);
+          assert.equal(settings.provider, "none");
+          assert.equal(settings.configured, false);
+          assert.equal(settings.stored, true);
+          assert.equal(settings.error, undefined);
+          assert.equal(judgmentConfigured(disabled), false);
+          assert.equal(tagSuggestionsAllowed(disabled), false);
+          assert.equal(await sameWork(requested, candidate, disabled), false);
+          assert.deepEqual(
+            await suggestTags("test", [{ id: "t", name: "Test" }], disabled),
+            [],
+          );
+          assert.equal(
+            await rankRelatedTitles(
+              requested,
+              [candidate, { title: "Other" }],
+              disabled,
+            ),
+            null,
+          );
+          assert.deepEqual(await checkJudgmentConnection(disabled), {
+            provider: "none",
+            connected: false,
+            error: "AI-assisted matching is disabled.",
+          });
+          const updated = nextProviderCredentials(disabled, {
+            stashdbApiKey: "new-stash-key",
+          });
+          assert.equal(updated?.judgmentProvider, "none");
+          assert.equal(updated?.typesafeApiKey, "stored-key");
+          assert.equal(judgmentConfigured(updated), false);
+          assert.equal(calls, 0);
+          // Re-enabling a backend can reuse its preserved configuration.
+          const enabled = nextProviderCredentials(updated, {
+            judgmentProvider: "ollama",
+          });
+          assert.equal(judgmentConfigured(enabled), true);
+          assert.equal(enabled?.ollamaModel, "nimble");
+        },
+      );
+    },
+  );
+});
+
+test("environment standard matching ignores invalid settings for unused AI backends", async () => {
+  await withEnv(
+    {
+      VELVARR_JUDGMENT_PROVIDER: "none",
+      TYPESAFE_API_KEY: "unused-key",
+      OLLAMA_BASE_URL: "not a URL",
+      OLLAMA_MODEL: "invalid model!",
+    },
+    async () => {
+      const settings = judgmentConfiguration();
+      assert.equal(settings.provider, "none");
+      assert.equal(settings.configured, false);
+      assert.equal(settings.error, undefined);
+      assert.equal(judgmentConfigured(), false);
+      assert.equal(
+        tagSuggestionsAllowed({ typesafeApiKey: "preserved-key" }),
+        false,
+      );
+      assert.deepEqual(await checkJudgmentConnection(), {
+        provider: "none",
+        connected: false,
+        error: "AI-assisted matching is disabled.",
+      });
     },
   );
 });

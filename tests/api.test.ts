@@ -3158,6 +3158,71 @@ test("Ollama settings and model verification require admin admission and preserv
   assert.equal((await clear.json()).judgment.provider, "typesafe");
 });
 
+test("standard matching persists through credential edits and requires admin admission", async () => {
+  const previous = getConfig()?.providers;
+  const body = {
+    judgmentProvider: "none",
+    typesafeApiKey: "preserved-disabled-ai-key",
+    ollamaUrl: "http://localhost:11434",
+    ollamaModel: "nimble",
+  };
+  const denied = await call("PATCH", "/api/admin/integrations", {
+    cookie: member,
+    body,
+  });
+  assert.equal(denied.status, 403);
+  const baseline = await (
+    await call("GET", "/api/admin/integrations", { cookie: owner })
+  ).json();
+  try {
+    const saved = await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body,
+    });
+    assert.equal(saved.status, 200);
+    const shape = await saved.json();
+    assert.equal(shape.judgment.provider, "none");
+    assert.equal(shape.judgment.configured, false);
+    assert.equal(shape.judgment.stored, true);
+    assert.equal(shape.providers.typesafe.configured, true);
+    assert.deepEqual(shape.jellyfin, baseline.jellyfin);
+    assert.deepEqual(shape.whisparr, baseline.whisparr);
+    assert.equal(getConfig()?.providers?.judgmentProvider, "none");
+    assert.equal(JSON.stringify(shape).includes(body.typesafeApiKey), false);
+    const edited = await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: { typesafeApiKey: "updated-disabled-ai-key" },
+    });
+    assert.equal(edited.status, 200);
+    assert.equal((await edited.json()).judgment.provider, "none");
+    const read = await call("GET", "/api/admin/integrations", {
+      cookie: owner,
+    });
+    assert.equal((await read.json()).judgment.configured, false);
+    const check = await call("POST", "/api/admin/judgment/check", {
+      cookie: owner,
+      body: {},
+    });
+    assert.equal(check.status, 200);
+    assert.deepEqual(await check.json(), {
+      provider: "none",
+      connected: false,
+      error: "AI-assisted matching is disabled.",
+    });
+  } finally {
+    const restored = await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: {
+        judgmentProvider: previous?.judgmentProvider ?? "",
+        typesafeApiKey: previous?.typesafeApiKey ?? "",
+        ollamaUrl: previous?.ollamaUrl ?? "",
+        ollamaModel: previous?.ollamaModel ?? "",
+      },
+    });
+    assert.equal(restored.status, 200);
+  }
+});
+
 test("an invalid environment judgment provider degrades the integrations response", async () => {
   const before = process.env.VELVARR_JUDGMENT_PROVIDER;
   try {
