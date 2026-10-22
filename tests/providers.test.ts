@@ -1136,6 +1136,48 @@ test("stashdb graphql resolver failures read as outages, not absence", async () 
   }
 });
 
+// Provider error text is lower-trust upstream content: the client-facing
+// message is flattened and capped at construction, never echoed verbatim.
+test("stashdb graphql error text is bounded and control-character free on the wire", async () => {
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  const hostile = "boom\n\t explained: " + "x".repeat(5000);
+  const fixture = await startFixture((_req, res, body) => {
+    const parsed = JSON.parse(body) as { query: string };
+    if (parsed.query.includes("findScene")) {
+      sendJson(res, 200, { data: null, errors: [{ message: hostile }] });
+      return;
+    }
+    sendJson(res, 200, { data: {} });
+  });
+  try {
+    process.env.STASHDB_BASE_URL = fixture.origin;
+    await assert.rejects(
+      getCatalogDetail({
+        provider: "stashdb",
+        kind: "scene",
+        id: STASH_SCENE_ID,
+      }),
+      (err: unknown) => {
+        assertProviderError(err, 502, "upstream_bad_response");
+        const message = (err as AppError).message;
+        assert.match(message, /boom/);
+        assert.ok(
+          !/[\u0000-\u001f\u007f]/.test(message),
+          `control character reached the wire: ${JSON.stringify(message)}`,
+        );
+        assert.ok(
+          message.length <= 250,
+          `wire message unbounded, got ${message.length} chars`,
+        );
+        return true;
+      },
+    );
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
 test("graphql error bodies are never cached; stale fallback keeps the last good payload", async () => {
   const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
   let mode: "errors" | "data-null" | "no-data" | "good" | "outage" = "errors";

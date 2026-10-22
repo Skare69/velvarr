@@ -294,9 +294,12 @@ function stashGraphQlFailureError(errors: unknown): AppError {
   const first = Array.isArray(errors)
     ? (errors[0] as { message?: unknown } | undefined)
     : undefined;
+  // stash-box message text is lower-trust upstream content and this AppError
+  // message is the client-facing wire text: flatten control characters and
+  // cap the length before it leaves the server.
   const detail =
     typeof first?.message === "string" && first.message !== ""
-      ? `: ${first.message}`
+      ? `: ${first.message.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 200)}`
       : "";
   return new AppError(
     502,
