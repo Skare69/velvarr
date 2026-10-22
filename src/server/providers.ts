@@ -139,6 +139,20 @@ export function resetMetaCache(): void {
   counterpartMemo.clear();
   tagListingMemo.clear();
   tagListingWalk.clear();
+  tagListingFailedAt.clear();
+}
+
+/** Test seam: the failure cooldown and the walk in flight are module state
+ * the suite must assert without racing loopback reads (a joined walk masks
+ * read counts). */
+export function tagWalkStateForTest(provider: CatalogProvider): {
+  coolingDown: boolean;
+  walkInFlight: boolean;
+} {
+  return {
+    coolingDown: tagWalkCooldownActive(provider),
+    walkInFlight: tagListingWalk.has(provider),
+  };
 }
 
 /** Learns the numeric filter key behind a TPDB tag uuid while rows map.
@@ -1642,6 +1656,12 @@ const TAG_SUGGESTION_TTL_MS = 30 * 24 * 60 * 60_000;
 // but re-walks in the background, so steady browsing never waits on a walk:
 // only the first read after a restart or an idle hour pays one.
 const TAG_REFRESH_AHEAD_MS = TAG_LISTING_TTL_MS / 2;
+// After a walk fails, background re-walks (the picker's warm, the
+// refresh-ahead read) pause for this window: one fresh burst per keystroke
+// against a down or rate-limiting provider extends the outage without
+// improving any answer. Foreground cold reads still try — the named error
+// surfaces — and their failure re-arms the window.
+const TAG_WALK_COOLDOWN_MS = 45 * 1000;
 // The tag picker's empty answer must not claim absence over a memo older
 // than the completeness window: searchCatalogTags re-checks the provider
 // natively in that case, so a tag published after the walk still answers.
@@ -1656,6 +1676,14 @@ const tagListingWalk = new Map<
   CatalogProvider,
   Promise<TagListing & { at: number }>
 >();
+// When each provider's last walk failed: background re-walks wait out
+// TAG_WALK_COOLDOWN_MS from this time before they try again.
+const tagListingFailedAt = new Map<CatalogProvider, number>();
+
+function tagWalkCooldownActive(provider: CatalogProvider): boolean {
+  const failedAt = tagListingFailedAt.get(provider);
+  return failedAt !== undefined && Date.now() - failedAt < TAG_WALK_COOLDOWN_MS;
+}
 // Listing pages read at once once page 1 has told the walk where the
 // listing ends. ponytail: fixed fan-out; lower it if a provider starts
 // rate-limiting the burst.
@@ -1740,8 +1768,9 @@ async function catalogTagListing(
   }
   // Refresh ahead: the memo still answers inside the completeness window,
   // while the background walk keeps it fresh for the reads after this one.
-  // A failed refresh leaves the memo as it is.
-  if (age >= TAG_REFRESH_AHEAD_MS) {
+  // A failed refresh leaves the memo as it is; a failed walk pauses the
+  // background refreshes for TAG_WALK_COOLDOWN_MS.
+  if (age >= TAG_REFRESH_AHEAD_MS && !tagWalkCooldownActive(provider)) {
     joinTagListingWalk(provider).catch(() => {});
   }
   return { ...memo.listing, at: memo.at };
@@ -1758,7 +1787,12 @@ function joinTagListingWalk(
   const done = () => {
     if (tagListingWalk.get(provider) === walk) tagListingWalk.delete(provider);
   };
-  walk.then(done, done);
+  // A rejection arms the cooldown (background re-walks pause) without
+  // touching what awaiting callers observe.
+  walk.then(done, () => {
+    tagListingFailedAt.set(provider, Date.now());
+    done();
+  });
   return walk;
 }
 
@@ -1861,9 +1895,9 @@ async function walkTagListing(
 
 /** Warms the provider's tag listing without blocking the caller: it joins
  * the walk in flight (or the fresh memo) and never rejects — a failed warm
- * leaves the memo as it was and the next read re-walks. The picker fires
- * this so a keystroke answers at once while the listing reads run in the
- * background. */
+ * leaves the memo as it was, and background re-walks pause for
+ * TAG_WALK_COOLDOWN_MS. The picker fires this so a keystroke answers at
+ * once while the listing reads run in the background. */
 export function warmCatalogTagListing(
   provider: CatalogProvider,
 ): Promise<void> {
@@ -1935,8 +1969,10 @@ export async function searchCatalogTags(
   if (needle !== "") {
     const memo = tagListingMemo.get(provider);
     const age = memo === undefined ? Infinity : Date.now() - memo.at;
-    // One walk per provider — a burst of keystrokes joins it.
-    if (age >= TAG_REFRESH_AHEAD_MS) void warmCatalogTagListing(provider);
+    // One walk per provider — a burst of keystrokes joins it. A walk that
+    // just failed pauses the warm for TAG_WALK_COOLDOWN_MS.
+    if (age >= TAG_REFRESH_AHEAD_MS && !tagWalkCooldownActive(provider))
+      void warmCatalogTagListing(provider);
     if (memo !== undefined && age < TAG_SUGGESTION_TTL_MS) {
       if (memo.listing.complete) {
         const exact: { id: string; name: string }[] = [];

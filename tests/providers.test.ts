@@ -37,6 +37,7 @@ import {
   searchCatalogTags,
   studioCounterpart,
   tagCounterpart,
+  tagWalkStateForTest,
   warmCatalogTagListing,
 } from "../src/server/providers.ts";
 import type {
@@ -3064,6 +3065,118 @@ test("the listing walk stops at the 50-page ceiling and reports the rows incompl
   } finally {
     await tpdb.close();
     restoreTpdb();
+  }
+});
+
+// A failed walk arms a per-provider cooldown: the picker's keystrokes and
+// the refresh-ahead read re-walk nothing until the window passes, so an
+// outage is not prolonged by one fresh burst per keystroke. Foreground cold
+// reads still try — the named error surfaces — and re-arm the window.
+test("a failed listing walk cools the background re-walks down before the next keystroke", async () => {
+  const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
+  const healthyRows = [
+    { id: 70, uuid: TPDB_TAG_A, name: "Anna" },
+    { id: 194, uuid: TPDB_TAG_B, name: "Annabella" },
+  ];
+  const expected = {
+    ids: [TPDB_TAG_A, TPDB_TAG_B],
+    dropped: false,
+    complete: true,
+  };
+  let walkReads = 0;
+  // Walk reads start in a held 503; the test releases the first one so the
+  // keystroke's background walk can be joined deterministically. The
+  // refresh-ahead phase fails with 404: an authoritative status bypasses
+  // the stale-on-error fallback, so the walk really fails although the
+  // healthy read before it is still in the metadata cache.
+  let mode: "held503" | "open503" | "ok" | "open404" = "held503";
+  let releaseWalk: () => void = () => {};
+  const walkGate = new Promise<void>((resolve) => {
+    releaseWalk = resolve;
+  });
+  const fixture = await startFixture((req, res) => {
+    const url = new URL(req.url ?? "/", "http://fixture.test");
+    if (url.pathname !== "/tags") return sendJson(res, 404, {});
+    // The walk reads the bare listing; the picker's native fallback carries q.
+    if (url.searchParams.has("q")) {
+      return sendJson(res, 200, {
+        data: [],
+        links: { next: null },
+        meta: { total: 0 },
+      });
+    }
+    walkReads += 1;
+    if (mode === "ok") {
+      return sendJson(res, 200, {
+        data: healthyRows,
+        links: { next: null },
+        meta: { total: healthyRows.length },
+      });
+    }
+    if (mode === "held503") {
+      void walkGate.then(() => sendJson(res, 503, {}));
+      return;
+    }
+    sendJson(res, mode === "open404" ? 404 : 503, {});
+  });
+  const realNow = Date.now;
+  let offsetMs = 0;
+  try {
+    process.env.TPDB_BASE_URL = fixture.origin;
+    Date.now = () => realNow() + offsetMs;
+    // Cold memo: the keystroke fires the background walk (held on the gate)
+    // and answers from the native search.
+    assert.deepEqual(await searchCatalogTags("tpdb", "anna"), []);
+    const warm = warmCatalogTagListing("tpdb"); // joins the held walk
+    releaseWalk(); // the walk fails with 503 and arms the cooldown
+    await warm;
+    assert.deepEqual(tagWalkStateForTest("tpdb"), {
+      coolingDown: true,
+      walkInFlight: false,
+    });
+    assert.equal(walkReads, 1);
+    // The next keystroke inside the cooldown window re-walks nothing.
+    assert.deepEqual(await searchCatalogTags("tpdb", "anna"), []);
+    assert.deepEqual(tagWalkStateForTest("tpdb"), {
+      coolingDown: true,
+      walkInFlight: false,
+    });
+    assert.equal(walkReads, 1);
+    // A foreground cold read may still try: the named error surfaces.
+    await assert.rejects(
+      expandCatalogTagTerm("tpdb", "anna"),
+      (err: unknown) => {
+        assertProviderError(err, 502, "upstream_unavailable", 503);
+        return true;
+      },
+    );
+    assert.equal(walkReads, 2);
+    // Past the window the background warm tries again.
+    offsetMs = 46_000;
+    await warmCatalogTagListing("tpdb");
+    assert.equal(walkReads, 3);
+    // The provider recovers: a foreground cold read walks and memoizes.
+    mode = "ok";
+    assert.deepEqual(await expandCatalogTagTerm("tpdb", "anna"), expected);
+    assert.equal(walkReads, 4);
+    // Thirty-one minutes in, a failure during the refresh-ahead read
+    // re-arms the cooldown: the next expansion answers from the memo and
+    // starts no background walk.
+    offsetMs = 31 * 60_000;
+    mode = "open404";
+    assert.deepEqual(await expandCatalogTagTerm("tpdb", "anna"), expected);
+    await warmCatalogTagListing("tpdb"); // joins the failed refresh-ahead
+    assert.equal(walkReads, 5);
+    assert.deepEqual(await expandCatalogTagTerm("tpdb", "anna"), expected);
+    assert.deepEqual(tagWalkStateForTest("tpdb"), {
+      coolingDown: true,
+      walkInFlight: false,
+    });
+    assert.equal(walkReads, 5);
+  } finally {
+    Date.now = realNow;
+    await fixture.close();
+    restore();
   }
 });
 
