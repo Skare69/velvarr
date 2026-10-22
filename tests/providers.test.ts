@@ -2999,6 +2999,74 @@ test("the expansion listing walk is shared, reads pages ahead, and refreshes bef
   }
 });
 
+test("the listing walk stops at the 50-page ceiling and reports the rows incomplete", async () => {
+  // A degraded provider serving fewer valid rows per page than requested
+  // must not hold the walk open past the documented 50-page bound: the
+  // row cap counts validated rows, so one surviving row per page would
+  // otherwise keep the walk going for thousands of awaited pages.
+  const restoreStash = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  let stashReads = 0;
+  const stash = await startFixture((_req, res, body) => {
+    const parsed = JSON.parse(body) as { variables?: { p?: number } };
+    const p = parsed.variables?.p ?? 1;
+    stashReads += 1;
+    // count still claims far more than the row cap, so only a page cap
+    // can end this walk.
+    sendJson(res, 200, {
+      data: {
+        queryTags: {
+          count: 100_000,
+          tags: [
+            {
+              id: `d0d00000-0000-4000-8000-${String(p).padStart(12, "0")}`,
+              name: `Tag ${p}`,
+            },
+          ],
+        },
+      },
+    });
+  });
+  try {
+    process.env.STASHDB_BASE_URL = stash.origin;
+    const stashExpansion = await expandCatalogTagTerm("stashdb", "tag");
+    assert.equal(stashReads, 50, `stashdb walk read ${stashReads} pages`);
+    assert.equal(stashExpansion.complete, false);
+  } finally {
+    await stash.close();
+    restoreStash();
+  }
+
+  // The TPDB walk has no count at all (no meta total here, so the read
+  // stays sequential): links.next must not chain past the page cap.
+  const restoreTpdb = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
+  let tpdbReads = 0;
+  const tpdb = await startFixture((req, res) => {
+    const url = new URL(req.url ?? "/", "http://fixture.test");
+    if (url.pathname !== "/tags") return sendJson(res, 404, {});
+    const p = Number(url.searchParams.get("page") ?? "1");
+    tpdbReads += 1;
+    sendJson(res, 200, {
+      data: [
+        {
+          id: 1000 + p,
+          uuid: `d0d10000-0000-4000-8000-${String(p).padStart(12, "0")}`,
+          name: `Tag ${p}`,
+        },
+      ],
+      links: { next: `https://fixture.test/tags?page=${p + 1}` },
+    });
+  });
+  try {
+    process.env.TPDB_BASE_URL = tpdb.origin;
+    const tpdbExpansion = await expandCatalogTagTerm("tpdb", "tag");
+    assert.equal(tpdbReads, 50, `tpdb walk read ${tpdbReads} pages`);
+    assert.equal(tpdbExpansion.complete, false);
+  } finally {
+    await tpdb.close();
+    restoreTpdb();
+  }
+});
+
 // --- studio and tag filters produce the right upstream query ---
 
 test("studio and tag filters select provider matches, including TPDB cold UUID bookmarks", async () => {

@@ -1602,6 +1602,12 @@ export async function getCatalogDetail(
  * hidden. */
 const TAG_EXPANSION_MAX_ROWS = 5000;
 
+/** The same bound in provider pages of 100: the documented ceiling on the
+ * listing walk's awaited page reads. A degraded provider serving fewer
+ * valid rows per page than requested must not hold the walk (and every
+ * free-text browse joining it) open past this many pages. */
+const TAG_EXPANSION_MAX_PAGES = TAG_EXPANSION_MAX_ROWS / 100;
+
 interface TagListing {
   rows: { id: string; name: string }[];
   complete: boolean;
@@ -1715,9 +1721,9 @@ function stashTagRows(rows: unknown[]): { id: string; name: string }[] {
  * match with prefix and fuzzy distance on name/aliases, TPDB's `q` is
  * documented only as a "search query" — which guarantees neither mid-word
  * substrings nor every row below its cap. `complete` is false when the walk
- * hit its row cap or ended on a rows-less page the provider's own end
- * signal contradicts; callers must then treat the rows as possibly missing
- * matches. */
+ * hit its row cap or page ceiling (50 pages of 100) or ended on a
+ * rows-less page the provider's own end signal contradicts; callers must
+ * then treat the rows as possibly missing matches. */
 async function catalogTagListing(
   provider: CatalogProvider,
 ): Promise<TagListing & { at: number }> {
@@ -1780,7 +1786,10 @@ async function walkTagListing(
         break;
       }
       if (typeof body.links?.next !== "string") break;
-      if (rows.length >= TAG_EXPANSION_MAX_ROWS) {
+      if (
+        rows.length >= TAG_EXPANSION_MAX_ROWS ||
+        page >= TAG_EXPANSION_MAX_PAGES
+      ) {
         complete = false;
         break;
       }
@@ -1829,7 +1838,10 @@ async function walkTagListing(
         break;
       }
       if (rows.length >= count) break;
-      if (rows.length >= TAG_EXPANSION_MAX_ROWS) {
+      if (
+        rows.length >= TAG_EXPANSION_MAX_ROWS ||
+        page >= TAG_EXPANSION_MAX_PAGES
+      ) {
         complete = false;
         break;
       }
