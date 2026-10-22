@@ -1542,7 +1542,7 @@ export function TitlesView() {
           selected={include}
           onChange={onInclude}
           allowFreeText
-          description="Titles must carry every selected tag (AND): a provider tag matches exactly, and a typed term keeps titles carrying any tag whose name contains it (case and separators ignored)."
+          description="Titles must carry every selected tag (AND): a provider tag matches exactly, and a typed term keeps titles carrying any tag whose name contains it (case and separators ignored), unless it exactly names a tag both providers publish, which then matches exactly on both."
         />
         <TagPicker
           id="titles-exclude"
