@@ -45,7 +45,13 @@
 //   studio records carry explicit provider URLs, which drive cross-provider
 //   linking; movies and scenes are never linked across providers.
 
-import { AppError, parseJson, requestBytes, requestJsonBytes } from "./http.ts";
+import {
+  AppError,
+  parseJson,
+  requestBytes,
+  requestJsonBytes,
+  shelfError,
+} from "./http.ts";
 import type { Service } from "./http.ts";
 import type {
   CatalogDetail,
@@ -2028,8 +2034,9 @@ const counterpartMemo = new Map<string, CrossProviderLink | null>();
  * profile link (identityLinkKey) with this one. Names never merge anything;
  * exactly one sharing candidate links, zero extends the explicit reason
  * honestly, and two or more is ambiguous and refused, never guessed.
- * Outage, not-configured, or bad payload returns the explicit reason
- * unchanged; this never throws. */
+ * Outage, not-configured, or bad payload returns the explicit reason beside
+ * a named `failure` (an honest "no link" stays failure-free); this never
+ * throws. */
 export async function linkedPerformerCounterpart(
   detail: CatalogDetail,
 ): Promise<CrossProviderLink> {
@@ -2097,10 +2104,12 @@ export async function linkedPerformerCounterpart(
             };
     counterpartMemo.set(memoKey, result);
     return result;
-  } catch {
-    // Outage/not-configured/bad payload: the explicit reason stands, and the
-    // failure is not memoized so a later call can retry.
-    return explicit;
+  } catch (err) {
+    // Outage/not-configured/bad payload: the explicit reason stands beside
+    // the named failure, so a caller can tell an honest "no published link"
+    // from a lookup that never finished. The failure is not memoized so a
+    // later call can retry.
+    return { ...explicit, failure: shelfError(err) };
   }
 }
 

@@ -6,7 +6,7 @@ import {
   performerField,
 } from "../parse.ts";
 import { type AuthContext, json } from "../admission.ts";
-import { AppError } from "../../../../server/http.ts";
+import { AppError, shelfError } from "../../../../server/http.ts";
 import type { CatalogReference } from "../../../../lib/contracts.ts";
 import {
   followPerformer,
@@ -28,30 +28,38 @@ export async function listFollowsRoute(ctx: AuthContext): Promise<Response> {
  * providers themselves published (never name-matched): an explicit
  * cross-provider URL first, then a shared third-party profile link
  * (identity URL match). The counterpart's own snapshot is read from that
- * provider. Null when no link resolves, or when the lookup fails: a
- * metadata outage must not sink the follow the user asked for. */
+ * provider. A metadata outage must not sink the follow the user asked for,
+ * but it is never allowed to read as "no published link": a failed lookup
+ * returns the named `failure` beside the counterpart-less result, so the
+ * follow creation can say the pairing is unknown rather than absent. */
 export async function performerCounterpart(
   reference: CatalogReference,
 ): Promise<{
-  reference: CatalogReference;
-  name: string;
-  imageUrl: string | null;
-} | null> {
+  counterpart: {
+    reference: CatalogReference;
+    name: string;
+    imageUrl: string | null;
+  } | null;
+  failure: { code: string; message: string } | null;
+}> {
   try {
     const detail = await getCatalogDetail(reference);
-    const linked = detail
-      ? (await linkedPerformerCounterpart(detail)).linked
-      : undefined;
-    if (!linked) return null;
-    const counterpart = await getCatalogDetail(linked);
-    if (!counterpart) return null;
+    const link = detail ? await linkedPerformerCounterpart(detail) : undefined;
+    if (!link?.linked) {
+      return { counterpart: null, failure: link?.failure ?? null };
+    }
+    const counterpart = await getCatalogDetail(link.linked);
+    if (!counterpart) return { counterpart: null, failure: null };
     return {
-      reference: linked,
-      name: counterpart.title,
-      imageUrl: followImage(counterpart.imageUrl),
+      counterpart: {
+        reference: link.linked,
+        name: counterpart.title,
+        imageUrl: followImage(counterpart.imageUrl),
+      },
+      failure: null,
     };
-  } catch {
-    return null;
+  } catch (err) {
+    return { counterpart: null, failure: shelfError(err) };
   }
 }
 
@@ -71,7 +79,7 @@ export async function createFollowRoute(
   const reference = performerFromBody(body);
   // A performer is one person on both metadata sources, so one Follow press
   // follows both: the pair then answers as one identity everywhere.
-  const counterpart = await performerCounterpart(reference);
+  const { counterpart, failure } = await performerCounterpart(reference);
   const follow = followPerformer(
     ctx.account.id,
     reference,
@@ -96,7 +104,9 @@ export async function createFollowRoute(
       // recording. Any other failure leaves the asked-for follow standing.
     }
   }
-  return json({ follow }, 201);
+  // A failed counterpart lookup keeps the follow but never reads as
+  // complete: the named error says the pairing is unknown, not absent.
+  return json({ follow, ...(failure ? { errors: [failure] } : {}) }, 201);
 }
 
 export async function deleteFollowRoute(

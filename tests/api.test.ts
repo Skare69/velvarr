@@ -5634,6 +5634,62 @@ test("a merge auto-follows the current performer without partial writes on a pro
   }
 });
 
+test("a follow survives a counterpart-lookup outage and names the failure", async () => {
+  const performer = {
+    provider: "tpdb",
+    kind: "performer",
+    id: TPDB_PERFORMER3,
+  };
+  const listed = async () => {
+    const res = await call("GET", "/api/follows", { cookie: member2 });
+    assert.equal(res.status, 200);
+    const body: { follows: FollowShape[] } = await res.json();
+    return body.follows;
+  };
+  const baseline = await listed();
+  try {
+    resetMetaCache();
+    tpdbFx.failPaths = [`/performers/${TPDB_PERFORMER3}`];
+    const created = await call("POST", "/api/follows", {
+      cookie: member2,
+      body: { performer, name: "Bulk Fixture Performer" },
+    });
+    // The follow itself survives the outage: 201, unpaired — but the 201
+    // names the pairing failure beside it, so the outage never reads as
+    // "the providers published no link".
+    assert.equal(created.status, 201);
+    const createdBody = (await created.json()) as {
+      follow: FollowShape;
+      errors?: { code: string; message: string }[];
+    };
+    assert.deepEqual(createdBody.follow.reference, performer);
+    assert.equal(createdBody.follow.linked, null);
+    assert.deepEqual(createdBody.errors, [
+      {
+        code: "upstream_unavailable",
+        message: "TPDB reported an unexpected error.",
+      },
+    ]);
+
+    // The stored row is the unpaired follow the outage left behind: the
+    // merge flow can still repair it once the provider answers again.
+    const stored = (await listed()).find(
+      (f) => f.reference.id === TPDB_PERFORMER3,
+    );
+    assert.ok(stored);
+    assert.equal(stored.linked, null);
+  } finally {
+    tpdbFx.failPaths = [];
+    resetMetaCache();
+  }
+  // Cleanup: unfollow the outage's row, so later tests keep the baseline.
+  const dropped = await call("DELETE", `/api/follows/tpdb/${TPDB_PERFORMER3}`, {
+    cookie: member2,
+  });
+  assert.equal(dropped.status, 204);
+  assert.deepEqual(await listed(), baseline);
+});
+
 test("a merge auto-follows the StashDB side without partial writes on a provider failure", async () => {
   const performer = {
     provider: "stashdb",

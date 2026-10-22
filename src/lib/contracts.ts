@@ -353,6 +353,10 @@ export type RequestListItem = RequestRecord & {
 export type CrossProviderLink = {
   linked?: CatalogReference;
   unlinkedReason?: string;
+  /** Set only when the lookup itself failed (outage, not configured, bad
+   * payload): `unlinkedReason` is then the lookup's best-effort verdict, not
+   * a confirmed absence. Omitted on a lookup that finished. */
+  failure?: ShelfError;
 };
 
 /** GET /api/catalog/{provider}/{kind}/{id}: the provider detail, the published
