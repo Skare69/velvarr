@@ -1011,11 +1011,33 @@ body:has(.auth-page) {
   display: grid;
   gap: 22px;
 }
-.connection-status-grid {
+.settings-connections {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 22px;
 }
+.settings-service-heading h2 {
+  font-size: 1.2rem;
+  font-weight: 650;
+}
+.settings-service-heading p {
+  color: var(--color-muted);
+  font-size: 0.875rem;
+  margin-top: 4px;
+}
+.settings-connection-status {
+  border-top: 1px solid var(--color-edge);
+  border-bottom: 1px solid var(--color-edge);
+  margin-top: 18px;
+  padding: 16px 0;
+}
+.settings-connection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .library-detail {
   outline: none;
 }
@@ -1202,9 +1224,6 @@ body:has(.auth-page) {
   .performer-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 20px 12px;
-  }
-  .connection-status-grid {
-    grid-template-columns: 1fr;
   }
   .library-detail-hero {
     align-items: center;
