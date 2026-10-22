@@ -9,13 +9,20 @@
  * here — the caller's `description` carries that per-surface help.
  */
 
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import {
   exactBothProviderTag,
   normalizeFacetName,
   type BrowseTagsResponse,
   type CatalogTagSelection,
 } from "../lib/contracts.ts";
+import { initTagWait, reduceTagWait } from "../lib/tag-wait.ts";
 import { useApiGet } from "./shared.tsx";
 import "./catalog.css";
 
@@ -87,18 +94,17 @@ export function TagPicker({
   const inputRef = useRef<HTMLInputElement>(null);
   const t = term.trim();
   // The debounce commits the term; the route only ever sees settled input.
-  const [committed, setCommitted] = useState<string | null>(null);
-  // A just-committed free-text chip awaiting proof that the term is a real
-  // both-provider tag (VELV-46): the term exactly as committed.
-  const awaitingFree = useRef<string | null>(null);
+  // `awaitingFree` is a just-picked free-text chip awaiting proof that the
+  // term is a real both-provider tag (VELV-46); the machine keeps it armed
+  // only while an answer for it can still arrive (VELV-50).
+  const [wait, waitTo] = useReducer(reduceTagWait, undefined, initTagWait);
+  const committed = wait.committed;
   useEffect(() => {
     if (t.length < 2) {
-      // While a promotion is awaited the query must stay alive: the
-      // answer reaches the hook only while `committed` holds the term.
-      if (awaitingFree.current === null) setCommitted(null);
+      waitTo({ type: "release" });
       return;
     }
-    const timer = setTimeout(() => setCommitted(t), 400);
+    const timer = setTimeout(() => waitTo({ type: "commit", term: t }), 400);
     return () => clearTimeout(timer);
   }, [t]);
 
@@ -117,9 +123,9 @@ export function TagPicker({
   // chip becomes that real tag; otherwise it stays free text. The query
   // is released either way (the debounce skip above ends with this).
   useEffect(() => {
-    const term = awaitingFree.current;
+    const term = wait.awaitingFree;
     if (term === null || loading) return;
-    awaitingFree.current = null;
+    waitTo({ type: "consumed" });
     const both =
       error === null && data !== null
         ? exactBothProviderTag(data.tags, term)
@@ -196,16 +202,15 @@ export function TagPicker({
     // real tag instead (VELV-46): exact native ids on both sides beat a
     // label-only selection. When the rows are not settled yet, the chip
     // goes in as free text and the search fires now; the settled answer
-    // promotes it in the effect above. ponytail: only the latest
+    // promotes it in the effect above. A settled answer is final, so the
+    // machine arms no wait for one (VELV-50). ponytail: only the latest
     // free-text pick is promoted — rapid consecutive free-text picks
     // keep the earlier chips free text.
     const swap = isFreeText(tag)
       ? exactBothProviderTag(options, tag.name)
       : undefined;
-    if (isFreeText(tag) && swap === undefined) {
-      awaitingFree.current = tag.name;
-      setCommitted(t);
-    }
+    if (isFreeText(tag) && swap === undefined)
+      waitTo({ type: "pickFreeText", term: t, loading });
     onChange([...selected, swap ?? tag]);
     setTerm("");
     setOpen(false);
