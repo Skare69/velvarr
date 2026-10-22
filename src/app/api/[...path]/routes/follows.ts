@@ -98,10 +98,18 @@ export async function createFollowRoute(
         counterpart.name,
         counterpart.imageUrl,
       );
-    } catch {
-      // The counterpart insert may fail with 409 when the counterpart was
-      // already followed on its own: the row exists, so nothing else needs
-      // recording. Any other failure leaves the asked-for follow standing.
+    } catch (e) {
+      // Only the already-followed conflict is benign: the counterpart row
+      // exists, so nothing else needs recording. Any other failure must
+      // surface — a silent swallow would leave the pair half-recorded while
+      // the route answers 201, a partial success that reads as complete.
+      if (
+        !(e instanceof AppError) ||
+        e.status !== 409 ||
+        e.code !== "already_following"
+      ) {
+        throw e;
+      }
     }
   }
   // A failed counterpart lookup keeps the follow but never reads as

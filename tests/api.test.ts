@@ -11,6 +11,7 @@ import {
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { rmTempDir } from "./setup.ts";
 import { Buffer } from "node:buffer";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -5472,6 +5473,92 @@ test("one follow covers both metadata sources, lists the performer once, and unf
     remaining.some((f) => f.reference.id === TPDB_PERFORMER4),
     false,
   );
+});
+
+test("a counterpart already followed on its own still folds into one 201 follow", async () => {
+  // The documented benign conflict: the StashDB side is followed standalone
+  // first, so the counterpart insert hits the unique conflict and stays
+  // swallowed — the pair still answers 201 and lists as one identity.
+  const standalone = await call("POST", "/api/follows", {
+    cookie: member2,
+    body: {
+      performer: {
+        provider: "stashdb",
+        kind: "performer",
+        id: STASH_PERFORMER2,
+      },
+      name: "Linked Fixture Performer",
+    },
+  });
+  assert.equal(standalone.status, 201);
+  const paired = await call("POST", "/api/follows", {
+    cookie: member2,
+    body: {
+      performer: { provider: "tpdb", kind: "performer", id: TPDB_PERFORMER4 },
+      name: "Linked Fixture Performer",
+    },
+  });
+  assert.equal(paired.status, 201);
+  const listed = await call("GET", "/api/follows", { cookie: member2 });
+  // Wire JSON boundary: the suite's FollowShape list, cast once by name.
+  const listedBody = (await listed.json()) as { follows: FollowShape[] };
+  assert.equal(
+    listedBody.follows.filter(
+      (f) =>
+        f.reference.id === TPDB_PERFORMER4 ||
+        f.reference.id === STASH_PERFORMER2,
+    ).length,
+    1,
+  );
+  // Unfollowing the pair restores the baseline for later tests.
+  const dropped = await call(
+    "DELETE",
+    `/api/follows/stashdb/${STASH_PERFORMER2}`,
+    { cookie: member2 },
+  );
+  assert.equal(dropped.status, 204);
+});
+
+test("a counterpart write failure surfaces a named error instead of a fake 201", async () => {
+  // A real storage fault, not a provider outage: a trigger aborts only the
+  // counterpart row's insert. That abort is not a unique conflict, so the
+  // route must refuse with a named error rather than answer 201 with the
+  // pair half-recorded.
+  const db = new DatabaseSync(join(apiDataDir, "velvarr.sqlite"));
+  db.exec(
+    `CREATE TRIGGER velv54_counterpart_fault BEFORE INSERT ON performer_follows
+     WHEN NEW.account_id = '${MEMBER2_ID}' AND NEW.provider = 'stashdb'
+       AND NEW.external_id = '${STASH_PERFORMER2}'
+     BEGIN SELECT RAISE(ABORT, 'sabotaged counterpart insert'); END`,
+  );
+  try {
+    const created = await call("POST", "/api/follows", {
+      cookie: member2,
+      body: {
+        performer: {
+          provider: "tpdb",
+          kind: "performer",
+          id: TPDB_PERFORMER4,
+        },
+        name: "Linked Fixture Performer",
+      },
+    });
+    assert.equal(created.status, 500);
+    assert.equal((await errorShape(created, 500)).code, "internal");
+  } finally {
+    db.exec("DROP TRIGGER velv54_counterpart_fault");
+    db.close();
+  }
+  // The asked-for follow stands after the surfaced failure; drop it again so
+  // later tests see the unchanged baseline.
+  const listed = await call("GET", "/api/follows", { cookie: member2 });
+  // Wire JSON boundary: the suite's FollowShape list, cast once by name.
+  const listedBody = (await listed.json()) as { follows: FollowShape[] };
+  assert.ok(listedBody.follows.some((f) => f.reference.id === TPDB_PERFORMER4));
+  const dropped = await call("DELETE", `/api/follows/tpdb/${TPDB_PERFORMER4}`, {
+    cookie: member2,
+  });
+  assert.equal(dropped.status, 204);
 });
 
 test("a user merge folds two standalone follows into one identity", async () => {
