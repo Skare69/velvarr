@@ -5,7 +5,8 @@
 /cache/
 
 # Local-only project documentation.
-/docs/
+/docs/*
+!/docs/how-it-works.md
 
 # Generated files.
 /node_modules/
