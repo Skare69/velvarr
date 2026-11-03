@@ -1490,12 +1490,24 @@ test("artwork gate: loopback only with the named test-fixture origin", () => {
 });
 
 test("property: isProviderImageUrl SSRF invariants over generated URL parts", () => {
-  // Oracle: any accepted URL is https on a safe allowlist host without
-  // credentials or fragment; verdicts are total, shaped, and deterministic.
+  // Oracle: any accepted URL is https on the provider allowlist without
+  // credentials, query or fragment, honors the stashdb /images/ path rule,
+  // and reports the service that host maps to; verdicts are total, shaped,
+  // and deterministic. Clean URL parts carry weight 3 so accepted URLs are
+  // common: the pre-fix uniform pools accepted 0 of 200 at the gate seed,
+  // which left the allowlist, query and path checks unreachable.
   const prev = process.env.VELVARR_TEST_ARTWORK_ORIGIN;
   try {
     delete process.env.VELVARR_TEST_ARTWORK_ORIGIN;
 
+    // Mirror of the module-private PROVIDER_IMAGE_HOSTS
+    // (src/server/provider-rows.ts); the accept branch asserts membership,
+    // so a loosened allowlist fails this property.
+    const ALLOWED_HOSTS = [
+      "cdn.theporndb.net",
+      "thumb.theporndb.net",
+      "stashdb.org",
+    ];
     const LOOPBACK_POOL = [
       "127.0.0.1",
       "127.8.8.8",
@@ -1510,14 +1522,6 @@ test("property: isProviderImageUrl SSRF invariants over generated URL parts", ()
       "0.0.0.0",
       "127.attacker.example",
       "attacker.example",
-    ];
-    const SAFE_POOL = [
-      "cdn.theporndb.net",
-      "thumb.theporndb.net",
-      "stashdb.org",
-      "www.stashdb.org",
-      "stashdb.org.",
-      "cdn.theporndb.net:443",
     ];
 
     // Local classifier: literal IPv4 private/loopback/link-local ranges,
@@ -1556,18 +1560,55 @@ test("property: isProviderImageUrl SSRF invariants over generated URL parts", ()
       );
     };
 
+    // Weighted oneof instead of fc.option: the empty (clean) choice must be
+    // the common case, or no generated URL reaches the accept branch.
     const urlArb = fc
       .record({
-        scheme: fc.constantFrom("https://", "http://", "ftp://"),
-        userinfo: fc.option(fc.constant("user:pass@"), { nil: "" }),
-        host: fc.constantFrom(...SAFE_POOL, ...LOOPBACK_POOL),
-        port: fc.option(fc.constantFrom(":80", ":8443"), { nil: "" }),
-        path: fc.option(
-          fc.constantFrom("/a.jpg", "/x/y.jpg", "/", "/..%2f..%2fetc"),
-          { nil: "" },
+        scheme: fc.oneof(
+          { weight: 3, arbitrary: fc.constant("https://") },
+          { weight: 1, arbitrary: fc.constant("http://") },
+          { weight: 1, arbitrary: fc.constant("ftp://") },
         ),
-        query: fc.option(fc.constant("?q=1"), { nil: "" }),
-        hash: fc.option(fc.constant("#frag"), { nil: "" }),
+        userinfo: fc.oneof(
+          { weight: 3, arbitrary: fc.constant("") },
+          { weight: 1, arbitrary: fc.constant("user:pass@") },
+        ),
+        host: fc.oneof(
+          { weight: 2, arbitrary: fc.constantFrom(...ALLOWED_HOSTS) },
+          {
+            weight: 3,
+            arbitrary: fc.constantFrom(
+              "www.stashdb.org",
+              "stashdb.org.",
+              "cdn.theporndb.net:443",
+              ...LOOPBACK_POOL,
+            ),
+          },
+        ),
+        port: fc.oneof(
+          { weight: 3, arbitrary: fc.constant("") },
+          { weight: 1, arbitrary: fc.constant(":80") },
+          { weight: 1, arbitrary: fc.constant(":8443") },
+        ),
+        path: fc.constantFrom(
+          "",
+          "/a.jpg",
+          "/x/y.jpg",
+          "/images/d695a097-3cf5-41c6-bf00-be5c7bc185b8",
+          "/images/0f47d850-8a93-4a55-9f8e-3ce30d3f1d21",
+          "/images/not-a-uuid",
+          "/graphql",
+          "/not-images/x.jpg",
+          "/..%2f..%2fetc",
+        ),
+        query: fc.oneof(
+          { weight: 3, arbitrary: fc.constant("") },
+          { weight: 1, arbitrary: fc.constant("?q=1") },
+        ),
+        hash: fc.oneof(
+          { weight: 3, arbitrary: fc.constant("") },
+          { weight: 1, arbitrary: fc.constant("#frag") },
+        ),
       })
       .map((p) =>
         [p.scheme, p.userinfo, p.host, p.port, p.path, p.query, p.hash].join(
@@ -1576,16 +1617,39 @@ test("property: isProviderImageUrl SSRF invariants over generated URL parts", ()
       );
     const garbageArb = fc.string({ maxLength: 80 });
 
+    let runs = 0;
+    let accepted = 0;
+    // No explicit numRuns/seed: tests/setup.ts pins seed 42 and 200 runs for
+    // the gate tier and scales both up for the FC_RUNS review tier; a hard
+    // 200 here would cap the review tier too.
     fc.assert(
       fc.property(fc.oneof(urlArb, garbageArb), (u) => {
+        runs += 1;
         const verdict: ImageUrlCheck = isProviderImageUrl(u); // must not throw
         if (verdict.ok) {
+          accepted += 1;
           assert.ok("service" in verdict && !("reason" in verdict));
           assert.ok(u.startsWith("https://"), `accepted non-https: ${u}`);
           const parsed = new URL(u);
           assert.equal(parsed.username, "");
           assert.equal(parsed.password, "");
           assert.equal(parsed.hash, "");
+          assert.equal(parsed.search, "", `accepted query string: ${u}`);
+          assert.ok(
+            ALLOWED_HOSTS.includes(parsed.hostname),
+            `accepted off-allowlist host: ${u}`,
+          );
+          if (parsed.hostname === "stashdb.org") {
+            assert.ok(
+              parsed.pathname.startsWith("/images/"),
+              `accepted stashdb.org path outside /images/: ${u}`,
+            );
+          }
+          assert.equal(
+            verdict.service,
+            parsed.hostname.endsWith("theporndb.net") ? "tpdb" : "stashdb",
+            `wrong service for: ${u}`,
+          );
           assert.equal(
             isPrivateHost(parsed.hostname),
             false,
@@ -1597,7 +1661,14 @@ test("property: isProviderImageUrl SSRF invariants over generated URL parts", ()
         // Determinism: a rejected URL stays rejected on a second call.
         assert.deepEqual(isProviderImageUrl(u), verdict);
       }),
-      { numRuns: 200 },
+    );
+    // The accept branch is the only place the allowlist, query, path and
+    // service pins bite; zero accepted inputs would make this property
+    // vacuous (the pre-fix arbitraries managed exactly that at seed 42).
+    assert.ok(
+      accepted > 0,
+      `isProviderImageUrl accepted 0 of ${runs} generated URLs; ` +
+        `accept branch (allowlist/query/path/service pins) untested`,
     );
   } finally {
     if (prev === undefined) delete process.env.VELVARR_TEST_ARTWORK_ORIGIN;
