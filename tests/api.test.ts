@@ -5549,11 +5549,12 @@ test("a counterpart already followed on its own still folds into one 201 follow"
   assert.equal(dropped.status, 204);
 });
 
-test("a counterpart write failure surfaces a named error instead of a fake 201", async () => {
+test("a counterpart write failure surfaces a named error and commits nothing", async () => {
   // A real storage fault, not a provider outage: a trigger aborts only the
   // counterpart row's insert. That abort is not a unique conflict, so the
   // route must refuse with a named error rather than answer 201 with the
-  // pair half-recorded.
+  // pair half-recorded — and because both rows share one transaction, the
+  // refusal commits nothing.
   const db = new DatabaseSync(join(apiDataDir, "velvarr.sqlite"));
   db.exec(
     `CREATE TRIGGER velv54_counterpart_fault BEFORE INSERT ON performer_follows
@@ -5579,16 +5580,19 @@ test("a counterpart write failure surfaces a named error instead of a fake 201",
     db.exec("DROP TRIGGER velv54_counterpart_fault");
     db.close();
   }
-  // The asked-for follow stands after the surfaced failure; drop it again so
-  // later tests see the unchanged baseline.
+  // The rollback left no half-pair: neither side is followed, so the
+  // client's "not following" state is truthful and a retry starts clean.
   const listed = await call("GET", "/api/follows", { cookie: member2 });
   // Wire JSON boundary: the suite's FollowShape list, cast once by name.
   const listedBody = (await listed.json()) as { follows: FollowShape[] };
-  assert.ok(listedBody.follows.some((f) => f.reference.id === TPDB_PERFORMER4));
-  const dropped = await call("DELETE", `/api/follows/tpdb/${TPDB_PERFORMER4}`, {
-    cookie: member2,
-  });
-  assert.equal(dropped.status, 204);
+  assert.equal(
+    listedBody.follows.filter(
+      (f) =>
+        f.reference.id === TPDB_PERFORMER4 ||
+        f.reference.id === STASH_PERFORMER2,
+    ).length,
+    0,
+  );
 });
 
 test("a user merge folds two standalone follows into one identity", async () => {

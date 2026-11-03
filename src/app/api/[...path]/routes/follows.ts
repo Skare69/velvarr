@@ -9,7 +9,7 @@ import { type AuthContext, json } from "../admission.ts";
 import { AppError, shelfError } from "../../../../server/http.ts";
 import type { CatalogReference } from "../../../../lib/contracts.ts";
 import {
-  followPerformer,
+  followPerformerPair,
   listFollows,
   mergePerformerFollows,
   unfollowPerformer,
@@ -80,38 +80,16 @@ export async function createFollowRoute(
   // A performer is one person on both metadata sources, so one Follow press
   // follows both: the pair then answers as one identity everywhere.
   const { counterpart, failure } = await performerCounterpart(reference);
-  const follow = followPerformer(
+  // Both rows commit together or not at all: a fault on the counterpart
+  // write answers honestly with nothing saved, so the client's "not
+  // following" state matches storage and a retry starts clean.
+  const follow = followPerformerPair(
     ctx.account.id,
     reference,
     fieldText(body, "name", 200),
     followImage(body.imageUrl),
-    counterpart?.reference ?? null,
+    counterpart,
   );
-  if (counterpart) {
-    try {
-      // The counterpart row exists so the per-provider follow shelves read
-      // both metadata sources; only the row above names the pair, and the
-      // list folds this one away.
-      followPerformer(
-        ctx.account.id,
-        counterpart.reference,
-        counterpart.name,
-        counterpart.imageUrl,
-      );
-    } catch (e) {
-      // Only the already-followed conflict is benign: the counterpart row
-      // exists, so nothing else needs recording. Any other failure must
-      // surface — a silent swallow would leave the pair half-recorded while
-      // the route answers 201, a partial success that reads as complete.
-      if (
-        !(e instanceof AppError) ||
-        e.status !== 409 ||
-        e.code !== "already_following"
-      ) {
-        throw e;
-      }
-    }
-  }
   // A failed counterpart lookup keeps the follow but never reads as
   // complete: the named error says the pairing is unknown, not absent.
   return json({ follow, ...(failure ? { errors: [failure] } : {}) }, 201);

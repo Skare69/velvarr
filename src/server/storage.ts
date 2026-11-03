@@ -1745,6 +1745,72 @@ export function followPerformer(
   );
 }
 
+/** One Follow press records the pair: the asked-for row naming its
+ * counterpart, plus the counterpart row the per-provider follow shelves
+ * read (the list folds that one away). Both inserts share one transaction
+ * (`insertFollowRow` expects the caller's), so a fault on the counterpart
+ * write rolls the asked-for follow back too: the route's error is honest
+ * and a retry starts clean, never a half-recorded pair. Only an
+ * already-followed conflict on the counterpart is benign — the row exists,
+ * so nothing else needs recording. */
+export function followPerformerPair(
+  accountId: string,
+  reference: CatalogReference,
+  name: string,
+  imageUrl: string | null,
+  counterpart: {
+    reference: CatalogReference;
+    name: string;
+    imageUrl: string | null;
+  } | null,
+): PerformerFollow {
+  if (!validCatalogRef(reference, ["performer"])) {
+    throw new AppError(
+      400,
+      "invalid_reference",
+      "performer reference is invalid",
+    );
+  }
+  const trimmed = name.trim();
+  if (!nonemptyString(trimmed, 500)) {
+    throw new AppError(400, "invalid_field", "performer name is required");
+  }
+  const d = open();
+  return inTransaction(d, () => {
+    const follow = rowToPerformerFollow(
+      insertFollowRow(
+        accountId,
+        reference,
+        trimmed,
+        imageUrl,
+        counterpart?.reference ?? null,
+      ),
+    );
+    if (counterpart) {
+      try {
+        insertFollowRow(
+          accountId,
+          counterpart.reference,
+          counterpart.name,
+          counterpart.imageUrl,
+          null,
+        );
+      } catch (e) {
+        // Only the already-followed conflict is benign here; any other
+        // fault rethrows and the transaction rolls both rows back.
+        if (
+          !(e instanceof AppError) ||
+          e.status !== 409 ||
+          e.code !== "already_following"
+        ) {
+          throw e;
+        }
+      }
+    }
+    return follow;
+  });
+}
+
 /** Follows are personal: own rows only, newest first. There is deliberately
  * no elevated sees-everything variant here, unlike listRequests.
  *
