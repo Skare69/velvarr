@@ -148,9 +148,14 @@ function judgmentBackend(options?: JudgmentOptions) {
         ...(url ? { baseURL: url } : {}),
         ...(model ? { defaultModel: model } : {}),
         timeout: local ? 30000 : 8000,
+        // One attempt on every backend: the SDK's default retries (2 more
+        // attempts, Retry-After up to 60 s, timeouts included) serialized a
+        // TypeSafe outage into a ~24 s or longer block on the request paths
+        // that pass no per-call retry — the admin connection probe, tag
+        // suggestions, and the related-titles rerank.
+        retry: { maxRetries: 0 },
         ...(local
           ? {
-              retry: { maxRetries: 0 },
               // The SDK requires a placeholder key; local Ollama receives no credential.
               fetch: (input, init) => {
                 const headers = new Headers(init?.headers);

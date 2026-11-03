@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { candidatesMayMatch } from "../src/server/jellyfin.ts";
 import {
+  checkJudgmentConnection,
+  rankRelatedTitles,
   resetSameWorkBreaker,
   sameWork,
   suggestTags,
@@ -377,6 +379,70 @@ test(
       globalThis.fetch = realFetch;
       delete process.env.TYPESAFE_API_KEY;
       resetSameWorkBreaker();
+    }
+  },
+);
+
+test(
+  "a hanging cloud backend answers the request paths within one attempt",
+  // suggestTags, rankRelatedTitles and checkJudgmentConnection pass no
+  // per-call retry: the client policy built in judgmentBackend is the only
+  // guard. Without it, each call would make three ~8 s attempts (backoff in
+  // between) and block its request path for about 25 s before degrading.
+  { timeout: 20000 },
+  async () => {
+    delete process.env.TYPESAFE_API_KEY;
+    const realFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (_url, init) => {
+      calls++;
+      // Never settles on its own — the endpoint hangs — but honors the
+      // abort signal exactly like real fetch: the SDK's per-attempt
+      // timeout works through that signal.
+      const { promise, reject } = Promise.withResolvers<never>();
+      const signal = init?.signal;
+      if (signal) {
+        signal.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+      }
+      return promise;
+    };
+    // A stored key no other test uses: the identity hash forces a fresh
+    // client that builds after the fetch swap above.
+    const options = { typesafeApiKey: "ts_budget_key" };
+    try {
+      const t0 = Date.now();
+      const [tags, ranked, probe] = await Promise.all([
+        suggestTags(
+          "threesome",
+          [
+            { id: "g", name: "Group" },
+            { id: "m", name: "Massage" },
+          ],
+          options,
+        ),
+        rankRelatedTitles(
+          { title: "Solaris" },
+          [
+            { title: "Solaris (Remastered)" },
+            { title: "Unrelated Documentary" },
+          ],
+          options,
+        ),
+        checkJudgmentConnection(options),
+      ]);
+      const elapsed = Date.now() - t0;
+      assert.deepEqual(tags, []);
+      assert.equal(ranked, null);
+      assert.equal(probe.connected, false);
+      assert.ok(
+        elapsed < 12000,
+        `one attempt must bound the wait, took ${elapsed} ms`,
+      );
+      assert.equal(calls, 3, "each request-path call makes one attempt only");
+    } finally {
+      globalThis.fetch = realFetch;
     }
   },
 );
