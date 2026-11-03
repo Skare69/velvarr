@@ -78,6 +78,10 @@ Checks before a commit:
 bun run format && bun run check && bun run test && bun run build
 ```
 
+[`docs/how-it-works.md`](docs/how-it-works.md) explains how the code is
+put together: the architecture map, the request-to-playback flow, and
+the acquisition life cycle, each tied to its source paths.
+
 ## Features
 
 - **Catalogs:** movies (TPDB), scenes (TPDB and StashDB), performers, and studios, with the filters and sort orders that each provider supports.
