@@ -3,7 +3,10 @@
 // effect (VELV-46). VELV-50: a pick against a settled answer must arm
 // nothing — a settled answer is final, so nothing would ever consume the
 // wait, and `release` would then keep the old query (and a failed search's
-// alert) alive after the input cleared.
+// alert) alive after the input cleared. VELV-75: once the armed wait is
+// consumed with the input still below the two-character minimum, the query
+// goes with it — the debounced `release` already ran as a no-op while the
+// wait was armed, so nothing else would drop the query.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -32,9 +35,26 @@ test("a free-text pick on an unsettled answer arms the wait and keeps the query 
   // The input clears mid-flight: the answer must still reach the hook.
   w = reduceTagWait(w, { type: "release" });
   assert.equal(w.committed, "cd");
-  // The answer settles: the promotion effect consumes the wait.
-  w = reduceTagWait(w, { type: "consumed" });
+  // The answer settles and is read with the input still empty (the pick
+  // cleared it): the query goes too. Nothing re-runs `release` once the
+  // input sits empty, so keeping the query here would keep a failed
+  // search's alert under it until the next keystroke (VELV-75).
+  w = reduceTagWait(w, { type: "consumed", inputLength: 0 });
   assert.equal(w.awaitingFree, null);
+  assert.equal(w.committed, null);
+});
+
+test("a consumed wait with live input keeps the query for the debounce", () => {
+  let w = reduceTagWait(initTagWait(), {
+    type: "pickFreeText",
+    term: "cd",
+    loading: true,
+  });
+  // The user typed a new term before the answer settled: from here the
+  // debounce owns the query, so consumed must not drop it.
+  w = reduceTagWait(w, { type: "consumed", inputLength: 2 });
+  assert.equal(w.awaitingFree, null);
+  assert.equal(w.committed, "cd");
 });
 
 test("a free-text pick inside the debounce window commits the term at once", () => {
@@ -50,7 +70,7 @@ test("a free-text pick inside the debounce window commits the term at once", () 
 test("no-op actions return the same state", () => {
   const w = initTagWait();
   assert.equal(reduceTagWait(w, { type: "release" }), w);
-  assert.equal(reduceTagWait(w, { type: "consumed" }), w);
+  assert.equal(reduceTagWait(w, { type: "consumed", inputLength: 0 }), w);
   // A commit of the already-committed term is the debounce's Object.is
   // no-op: useReducer skips the re-render, as setCommitted(t) did.
   const settled = reduceTagWait(w, { type: "commit", term: "ab" });

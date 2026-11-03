@@ -19,8 +19,11 @@ export type TagWaitAction =
   | { type: "release" }
   /** A free-text chip was picked with no real tag to swap in. */
   | { type: "pickFreeText"; term: string; loading: boolean }
-  /** The promotion effect has read the answer. */
-  | { type: "consumed" };
+  /** The promotion effect has read the answer. `inputLength` is the
+   * trimmed input's length at that moment: below the two-character
+   * minimum the pick cleared the input, and the query goes with the
+   * answer (VELV-75). */
+  | { type: "consumed"; inputLength: number };
 
 export function initTagWait(): TagWait {
   return { committed: null, awaitingFree: null };
@@ -46,6 +49,13 @@ export function reduceTagWait(w: TagWait, a: TagWaitAction): TagWait {
       return { committed: a.term, awaitingFree: a.term };
     case "consumed":
       if (w.awaitingFree === null) return w;
+      // The answer is read: the promotion no longer needs the query. When
+      // the input sits below the two-character minimum (the pick cleared
+      // it), the query goes too — `release` already ran as a no-op while
+      // the wait was armed, and nothing re-runs it over an empty input, so
+      // keeping the term here would keep a failed search's alert alive
+      // (VELV-75). With live input the debounce owns the query from here.
+      if (a.inputLength < 2) return { committed: null, awaitingFree: null };
       return { ...w, awaitingFree: null };
   }
 }

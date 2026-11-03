@@ -120,12 +120,15 @@ export function TagPicker({
 
   // The awaited answer landed: when it carries a tag both providers
   // publish under the term's normalized name, the just-added free-text
-  // chip becomes that real tag; otherwise it stays free text. The query
-  // is released either way (the debounce skip above ends with this).
+  // chip becomes that real tag; otherwise it stays free text. Consuming
+  // the wait also releases the query when the input cleared for the pick —
+  // the debounced `release` ran as a no-op while the wait was armed — so a
+  // failed search's alert cannot outlive the emptied input (VELV-75); with
+  // live input the debounce owns the query from here.
   useEffect(() => {
     const term = wait.awaitingFree;
     if (term === null || loading) return;
-    waitTo({ type: "consumed" });
+    waitTo({ type: "consumed", inputLength: t.length });
     const both =
       error === null && data !== null
         ? exactBothProviderTag(data.tags, term)
