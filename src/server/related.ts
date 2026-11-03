@@ -20,7 +20,7 @@ import {
 } from "./judgment.ts";
 import { isHiddenTitle } from "./catalog-visibility.ts";
 import { type SourceError } from "../lib/contracts.ts";
-import { AppError } from "./http.ts";
+import { AppError, sourceError } from "./http.ts";
 import {
   getCatalogDetail,
   searchCatalog,
@@ -58,17 +58,6 @@ const RELATED_LIMIT = 12;
 const refKey = (r: { provider: string; kind: string; id: string }) =>
   `${r.provider}:${r.kind}:${r.id.toLowerCase()}`;
 
-function toSourceError(provider: CatalogProvider, err: unknown): SourceError {
-  return {
-    provider,
-    code: err instanceof AppError ? err.code : "upstream_error",
-    message:
-      err instanceof Error && err.message !== ""
-        ? err.message
-        : "The provider request failed.",
-  };
-}
-
 /** The metadata a Jev rerank may see: titles, tag names, studio, year. */
 function descriptor(d: CatalogDetail): RankableTitle {
   const year = Number((d.releaseDate ?? "").slice(0, 4));
@@ -97,7 +86,7 @@ export async function relatedTitles(
       items: [],
       ranking: "tags",
       canRank: false,
-      errors: [toSourceError(reference.provider, err)],
+      errors: [sourceError(reference.provider, err)],
     };
   }
   if (source === null) {
@@ -139,7 +128,7 @@ export async function relatedTitles(
       // An outage is not absence: name the provider once and keep the rail
       // partial beside the error evidence.
       if (!errors.some((e) => e.provider === other)) {
-        errors.push(toSourceError(other, settled.reason));
+        errors.push(sourceError(other, settled.reason));
       }
     } else if (settled.value !== undefined && settled.value.native) {
       // Native matches only: a uuid-less exact-label match (TPDB's numeric
@@ -195,7 +184,7 @@ export async function relatedTitles(
       } catch (err) {
         return {
           items: [] as CatalogDetail[],
-          error: toSourceError(q.provider, err),
+          error: sourceError(q.provider, err),
         };
       }
     }),
@@ -333,7 +322,7 @@ export async function relatedPerformers(
   try {
     page = await searchCatalog(query);
   } catch (err) {
-    return { items: [], errors: [toSourceError(reference.provider, err)] };
+    return { items: [], errors: [sourceError(reference.provider, err)] };
   }
   // Count co-appearances over visible titles only; the performer themself
   // and duplicate credit rows never count twice on one title. ponytail: a
@@ -460,7 +449,7 @@ export async function performerTags(
     } catch (err) {
       // Partial evidence stays next to the named error; a half-scanned
       // overview never reads as complete.
-      return finish([toSourceError(reference.provider, err)]);
+      return finish([sourceError(reference.provider, err)]);
     }
     for (const row of rows.items) {
       if (isHiddenTitle(row, hiddenTags)) continue;
