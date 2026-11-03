@@ -2269,7 +2269,7 @@ test("studio links resolve both published TPDB URL forms; uuid form wins; absenc
   assert.match(unlinked.unlinkedReason ?? "", /TPDB/);
 });
 
-test("studioCounterpart resolves one stashdb studio per exact url and degrades to undefined", async () => {
+test("studioCounterpart resolves one stashdb studio per exact url and rejects on upstream failure", async () => {
   const restore = setEnv({
     TPDB_API_TOKEN: TPDB_TOKEN,
     STASHDB_API_KEY: STASH_TOKEN,
@@ -2457,19 +2457,28 @@ test("studioCounterpart resolves one stashdb studio per exact url and degrades t
       undefined,
     );
 
-    // Upstream failure and malformed payload: undefined, never a throw.
-    // Fresh ids per phase so the metadata cache cannot serve a stale hit
-    // over the scripted failure.
+    // Deliberate contract flip (fix(discover)): a stashdb outage during the
+    // lookup is a failed read, not absence — the AppError propagates so
+    // resolveLinked records the dead side beside the tiles instead of
+    // silently dropping the tile's cross-provider link. Absence stays "the
+    // lookup finished and nothing published". Fresh ids per phase so the
+    // metadata cache cannot serve a stale hit over the scripted failure.
     fail = true;
-    assert.equal(
-      await studioCounterpart({
+    await assert.rejects(
+      studioCounterpart({
         provider: "tpdb",
         kind: "studio",
         id: TPDB_STUDIO_DOWN,
       }),
-      undefined,
+      (err: unknown) => {
+        assertProviderError(err, 502, "upstream_unavailable", 500);
+        return true;
+      },
     );
     fail = false;
+    // A populated-but-malformed queryStudios document is still a completed
+    // lookup: the structural guard reads the non-array studio list as zero
+    // hits, so every candidate is walked and the answer stays undefined.
     malformed = true;
     assert.equal(
       await studioCounterpart({

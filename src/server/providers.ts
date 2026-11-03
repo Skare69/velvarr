@@ -2159,8 +2159,13 @@ export async function linkedPerformerCounterpart(
  * `theporndb.net` URLs and StashDB's exact-URL studio search arbitrates: a
  * candidate wins only when exactly one studio's own `urls` contain it. The
  * live `sites/blacked` case matches two studios, so ambiguity is refused,
- * never guessed. Absence, ambiguity, outage, malformed payload — always
- * undefined; this never throws. */
+ * never guessed. Absence and ambiguity are undefined — and so is a dangling
+ * published pointer, where the upstream answers 404 for a site row that no
+ * longer exists. An outage, missing credentials, or an unusable payload is
+ * an AppError that propagates, so the caller records the failed lookup
+ * beside the tiles instead of reading it as absence; a populated document
+ * with an unusable shape is still a completed lookup and reads as zero
+ * hits. */
 export async function studioCounterpart(
   reference: CatalogReference,
 ): Promise<CatalogReference | undefined> {
@@ -2235,8 +2240,16 @@ export async function studioCounterpart(
       // Zero hits or ambiguous hits: try the next candidate URL, never guess.
     }
     return undefined;
-  } catch {
-    return undefined; // outage/not-configured/bad payload degrade to absent
+  } catch (err) {
+    // A 404 is a completed lookup: the published pointer dangles and the
+    // counterpart is honestly absent. Any other failure — outage, missing
+    // credentials, unusable payload — is an AppError from the transport and
+    // propagates so resolveLinked names the failed side instead of reading
+    // it as absence.
+    if (err instanceof AppError && err.upstreamStatus === 404) {
+      return undefined;
+    }
+    throw err;
   }
 }
 

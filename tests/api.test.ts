@@ -1107,7 +1107,11 @@ async function stashdbHandler(
                 child_studios: [],
               },
             }
-          : null,
+          : // The documented absence signal for find* queries: a null
+            // dataKey without errors. A bare null data object reads as an
+            // outage and would name StashDB on the shelf instead of
+            // resolving nothing.
+            { findStudio: null },
     });
   }
   json(res, 200, { data: null });
@@ -5210,7 +5214,9 @@ async function slugStashHandler(
                   child_studios: [],
                 },
               }
-            : null,
+            : // Same absence signal as the shared fixture: a null dataKey
+              // without errors, never a bare null data object.
+              { findStudio: null },
     });
   }
   json(res, 200, { data: null });

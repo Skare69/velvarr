@@ -521,7 +521,8 @@ function facetPreview(tile: FacetItem): ShelfMorePreview {
 // Resolves each tile's cross-provider counterpart, settled: a rejection or
 // an absent counterpart just leaves `linked` off the tile — and a rejection
 // is returned as the OTHER side's named outage, never read as absence
-// (tagCounterpart throws on upstream failure for exactly this).
+// (studioCounterpart and tagCounterpart throw on upstream failure for
+// exactly this).
 export async function resolveLinked(
   tiles: FacetItem[],
 ): Promise<SourceError[]> {
