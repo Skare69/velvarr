@@ -371,7 +371,16 @@ test("property: canonical query round trips through parseBrowseQuery unchanged",
     tpdb: fc.option(fc.uuid(), { nil: undefined }),
     stashdb: fc.option(fc.uuid(), { nil: undefined }),
   });
-  const selectionList = fc.array(selection, { maxLength: 3 });
+  // parseTagSelections consolidates selections sharing a folded label
+  // (normalizeFacetName), so the generator emits distinct labels. Generated
+  // names are [a-z0-9], where the fold is the identity — distinct labels
+  // can never merge, and the exact compare below measures parsing, not
+  // consolidation.
+  const selectionList = fc
+    .array(selection, { maxLength: 3 })
+    .map((list) => [
+      ...new Map(list.map((s) => [s.name, s] as const)).values(),
+    ]);
 
   fc.assert(
     fc.property(
@@ -441,6 +450,46 @@ test("property: canonical query round trips through parseBrowseQuery unchanged",
           params.set("exclude", JSON.stringify(g.exclude));
 
         const p1 = parseBrowseQuery(params);
+        // Input oracle: p1 must hold the generated fields themselves. The
+        // p2 === p1 compare below cannot see a parser that drops a field —
+        // a lossy parse round trips against itself.
+        assert.equal(p1.type, g.type ?? "all");
+        assert.equal(p1.studioMode, g.studioMode ?? "exact");
+        assert.equal(p1.sort, g.sort);
+        assert.equal(p1.direction, g.direction);
+        assert.equal(p1.date, g.date);
+        assert.equal(p1.dateOperation, g.dateOperation);
+        assert.equal(p1.year, g.year);
+        assert.equal(p1.page, g.page);
+        assert.equal(p1.perPage, g.perPage);
+        assert.equal(p1.q, g.q);
+        assert.equal(
+          p1.performerStarred,
+          g.performerStarred === "1" ? true : undefined,
+        );
+        assert.equal(p1.studioTpdb, g.studioTpdb);
+        assert.equal(p1.studioStashdb, g.studioStashdb);
+        assert.equal(p1.performerTpdb, g.performerTpdb);
+        assert.equal(p1.performerStashdb, g.performerStashdb);
+        // fast-check records are null-prototype and deepStrictEqual compares
+        // prototypes, so rebuild plain copies in the parser's own key shape
+        // (ids present-but-undefined, as parseTagSelections emits).
+        assert.deepEqual(
+          p1.include,
+          (g.include ?? []).map((s) => ({
+            name: s.name,
+            tpdb: s.tpdb,
+            stashdb: s.stashdb,
+          })),
+        );
+        assert.deepEqual(
+          p1.exclude,
+          (g.exclude ?? []).map((s) => ({
+            name: s.name,
+            tpdb: s.tpdb,
+            stashdb: s.stashdb,
+          })),
+        );
         const out = new URLSearchParams();
         out.set("type", p1.type);
         out.set("studioMode", p1.studioMode);

@@ -54,7 +54,7 @@ import { routes as adminRoutes } from "../src/app/api/[...path]/routes/admin.ts"
 import { routes as discoverRoutes } from "../src/app/api/[...path]/routes/discover.ts";
 import { allowArtworkFixture } from "./fixture.ts";
 import fc from "fast-check";
-import { readJson } from "../src/app/api/[...path]/parse.ts";
+import { BODY_LIMIT_BYTES, readJson } from "../src/app/api/[...path]/parse.ts";
 
 test("route tables never shadow: every request shape matches at most one def", () => {
   const all: RouteDef[] = [
@@ -1359,8 +1359,12 @@ before(async () => {
     });
 });
 
-// Oracle: readJson either resolves to a plain object or rejects with an
-// AppError — never anything else, for any request body.
+// Oracle: readJson's verdict is decided by the bytes themselves — oversize
+// always rejects 413 payload_too_large; an empty body resolves {}; a valid
+// JSON object resolves to that exact object; other valid JSON rejects 400
+// invalid_body; unparseable bytes reject 400 invalid_json. JSON.parse on the
+// same bytes is the independent reference, so an always-{} or always-throw
+// implementation cannot pass.
 test("readJson: every body yields a plain object or an AppError", async () => {
   const arbitraryBody = fc.oneof(
     fc.uint8Array({ minLength: 0, maxLength: 2000 }),
@@ -1374,14 +1378,45 @@ test("readJson: every body yields a plain object or an AppError", async () => {
       const request = new Request("http://127.0.0.1/t", {
         method: "POST",
         body: bytes,
+        // undici sets content-length at dispatch, not on a constructed
+        // Request; the header routes oversize bodies through readJson's
+        // declared-length guard instead of only the stream-count guard.
+        headers: { "content-length": String(bytes.length) },
       });
+      const oversize = bytes.length > BODY_LIMIT_BYTES;
+      const text = new TextDecoder().decode(bytes);
+      let expectedObject: object | undefined;
+      let expectedCode: string | undefined;
+      if (!oversize && text.trim() !== "") {
+        try {
+          const expected: unknown = JSON.parse(text);
+          if (
+            typeof expected === "object" &&
+            expected !== null &&
+            !Array.isArray(expected)
+          ) {
+            expectedObject = expected as Record<string, unknown>;
+          } else {
+            expectedCode = "invalid_body";
+          }
+        } catch {
+          expectedCode = "invalid_json";
+        }
+      }
       try {
         const parsed = await readJson(request);
-        assert.strictEqual(typeof parsed, "object");
-        assert.notStrictEqual(parsed, null);
-        assert.strictEqual(Array.isArray(parsed), false);
+        assert.ok(!oversize, `oversize body resolved: ${bytes.length} bytes`);
+        assert.equal(expectedCode, undefined, "resolved where 400 expected");
+        assert.deepEqual(parsed, expectedObject ?? {});
       } catch (error) {
         assert.ok(error instanceof AppError, `non-AppError: ${String(error)}`);
+        if (oversize) {
+          assert.equal(error.status, 413);
+          assert.equal(error.code, "payload_too_large");
+        } else {
+          assert.equal(error.status, 400);
+          assert.equal(error.code, expectedCode);
+        }
       }
     }),
   );

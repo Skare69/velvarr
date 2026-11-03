@@ -47,6 +47,7 @@ import type {
 import type { CatalogDetail } from "../src/lib/contracts.ts";
 import { normalizeFacetName } from "../src/lib/contracts.ts";
 import {
+  isIsoDate,
   stashFuzzyDate,
   type ImageUrlCheck,
 } from "../src/server/provider-rows.ts";
@@ -2069,12 +2070,38 @@ test("cross-provider identity uses only explicit provider URLs; scenes stay unli
 // Property: cross-provider link output is total, xor-shaped, and honors the
 // provider-opposite/lowercase-uuid contract; movies and scenes never link.
 test("property: crossProviderLink emits exactly one of linked/unlinkedReason with the opposite provider", () => {
-  const mixCase = (uuid: string): string =>
-    [...uuid]
-      .map((c) =>
-        /[0-9a-f]/.test(c) && c !== "-" ? (c < "8" ? c.toUpperCase() : c) : c,
-      )
-      .join("");
+  // Uppercase exactly the hex letters a-f: digits have no case, and a
+  // "sometimes uppercase" generator that changed nothing would let a
+  // lowercasing regression in identity-links ship green.
+  // Independent mirror of the published counterpart URL shapes (the host +
+  // bucket + uuid, or TPDB /sites/<slug> studio form) so the oracle can
+  // demand a link when the generator builds one — the one-way check
+  // ("when linked, it is well-formed") passed a function that never linked.
+  const counterpartShapeRe =
+    /^https:\/\/(?:www\.)?(theporndb\.net|stashdb\.org)\/(performers|studios)\/([0-9a-f-]{36})\/?$/i;
+  const uuidShapeRe =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const slugShapeRe =
+    /^https:\/\/(?:www\.)?theporndb\.net\/sites\/([a-z0-9][a-z0-9-]{0,63})\/?$/i;
+  const isCounterpartUrl = (
+    provider: string,
+    kind: string,
+    url: string,
+  ): boolean => {
+    const m = counterpartShapeRe.exec(url);
+    if (m !== null) {
+      const urlProvider = m[1] === "theporndb.net" ? "tpdb" : "stashdb";
+      const urlKind = m[2] === "performers" ? "performer" : "studio";
+      return (
+        urlProvider !== provider &&
+        urlKind === kind &&
+        uuidShapeRe.test(m[3] ?? "")
+      );
+    }
+    if (slugShapeRe.test(url))
+      return provider === "stashdb" && kind === "studio";
+    return false;
+  };
   const linkArb = fc.oneof(
     // Valid counterpart performer/studio uuid URLs, sometimes uppercase hex.
     fc
@@ -2092,7 +2119,9 @@ test("property: crossProviderLink emits exactly one of linked/unlinkedReason wit
       })
       .map(
         (p) =>
-          `https://${p.host}/${p.bucket}/${p.upper ? mixCase(p.id) : p.id}${p.slash}`,
+          `https://${p.host}/${p.bucket}/${
+            p.upper ? p.id.replace(/[a-f]/g, (c) => c.toUpperCase()) : p.id
+          }${p.slash}`,
       ),
     fc
       .string({ minLength: 1, maxLength: 40 })
@@ -2129,6 +2158,12 @@ test("property: crossProviderLink emits exactly one of linked/unlinkedReason wit
         const hasLinked = out.linked !== undefined;
         const hasReason = out.unlinkedReason !== undefined;
         assert.notEqual(hasLinked, hasReason); // exactly one of the two
+        // Two-way oracle: a generated counterpart URL must produce a link;
+        // a record with none must stay unlinked with a reason.
+        const expectsLink = urls.some((url) =>
+          isCounterpartUrl(provider, kind, url),
+        );
+        assert.equal(hasLinked, expectsLink);
         if (kind === "movie" || kind === "scene") {
           assert.equal(hasLinked, false);
           return;
@@ -2173,6 +2208,12 @@ test("property: stashFuzzyDate canonicalizes valid records, rejects everything e
     date: isoDate,
     accuracy: fc.constantFrom("DAY", "MONTH", "YEAR"),
   });
+  // Type guard, keeps narrowing: the oracle reads date/accuracy only after
+  // the shape is checked, mirroring the source's null/object rule.
+  const isFuzzyDateShaped = (
+    x: unknown,
+  ): x is { date?: unknown; accuracy?: unknown } =>
+    x !== null && typeof x === "object" && "date" in x && "accuracy" in x;
   const junkArb = fc.oneof(
     fc.constantFrom(null, undefined, 42, "x", true),
     fc.array(fc.integer(), { maxLength: 3 }),
@@ -2183,17 +2224,33 @@ test("property: stashFuzzyDate canonicalizes valid records, rejects everything e
         .string({ maxLength: 10 })
         .filter((s) => !["DAY", "MONTH", "YEAR"].includes(s)),
     }),
+    // A wrong date beside a valid accuracy: the accuracy check alone would
+    // wrongly accept these, so the oracle (and the source) must require
+    // isIsoDate. Constant shapes pin the calendar-vs-shape distinction
+    // every run; the filtered arm adds breadth.
+    fc.record({
+      date: fc.constantFrom(
+        "2020-99-99",
+        "2020-02-30",
+        "2020-13-01",
+        "2020-1-1",
+        "0000-00-00",
+        "",
+      ),
+      accuracy: fc.constantFrom("DAY", "MONTH", "YEAR"),
+    }),
+    fc.record({
+      date: fc.string({ maxLength: 20 }).filter((s) => !isIsoDate(s)),
+      accuracy: fc.constantFrom("DAY", "MONTH", "YEAR"),
+    }),
   );
 
   fc.assert(
     fc.property(fc.oneof(validArb, junkArb), (v) => {
       const out = stashFuzzyDate(v); // must not throw
       if (
-        v !== null &&
-        typeof v === "object" &&
-        "date" in v &&
-        "accuracy" in v &&
-        typeof v.date === "string" &&
+        isFuzzyDateShaped(v) &&
+        isIsoDate(v.date) &&
         (v.accuracy === "DAY" ||
           v.accuracy === "MONTH" ||
           v.accuracy === "YEAR")
