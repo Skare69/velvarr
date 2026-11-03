@@ -17,6 +17,7 @@ import type {
   RequestRecord,
 } from "../lib/contracts.ts";
 import { countPendingApprovals, REQUESTS_CHANGED } from "../lib/approvals.ts";
+import { signOutKeepsSession } from "../lib/signout.ts";
 import {
   ApiError,
   api,
@@ -121,6 +122,7 @@ export default function VelvarrApp() {
   const [account, setAccount] = useState<Account | null>(null);
   const [providers, setProviders] = useState<ProviderStatus | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
+  const [signOutError, setSignOutError] = useState(false);
   useTapReveal();
 
   // Re-reads the session snapshot; also runs after an admin saves or clears
@@ -209,12 +211,21 @@ export default function VelvarrApp() {
   const signOut = useCallback(async () => {
     try {
       await api("/api/logout", { method: "POST", body: "{}" });
-    } catch {
-      /* cookie already gone */
+    } catch (err) {
+      // Only an explicit "no session" answer may clear this tab's view. A
+      // 401 already fired velvarr:unauthorized, which lands the tab on the
+      // login screen. Any other failure — a network error, a CSRF 403, a
+      // 5xx — leaves the session cookie valid: clearing the view would hide
+      // a live session behind the login screen, and notifyAuthChanged would
+      // re-boot other tabs for a cookie that never changed.
+      if (!signOutKeepsSession(err)) return;
+      setSignOutError(true);
+      return;
     }
     clearSession();
     // Tell other tabs the cookie jar changed; they drop A's reads and re-boot.
     notifyAuthChanged();
+    setSignOutError(false);
     setPhase("login");
     window.history.replaceState(null, "", window.location.pathname);
   }, []);
@@ -242,6 +253,17 @@ export default function VelvarrApp() {
       value={{ account, providers, signOut, refreshSession }}
     >
       <Shell />
+      {/* A failed sign-out keeps the session: the banner must live outside
+          the account menu so closing the menu cannot hide it. */}
+      {signOutError && (
+        <div className="signout-alert">
+          <ErrorPanel
+            title="Sign-out failed"
+            message="You are still signed in."
+            onRetry={() => void signOut()}
+          />
+        </div>
+      )}
     </SessionCtx.Provider>
   );
 }

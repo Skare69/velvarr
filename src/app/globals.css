@@ -568,6 +568,16 @@ body:has(.auth-page) {
   width: 100%;
   margin-top: 16px;
 }
+/* A failed sign-out keeps the user in the app; the banner floats above
+   every view (the topbar sits at z-index 30, the highest overlay at 60). */
+.signout-alert {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(430px, calc(100vw - 32px));
+  z-index: 70;
+}
 .app-main {
   margin-left: var(--sidebar-width);
   padding: calc(var(--topbar-height) + 26px) 28px 56px;
