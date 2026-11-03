@@ -6,8 +6,12 @@ import {
   performerField,
 } from "../parse.ts";
 import { type AuthContext, json } from "../admission.ts";
-import { AppError, shelfError } from "../../../../server/http.ts";
-import type { CatalogReference } from "../../../../lib/contracts.ts";
+import { AppError, sourceError } from "../../../../server/http.ts";
+import type {
+  CatalogDetail,
+  CatalogReference,
+  SourceError,
+} from "../../../../lib/contracts.ts";
 import {
   followPerformerPair,
   listFollows,
@@ -40,7 +44,7 @@ export async function performerCounterpart(
     name: string;
     imageUrl: string | null;
   } | null;
-  failure: { code: string; message: string } | null;
+  failure: SourceError | null;
 }> {
   try {
     const detail = await getCatalogDetail(reference);
@@ -48,7 +52,16 @@ export async function performerCounterpart(
     if (!link?.linked) {
       return { counterpart: null, failure: link?.failure ?? null };
     }
-    const counterpart = await getCatalogDetail(link.linked);
+    let counterpart: CatalogDetail | null;
+    try {
+      counterpart = await getCatalogDetail(link.linked);
+    } catch (err) {
+      // The counterpart's own provider failed; attribute the error to it.
+      return {
+        counterpart: null,
+        failure: sourceError(link.linked.provider, err),
+      };
+    }
     if (!counterpart) return { counterpart: null, failure: null };
     return {
       counterpart: {
@@ -59,7 +72,8 @@ export async function performerCounterpart(
       failure: null,
     };
   } catch (err) {
-    return { counterpart: null, failure: shelfError(err) };
+    // Only the primary detail read lands here: attribute it to this provider.
+    return { counterpart: null, failure: sourceError(reference.provider, err) };
   }
 }
 

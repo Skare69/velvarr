@@ -28,6 +28,7 @@ import type {
   CatalogProvider,
   CatalogReference,
   PerformerFollow,
+  FollowResponse,
 } from "../lib/contracts";
 import {
   isBrowseableTagSelection,
@@ -453,10 +454,12 @@ function FollowStar({
   >("unknown");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
 
   const check = useCallback(() => {
     let live = true;
     setError(null);
+    setNote(null);
     setStatus("unknown");
     api<{ follows: PerformerFollow[] }>("/api/follows")
       .then((d) => {
@@ -483,6 +486,7 @@ function FollowStar({
   const toggle = async () => {
     setBusy(true);
     setError(null);
+    setNote(null);
     try {
       if (status === "following") {
         await api(`/api/follows/${provider}/${encodeURIComponent(id)}`, {
@@ -490,7 +494,7 @@ function FollowStar({
         });
         setStatus("notFollowing");
       } else {
-        await api("/api/follows", {
+        const res = await api<FollowResponse>("/api/follows", {
           method: "POST",
           body: JSON.stringify({
             performer: { provider, kind: "performer", id },
@@ -499,6 +503,12 @@ function FollowStar({
           }),
         });
         setStatus("following");
+        const failure = res.errors?.[0];
+        if (failure) {
+          setNote(
+            `Followed. Pairing with ${providerLabel(failure.provider)} is unknown; try Merge.`,
+          );
+        }
       }
     } catch (e) {
       setError(messageOf(e));
@@ -539,6 +549,11 @@ function FollowStar({
       {error && (
         <p className="bulk-error mt-2 text-xs" role="alert">
           {error}
+        </p>
+      )}
+      {note && (
+        <p className="bulk-error mt-2 text-xs" role="status">
+          {note}
         </p>
       )}
     </div>
@@ -1070,6 +1085,7 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
       ? payload.link.unlinkedReason
       : undefined
     : undefined;
+  const linkFailure = payload ? payload.link.failure : undefined;
 
   // One metadata source per kind: TPDB has her movies, StashDB has her scenes.
   // She is one person, so both catalogs belong on her page — the counterpart
@@ -1257,26 +1273,46 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
                 performerName={d.title}
               />
             ))}
-            {missing && (
-              <div className="panel p-6" role="note">
-                <h3 className="font-semibold">
-                  {missing === "tpdb"
-                    ? `${d.title}’s movies are not shown`
-                    : `${d.title}’s scenes are not shown`}
-                </h3>
-                <p className="mt-2 text-sm text-muted">
-                  {unlinkedReason ??
-                    `${providerLabel(reference.provider)} publishes no ${providerLabel(missing)} link for this performer, and ${providerLabel(missing)} is the only source for ${missing === "tpdb" ? "movies" : "scenes"}. Velvarr pairs only the records the providers link themselves — it never matches performers by name.`}
-                </p>
-                <MergeControl
-                  reference={reference}
-                  onMerged={() => {
-                    setMerged(`${reference.provider}:${reference.id}`);
-                    setReload((n) => n + 1);
-                  }}
-                />
-              </div>
-            )}
+            {missing &&
+              (linkFailure ? (
+                <div className="space-y-4">
+                  <ErrorPanel
+                    title={
+                      missing === "tpdb"
+                        ? `${d.title}’s movies are not shown`
+                        : `${d.title}’s scenes are not shown`
+                    }
+                    message={`Pairing with ${providerLabel(linkFailure.provider)} is unknown: the lookup failed (${linkFailure.message}). This is not a confirmed absence — retry, or merge the two entries yourself.`}
+                    onRetry={() => setReload((n) => n + 1)}
+                  />
+                  <MergeControl
+                    reference={reference}
+                    onMerged={() => {
+                      setMerged(`${reference.provider}:${reference.id}`);
+                      setReload((n) => n + 1);
+                    }}
+                  />
+                </div>
+              ) : (
+                <div className="panel p-6" role="note">
+                  <h3 className="font-semibold">
+                    {missing === "tpdb"
+                      ? `${d.title}’s movies are not shown`
+                      : `${d.title}’s scenes are not shown`}
+                  </h3>
+                  <p className="mt-2 text-sm text-muted">
+                    {unlinkedReason ??
+                      `${providerLabel(reference.provider)} publishes no ${providerLabel(missing)} link for this performer, and ${providerLabel(missing)} is the only source for ${missing === "tpdb" ? "movies" : "scenes"}. Velvarr pairs only the records the providers link themselves — it never matches performers by name.`}
+                  </p>
+                  <MergeControl
+                    reference={reference}
+                    onMerged={() => {
+                      setMerged(`${reference.provider}:${reference.id}`);
+                      setReload((n) => n + 1);
+                    }}
+                  />
+                </div>
+              ))}
             <RelatedPerformers
               provider={reference.provider}
               id={reference.id}

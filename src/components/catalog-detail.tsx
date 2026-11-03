@@ -439,6 +439,7 @@ function DetailBody({
         target={target}
         onNavigate={onNavigate}
         onBrowse={onBrowse}
+        onRetryLink={onRefetch}
       />
     </>
   );
@@ -451,15 +452,18 @@ export function DetailSections({
   target,
   onNavigate,
   onBrowse,
+  onRetryLink,
 }: {
   payload: CatalogDetailResponse;
   target: DetailTarget;
   onNavigate: (r: CatalogReference) => void;
   onBrowse: (filter: BrowseFilter) => void;
+  onRetryLink?: () => void;
 }) {
   const d = payload.detail;
   const mediaKind = asMediaKind(target.kind);
   const linked = "linked" in payload.link ? payload.link.linked : undefined;
+  const linkFailure = payload.link.failure;
   // A provider-supplied studio reference (kind "studio") becomes a real
   // control; without one the studio stays plain text.
   const studioRef =
@@ -684,6 +688,12 @@ export function DetailSections({
               >
                 Open the linked {providerLabel(linked.provider)} record
               </button>
+            ) : linkFailure ? (
+              <ErrorPanel
+                title="Cross-provider lookup failed"
+                message={`Pairing with ${providerLabel(linkFailure.provider)} is unknown: ${linkFailure.message}. This is not a confirmed absence — retry, or merge the two entries on the performer page.`}
+                onRetry={onRetryLink}
+              />
             ) : (
               <p className="mt-2 text-xs text-muted">
                 {"unlinkedReason" in payload.link

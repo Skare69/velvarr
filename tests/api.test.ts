@@ -189,6 +189,10 @@ const STASH_PERFORMER4 = "4c4d5e6f-0000-0000-0000-0000000000d8";
 // Only a merge-refusal prop: followed, never merged, unfollowed in the same
 // test.
 const TPDB_PERFORMER6 = "2a2b3c4d-0000-0000-0000-000000000015";
+// Carries a third-party identity link and no explicit counterpart, so
+// linkedPerformerCounterpart runs the other provider's name search — the
+// only fixture reaching that branch.
+const TPDB_PERFORMER7 = "2a2b3c4d-0000-0000-0000-000000000018";
 const TPDB_STUDIO = "2a2b3c4d-0000-0000-0000-0000000000a1";
 // Second studio on the /movies snapshot: no published counterpart anywhere,
 // so the unified Studios shelf can prove unlinked tiles still render.
@@ -828,6 +832,15 @@ async function tpdbHandler(
   if (p === `/performers/${TPDB_PERFORMER5}`) {
     return json(res, 200, {
       data: { id: TPDB_PERFORMER5, name: "User-Merged Fixture Performer" },
+    });
+  }
+  if (p === `/performers/${TPDB_PERFORMER7}`) {
+    return json(res, 200, {
+      data: {
+        id: TPDB_PERFORMER7,
+        name: "Identity-Linked Fixture Performer",
+        extras: { links: { twitter: "https://twitter.com/IdentityFixture" } },
+      },
     });
   }
   if (p === `/performers/${TPDB_PERFORMER3}`) {
@@ -5785,14 +5798,17 @@ test("a follow survives a counterpart-lookup outage and names the failure", asyn
     // names the pairing failure beside it, so the outage never reads as
     // "the providers published no link".
     assert.equal(created.status, 201);
+    // The follow `errors` array is SourceError-shaped like every other
+    // errors array, so this pin gained the provider.
     const createdBody = (await created.json()) as {
       follow: FollowShape;
-      errors?: { code: string; message: string }[];
+      errors?: { provider: string; code: string; message: string }[];
     };
     assert.deepEqual(createdBody.follow.reference, performer);
     assert.equal(createdBody.follow.linked, null);
     assert.deepEqual(createdBody.errors, [
       {
+        provider: "tpdb",
         code: "upstream_unavailable",
         message: "TPDB reported an unexpected error.",
       },
@@ -5815,6 +5831,74 @@ test("a follow survives a counterpart-lookup outage and names the failure", asyn
   });
   assert.equal(dropped.status, 204);
   assert.deepEqual(await listed(), baseline);
+});
+
+test("a counterpart search outage names the failed provider on the follow and the catalog link", async () => {
+  const performer = {
+    provider: "tpdb",
+    kind: "performer",
+    id: TPDB_PERFORMER7,
+  };
+  const listed = async () => {
+    const res = await call("GET", "/api/follows", { cookie: member2 });
+    assert.equal(res.status, 200);
+    const body: { follows: FollowShape[] } = await res.json();
+    return body.follows;
+  };
+  const baseline = await listed();
+  try {
+    resetMetaCache();
+    stashdbFx.fail = 5;
+    const created = await call("POST", "/api/follows", {
+      cookie: member2,
+      body: { performer, name: "Identity-Linked Fixture Performer" },
+    });
+    // The primary detail read succeeds; only the StashDB name search fails,
+    // so this pin proves the { ...explicit, failure } branch in
+    // linkedPerformerCounterpart — the branch the primary-detail outage test
+    // cannot reach.
+    assert.equal(created.status, 201);
+    const createdBody = (await created.json()) as {
+      follow: FollowShape;
+      errors?: { provider: string; code: string; message: string }[];
+    };
+    assert.deepEqual(createdBody.follow.reference, performer);
+    assert.equal(createdBody.follow.linked, null);
+    assert.deepEqual(createdBody.errors, [
+      {
+        provider: "stashdb",
+        code: "upstream_unavailable",
+        message: "StashDB reported an unexpected error.",
+      },
+    ]);
+    // GET /api/catalog carries the same named failure on the link: the
+    // performer page can tell a failed lookup from an honest "no link".
+    const detail = await call(
+      "GET",
+      `/api/catalog/tpdb/performer/${TPDB_PERFORMER7}`,
+      { cookie: member2 },
+    );
+    assert.equal(detail.status, 200);
+    const detailBody = (await detail.json()) as {
+      link: {
+        linked?: unknown;
+        failure?: { provider: string; code: string; message: string };
+      };
+    };
+    assert.equal(detailBody.link.linked, undefined);
+    assert.deepEqual(detailBody.link.failure, {
+      provider: "stashdb",
+      code: "upstream_unavailable",
+      message: "StashDB reported an unexpected error.",
+    });
+  } finally {
+    stashdbFx.fail = 0;
+    resetMetaCache();
+    await call("DELETE", `/api/follows/tpdb/${TPDB_PERFORMER7}`, {
+      cookie: member2,
+    });
+    assert.deepEqual(await listed(), baseline);
+  }
 });
 
 test("a merge auto-follows the StashDB side without partial writes on a provider failure", async () => {

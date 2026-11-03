@@ -282,6 +282,16 @@ export type PerformerFollow = {
   linked: CatalogReference | null;
 };
 
+/** POST /api/follows 201: the stored follow beside the counterpart lookup's
+ * named failure when the pairing is unknown (outage, not configured, bad
+ * payload). The follow itself survives a lookup outage; `errors` names the
+ * source that failed, so the UI can say "pairing unknown, try Merge"
+ * instead of reading the outage as "the providers published no link". */
+export type FollowResponse = {
+  follow: PerformerFollow;
+  errors?: SourceError[];
+};
+
 /** One provider tag a user picked by its real published label. Ids are the
  * provider's own UUIDs; at least one must be present. */
 export type CatalogTagSelection = {
@@ -355,8 +365,9 @@ export type CrossProviderLink = {
   unlinkedReason?: string;
   /** Set only when the lookup itself failed (outage, not configured, bad
    * payload): `unlinkedReason` is then the lookup's best-effort verdict, not
-   * a confirmed absence. Omitted on a lookup that finished. */
-  failure?: ShelfError;
+   * a confirmed absence, and the error names the provider that failed.
+   * Omitted on a lookup that finished. */
+  failure?: SourceError;
 };
 
 /** GET /api/catalog/{provider}/{kind}/{id}: the provider detail, the published

@@ -435,6 +435,7 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
               target={target}
               onNavigate={(r) => setP(detailParams(r), { push: true })}
               onBrowse={browseTo}
+              onRetryLink={reloadCat}
             />
           )}
         </>

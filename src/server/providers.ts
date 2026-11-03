@@ -50,7 +50,7 @@ import {
   parseJson,
   requestBytes,
   requestJsonBytes,
-  shelfError,
+  sourceError,
 } from "./http.ts";
 import type { Service } from "./http.ts";
 import type {
@@ -2071,8 +2071,8 @@ const counterpartMemo = new Map<string, CrossProviderLink | null>();
  * exactly one sharing candidate links, zero extends the explicit reason
  * honestly, and two or more is ambiguous and refused, never guessed.
  * Outage, not-configured, or bad payload returns the explicit reason beside
- * a named `failure` (an honest "no link" stays failure-free); this never
- * throws. */
+ * a named `failure` attributed to the other provider (an honest "no link"
+ * stays failure-free); this never throws. */
 export async function linkedPerformerCounterpart(
   detail: CatalogDetail,
 ): Promise<CrossProviderLink> {
@@ -2083,6 +2083,8 @@ export async function linkedPerformerCounterpart(
   const memoed = counterpartMemo.get(memoKey);
   // null memo = no auto link: fall back to the explicit verdict.
   if (memoed !== undefined) return memoed ?? explicit;
+  const other: CatalogProvider =
+    detail.reference.provider === "tpdb" ? "stashdb" : "tpdb";
   try {
     const mine = new Set(
       detail.links
@@ -2092,8 +2094,6 @@ export async function linkedPerformerCounterpart(
     // With no identity-scoped link of our own, no candidate can ever share
     // one — skip the search and let the explicit reason stand.
     if (mine.size === 0) return explicit;
-    const other: CatalogProvider =
-      detail.reference.provider === "tpdb" ? "stashdb" : "tpdb";
     const otherName = other === "stashdb" ? "StashDB" : "TPDB";
     const search = await searchCatalog(
       other === "tpdb"
@@ -2145,7 +2145,7 @@ export async function linkedPerformerCounterpart(
     // the named failure, so a caller can tell an honest "no published link"
     // from a lookup that never finished. The failure is not memoized so a
     // later call can retry.
-    return { ...explicit, failure: shelfError(err) };
+    return { ...explicit, failure: sourceError(other, err) };
   }
 }
 
