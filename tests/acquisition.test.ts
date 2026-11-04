@@ -1254,6 +1254,19 @@ test("server-start hook registers idempotent SIGTERM/SIGINT handlers", async () 
   delete process.env.NEXT_RUNTIME;
 });
 
+test("the installed SIGTERM handler shuts the loop down and exits 0", async (t) => {
+  freshDb(); // nothing due: shutdown has no in-flight pass to wait for
+  const handler = process.listeners("SIGTERM").at(-1);
+  assert.ok(handler, "register() above installed the SIGTERM handler");
+  const exit = t.mock.method(process, "exit", () => undefined as never);
+  handler("SIGTERM");
+  // shutdownAcquisition resolves before the handler exits: the recorded
+  // exit(0) call is the proof that the graceful path completed instead of
+  // the grace window expiring.
+  await until(() => exit.mock.calls.length > 0);
+  assert.deepEqual(exit.mock.calls[0]?.arguments, [0]);
+});
+
 // --- notifier ---------------------------------------------------------
 
 test("notifier fires exactly once per real transition and carries no credential", async () => {
