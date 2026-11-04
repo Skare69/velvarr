@@ -1256,15 +1256,33 @@ test("server-start hook registers idempotent SIGTERM/SIGINT handlers", async () 
 
 test("the installed SIGTERM handler shuts the loop down and exits 0", async (t) => {
   freshDb(); // nothing due: shutdown has no in-flight pass to wait for
+  // Self-sufficient under --test-name-pattern: the once-per-process guard
+  // makes this register() a no-op when the test above already registered.
+  process.env.NEXT_RUNTIME = "nodejs";
+  await register();
+  delete process.env.NEXT_RUNTIME;
   const handler = process.listeners("SIGTERM").at(-1);
-  assert.ok(handler, "register() above installed the SIGTERM handler");
+  assert.ok(handler, "register() installed the SIGTERM handler");
   const exit = t.mock.method(process, "exit", () => undefined as never);
-  handler("SIGTERM");
-  // shutdownAcquisition resolves before the handler exits: the recorded
-  // exit(0) call is the proof that the graceful path completed instead of
-  // the grace window expiring.
-  await until(() => exit.mock.calls.length > 0);
-  assert.deepEqual(exit.mock.calls[0]?.arguments, [0]);
+  const logged: unknown[][] = [];
+  const realConsoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    logged.push(args);
+  };
+  try {
+    handler("SIGTERM");
+    // shutdownAcquisition resolves before the handler exits; the recorded
+    // exit(0) plus no grace-expiry line is the graceful path, not the
+    // forced one (both exit 0, so only the log tells them apart).
+    await until(() => exit.mock.calls.length > 0);
+    assert.deepEqual(exit.mock.calls[0]?.arguments, [0]);
+    assert.ok(
+      !logged.some((a) => String(a[0]).includes("shutdown grace expired")),
+      "shutdown completed inside the grace window",
+    );
+  } finally {
+    console.error = realConsoleError;
+  }
 });
 
 // --- notifier ---------------------------------------------------------
