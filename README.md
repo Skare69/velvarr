@@ -59,7 +59,7 @@ On the first visit, enter `VELVARR_SETUP_SECRET` as the setup secret to create t
 
 **Upgrade:** set the new image tag in `compose.yaml`, then run `docker compose pull && docker compose up -d`.
 
-**Health:** the container health check reads `/api/status`. If the container is `unhealthy`, Velvarr cannot open `/data`. Run `docker compose logs velvarr` to see the cause.
+**Health:** the container health check reads `/api/status`. If the container is `unhealthy`, `/api/status` failed: Velvarr cannot open `/data`, or the database file is not a Velvarr database or was written by a newer version. Run `docker compose logs velvarr` to see the cause.
 
 ## Development
 
@@ -109,13 +109,19 @@ Put the variables in `.env.local`.
 | `VELVARR_ALLOW_HTTP`          | no              | `1` allows plain HTTP to private and Docker-network addresses. |
 | `VELVARR_DISCORD_WEBHOOK_URL` | no              | Private Discord webhook (https only). |
 | `VELVARR_DISCORD_DETAIL`      | no              | `1` adds titles to notifications. By default, messages contain only identities. |
+| `TPDB_API_TOKEN`              | no              | TPDB token for calls made without a token saved in Settings. A saved token wins. |
+| `STASHDB_API_KEY`             | no              | StashDB key for calls made without a key saved in Settings. A saved key wins. |
+| `TPDB_BASE_URL`               | no              | TPDB API root override. Default `https://api.theporndb.net`. |
+| `STASHDB_BASE_URL`            | no              | StashDB API root override. Default `https://stashdb.org`. |
+| `TYPESAFE_BASE_URL`           | no              | TypeSafe cloud API root override. Unset uses the TypeSafe default. |
+| `TYPESAFE_DEFAULT_MODEL`      | no              | TypeSafe decision model override. Unset uses the TypeSafe default. |
 | `TYPESAFE_API_KEY`            | no              | TypeSafe key for AI-assisted matching. A key saved in Settings wins. Tag suggestions need a key saved in Settings. |
 | `VELVARR_JUDGMENT_PROVIDER`   | no              | `typesafe` (default) or `ollama`. A choice saved in Settings wins. Tag suggestions need a choice saved in Settings. |
 | `OLLAMA_BASE_URL`             | no              | Ollama API root. Default `http://localhost:11434`. |
 | `OLLAMA_MODEL`                | no              | Ollama decision model. Default `nimble`. |
-| `VELVARR_UPDATE_CHECK`        | no              | `0` disables the release check. Otherwise, the server asks `api.github.com` at most once an hour. |
+| `VELVARR_UPDATE_CHECK`        | no              | `0` disables the release check. Otherwise, the server asks `api.github.com` at most once an hour after a success and at most once every ten minutes after a failure. |
 
-Unless `VELVARR_ORIGIN` is `https:`, the cookie is `Secure` only when the proxy sends `X-Forwarded-Proto: https` or the request URL is https. Each change request must also send `Sec-Fetch-Site: same-origin` and a JSON content type.
+Unless `VELVARR_ORIGIN` is `https:`, the cookie is `Secure` only when the proxy sends `X-Forwarded-Proto: https` or the request URL is https. On each change request, a supplied `Sec-Fetch-Site` header must say `same-origin`, and a request that carries a body must send `application/json`.
 
 Each failed sign-in writes one log line: `[auth] failed sign-in attempt: account="<name>" ip="<address>"`. The log never contains the password. The address is the first `X-Forwarded-For` entry, or `unknown`. A client can set this header. Trust the address only when your proxy replaces the header.
 
