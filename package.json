@@ -33,6 +33,7 @@
   },
   "devDependencies": {
     "@stryker-mutator/core": "^10.0.0",
+    "@stryker-mutator/tap-runner": "10.0.0",
     "@tailwindcss/postcss": "4.3.3",
     "@types/node": "24.13.4",
     "@types/react": "19.3.0",

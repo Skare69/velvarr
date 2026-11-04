@@ -7,36 +7,67 @@ import { join } from "node:path";
  * in-file disable markers, related.ts whole, judgment.ts and discovery.ts
  * whole — their effect glue is covered by the faked-fetch suites below or
  * carries in-file disable markers). Effect-heavy adapters stay out.
- * The command runner runs a hand-picked list of the suites that kill
- * mutants in the mutate set (not all of `bun run test`), so a mutant only
- * survives when that list cannot catch it.
+ * The tap runner runs each suite of the hand-picked list below in its own
+ * node process (not all of `bun run test`), perTest coverage narrows every
+ * mutant to the suites that executed its line, and forceBail stops a suite
+ * at its first failing test — so a mutant survives only when its covering
+ * suites cannot catch it, and NoCoverage reports the rest.
  * The sandbox lives outside the repo on purpose: a mutant that wipes cwd or
  * writes into it must never touch a real checkout.
  * @type {import('@stryker-mutator/api/core').StrykerOptions}
  */
 const config = {
   packageManager: "npm",
-  testRunner: "command",
-  // Two-stage selection lives in scripts/mutant-run.ts: per mutant, stage 1
-  // runs only the suites whose import closure contains the mutated file
-  // (FILES there, in this order), stage 2 runs the full list for stage-1
-  // survivors and map misses; the dry run runs the full list once. Files run
-  // serially inside one mutant run so 8 workers × ≤2 node processes stay off
-  // the Windows loopback red zone — ≥12 concurrent test-file suites drop
-  // loopback connections (measured: 5–27 flaky failures at default fan-out,
-  // green at ≤4 suites).
-  commandRunner: {
-    command: "node --experimental-strip-types scripts/mutant-run.ts",
+  testRunner: "tap",
+  // Per-test coverage with the tap runner means per test FILE: each suite in
+  // tap.testFiles runs as the main module of its own node process, its
+  // coverage lands in one pid-keyed stryker-output dump on process exit, and
+  // Stryker runs a mutant only against the files that executed its line. A
+  // new pure-logic test file must be added to tap.testFiles.
+  // The invocation must NOT wrap the file in `node --test`: that spawns
+  // grandchild processes, so the hook's pid-keyed coverage dump never
+  // reaches the runner (every mutant came back NoCoverage when tried).
+  // Standalone execution needs --test-reporter=tap (piped standalone
+  // node:test emits the spec reporter otherwise, which the TAP parser
+  // cannot read, so every kill was miscategorized as an error when tried).
+  coverageAnalysis: "perTest",
+  tap: {
+    testFiles: [
+      "tests/status.test.ts",
+      "tests/tags.test.ts",
+      "tests/tag-wait.test.ts",
+      "tests/related.test.ts",
+      "tests/browse.test.ts",
+      "tests/browse-items.test.ts",
+      "tests/providers.test.ts",
+      "tests/api.test.ts",
+      "tests/approvals.test.ts",
+      "tests/decisions.test.ts",
+      "tests/names.test.ts",
+      "tests/update.test.ts",
+      "tests/browse-url.test.ts",
+      "tests/person.test.ts",
+      "tests/api-get.test.ts",
+      "tests/sorts.test.ts",
+      "tests/ollama.test.ts",
+      "tests/judgment.test.ts",
+      "tests/discovery.test.ts",
+    ],
+    nodeArgs: [
+      "--experimental-strip-types",
+      "--import",
+      "./tests/setup.ts",
+      "--test-reporter=tap",
+      "-r",
+      "{{hookFile}}",
+      "{{testFile}}",
+    ],
+    forceBail: true,
   },
-  // The command runner only reports an exit code, so per-test coverage is
-  // impossible; scripts/mutant-run.ts narrows per FILE instead (static import
-  // closure), and a mutant still survives only when the whole scoped suite
-  // cannot catch it. NoCoverage stays unreportable here.
-  coverageAnalysis: "off",
-  // The dry run (full suite through scripts/mutant-run.ts) nets ~13.2 s on
-  // the Linux worker. Stryker's per-run budget is timeoutFactor × net +
-  // timeoutMS (default factor 1.5: about 1.5 × 13.2 s + 60 s here); stage-1
-  // selections and stage-2 full runs both stay inside it. timeoutMS is the
+  // The tap dry run (19 suites, one node process each) nets 26.3 s on the
+  // Linux worker (5.4 s of it process overhead). Stryker's per-run budget is
+  // timeoutFactor × net + timeoutMS (default factor 1.5); a per-mutant
+  // selection of one to a few suites stays far inside it. timeoutMS is the
   // fixed slack on top of the measured net time, never the sole kill clock.
   timeoutMS: 60000,
   concurrency: 8,
@@ -63,16 +94,20 @@ const config = {
   // Stryker gains a TS7-compatible preprocessor.
   tsconfigFile: "tsconfig.sandbox-unused.json",
   tempDirName: join(tmpdir(), "velvarr-stryker"),
-  // No `incremental` here: with the command runner a stale cache replayed
-  // statuses from an older command (one replay reported decisions.ts at 0%
-  // that the current suite kills completely). Measured on this commit
-  // (2026-11-04, Linux worker, concurrency 8): the full-list command took
-  // 142.8 min wall for 3417 mutants (2177 tested), the two-stage selection
-  // 49.6 min for the same set. Verdicts matched 2176/2177; the one flip is
-  // discovery.ts's dropped-sort mutant, whose kill rides on a
-  // same-millisecond Date.now() tie in tests/discovery.test.ts (its
-  // random-uuid row ids make the order a coin flip; the test comment there
-  // documents the sensitivity), so either verdict is a fair sample.
+  // No `incremental` here: a stale cache once replayed statuses from an
+  // older run (one replay reported decisions.ts at 0% that the current
+  // suites kill completely), and a full run keeps scores comparable across
+  // runner changes. Measured on this commit (2026-11-04, Linux worker,
+  // concurrency 8): the old full-list command 142.8 min wall, static
+  // per-file import-closure selection 49.6 min, the tap runner 15.9 min for
+  // the same 3417 mutants (2177 tested; 1962 killed + 5 timeout detected,
+  // 181 survived + 29 NoCoverage undetected). Against the full-list run the
+  // killed set is identical; one admission.ts mutant flipped Killed →
+  // Timeout (both detected), 30 mutants flipped Survived → NoCoverage (see
+  // below), and discovery.ts's dropped-sort mutant flipped the other way —
+  // its kill rides a same-millisecond Date.now() tie in
+  // tests/discovery.test.ts whose random-uuid row ids make the order a coin
+  // flip, so either verdict is a fair sample.
   reporters: ["clear-text", "progress"],
   // stryker.log (cwd) captures the run including worker deaths, but its
   // per-mutant detail covers killed mutants only — the survived diffs are
@@ -89,14 +124,19 @@ const config = {
   // 4 timeout, 236 survived, 2078 tested, 2026-10-18, Linux worker,
   // concurrency 8; first run with admission.ts's rate-budget section in
   // the set, +51 mutants, 47 of them killed); a regression below break
-  // fails the run. On 2026-11-04 the measured clean-run scores were 90.31
-  // (full-list command) and 90.35 (two-stage selection) on this commit —
+  // fails the run. On 2026-11-04 the measured clean-run scores on this
+  // commit were 90.31 (old full-list command) and 90.35 (tap runner) —
   // later test commits killed more mutants, so the floor moved up.
-  // A 0-survivor (100.00) result means a broken environment, not a perfect
-  // one: the accepted survivors below are the floor of a healthy run. A
+  // A 0-survivor result — or every mutant reading NoCoverage — means a
+  // broken environment, not a perfect one: the accepted survivors below are
+  // the floor of a healthy run. A
   // vacuous 100.00 was once produced by all 8 workers sharing one exported
   // VELVARR_DATA_DIR and failing on its locks; tests/setup.ts now gives
   // every test process its own dir.
+  // With perTest coverage, mutants that no test executes report as
+  // NoCoverage instead of Survived; both count as undetected, so the score
+  // is unaffected (on the 2026-11-04 related.ts + browse.ts benchmark
+  // scopes, 16 of 752 mutants flipped that way).
   // status.ts and browse-includes.ts are fully killed: the badge and
   // acquisition-line tests pin every status branch, the sorts suite pins
   // the capability table, and tests/browse.test.ts pins the include
