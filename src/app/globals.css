@@ -1040,12 +1040,31 @@ body:has(.auth-page) {
   margin-top: 18px;
   padding: 16px 0;
 }
+.settings-connection-save {
+  display: grid;
+  gap: 16px;
+}
+.settings-save-status {
+  color: var(--color-ok);
+  font-size: 0.875rem;
+}
 .settings-connection-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+}
+.settings-connection-actions p {
+  flex: 1 1 260px;
+}
+.settings-connection-actions button {
+  flex-shrink: 0;
+}
+@media (max-width: 600px) {
+  .settings-connection-actions button {
+    width: 100%;
+  }
 }
 
 .library-detail {
