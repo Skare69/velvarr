@@ -8,28 +8,10 @@ import { chargeRateBudget, requireAdmin, requireSession } from "./admission.ts";
 import { guardMutation } from "../../../server/security.ts";
 import { AppError } from "../../../server/http.ts";
 import { json } from "./admission.ts";
-import { routes as authRoutes } from "./routes/auth.ts";
-import { routes as requestRoutes } from "./routes/requests.ts";
-import { routes as followRoutes } from "./routes/follows.ts";
-import { routes as catalogRoutes } from "./routes/catalog.ts";
-import { routes as browseRoutes } from "./routes/browse.ts";
-import { routes as libraryRoutes } from "./routes/library.ts";
-import { routes as adminRoutes } from "./routes/admin.ts";
-import { routes as discoverRoutes } from "./routes/discover.ts";
-
-const ROUTES: RouteDef[] = [
-  ...authRoutes,
-  ...requestRoutes,
-  ...followRoutes,
-  ...catalogRoutes,
-  ...browseRoutes,
-  ...libraryRoutes,
-  ...adminRoutes,
-  ...discoverRoutes,
-];
+import { routeTable } from "./registry.ts";
 
 function match(method: string, segments: string[]): RouteDef | undefined {
-  return ROUTES.find(
+  return routeTable().find(
     (r) =>
       r.method === method &&
       r.segments.length === segments.length &&

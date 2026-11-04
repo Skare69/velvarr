@@ -44,29 +44,14 @@ import {
   resetRateBuckets,
   resetSessionCache,
 } from "../src/app/api/[...path]/admission.ts";
-import { routes as authRoutes } from "../src/app/api/[...path]/routes/auth.ts";
-import { routes as requestRoutes } from "../src/app/api/[...path]/routes/requests.ts";
-import { routes as followRoutes } from "../src/app/api/[...path]/routes/follows.ts";
 import { routes as catalogRoutes } from "../src/app/api/[...path]/routes/catalog.ts";
-import { routes as browseRoutes } from "../src/app/api/[...path]/routes/browse.ts";
-import { routes as libraryRoutes } from "../src/app/api/[...path]/routes/library.ts";
-import { routes as adminRoutes } from "../src/app/api/[...path]/routes/admin.ts";
-import { routes as discoverRoutes } from "../src/app/api/[...path]/routes/discover.ts";
+import { routeTable } from "../src/app/api/[...path]/registry.ts";
 import { allowArtworkFixture } from "./fixture.ts";
 import fc from "fast-check";
 import { BODY_LIMIT_BYTES, readJson } from "../src/app/api/[...path]/parse.ts";
 
 test("route tables never shadow: every request shape matches at most one def", () => {
-  const all: RouteDef[] = [
-    ...authRoutes,
-    ...requestRoutes,
-    ...followRoutes,
-    ...catalogRoutes,
-    ...browseRoutes,
-    ...libraryRoutes,
-    ...adminRoutes,
-    ...discoverRoutes,
-  ];
+  const all: RouteDef[] = routeTable();
   // Exact match semantics (method + segment count + literal/:param) make the
   // fold order irrelevant ONLY if no two defs can match the same request. A
   // param at position i makes any other def with that method+length a
