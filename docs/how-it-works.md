@@ -55,7 +55,8 @@ flowchart LR
   settings); the URL is the state (`?view=…`). Cards and hooks live in
   `src/components/shared.tsx`.
 - **API dispatch** — `src/app/api/[...path]/route.ts`; exact matching over the
-  folded route table. Every mutation passes the origin/CSRF gate
+  folded route table (`routeTable()` in `registry.ts`, where a new domain
+  module joins). Every mutation passes the origin/CSRF gate
   (`guardMutation` in `src/server/security.ts`) before route matching.
 - **Session + rate gate** — `src/app/api/[...path]/admission.ts`; the
   session cookie resolved to the `AuthContext` every handler receives,

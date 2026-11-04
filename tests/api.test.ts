@@ -8894,8 +8894,9 @@ test("login spray cap: rotating strangers fill it, the admitted owner still sign
   assert.notEqual(guess.status, 200);
 });
 
-// A plain-Error def folded into the real dispatch: pushed at module scope so
-// the spread inside route.ts (imported in before()) sees it. Session auth —
+// A plain-Error def folded into the real dispatch: pushed at module scope,
+// before any test runs, so the lazy fold in registry.ts (the first
+// routeTable() call, inside the shadow test) includes it. Session auth —
 // the open-surface assertion at the top of this file pins the exact open
 // list. At the file's end: the owner account exists only after setup ran.
 catalogRoutes.push({

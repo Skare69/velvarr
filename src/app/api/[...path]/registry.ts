@@ -2,8 +2,8 @@
 // and tests/api.test.ts asserts the no-shadow property over the same defs.
 // The fold is lazy and memoized so it observes a domain array that grows at
 // module scope after imports — tests push a plain-Error route into
-// catalogRoutes before any test runs, and folding on first use sees it,
-// exactly like the inline fold in route.ts that this replaces.
+// catalogRoutes before any test runs, and folding on first use sees it (an
+// eager fold here would not: the test file imports this module statically).
 import type { RouteDef } from "./admission.ts";
 import { routes as authRoutes } from "./routes/auth.ts";
 import { routes as requestRoutes } from "./routes/requests.ts";
