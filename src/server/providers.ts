@@ -279,16 +279,30 @@ function credential(provider: "tpdb" | "stashdb"): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 
+/** Whether the provider holds a usable credential: a Settings-saved value or
+ * the environment fallback, non-empty. The discovery cache fingerprint folds
+ * configured-ness into its keys; it calls this instead of re-implementing
+ * the credential() precedence, so the two can never drift. */
+export function providerConfigured(provider: "tpdb" | "stashdb"): boolean {
+  return credential(provider) !== undefined;
+}
+
+// Provider API roots: an environment override applies only when it is a
+// non-empty string; otherwise the provider default applies.
+function envBaseUrl(
+  name: "TPDB_BASE_URL" | "STASHDB_BASE_URL",
+  fallback: string,
+): string {
+  const value = process.env[name];
+  return typeof value === "string" && value.trim() !== "" ? value : fallback;
+}
+
 function tpdbGet<T>(path: string): Promise<T> {
   const token = credential("tpdb");
   if (token === undefined) {
     throw notConfigured("tpdb");
   }
-  const base =
-    typeof process.env.TPDB_BASE_URL === "string" &&
-    process.env.TPDB_BASE_URL.trim() !== ""
-      ? process.env.TPDB_BASE_URL
-      : "https://api.theporndb.net";
+  const base = envBaseUrl("TPDB_BASE_URL", "https://api.theporndb.net");
   return requestJson<T>(base, path, token, { service: "tpdb" });
 }
 
@@ -353,11 +367,7 @@ async function stashQuery(
   if (token === undefined) {
     throw notConfigured("stashdb");
   }
-  const base =
-    typeof process.env.STASHDB_BASE_URL === "string" &&
-    process.env.STASHDB_BASE_URL.trim() !== ""
-      ? process.env.STASHDB_BASE_URL
-      : "https://stashdb.org";
+  const base = envBaseUrl("STASHDB_BASE_URL", "https://stashdb.org");
   const body = await requestJson<{
     data?: Record<string, unknown> | null;
     errors?: unknown;

@@ -18,8 +18,8 @@ import {
   type BrowsePage,
 } from "./browse.ts";
 import { AppError } from "./http.ts";
+import { providerConfigured } from "./providers.ts";
 import {
-  getConfig,
   getDiscoverCache,
   listFollows,
   pruneDiscoverCache,
@@ -49,17 +49,13 @@ const PRUNE_MAX_AGE_MS = 60 * 60_000;
 const inFlight = new Map<string, Promise<unknown>>();
 
 function fingerprint(hiddenTags: CatalogTagSelection[]): string {
-  // Covers hiddenTags plus provider configured-ness, mirroring providers.ts
-  // credential(): stored value first (?? — an empty stored string means
-  // unconfigured, it never falls through to env), env fallback. A mismatch
-  // could never serve wrong data (a not-configured build throws and is
-  // never cached), but an exact mirror keeps the keys stable.
-  const stored = getConfig()?.providers;
-  const tpdb = stored?.tpdbApiToken ?? process.env.TPDB_API_TOKEN;
-  const stashdb = stored?.stashdbApiKey ?? process.env.STASHDB_API_KEY;
-  const configuredTpdb = typeof tpdb === "string" && tpdb.trim() !== "";
-  const configuredStashdb =
-    typeof stashdb === "string" && stashdb.trim() !== "";
+  // Covers hiddenTags plus provider configured-ness. Configured-ness comes
+  // from providers.ts providerConfigured() — the credential() precedence by
+  // construction, so this mirror can never drift. A mismatch could never
+  // serve wrong data (a not-configured build throws and is never cached),
+  // but identical keys keep the cache stable.
+  const configuredTpdb = providerConfigured("tpdb");
+  const configuredStashdb = providerConfigured("stashdb");
   // Canonical: one tag set is one key. Each selection folds to its
   // normalized label plus provider ids — the same pairing tagMatches and
   // mergeTagCounts use — and the set is sorted and deduped, so reordering
