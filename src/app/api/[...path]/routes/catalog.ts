@@ -60,7 +60,7 @@ import {
   relatedTitles,
 } from "../../../../server/related.ts";
 
-export function isTpdbDateOperation(v: string): v is ReleaseDateOperation {
+function isTpdbDateOperation(v: string): v is ReleaseDateOperation {
   return ["<", "<=", "=", ">", ">="].includes(v);
 }
 

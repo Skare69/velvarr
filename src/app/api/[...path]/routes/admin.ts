@@ -268,7 +268,7 @@ export function nextProviderCredentials(
  * must present the key again, and the check runs before any upstream call
  * so nothing — not even /System/Info/Public — reaches the new host. Both
  * URLs are validateBaseUrl outputs, so they always parse. */
-export async function nextJellyfin(
+async function nextJellyfin(
   current: IntegrationConfig["jellyfin"],
   body: Record<string, unknown>,
 ): Promise<IntegrationConfig["jellyfin"]> {

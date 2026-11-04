@@ -341,7 +341,7 @@ export async function updatePreferences(
 // verification (verified flag + account) lives on the admin providers route;
 // here an outage must never claim a configured provider vanished, and an
 // unconfigured provider must never pretend otherwise.
-export async function providerPresence(
+async function providerPresence(
   provider: "tpdb" | "stashdb",
 ): Promise<ProviderStatus["tpdb"]> {
   try {

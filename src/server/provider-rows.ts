@@ -42,7 +42,7 @@ export function cleanString(v: unknown, max: number): string | undefined {
   return s === "" ? undefined : s.slice(0, max);
 }
 
-export function cleanDuration(v: unknown): number | undefined {
+function cleanDuration(v: unknown): number | undefined {
   if (typeof v !== "number" || !Number.isFinite(v)) return undefined;
   const s = Math.round(v);
   return s >= 1 && s <= 86_400 ? s : undefined; // absurd durations are dropped
@@ -50,11 +50,7 @@ export function cleanDuration(v: unknown): number | undefined {
 
 /** Range-checked integer: upstream stats outside the plausible band are
  * dropped, never normalized into something displayable. */
-export function cleanInt(
-  v: unknown,
-  min: number,
-  max: number,
-): number | undefined {
+function cleanInt(v: unknown, min: number, max: number): number | undefined {
   return typeof v === "number" && Number.isInteger(v) && v >= min && v <= max
     ? v
     : undefined;
@@ -69,7 +65,7 @@ export function cleanYear(v: unknown): number | undefined {
     : undefined;
 }
 
-export function httpsUrl(v: unknown): string | undefined {
+function httpsUrl(v: unknown): string | undefined {
   const s = cleanString(v, 2048);
   if (s === undefined) return undefined;
   try {
@@ -175,7 +171,7 @@ export function isProviderImageUrl(url: string): ImageUrlCheck {
   };
 }
 
-export function servableImage(v: unknown): string | undefined {
+function servableImage(v: unknown): string | undefined {
   const s = httpsUrl(v);
   return s !== undefined && isProviderImageUrl(s).ok ? s : undefined;
 }
@@ -200,7 +196,7 @@ export interface CatalogCreditAcc {
 /** Credits resolve canonical identity through performers[].parent.id (the
  * canonical performer UUID), falling back to the row id itself. Deduplicated
  * by provider id, never by name. */
-export function tpdbCredits(rows: unknown): CatalogCreditAcc[] {
+function tpdbCredits(rows: unknown): CatalogCreditAcc[] {
   if (!Array.isArray(rows)) return [];
   const mapped: CatalogCreditAcc[] = [];
   for (const row of rows.slice(0, MAX.credits * 2)) {
@@ -256,7 +252,7 @@ export function tpdbTags(
   return dedupeBy(out, (t) => t.id).slice(0, MAX.tagFilter);
 }
 
-export function tpdbRelated(
+function tpdbRelated(
   rows: unknown,
   kind: "movie" | "scene",
 ): CatalogReference[] {
@@ -436,7 +432,7 @@ interface StashScenePerformer {
   } | null;
 }
 
-export function stashImageUrl(images: unknown): string | undefined {
+function stashImageUrl(images: unknown): string | undefined {
   if (!Array.isArray(images)) return undefined;
   for (const img of images.slice(0, 5)) {
     const url = servableImage((img as { url?: unknown } | null)?.url);
@@ -445,7 +441,7 @@ export function stashImageUrl(images: unknown): string | undefined {
   return undefined;
 }
 
-export function stashLinks(rows: unknown): { url: string; label?: string }[] {
+function stashLinks(rows: unknown): { url: string; label?: string }[] {
   if (!Array.isArray(rows)) return [];
   const out: { url: string; label?: string }[] = [];
   for (const row of rows.slice(0, MAX.links * 2)) {
@@ -457,7 +453,7 @@ export function stashLinks(rows: unknown): { url: string; label?: string }[] {
   return dedupeBy(out, (l) => l.url).slice(0, MAX.links);
 }
 
-export function stashCredits(rows: unknown): CatalogCreditAcc[] {
+function stashCredits(rows: unknown): CatalogCreditAcc[] {
   if (!Array.isArray(rows)) return [];
   const out: CatalogCreditAcc[] = [];
   for (const row of rows.slice(0, MAX.credits * 2)) {
@@ -557,7 +553,7 @@ export function stashPerformerDetail(row: unknown): CatalogDetail | undefined {
  * `birthdate` (FuzzyDate) is deprecated upstream in favour of `birth_date`,
  * but it is the field every shipped stash-box release resolves — switch once
  * prod is guaranteed to run a release that knows `birth_date`. */
-export function stashPerformerPerson(
+function stashPerformerPerson(
   r: Record<string, unknown>,
 ): CatalogPerson | undefined {
   const birth = stashFuzzyDate(r.birthdate);
@@ -592,7 +588,7 @@ export function stashPerformerPerson(
 
 /** Humanises a stash-box enum value ("TRANSGENDER_FEMALE" becomes
  * "Transgender female"). NA means "not applicable" — dropped, never shown. */
-export function stashEnumLabel(v: unknown): string | undefined {
+function stashEnumLabel(v: unknown): string | undefined {
   if (typeof v !== "string" || v === "NA") return undefined;
   const s = v.toLowerCase().replaceAll("_", " ");
   return s.charAt(0).toUpperCase() + s.slice(1);
@@ -616,7 +612,7 @@ export function stashFuzzyDate(
 }
 
 /** Body modifications: "Left wrist: script A" or bare "Left wrist". */
-export function stashBodyMods(v: unknown): string[] | undefined {
+function stashBodyMods(v: unknown): string[] | undefined {
   if (!Array.isArray(v)) return undefined;
   const mods = v
     .map((m) => {

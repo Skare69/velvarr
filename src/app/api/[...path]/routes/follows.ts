@@ -79,7 +79,7 @@ export async function performerCounterpart(
 
 /** An image URL that fails the provider-artwork check degrades to null
  * rather than sinking the whole follow: the snapshot is cosmetic. */
-export function followImage(raw: unknown): string | null {
+function followImage(raw: unknown): string | null {
   return typeof raw === "string" && raw !== "" && isProviderImageUrl(raw).ok
     ? raw
     : null;
