@@ -17,22 +17,27 @@ import { join } from "node:path";
 const config = {
   packageManager: "npm",
   testRunner: "command",
-  // Scoped to the suites that kill mutants in the mutate set (a new
-  // pure-logic test file must be added here); files run serially inside one
-  // mutant run so 8 workers × 2 node processes stay off the Windows loopback
-  // red zone — ≥12 concurrent test-file suites drop loopback connections
-  // (measured: 5–27 flaky failures at default fan-out, green at ≤4 suites).
+  // Two-stage selection lives in scripts/mutant-run.ts: per mutant, stage 1
+  // runs only the suites whose import closure contains the mutated file
+  // (FILES there, in this order), stage 2 runs the full list for stage-1
+  // survivors and map misses; the dry run runs the full list once. Files run
+  // serially inside one mutant run so 8 workers × ≤2 node processes stay off
+  // the Windows loopback red zone — ≥12 concurrent test-file suites drop
+  // loopback connections (measured: 5–27 flaky failures at default fan-out,
+  // green at ≤4 suites).
   commandRunner: {
-    command:
-      "node --experimental-strip-types --import ./tests/setup.ts --test --test-concurrency=1 tests/status.test.ts tests/tags.test.ts tests/tag-wait.test.ts tests/related.test.ts tests/browse.test.ts tests/browse-items.test.ts tests/providers.test.ts tests/api.test.ts tests/approvals.test.ts tests/decisions.test.ts tests/names.test.ts tests/update.test.ts tests/browse-url.test.ts tests/person.test.ts tests/api-get.test.ts tests/sorts.test.ts tests/ollama.test.ts tests/judgment.test.ts tests/discovery.test.ts",
+    command: "node --experimental-strip-types scripts/mutant-run.ts",
   },
   // The command runner only reports an exit code, so per-test coverage is
-  // impossible; Stryker runs every mutant against the whole scoped command.
+  // impossible; scripts/mutant-run.ts narrows per FILE instead (static import
+  // closure), and a mutant still survives only when the whole scoped suite
+  // cannot catch it. NoCoverage stays unreportable here.
   coverageAnalysis: "off",
-  // One mutant run = the scoped suite (net ~13.1 s on the Linux worker).
-  // Stryker's per-run budget is timeoutFactor × net + timeoutMS (default
-  // factor 1.5: about 1.5 × 13.1 s + 60 s here); timeoutMS is the fixed
-  // slack on top of the measured net time, never the sole kill clock.
+  // The dry run (full suite through scripts/mutant-run.ts) nets ~13.2 s on
+  // the Linux worker. Stryker's per-run budget is timeoutFactor × net +
+  // timeoutMS (default factor 1.5: about 1.5 × 13.2 s + 60 s here); stage-1
+  // selections and stage-2 full runs both stay inside it. timeoutMS is the
+  // fixed slack on top of the measured net time, never the sole kill clock.
   timeoutMS: 60000,
   concurrency: 8,
   mutate: [
@@ -60,8 +65,14 @@ const config = {
   tempDirName: join(tmpdir(), "velvarr-stryker"),
   // No `incremental` here: with the command runner a stale cache replayed
   // statuses from an older command (one replay reported decisions.ts at 0%
-  // that the current suite kills completely). The honest cost is the full
-  // run: ~56 min at 2027 tested (2026-10-16, Linux worker, concurrency 8).
+  // that the current suite kills completely). Measured on this commit
+  // (2026-11-04, Linux worker, concurrency 8): the full-list command took
+  // 142.8 min wall for 3417 mutants (2177 tested), the two-stage selection
+  // 49.6 min for the same set. Verdicts matched 2176/2177; the one flip is
+  // discovery.ts's dropped-sort mutant, whose kill rides on a
+  // same-millisecond Date.now() tie in tests/discovery.test.ts (its
+  // random-uuid row ids make the order a coin flip; the test comment there
+  // documents the sensitivity), so either verdict is a fair sample.
   reporters: ["clear-text", "progress"],
   // stryker.log (cwd) captures the run including worker deaths, but its
   // per-mutant detail covers killed mutants only — the survived diffs are
@@ -74,11 +85,13 @@ const config = {
   // the score drifts between runs (one exact-millisecond
   // boundary mutant can flip either way), and a re-floored break would
   // fail clean runs on that drift — which is how the 88.2 gate went red
-  // at v0.38.1. Current measured clean-run score: 88.92 (1890 killed,
+  // at v0.38.1. Measured clean-run score 88.92 (1890 killed,
   // 4 timeout, 236 survived, 2078 tested, 2026-10-18, Linux worker,
   // concurrency 8; first run with admission.ts's rate-budget section in
   // the set, +51 mutants, 47 of them killed); a regression below break
-  // fails the run.
+  // fails the run. On 2026-11-04 the measured clean-run scores were 90.31
+  // (full-list command) and 90.35 (two-stage selection) on this commit —
+  // later test commits killed more mutants, so the floor moved up.
   // A 0-survivor (100.00) result means a broken environment, not a perfect
   // one: the accepted survivors below are the floor of a healthy run. A
   // vacuous 100.00 was once produced by all 8 workers sharing one exported
