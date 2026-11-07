@@ -182,6 +182,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
   // Select choices; the currently stored value is always offered so a stale
   // status can never silently change what will be saved.
   const hasUrl = whisparrUrl.trim() !== "";
+  const fieldsDisabled = pending || loading || !!loadError;
   const rootChoices = (() => {
     const paths = whisparrStatus?.rootFolders?.map((rf) => rf.path) ?? [];
     if (rootFolderPath !== "" && !paths.includes(rootFolderPath))
@@ -321,6 +322,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                   autoComplete="off"
                   maxLength={300}
                   value={jellyfinUrl}
+                  disabled={fieldsDisabled}
                   onChange={(e) => setJellyfinUrl(e.target.value)}
                 />
               </div>
@@ -335,6 +337,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                   autoComplete="off"
                   maxLength={300}
                   value={externalUrl}
+                  disabled={fieldsDisabled}
                   onChange={(e) => setExternalUrl(e.target.value)}
                 />
               </div>
@@ -353,6 +356,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                       : "Not set"
                   }
                   value={jellyfinApiKey}
+                  disabled={fieldsDisabled}
                   onChange={(e) => setJellyfinApiKey(e.target.value)}
                 />
               </div>
@@ -388,6 +392,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                   autoComplete="off"
                   maxLength={300}
                   value={whisparrUrl}
+                  disabled={fieldsDisabled}
                   onChange={(e) => setWhisparrUrl(e.target.value)}
                 />
               </div>
@@ -406,6 +411,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                       : "Not set"
                   }
                   value={whisparrApiKey}
+                  disabled={fieldsDisabled}
                   onChange={(e) => setWhisparrApiKey(e.target.value)}
                 />
               </div>
@@ -425,7 +431,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                       type="checkbox"
                       className="check"
                       checked={deliveryEnabled}
-                      disabled={!hasUrl || pending}
+                      disabled={!hasUrl || fieldsDisabled}
                       onChange={(e) => setDeliveryEnabled(e.target.checked)}
                     />
                     Send approved requests to Whisparr
@@ -440,7 +446,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                       id="int-w-root"
                       className="input"
                       value={effectiveRoot}
-                      disabled={!hasUrl || pending}
+                      disabled={!hasUrl || fieldsDisabled}
                       onChange={(e) => setRootFolderPath(e.target.value)}
                     >
                       {rootChoices.map((path) => (
@@ -458,7 +464,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                       maxLength={1024}
                       placeholder="Whisparr download root, e.g. /data/adult"
                       value={rootFolderPath}
-                      disabled={!hasUrl || pending}
+                      disabled={!hasUrl || fieldsDisabled}
                       onChange={(e) => setRootFolderPath(e.target.value)}
                     />
                   )}
@@ -472,7 +478,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                       id="int-w-profile"
                       className="input"
                       value={effectiveProfile}
-                      disabled={!hasUrl || pending}
+                      disabled={!hasUrl || fieldsDisabled}
                       onChange={(e) => setQualityProfileId(e.target.value)}
                     >
                       {profileChoices.map((p) => (
@@ -489,7 +495,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                       step={1}
                       className="input"
                       value={qualityProfileId}
-                      disabled={!hasUrl || pending}
+                      disabled={!hasUrl || fieldsDisabled}
                       onChange={(e) => setQualityProfileId(e.target.value)}
                     />
                   )}
@@ -500,7 +506,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                       type="checkbox"
                       className="check"
                       checked={searchOnAdd}
-                      disabled={!hasUrl || pending}
+                      disabled={!hasUrl || fieldsDisabled}
                       onChange={(e) => setSearchOnAdd(e.target.checked)}
                     />
                     Search Whisparr as soon as a request is sent
@@ -530,7 +536,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                       autoComplete="off"
                       maxLength={1024}
                       value={m.whisparrPrefix}
-                      disabled={!hasUrl || pending}
+                      disabled={!hasUrl || fieldsDisabled}
                       onChange={(e) =>
                         setMappings((cur) =>
                           cur.map((x, j) =>
@@ -553,7 +559,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                       autoComplete="off"
                       maxLength={1024}
                       value={m.jellyfinPrefix}
-                      disabled={!hasUrl || pending}
+                      disabled={!hasUrl || fieldsDisabled}
                       onChange={(e) =>
                         setMappings((cur) =>
                           cur.map((x, j) =>
@@ -568,7 +574,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                   <button
                     type="button"
                     className="btn"
-                    disabled={!hasUrl || pending}
+                    disabled={!hasUrl || fieldsDisabled}
                     onClick={() =>
                       setMappings((cur) => cur.filter((_, j) => j !== i))
                     }
@@ -580,7 +586,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
               <button
                 type="button"
                 className="btn mt-3"
-                disabled={!hasUrl || pending || mappings.length >= 50}
+                disabled={!hasUrl || fieldsDisabled || mappings.length >= 50}
                 onClick={() =>
                   setMappings((cur) => [
                     ...cur,
@@ -627,7 +633,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
           <button
             type="submit"
             className="btn btn-accent"
-            disabled={pending || loading || !info || !!loadError}
+            disabled={fieldsDisabled || !info}
           >
             {pending ? "Saving…" : "Save integrations"}
           </button>
@@ -647,7 +653,7 @@ function ConnectionSettingsPlaceholder({
   failed: boolean;
 }) {
   return (
-    <div className="mt-4" aria-label={`${service} settings`}>
+    <div className="mt-4" role="group" aria-label={`${service} settings`}>
       <p className="text-sm text-muted" role={failed ? undefined : "status"}>
         {failed
           ? "Connection settings could not be loaded. Retry below."
@@ -702,7 +708,11 @@ function WhisparrCard({ onForbidden }: { onForbidden: () => void }) {
       </div>
 
       {!ready ? (
-        <div className="mt-3 space-y-2" aria-label="Checking Whisparr">
+        <div
+          className="mt-3 space-y-2"
+          role="status"
+          aria-label="Checking Whisparr"
+        >
           <div className="skel h-5 w-1/2" />
           <div className="skel h-5 w-2/3" />
         </div>
@@ -808,7 +818,11 @@ function JellyfinCard({ onForbidden }: { onForbidden: () => void }) {
       </div>
 
       {!ready ? (
-        <div className="mt-3 space-y-2" aria-label="Checking Jellyfin">
+        <div
+          className="mt-3 space-y-2"
+          role="status"
+          aria-label="Checking Jellyfin"
+        >
           <div className="skel h-5 w-1/2" />
         </div>
       ) : (error ?? status?.error) ? (
