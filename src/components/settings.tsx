@@ -10,6 +10,7 @@ import {
   useCallback,
   useEffect,
   useRef,
+  useReducer,
   useState,
   type FormEvent,
 } from "react";
@@ -29,6 +30,11 @@ import {
   useSession,
 } from "./shared.tsx";
 import { LimitsPanel, ReleaseStatusPanel } from "./limits.tsx";
+import {
+  initJudgmentEditor,
+  providerSettingsActions,
+  reduceJudgmentEditor,
+} from "../lib/provider-settings.ts";
 
 /* ---------- App-local API view records (not in contracts.ts) ---------- */
 
@@ -1077,6 +1083,11 @@ function ProviderCredentialCard({
     checkError ??
     (check?.configured && !check.verified ? check.error.message : null);
   const busy = saving || checking || forbidden;
+  const actions = providerSettingsActions({
+    configLoaded: Boolean(config),
+    busy,
+    unsaved,
+  });
   const connectionState: ConnectionStateLabel = (() => {
     if (checking) return "Checking…";
     if (unsaved) return "Unsaved changes";
@@ -1086,10 +1097,7 @@ function ProviderCredentialCard({
     return config.configured ? "Not checked" : "Not configured";
   })();
   return (
-    <section
-      className="panel p-5 settings-service"
-      aria-labelledby={"provider-heading-" + id}
-    >
+    <section className="panel p-5" aria-labelledby={"provider-heading-" + id}>
       <div className="settings-service-summary">
         <div className="settings-service-heading">
           <h2 id={"provider-heading-" + id}>{name}</h2>
@@ -1099,7 +1107,7 @@ function ProviderCredentialCard({
           <button
             type="button"
             className="btn"
-            disabled={busy || !config || unsaved}
+            disabled={!actions.canCheck}
             title={
               unsaved
                 ? "Save or cancel your changes before checking the connection."
@@ -1113,7 +1121,7 @@ function ProviderCredentialCard({
             <button
               type="button"
               className="btn"
-              disabled={busy || !config}
+              disabled={!actions.canEdit}
               aria-expanded={false}
               aria-controls={"provider-editor-" + id}
               onClick={() => {
@@ -1157,7 +1165,7 @@ function ProviderCredentialCard({
             type="password"
             autoComplete="off"
             maxLength={maxLength}
-            disabled={busy || !config}
+            disabled={!actions.canEdit}
             value={draft}
             onChange={(event) => {
               setDraft(event.target.value);
@@ -1178,7 +1186,7 @@ function ProviderCredentialCard({
             <button
               type="submit"
               className="btn btn-accent"
-              disabled={busy || !config}
+              disabled={!actions.canEdit}
             >
               Save
             </button>
@@ -1246,17 +1254,24 @@ function JudgmentCard({
   saving: boolean;
   onSave: SaveProviderSettings;
 }) {
-  const [editing, setEditing] = useState(false);
+  const [{ editing, connected, message }, dispatch] = useReducer(
+    reduceJudgmentEditor,
+    undefined,
+    initJudgmentEditor,
+  );
   const [provider, setProvider] = useState<JudgmentProvider>("none");
   const [url, setUrl] = useState("");
   const [model, setModel] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [checking, setChecking] = useState(false);
-  const [connected, setConnected] = useState<boolean | null>(null);
   const [forbidden, setForbidden] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const busy = saving || checking || forbidden;
+  const actions = providerSettingsActions({
+    configLoaded: Boolean(config),
+    busy,
+    storedJudgment: config?.stored,
+  });
   // With no configured or explicitly selected backend, present standard
   // matching. An explicit "none" save also overrides environment credentials.
   const savedProvider =
@@ -1296,15 +1311,14 @@ function JudgmentCard({
     setUrl(config.url);
     setModel(config.model);
     setApiKey("");
-    setMessage(null);
     setSaveError(null);
-    setEditing(true);
+    dispatch({ type: "edit" });
   }
 
   function cancel() {
     setApiKey("");
     setSaveError(null);
-    setEditing(false);
+    dispatch({ type: "cancel" });
   }
 
   async function apply(
@@ -1313,16 +1327,13 @@ function JudgmentCard({
     verify = false,
   ) {
     setSaveError(null);
-    setMessage(null);
     try {
       await onSave(body);
       setApiKey("");
-      setConnected(null);
-      setEditing(false);
+      dispatch({ type: "saved", message: success });
       // Probe only after persistence succeeds: the endpoint reads saved settings,
       // not the draft. A failed probe must not turn a successful save into an error.
       if (verify) await check();
-      else setMessage(success);
     } catch (error) {
       if (error instanceof ApiError && error.status === 403) setForbidden(true);
       else setSaveError(messageOf(error));
@@ -1354,23 +1365,27 @@ function JudgmentCard({
 
   async function check() {
     setChecking(true);
-    setMessage(null);
+    dispatch({ type: "checking" });
     try {
       const result = await api<{
         provider: JudgmentProvider;
         connected: boolean;
         error?: string;
       }>("/api/admin/judgment/check", { method: "POST", body: "{}" });
-      setConnected(result.connected);
-      setMessage(
-        result.connected
+      dispatch({
+        type: "checked",
+        connected: result.connected,
+        message: result.connected
           ? `${result.provider === "ollama" ? "Ollama" : "TypeSafe"} answered a decision successfully.`
           : (result.error ?? "Connection failed."),
-      );
+      });
     } catch (error) {
       if (error instanceof ApiError && error.status === 403) setForbidden(true);
-      setConnected(false);
-      setMessage(messageOf(error));
+      dispatch({
+        type: "checked",
+        connected: false,
+        message: messageOf(error),
+      });
     } finally {
       setChecking(false);
     }
@@ -1448,10 +1463,7 @@ function JudgmentCard({
   );
 
   return (
-    <section
-      className="panel p-5 settings-service"
-      aria-labelledby="judgment-heading"
-    >
+    <section className="panel p-5" aria-labelledby="judgment-heading">
       <div className="settings-service-summary">
         <div className="settings-service-heading">
           <h2 id="judgment-heading">AI-assisted matching</h2>
@@ -1462,7 +1474,7 @@ function JudgmentCard({
             <button
               type="button"
               className="btn"
-              disabled={busy || !config}
+              disabled={!actions.canEdit}
               aria-expanded={false}
               aria-controls="judgment-editor"
               onClick={begin}
@@ -1502,7 +1514,6 @@ function JudgmentCard({
                 onChange={(event) => {
                   setProvider(event.target.value as JudgmentProvider);
                   setSaveError(null);
-                  setMessage(null);
                 }}
               >
                 <option value="none">Standard matching (no AI)</option>
@@ -1613,7 +1624,7 @@ function JudgmentCard({
                   Clear stored credential
                 </button>
               )}
-              {!standard && config?.stored && (
+              {actions.canUseEnvironment && (
                 <button
                   type="button"
                   className="btn"
