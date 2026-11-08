@@ -1093,6 +1093,7 @@ function ProviderCredentialCard({
     if (unsaved) return "Unsaved changes";
     if (error) return "Connection failed";
     if (check?.configured && check.verified) return "Connected";
+    if (check && !check.configured) return "Not configured";
     if (!config) return "Loading configuration…";
     return config.configured ? "Not checked" : "Not configured";
   })();
