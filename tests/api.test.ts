@@ -950,6 +950,17 @@ async function stashdbHandler(
   const body = await readBody(req);
   const query = typeof body.query === "string" ? body.query : "";
   stashdbFx.lastVars = JSON.stringify(body.variables ?? null);
+  if (query.includes("me { id name roles")) {
+    return json(res, 200, {
+      data: {
+        me: {
+          id: "fixture-stashdb-account",
+          name: "Fixture StashDB",
+          roles: ["READ"],
+        },
+      },
+    });
+  }
   if (query.includes("queryStudios")) {
     // studioCounterpart matches the exact stored URL: the one published
     // theporndb.net/studios/<uuid> pair resolves; every other URL is
@@ -2973,6 +2984,121 @@ test("provider credentials: stored config wins over environment, clear falls bac
   });
 });
 
+test("individual provider checks require admin admission and reject unsupported providers without reads", async () => {
+  if (!owner) await boot();
+  const admin = owner || (await loginAs("owner"));
+  const requester = member || (await loginAs("member"));
+  const beforeTpdb = tpdbFx.calls,
+    beforeStashdb = stashdbFx.calls;
+  assert.equal((await call("GET", "/api/admin/providers/tpdb")).status, 401);
+  assert.equal(
+    (await call("GET", "/api/admin/providers/tpdb", { cookie: requester }))
+      .status,
+    403,
+  );
+  for (const provider of ["unknown", "tmdb", "typesafe"]) {
+    const refused = await call("GET", "/api/admin/providers/" + provider, {
+      cookie: admin,
+    });
+    assert.equal((await errorShape(refused, 400)).code, "invalid_query");
+  }
+  assert.equal(tpdbFx.calls, beforeTpdb);
+  assert.equal(stashdbFx.calls, beforeStashdb);
+});
+
+test("a failed individual provider check stays scoped and never invalidates the Velvarr session", async () => {
+  if (!owner) await boot();
+  const admin = owner || (await loginAs("owner"));
+  const previousStashKey = process.env.STASHDB_API_KEY;
+  const previousStashBase = process.env.STASHDB_BASE_URL;
+  process.env.STASHDB_API_KEY = stashdbKey;
+  process.env.STASHDB_BASE_URL = stashdbUrl;
+  const beforeStashdb = stashdbFx.calls;
+  assert.equal(
+    (
+      await call("PATCH", "/api/admin/integrations", {
+        cookie: admin,
+        body: { tpdbApiToken: "wrong-provider-row-key" },
+      })
+    ).status,
+    200,
+  );
+  try {
+    const response = await call("GET", "/api/admin/providers/tpdb", {
+      cookie: admin,
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.provider, "tpdb");
+    assert.equal(body.configured, true);
+    assert.equal(body.verified, false);
+    assert.equal(body.error.code, "upstream_auth");
+    assert.equal(
+      JSON.stringify(body).includes("wrong-provider-row-key"),
+      false,
+    );
+    assert.equal(
+      stashdbFx.calls,
+      beforeStashdb,
+      "checking TPDB never contacts StashDB",
+    );
+    assert.equal((await call("GET", "/api/me", { cookie: admin })).status, 200);
+    const beforeTpdb = tpdbFx.calls;
+    const other = await call("GET", "/api/admin/providers/stashdb", {
+      cookie: admin,
+    });
+    assert.equal(other.status, 200);
+    assert.deepEqual(await other.json(), {
+      provider: "stashdb",
+      configured: true,
+      verified: true,
+      account: "Fixture StashDB",
+    });
+    assert.equal(
+      tpdbFx.calls,
+      beforeTpdb,
+      "a rejected TPDB key cannot block the StashDB check",
+    );
+  } finally {
+    if (previousStashKey === undefined) delete process.env.STASHDB_API_KEY;
+    else process.env.STASHDB_API_KEY = previousStashKey;
+    if (previousStashBase === undefined) delete process.env.STASHDB_BASE_URL;
+    else process.env.STASHDB_BASE_URL = previousStashBase;
+    assert.equal(
+      (
+        await call("PATCH", "/api/admin/integrations", {
+          cookie: admin,
+          body: { tpdbApiToken: "" },
+        })
+      ).status,
+      200,
+    );
+  }
+});
+
+test("an unconfigured provider row reports absence without contacting either provider", async () => {
+  if (!owner) await boot();
+  const admin = owner || (await loginAs("owner"));
+  const token = process.env.TPDB_API_TOKEN;
+  delete process.env.TPDB_API_TOKEN;
+  try {
+    const beforeTpdb = tpdbFx.calls,
+      beforeStashdb = stashdbFx.calls;
+    const response = await call("GET", "/api/admin/providers/tpdb", {
+      cookie: admin,
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      provider: "tpdb",
+      configured: false,
+    });
+    assert.equal(tpdbFx.calls, beforeTpdb);
+    assert.equal(stashdbFx.calls, beforeStashdb);
+  } finally {
+    if (token === undefined) delete process.env.TPDB_API_TOKEN;
+    else process.env.TPDB_API_TOKEN = token;
+  }
+});
 test("Ollama settings and model verification require admin admission and preserve integrations", async () => {
   const baselineResponse = await call("GET", "/api/admin/integrations", {
     cookie: owner,
@@ -3030,6 +3156,71 @@ test("Ollama settings and model verification require admin admission and preserv
   });
   assert.equal(clear.status, 200);
   assert.equal((await clear.json()).judgment.provider, "typesafe");
+});
+
+test("standard matching persists through credential edits and requires admin admission", async () => {
+  const previous = getConfig()?.providers;
+  const body = {
+    judgmentProvider: "none",
+    typesafeApiKey: "preserved-disabled-ai-key",
+    ollamaUrl: "http://localhost:11434",
+    ollamaModel: "nimble",
+  };
+  const denied = await call("PATCH", "/api/admin/integrations", {
+    cookie: member,
+    body,
+  });
+  assert.equal(denied.status, 403);
+  const baseline = await (
+    await call("GET", "/api/admin/integrations", { cookie: owner })
+  ).json();
+  try {
+    const saved = await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body,
+    });
+    assert.equal(saved.status, 200);
+    const shape = await saved.json();
+    assert.equal(shape.judgment.provider, "none");
+    assert.equal(shape.judgment.configured, false);
+    assert.equal(shape.judgment.stored, true);
+    assert.equal(shape.providers.typesafe.configured, true);
+    assert.deepEqual(shape.jellyfin, baseline.jellyfin);
+    assert.deepEqual(shape.whisparr, baseline.whisparr);
+    assert.equal(getConfig()?.providers?.judgmentProvider, "none");
+    assert.equal(JSON.stringify(shape).includes(body.typesafeApiKey), false);
+    const edited = await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: { typesafeApiKey: "updated-disabled-ai-key" },
+    });
+    assert.equal(edited.status, 200);
+    assert.equal((await edited.json()).judgment.provider, "none");
+    const read = await call("GET", "/api/admin/integrations", {
+      cookie: owner,
+    });
+    assert.equal((await read.json()).judgment.configured, false);
+    const check = await call("POST", "/api/admin/judgment/check", {
+      cookie: owner,
+      body: {},
+    });
+    assert.equal(check.status, 200);
+    assert.deepEqual(await check.json(), {
+      provider: "none",
+      connected: false,
+      error: "AI-assisted matching is disabled.",
+    });
+  } finally {
+    const restored = await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: {
+        judgmentProvider: previous?.judgmentProvider ?? "",
+        typesafeApiKey: previous?.typesafeApiKey ?? "",
+        ollamaUrl: previous?.ollamaUrl ?? "",
+        ollamaModel: previous?.ollamaModel ?? "",
+      },
+    });
+    assert.equal(restored.status, 200);
+  }
 });
 
 test("an invalid environment judgment provider degrades the integrations response", async () => {

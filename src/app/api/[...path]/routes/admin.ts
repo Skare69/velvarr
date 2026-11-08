@@ -191,7 +191,7 @@ export function nextProviderCredentials(
     throw new AppError(
       400,
       "invalid_field",
-      "Judgment provider must be typesafe or ollama.",
+      "Judgment provider must be none, typesafe, or ollama.",
     );
   }
   if (ollamaModel && !isOllamaModel(ollamaModel)) {
@@ -512,9 +512,35 @@ export async function adminProviders(_ctx: AuthContext): Promise<Response> {
   return json({ providers: [tpdb, stashdb] });
 }
 
+/**
+ * Provider rejection is status feedback. Returning HTTP 401 here would trigger
+ * the client's global sign-out even though its Velvarr session is still valid.
+ */
+export async function adminProvider(provider: string): Promise<Response> {
+  if (provider !== "tpdb" && provider !== "stashdb")
+    throw new AppError(400, "invalid_query", "Unknown metadata provider.");
+  try {
+    return json(await getProviderStatus(provider));
+  } catch (error) {
+    if (!(error instanceof AppError)) throw error;
+    return json({
+      provider,
+      configured: true,
+      verified: false,
+      error: { code: error.code, message: error.message },
+    });
+  }
+}
+
 import type { RouteDef } from "../admission.ts";
 
 export const routes: RouteDef[] = [
+  {
+    method: "GET",
+    segments: ["admin", "providers", ":provider"],
+    auth: "admin",
+    run: async (_ctx, _request, params) => adminProvider(params.provider!),
+  },
   {
     method: "GET",
     segments: ["admin", "users"],
