@@ -109,6 +109,7 @@ Put the variables in `.env.local`.
 | `VELVARR_ALLOW_HTTP`          | no              | `1` allows plain HTTP to private and Docker-network addresses. |
 | `VELVARR_DISCORD_WEBHOOK_URL` | no              | Private Discord webhook (https only). |
 | `VELVARR_DISCORD_DETAIL`      | no              | `1` adds titles to notifications. By default, messages contain only identities. |
+| `VELVARR_WHISPARR_LIBRARY_LIMIT_MIB` | no      | Maximum size in MiB of the Whisparr library list (`/api/v3/movie`), as decoded JSON. A whole number from 2 to 256. Default 32, about 5,000 titles. Increase it for a larger library. An invalid value stops the Whisparr path lookups with `bad_whisparr_config`. |
 | `TPDB_API_TOKEN`              | no              | TPDB token for calls made without a token saved in Settings. A saved token wins. |
 | `STASHDB_API_KEY`             | no              | StashDB key for calls made without a key saved in Settings. A saved key wins. |
 | `TPDB_BASE_URL`               | no              | TPDB API root override. Default `https://api.theporndb.net`. |
