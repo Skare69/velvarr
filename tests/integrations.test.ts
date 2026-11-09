@@ -27,6 +27,7 @@ import {
   normalizeItemId,
   validateUser,
 } from "../src/server/jellyfin.ts";
+import { providerCheckFailure } from "../src/app/api/[...path]/routes/admin.ts";
 import { getWhisparrStatus } from "../src/server/whisparr.ts";
 import type { IntegrationConfig, LibraryItem } from "../src/lib/contracts.ts";
 import {
@@ -2470,9 +2471,11 @@ import {
   findWhisparrItem,
   findWhisparrItemByPath,
   MOVIE_LIST_BYTES,
+  movieListBytes,
   observeWhisparrItem,
   resolveWhisparrItem,
 } from "../src/server/whisparr.ts";
+import { gzipSync } from "node:zlib";
 import type { WhisparrDelivery } from "../src/lib/contracts.ts";
 
 const MOVIE_UUID = dashed(hexId(0x2a1));
@@ -2635,6 +2638,206 @@ test("the full movie-list read carries its own bound above the shared JSON cap",
           err instanceof AppError &&
           err.message === "Whisparr returned an oversized response.",
       );
+    },
+  );
+});
+
+const LIMIT_ENV = "VELVARR_WHISPARR_LIBRARY_LIMIT_MIB";
+
+/** Runs fn with the movie-list limit env set (undefined → unset), then
+ * restores the previous value so later tests see the default. */
+async function withListLimit(
+  value: string | undefined,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const before = process.env[LIMIT_ENV];
+  if (value === undefined) delete process.env[LIMIT_ENV];
+  else process.env[LIMIT_ENV] = value;
+  try {
+    await fn();
+  } finally {
+    if (before === undefined) delete process.env[LIMIT_ENV];
+    else process.env[LIMIT_ENV] = before;
+  }
+}
+
+const isOversized = (err: unknown) =>
+  err instanceof AppError &&
+  err.message === "Whisparr returned an oversized response.";
+
+/** count stored movies at /data/xxx/Pad Movie N, each padded by pad bytes. */
+function paddedList(count: number, pad: number) {
+  return Array.from({ length: count }, (_, i) =>
+    storedMovie({
+      id: i + 1,
+      path: `/data/xxx/Pad Movie ${i + 1}`,
+      pad: "x".repeat(pad),
+    }),
+  );
+}
+
+test("the movie-list limit env reads whole MiB in [2, 256] and defaults when unset", async () => {
+  await withListLimit(undefined, async () => {
+    assert.equal(movieListBytes(), MOVIE_LIST_BYTES);
+  });
+  await withListLimit(" ", async () => {
+    assert.equal(movieListBytes(), MOVIE_LIST_BYTES);
+  });
+  await withListLimit("2", async () => {
+    assert.equal(movieListBytes(), 2 * 1024 * 1024);
+  });
+  await withListLimit("256", async () => {
+    assert.equal(movieListBytes(), 256 * 1024 * 1024);
+  });
+});
+
+test("an invalid movie-list limit fails with a named error before any Whisparr request", async () => {
+  for (const value of ["1", "257", "0", "-4", "2.5", "64MiB", "abc", "1e2"]) {
+    await withFixture(
+      (_req, res) => sendJson(res, 200, [storedMovie()]),
+      async (fx) => {
+        await withListLimit(value, async () => {
+          await assert.rejects(
+            findWhisparrItemByPath(deliveryConfig(fx.origin), [
+              "/data/xxx/Sample Movie/file.mkv",
+            ]),
+            (err: unknown) =>
+              err instanceof AppError && err.code === "bad_whisparr_config",
+            value,
+          );
+        });
+        assert.equal(fx.log.length, 0, value);
+      },
+    );
+  }
+});
+
+test("the movie-list limit bounds the decoded body of a gzip response", async () => {
+  // ~3 MiB of JSON compresses to a few KiB: only a decoded-size check
+  // catches it under a 2 MiB limit.
+  const body = gzipSync(JSON.stringify(paddedList(300, 10_000)));
+  assert.ok(body.length < 1024 * 1024);
+  await withFixture(
+    (req, res) => {
+      if (pathOf(req.url ?? "") !== "/api/v3/movie")
+        return sendJson(res, 404, {});
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "content-encoding": "gzip",
+        "content-length": String(body.length),
+      });
+      res.end(body);
+    },
+    async (fx) => {
+      await withListLimit("2", async () => {
+        await assert.rejects(
+          findWhisparrItemByPath(deliveryConfig(fx.origin), [
+            "/data/xxx/Pad Movie 7/file.mkv",
+          ]),
+          isOversized,
+        );
+      });
+      // The same compressed body fits under a larger limit.
+      await withListLimit("8", async () => {
+        assert.deepEqual(
+          await findWhisparrItemByPath(deliveryConfig(fx.origin), [
+            "/data/xxx/Pad Movie 7/file.mkv",
+          ]),
+          movieRef,
+        );
+      });
+    },
+  );
+});
+
+test("a changed API key or movie-list limit refetches instead of reusing the cached list", async () => {
+  await withFixture(
+    (req, res) => {
+      if (pathOf(req.url ?? "") === "/api/v3/movie")
+        return sendJson(res, 200, [storedMovie()]);
+      sendJson(res, 404, {});
+    },
+    async (fx) => {
+      const paths = ["/data/xxx/Sample Movie/file.mkv"];
+      const config = deliveryConfig(fx.origin);
+      const rekeyed: IntegrationConfig = {
+        ...config,
+        whisparr: { ...config.whisparr!, apiKey: `${WH_KEY}-rotated` },
+      };
+      await withListLimit("16", async () => {
+        assert.deepEqual(await findWhisparrItemByPath(config, paths), movieRef);
+        assert.deepEqual(await findWhisparrItemByPath(config, paths), movieRef);
+        assert.equal(fx.log.length, 1); // same key and limit: cache hit
+        assert.deepEqual(
+          await findWhisparrItemByPath(rekeyed, paths),
+          movieRef,
+        );
+        assert.equal(fx.log.length, 2);
+        assert.equal(fx.log[1]!.headers["x-api-key"], `${WH_KEY}-rotated`);
+      });
+      await withListLimit("24", async () => {
+        assert.deepEqual(
+          await findWhisparrItemByPath(rekeyed, paths),
+          movieRef,
+        );
+        assert.equal(fx.log.length, 3);
+      });
+    },
+  );
+});
+
+test("an oversized movie list is evicted, so the next read refetches and recovers", async () => {
+  let oversized = true;
+  await withFixture(
+    (req, res) => {
+      if (pathOf(req.url ?? "") !== "/api/v3/movie")
+        return sendJson(res, 404, {});
+      sendJson(
+        res,
+        200,
+        oversized ? paddedList(300, 10_000) : paddedList(10, 0),
+      );
+    },
+    async (fx) => {
+      const paths = ["/data/xxx/Pad Movie 7/file.mkv"];
+      await withListLimit("2", async () => {
+        await assert.rejects(
+          findWhisparrItemByPath(deliveryConfig(fx.origin), paths),
+          isOversized,
+        );
+        // Same key and limit inside the TTL: the failure is not cached.
+        oversized = false;
+        assert.deepEqual(
+          await findWhisparrItemByPath(deliveryConfig(fx.origin), paths),
+          movieRef,
+        );
+      });
+      assert.equal(fx.log.length, 2);
+    },
+  );
+});
+
+test("the compacted cached list still detects ambiguous paths", async () => {
+  await withFixture(
+    (req, res) => {
+      if (pathOf(req.url ?? "") === "/api/v3/movie")
+        return sendJson(res, 200, [
+          storedMovie({ path: "/data/xxx/Shared" }),
+          storedScene({ path: "/data/xxx/Shared" }),
+        ]);
+      sendJson(res, 404, {});
+    },
+    async (fx) => {
+      const paths = ["/data/xxx/Shared/file.mkv"];
+      for (let round = 0; round < 2; round++) {
+        await assert.rejects(
+          findWhisparrItemByPath(deliveryConfig(fx.origin), paths),
+          (err: unknown) =>
+            err instanceof AppError && err.code === "ambiguous_identity",
+        );
+      }
+      // The second round ran against the compacted cache entry.
+      assert.equal(fx.log.length, 1);
     },
   );
 });
@@ -4053,4 +4256,42 @@ test("resolvePlaybackAccess keeps proven rejections, outages, and auth deaths di
       );
     },
   );
+});
+
+test("provider checks report only upstream failures as credential status", () => {
+  for (const code of [
+    "upstream_auth",
+    "upstream_forbidden",
+    "upstream_not_found",
+    "upstream_unavailable",
+    "upstream_timeout",
+    "upstream_bad_response",
+  ]) {
+    assert.deepEqual(
+      providerCheckFailure(
+        "tpdb",
+        new AppError(502, code, "Synthetic upstream failure"),
+      ),
+      {
+        provider: "tpdb",
+        configured: true,
+        verified: false,
+        error: { code, message: "Synthetic upstream failure" },
+      },
+    );
+  }
+});
+
+test("provider checks preserve storage, decryption, configuration and unexpected errors", () => {
+  for (const error of [
+    new AppError(500, "secret_key_mismatch", "Cannot decrypt configuration"),
+    new AppError(400, "invalid_config", "Invalid settings"),
+    new AppError(500, "invalid_secret_key", "Invalid encryption key"),
+    new Error("Unexpected storage fault"),
+  ]) {
+    assert.throws(
+      () => providerCheckFailure("stashdb", error),
+      (thrown) => thrown === error,
+    );
+  }
 });

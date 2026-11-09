@@ -14,6 +14,8 @@ import type {
   IntegrationConfig,
   WhisparrDelivery,
   WhisparrPathMapping,
+  ProviderCheck,
+  CredentialProvider,
 } from "../../../../lib/contracts.ts";
 import {
   isJudgmentProvider,
@@ -191,7 +193,7 @@ export function nextProviderCredentials(
     throw new AppError(
       400,
       "invalid_field",
-      "Judgment provider must be none, typesafe, or ollama.",
+      "Judgment provider must be typesafe, ollama, or none.",
     );
   }
   if (ollamaModel && !isOllamaModel(ollamaModel)) {
@@ -512,35 +514,48 @@ export async function adminProviders(_ctx: AuthContext): Promise<Response> {
   return json({ providers: [tpdb, stashdb] });
 }
 
-/**
- * Provider rejection is status feedback. Returning HTTP 401 here would trigger
- * the client's global sign-out even though its Velvarr session is still valid.
- */
-export async function adminProvider(provider: string): Promise<Response> {
-  if (provider !== "tpdb" && provider !== "stashdb")
-    throw new AppError(400, "invalid_query", "Unknown metadata provider.");
+/** Only upstream failures are credential-status data. Storage, decryption,
+ * and local configuration failures retain their original HTTP error. */
+export function providerCheckFailure(
+  provider: CredentialProvider,
+  error: unknown,
+): ProviderCheck {
+  const upstreamCodes = new Set([
+    "upstream_auth",
+    "upstream_forbidden",
+    "upstream_not_found",
+    "upstream_unavailable",
+    "upstream_timeout",
+    "upstream_bad_response",
+  ]);
+  if (!(error instanceof AppError) || !upstreamCodes.has(error.code))
+    throw error;
+  return {
+    provider,
+    configured: true,
+    verified: false,
+    error: { code: error.code, message: error.message },
+  };
+}
+
+export async function adminProviderCheck(
+  _ctx: AuthContext,
+  raw: string,
+): Promise<Response> {
+  if (raw !== "tpdb" && raw !== "stashdb") {
+    throw new AppError(400, "invalid_provider", "Unknown credential provider.");
+  }
+  const provider = raw;
   try {
     return json(await getProviderStatus(provider));
-  } catch (error) {
-    if (!(error instanceof AppError)) throw error;
-    return json({
-      provider,
-      configured: true,
-      verified: false,
-      error: { code: error.code, message: error.message },
-    });
+  } catch (err) {
+    return json(providerCheckFailure(provider, err));
   }
 }
 
 import type { RouteDef } from "../admission.ts";
 
 export const routes: RouteDef[] = [
-  {
-    method: "GET",
-    segments: ["admin", "providers", ":provider"],
-    auth: "admin",
-    run: async (_ctx, _request, params) => adminProvider(params.provider!),
-  },
   {
     method: "GET",
     segments: ["admin", "users"],
@@ -577,6 +592,12 @@ export const routes: RouteDef[] = [
     segments: ["admin", "providers"],
     auth: "admin",
     run: async (ctx) => adminProviders(ctx),
+  },
+  {
+    method: "GET",
+    segments: ["admin", "providers", ":provider"],
+    auth: "admin",
+    run: async (ctx, _request, p) => adminProviderCheck(ctx, p.provider!),
   },
   {
     method: "POST",

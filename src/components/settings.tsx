@@ -15,6 +15,8 @@ import {
   type FormEvent,
 } from "react";
 import type {
+  CredentialProvider,
+  ProviderCheck,
   IntegrationConfig,
   JudgmentProvider,
   WhisparrDelivery,
@@ -34,6 +36,13 @@ import {
   initJudgmentEditor,
   providerSettingsActions,
   reduceJudgmentEditor,
+} from "../lib/judgment-editor.ts";
+import {
+  canClearCredential,
+  canSaveCredential,
+  canTestCredential,
+  connectionState,
+  createProviderSettingsQueue,
 } from "../lib/provider-settings.ts";
 
 /* ---------- App-local API view records (not in contracts.ts) ---------- */
@@ -865,7 +874,6 @@ type ProviderConfigRow = {
   configured: boolean;
   source: "stored" | "environment";
 };
-type CredentialProvider = "tpdb" | "stashdb";
 type JudgmentConfig = {
   provider: JudgmentProvider;
   url: string;
@@ -883,21 +891,10 @@ type ProviderSettingsPatch = Partial<
     judgmentProvider: JudgmentProvider | "";
   }
 >;
-type SaveProviderSettings = (body: ProviderSettingsPatch) => Promise<void>;
-type ProviderCheckRow =
-  | { provider: CredentialProvider; configured: false }
-  | {
-      provider: CredentialProvider;
-      configured: true;
-      verified: true;
-      account: string;
-    }
-  | {
-      provider: CredentialProvider;
-      configured: true;
-      verified: false;
-      error: { code: string; message: string };
-    };
+type SaveProviderSettings = (
+  body: ProviderSettingsPatch,
+) => Promise<ProviderSettingsInfo>;
+type RunProviderOperation = <T>(operation: () => Promise<T>) => Promise<T>;
 
 const CREDENTIAL_ROWS = [
   {
@@ -944,7 +941,21 @@ function MetadataSettings() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
   const [saving, setSaving] = useState(false);
-  const savingRef = useRef(false);
+  const [runQueued] = useState(createProviderSettingsQueue);
+  const operationCount = useRef(0);
+  const runOperation: RunProviderOperation = useCallback(
+    async (operation) => {
+      operationCount.current++;
+      setSaving(true);
+      try {
+        return await runQueued(operation);
+      } finally {
+        operationCount.current--;
+        if (operationCount.current === 0) setSaving(false);
+      }
+    },
+    [runQueued],
+  );
 
   const load = useCallback(() => {
     setLoadError(null);
@@ -958,14 +969,10 @@ function MetadataSettings() {
   }, []);
   useEffect(load, [load]);
 
-  const save: SaveProviderSettings = async (body) => {
-    // Metadata and AI settings share one stored configuration. Serialize all
-    // writes without resetting another card's draft.
-    if (savingRef.current)
-      throw new Error("Wait for the current save to finish.");
-    savingRef.current = true;
-    setSaving(true);
-    try {
+  const save: SaveProviderSettings = (body) =>
+    runOperation(async () => {
+      // All metadata/AI saves and probes use one queue. A probe always reads
+      // persisted settings, and a failed operation cannot block the next one.
       const data = await api<ProviderSettingsInfo>("/api/admin/integrations", {
         method: "PATCH",
         body: JSON.stringify(body),
@@ -973,11 +980,8 @@ function MetadataSettings() {
       setInfo(data);
       setLoadError(null);
       refreshSession().catch(() => undefined);
-    } finally {
-      savingRef.current = false;
-      setSaving(false);
-    }
-  };
+      return data;
+    });
 
   if (forbidden) return <ForbiddenPanel />;
   return (
@@ -995,6 +999,7 @@ function MetadataSettings() {
           {...row}
           config={info?.providers[row.id]}
           saving={saving}
+          runOperation={runOperation}
           onSave={save}
         />
       ))}
@@ -1002,6 +1007,7 @@ function MetadataSettings() {
         config={info?.judgment}
         keyConfig={info?.providers.typesafe}
         saving={saving}
+        runOperation={runOperation}
         onSave={save}
       />
     </>
@@ -1018,14 +1024,20 @@ function ProviderCredentialCard({
   config,
   saving,
   onSave,
+  runOperation,
 }: {
   config?: ProviderConfigRow;
   saving: boolean;
   onSave: SaveProviderSettings;
+  runOperation: RunProviderOperation;
 } & (typeof CREDENTIAL_ROWS)[number]) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
-  const [check, setCheck] = useState<ProviderCheckRow | null>(null);
+  const [check, setCheck] = useState<ProviderCheck | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -1037,14 +1049,18 @@ function ProviderCredentialCard({
     setCheck(null);
     setCheckError(null);
     try {
-      setCheck(await api<ProviderCheckRow>("/api/admin/providers/" + id));
+      setCheck(
+        await runOperation(() =>
+          api<ProviderCheck>("/api/admin/providers/" + id),
+        ),
+      );
     } catch (error) {
       if (error instanceof ApiError && error.status === 403) setForbidden(true);
       else setCheckError(messageOf(error));
     } finally {
       setChecking(false);
     }
-  }, [id]);
+  }, [id, runOperation]);
   useEffect(() => {
     void verify();
   }, [verify]);
@@ -1060,7 +1076,7 @@ function ProviderCredentialCard({
     setSaved(null);
     try {
       // A blank edit keeps the current credential; removal is explicit.
-      if (clear || draft.trim()) {
+      if (clear || canSaveCredential({ draft, pending: false })) {
         await onSave({ [field]: clear ? "" : draft.trim() });
         setSaved(
           clear
@@ -1083,20 +1099,31 @@ function ProviderCredentialCard({
     checkError ??
     (check?.configured && !check.verified ? check.error.message : null);
   const busy = saving || checking || forbidden;
-  const actions = providerSettingsActions({
-    configLoaded: Boolean(config),
-    busy,
-    unsaved,
+  const actions = {
+    canCheck: canTestCredential({
+      draft,
+      pending: saving || forbidden,
+      checking,
+      configured: config?.configured,
+    }),
+    canEdit: !busy && Boolean(config),
+    canClear: canClearCredential({ source: config?.source, pending: busy }),
+  };
+  const state = connectionState({
+    draft: editing ? draft : "",
+    checking,
+    check,
+    requestError: checkError,
   });
-  const connectionState: ConnectionStateLabel = (() => {
-    if (checking) return "Checking…";
-    if (unsaved) return "Unsaved changes";
-    if (error) return "Connection failed";
-    if (check?.configured && check.verified) return "Connected";
-    if (check && !check.configured) return "Not configured";
-    if (!config) return "Loading configuration…";
-    return config.configured ? "Not checked" : "Not configured";
-  })();
+  const stateLabels = {
+    unsaved: "Unsaved changes",
+    checking: "Checking…",
+    connected: "Connected",
+    failed: "Connection failed",
+    not_configured: "Not configured",
+    unknown: "Not checked",
+  } as const;
+  const connectionStateLabel: ConnectionStateLabel = stateLabels[state];
   return (
     <section className="panel p-5" aria-labelledby={"provider-heading-" + id}>
       <div className="settings-service-summary">
@@ -1123,8 +1150,6 @@ function ProviderCredentialCard({
               type="button"
               className="btn"
               disabled={!actions.canEdit}
-              aria-expanded={false}
-              aria-controls={"provider-editor-" + id}
               onClick={() => {
                 setSaved(null);
                 setEditing(true);
@@ -1136,7 +1161,7 @@ function ProviderCredentialCard({
         </div>
       </div>
       <div className="settings-service-status" aria-live="polite">
-        <ConnectionState state={connectionState} />
+        <ConnectionState state={connectionStateLabel} />
         {!unsaved && check?.configured && check.verified && (
           <span className="text-muted">{check.account}</span>
         )}
@@ -1162,6 +1187,7 @@ function ProviderCredentialCard({
           </label>
           <input
             id={"provider-" + id}
+            ref={inputRef}
             className="input mt-2"
             type="password"
             autoComplete="off"
@@ -1203,7 +1229,7 @@ function ProviderCredentialCard({
               <button
                 type="button"
                 className="btn"
-                disabled={busy}
+                disabled={!actions.canClear}
                 onClick={() => void apply(true)}
               >
                 Clear stored credential
@@ -1249,36 +1275,55 @@ function JudgmentCard({
   keyConfig,
   saving,
   onSave,
+  runOperation,
 }: {
   config?: JudgmentConfig;
   keyConfig?: ProviderConfigRow;
   saving: boolean;
   onSave: SaveProviderSettings;
+  runOperation: RunProviderOperation;
 }) {
-  const [{ editing, connected, message }, dispatch] = useReducer(
+  const [editor, dispatch] = useReducer(
     reduceJudgmentEditor,
     undefined,
     initJudgmentEditor,
   );
-  const [provider, setProvider] = useState<JudgmentProvider>("none");
-  const [url, setUrl] = useState("");
-  const [model, setModel] = useState("");
+  const [editing, setEditing] = useState(false);
   const [apiKey, setApiKey] = useState("");
-  const [checking, setChecking] = useState(false);
   const [forbidden, setForbidden] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const selectRef = useRef<HTMLSelectElement>(null);
+  const { provider, url, model } = editor.draft;
+  const checking = editor.check?.state === "checking";
+  const connected = editor.check?.state === "connected";
   const busy = saving || checking || forbidden;
-  const actions = providerSettingsActions({
-    configLoaded: Boolean(config),
-    busy,
-    storedJudgment: config?.stored,
+  const actions = providerSettingsActions(editor, {
+    ready: Boolean(config),
+    pending: saving || forbidden,
+    configured: Boolean(config?.configured),
   });
-  // With no configured or explicitly selected backend, present standard
-  // matching. An explicit "none" save also overrides environment credentials.
   const savedProvider =
     config && !config.configured && !config.stored && !config.error
       ? "none"
       : config?.provider;
+  useEffect(() => {
+    if (!config) return;
+    const settings = {
+      provider: savedProvider ?? "none",
+      url: config.url,
+      model: config.model,
+    };
+    if (
+      settings.provider !== editor.saved.provider ||
+      settings.url !== editor.saved.url ||
+      settings.model !== editor.saved.model
+    ) {
+      dispatch({ type: "loaded", settings });
+    }
+  }, [config, savedProvider, editor.saved]);
+  useEffect(() => {
+    if (editing) selectRef.current?.focus();
+  }, [editing]);
   const displayedProvider = editing ? provider : savedProvider;
   const standard = displayedProvider === "none";
   const providerName = standard
@@ -1308,18 +1353,17 @@ function JudgmentCard({
 
   function begin() {
     if (!config) return;
-    setProvider(savedProvider ?? "none");
-    setUrl(config.url);
-    setModel(config.model);
+    dispatch({ type: "cancel" });
     setApiKey("");
     setSaveError(null);
-    dispatch({ type: "edit" });
+    setEditing(true);
   }
 
   function cancel() {
     setApiKey("");
     setSaveError(null);
     dispatch({ type: "cancel" });
+    setEditing(false);
   }
 
   async function apply(
@@ -1329,9 +1373,10 @@ function JudgmentCard({
   ) {
     setSaveError(null);
     try {
-      await onSave(body);
+      const data = await onSave(body);
       setApiKey("");
-      dispatch({ type: "saved", message: success });
+      dispatch({ type: "saved", settings: data.judgment, notice: success });
+      setEditing(false);
       // Probe only after persistence succeeds: the endpoint reads saved settings,
       // not the draft. A failed probe must not turn a successful save into an error.
       if (verify) await check();
@@ -1359,36 +1404,33 @@ function JudgmentCard({
           },
       standard
         ? "Standard matching saved. AI-assisted matching is disabled."
-        : "",
+        : "Settings saved.",
       !standard,
     );
   }
 
   async function check() {
-    setChecking(true);
     dispatch({ type: "checking" });
     try {
-      const result = await api<{
-        provider: JudgmentProvider;
-        connected: boolean;
-        error?: string;
-      }>("/api/admin/judgment/check", { method: "POST", body: "{}" });
+      const result = await runOperation(() =>
+        api<{
+          provider: JudgmentProvider;
+          connected: boolean;
+          error?: string;
+        }>("/api/admin/judgment/check", { method: "POST", body: "{}" }),
+      );
       dispatch({
         type: "checked",
-        connected: result.connected,
-        message: result.connected
-          ? `${result.provider === "ollama" ? "Ollama" : "TypeSafe"} answered a decision successfully.`
-          : (result.error ?? "Connection failed."),
+        result: result.connected
+          ? { connected: true, provider: result.provider }
+          : { connected: false, message: result.error ?? "Connection failed." },
       });
     } catch (error) {
       if (error instanceof ApiError && error.status === 403) setForbidden(true);
       dispatch({
         type: "checked",
-        connected: false,
-        message: messageOf(error),
+        result: { connected: false, message: messageOf(error) },
       });
-    } finally {
-      setChecking(false);
     }
   }
 
@@ -1396,7 +1438,7 @@ function JudgmentCard({
     if (checking) return "Checking…";
     if (unsaved) return "Unsaved changes";
     if (config?.error) return "Configuration error";
-    if (connected === false) return "Connection failed";
+    if (editor.check?.state === "failed") return "Connection failed";
     if (connected) return "Connected";
     return config?.configured ? "Not checked" : "Not configured";
   })();
@@ -1475,9 +1517,7 @@ function JudgmentCard({
             <button
               type="button"
               className="btn"
-              disabled={!actions.canEdit}
-              aria-expanded={false}
-              aria-controls="judgment-editor"
+              disabled={busy || !config}
               onClick={begin}
             >
               Edit
@@ -1509,11 +1549,15 @@ function JudgmentCard({
             <div className="settings-select max-w-md">
               <select
                 id="judgment-provider"
+                ref={selectRef}
                 className="input"
                 disabled={busy}
                 value={provider}
                 onChange={(event) => {
-                  setProvider(event.target.value as JudgmentProvider);
+                  dispatch({
+                    type: "edit",
+                    patch: { provider: event.target.value as JudgmentProvider },
+                  });
                   setSaveError(null);
                 }}
               >
@@ -1565,7 +1609,12 @@ function JudgmentCard({
                       required
                       disabled={busy}
                       value={url}
-                      onChange={(event) => setUrl(event.target.value)}
+                      onChange={(event) =>
+                        dispatch({
+                          type: "edit",
+                          patch: { url: event.target.value },
+                        })
+                      }
                     />
                     <label className="label" htmlFor="ollama-model">
                       Decision model
@@ -1576,7 +1625,12 @@ function JudgmentCard({
                       required
                       disabled={busy}
                       value={model}
-                      onChange={(event) => setModel(event.target.value)}
+                      onChange={(event) =>
+                        dispatch({
+                          type: "edit",
+                          patch: { model: event.target.value },
+                        })
+                      }
                     />
                     <p className="text-sm text-muted">
                       Use a reachable Ollama server with a decision model such
@@ -1594,10 +1648,7 @@ function JudgmentCard({
               <button
                 type="submit"
                 className="btn btn-accent"
-                disabled={
-                  busy ||
-                  (provider === "ollama" && (!url.trim() || !model.trim()))
-                }
+                disabled={!actions.save}
               >
                 Save
               </button>
@@ -1625,7 +1676,7 @@ function JudgmentCard({
                   Clear stored credential
                 </button>
               )}
-              {actions.canUseEnvironment && (
+              {config?.stored && (
                 <button
                   type="button"
                   className="btn"
@@ -1644,9 +1695,22 @@ function JudgmentCard({
           </div>
         </form>
       )}
-      {message && !unsaved && (
+      {editor.notice && !unsaved && (
         <p className="mt-3 text-sm text-muted" role="status">
-          {message}
+          {editor.notice}
+        </p>
+      )}
+      {editor.check && !unsaved && (
+        <p
+          className="judgment-check mt-2"
+          data-state={editor.check.state}
+          role="status"
+        >
+          {editor.check.state === "checking"
+            ? "Checking the saved connection…"
+            : editor.check.state === "connected"
+              ? `${editor.check.provider === "ollama" ? "Ollama" : "TypeSafe"} answered a decision successfully.`
+              : editor.check.message}
         </p>
       )}
       {saveError && (

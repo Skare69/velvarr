@@ -653,7 +653,8 @@ test("an invalid environment provider and URL degrade with a combined error", ()
     assert.equal(
       settings.error,
       'VELVARR_JUDGMENT_PROVIDER has an invalid value "bogus"; ' +
-        'judgment features stay disabled until it is "none", "typesafe", or "ollama". ' +
+        // The valid-value list gained "none" (standard matching only).
+        'judgment features stay disabled until it is "typesafe", "ollama", or "none". ' +
         "A valid integration base URL is required.",
     );
   } finally {
@@ -1318,69 +1319,118 @@ test("ranking orders by score with the original order breaking ties", async () =
   );
 });
 
-test("standard matching disables all AI paths despite saved and environment credentials", async () => {
+const disabled: Providers = {
+  judgmentProvider: "none",
+  typesafeApiKey: "fixture-cloud-key",
+  ollamaUrl: "http://localhost:11434",
+  ollamaModel: "nimble",
+};
+
+test("a stored none provider disables every judgment path and never calls a backend", async () => {
+  let calls = 0;
   await withEnv(
     {
+      TYPESAFE_API_KEY: "env-cloud-key",
+      TYPESAFE_BASE_URL: "http://127.0.0.1:9",
       VELVARR_JUDGMENT_PROVIDER: "ollama",
-      TYPESAFE_API_KEY: "environment-key",
-      OLLAMA_BASE_URL: "http://localhost:11434",
-      OLLAMA_MODEL: "nimble",
+      OLLAMA_BASE_URL: "http://127.0.0.1:11434",
     },
-    async () => {
-      const disabled: Providers = {
-        ...local,
-        judgmentProvider: "none",
-        typesafeApiKey: "stored-key",
-      };
-      let calls = 0;
-      await withFetch(
+    () =>
+      withFetch(
         async () => {
           calls++;
-          throw new Error("Standard matching must not call any AI service");
+          return response([{ name: "yes", probability: 1 }]);
         },
         async () => {
-          const settings = judgmentConfiguration(disabled);
-          assert.equal(settings.provider, "none");
-          assert.equal(settings.configured, false);
-          assert.equal(settings.stored, true);
-          assert.equal(settings.error, undefined);
+          const config = judgmentConfiguration(disabled);
+          assert.equal(config.provider, "none");
+          assert.equal(config.configured, false);
+          assert.equal(config.error, undefined);
           assert.equal(judgmentConfigured(disabled), false);
           assert.equal(tagSuggestionsAllowed(disabled), false);
           assert.equal(await sameWork(requested, candidate, disabled), false);
           assert.deepEqual(
-            await suggestTags("test", [{ id: "t", name: "Test" }], disabled),
+            await suggestTags("term", [{ id: "t", name: "T" }], disabled),
             [],
           );
           assert.equal(
             await rankRelatedTitles(
-              requested,
-              [candidate, { title: "Other" }],
+              { title: "Seed" },
+              [{ title: "a" }, { title: "b" }, { title: "c" }],
               disabled,
             ),
             null,
           );
-          assert.deepEqual(await checkJudgmentConnection(disabled), {
-            provider: "none",
-            connected: false,
-            error: "AI-assisted matching is disabled.",
-          });
-          const updated = nextProviderCredentials(disabled, {
-            stashdbApiKey: "new-stash-key",
-          });
-          assert.equal(updated?.judgmentProvider, "none");
-          assert.equal(updated?.typesafeApiKey, "stored-key");
-          assert.equal(judgmentConfigured(updated), false);
-          assert.equal(calls, 0);
-          // Re-enabling a backend can reuse its preserved configuration.
-          const enabled = nextProviderCredentials(updated, {
-            judgmentProvider: "ollama",
-          });
-          assert.equal(judgmentConfigured(enabled), true);
-          assert.equal(enabled?.ollamaModel, "nimble");
+          assert.equal(calls, 0, "a disabled provider never reaches a backend");
         },
-      );
+      ),
+  );
+});
+
+test("an environment none provider disables judgment even with a cloud key", async () => {
+  await withEnv(
+    { VELVARR_JUDGMENT_PROVIDER: "none", TYPESAFE_API_KEY: "env-cloud-key" },
+    () => {
+      const config = judgmentConfiguration();
+      assert.equal(config.provider, "none");
+      assert.equal(config.configured, false);
+      assert.equal(config.error, undefined);
     },
   );
+});
+
+test("a connection check for a disabled provider reports it without a request", async () => {
+  let calls = 0;
+  await withFetch(
+    async () => {
+      calls++;
+      return response([{ name: "yes", probability: 1 }]);
+    },
+    async () => {
+      assert.deepEqual(
+        await checkJudgmentConnection({
+          judgmentProvider: "none",
+          typesafeApiKey: "k",
+        }),
+        {
+          provider: "none",
+          connected: false,
+          error: "AI-assisted matching is disabled.",
+        },
+      );
+      assert.equal(calls, 0);
+    },
+  );
+});
+
+test("disabling judgment keeps stored backend settings for re-enablement", async () => {
+  await withEnv({ VELVARR_JUDGMENT_PROVIDER: undefined }, () => {
+    const keyEdit = nextProviderCredentials(disabled, {
+      typesafeApiKey: "new",
+    });
+    assert.equal(keyEdit?.judgmentProvider, "none");
+    assert.equal(keyEdit?.typesafeApiKey, "new");
+    assert.equal(keyEdit?.ollamaUrl, "http://localhost:11434");
+    assert.equal(keyEdit?.ollamaModel, "nimble");
+    assert.equal(judgmentConfiguration(keyEdit).provider, "none");
+
+    const off = nextProviderCredentials(
+      { ...local, typesafeApiKey: "fixture-cloud-key" },
+      { judgmentProvider: "none" },
+    );
+    assert.equal(off?.judgmentProvider, "none");
+    assert.equal(off?.ollamaUrl, "http://localhost:11434");
+    assert.equal(off?.ollamaModel, "nimble");
+    assert.equal(off?.typesafeApiKey, "fixture-cloud-key");
+    assert.equal(judgmentConfiguration(off).configured, false);
+
+    const on = nextProviderCredentials(off, { judgmentProvider: "ollama" });
+    const config = judgmentConfiguration(on);
+    assert.equal(config.provider, "ollama");
+    assert.equal(config.model, "nimble");
+    assert.equal(config.configured, true);
+    assert.equal(on?.ollamaUrl, "http://localhost:11434");
+  });
 });
 
 test("environment standard matching ignores invalid settings for unused AI backends", async () => {

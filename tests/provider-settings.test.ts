@@ -1,141 +1,177 @@
+// Per-provider credential card state: which chip a card shows and which
+// actions it allows. The precedence keeps a typed key from reading as proven
+// by the saved key's live result.
+
 import assert from "node:assert/strict";
 import { test } from "node:test";
-
+import type { ProviderCheck } from "../src/lib/contracts.ts";
 import {
-  initJudgmentEditor,
-  providerSettingsActions,
-  reduceJudgmentEditor,
+  createProviderSettingsQueue,
+  canClearCredential,
+  canSaveCredential,
+  canTestCredential,
+  connectionState,
 } from "../src/lib/provider-settings.ts";
 
-test("a failed or pending configuration read leaves saved-provider checks available", () => {
-  assert.deepEqual(
-    providerSettingsActions({ configLoaded: false, busy: false }),
-    { canCheck: true, canEdit: false, canUseEnvironment: false },
+const verified: ProviderCheck = {
+  provider: "tpdb",
+  configured: true,
+  verified: true,
+  account: "admin",
+};
+const rejected: ProviderCheck = {
+  provider: "tpdb",
+  configured: true,
+  verified: false,
+  error: { code: "tpdb_auth", message: "Key rejected." },
+};
+const absent: ProviderCheck = { provider: "stashdb", configured: false };
+
+const base = {
+  draft: "",
+  checking: false,
+  check: null as ProviderCheck | null,
+  requestError: null as string | null,
+};
+
+test("a non-blank draft is unsaved, even over a check in flight", () => {
+  assert.equal(
+    connectionState({ ...base, draft: "new-key", checking: true }),
+    "unsaved",
+  );
+});
+
+test("a non-blank draft is unsaved, even over a verified result", () => {
+  assert.equal(
+    connectionState({ ...base, draft: " k ", check: verified }),
+    "unsaved",
+  );
+});
+
+test("a whitespace-only draft is not unsaved", () => {
+  assert.equal(
+    connectionState({ ...base, draft: "  \t", check: verified }),
+    "connected",
+  );
+});
+
+test("a check in flight is checking, even over a previous result", () => {
+  assert.equal(
+    connectionState({ ...base, checking: true, check: verified }),
+    "checking",
+  );
+});
+
+test("a failed request is failed, even with a previous verified result", () => {
+  assert.equal(
+    connectionState({ ...base, requestError: "Network down", check: verified }),
+    "failed",
+  );
+});
+
+test("no result and no error is unknown", () => {
+  assert.equal(connectionState(base), "unknown");
+});
+
+test("configured false is not configured", () => {
+  assert.equal(connectionState({ ...base, check: absent }), "not_configured");
+});
+
+test("a rejected key is failed", () => {
+  assert.equal(connectionState({ ...base, check: rejected }), "failed");
+});
+
+test("an accepted key is connected", () => {
+  assert.equal(connectionState({ ...base, check: verified }), "connected");
+});
+
+test("save needs a non-blank draft", () => {
+  assert.equal(canSaveCredential({ draft: "key", pending: false }), true);
+  assert.equal(canSaveCredential({ draft: "   ", pending: false }), false);
+  assert.equal(canSaveCredential({ draft: "", pending: false }), false);
+});
+
+test("save is blocked while a request is pending", () => {
+  assert.equal(canSaveCredential({ draft: "key", pending: true }), false);
+});
+
+const testable = {
+  draft: "",
+  pending: false,
+  checking: false,
+  configured: true as boolean | undefined,
+};
+
+test("test is allowed with no draft and a configured key", () => {
+  assert.equal(canTestCredential(testable), true);
+});
+
+test("test is blocked by a draft, but not by whitespace", () => {
+  assert.equal(canTestCredential({ ...testable, draft: "new" }), false);
+  assert.equal(canTestCredential({ ...testable, draft: "  " }), true);
+});
+
+test("test is blocked while pending or checking", () => {
+  assert.equal(canTestCredential({ ...testable, pending: true }), false);
+  assert.equal(canTestCredential({ ...testable, checking: true }), false);
+});
+
+test("test is blocked when not configured, allowed while unknown", () => {
+  assert.equal(canTestCredential({ ...testable, configured: false }), false);
+  assert.equal(canTestCredential({ ...testable, configured: undefined }), true);
+});
+
+test("clear is allowed only for a stored key", () => {
+  assert.equal(canClearCredential({ source: "stored", pending: false }), true);
+  assert.equal(
+    canClearCredential({ source: "environment", pending: false }),
+    false,
   );
   assert.equal(
-    providerSettingsActions({ configLoaded: true, busy: false }).canEdit,
-    true,
-  );
-});
-
-test("saving, checking, or forbidden admission keeps provider actions disabled", () => {
-  // Each card includes all three conditions in its shared busy flag.
-  for (const configLoaded of [false, true]) {
-    const actions = providerSettingsActions({ configLoaded, busy: true });
-    assert.equal(actions.canCheck, false);
-    assert.equal(actions.canEdit, false);
-  }
-});
-
-test("a replacement credential draft cannot check the old saved credential", () => {
-  const actions = providerSettingsActions({
-    configLoaded: true,
-    busy: false,
-    unsaved: true,
-  });
-  assert.equal(actions.canCheck, false);
-  assert.equal(actions.canEdit, true);
-});
-
-test("every stored judgment choice, including no AI, can return to the environment", () => {
-  for (const provider of ["none", "typesafe", "ollama"] as const) {
-    const config = { provider, stored: true };
-    assert.equal(
-      providerSettingsActions({
-        configLoaded: true,
-        busy: false,
-        storedJudgment: config.stored,
-      }).canUseEnvironment,
-      true,
-      config.provider,
-    );
-  }
-});
-
-test("environment-only judgment settings do not offer a redundant reset", () => {
-  assert.equal(
-    providerSettingsActions({
-      configLoaded: true,
-      busy: false,
-      storedJudgment: false,
-    }).canUseEnvironment,
+    canClearCredential({ source: undefined, pending: false }),
     false,
   );
 });
 
-test("a busy stored judgment editor keeps its reset action visible but cannot edit", () => {
-  const actions = providerSettingsActions({
-    configLoaded: true,
-    busy: true,
-    storedJudgment: true,
-  });
-  assert.equal(actions.canUseEnvironment, true);
-  assert.equal(actions.canEdit, false);
+test("clear is blocked while a request is pending", () => {
+  assert.equal(canClearCredential({ source: "stored", pending: true }), false);
 });
 
-test("opening and canceling an AI edit preserves a failed connection and its explanation", () => {
-  const failed = reduceJudgmentEditor(initJudgmentEditor(), {
-    type: "checked",
-    connected: false,
-    message: "TypeSafe rejected the saved credential.",
+test("provider saves and probes share one queue even when requested in the same tick", async () => {
+  const run = createProviderSettingsQueue();
+  const events: string[] = [];
+  let release!: () => void;
+  const barrier = new Promise<void>((resolve) => {
+    release = resolve;
   });
-  const editing = reduceJudgmentEditor(failed, { type: "edit" });
-  assert.equal(editing.editing, true);
-  assert.equal(editing.connected, false);
-  assert.equal(editing.message, failed.message);
-  assert.deepEqual(reduceJudgmentEditor(editing, { type: "cancel" }), failed);
+  const save = run(async () => {
+    events.push("save started");
+    await barrier;
+    events.push("save finished");
+    return "saved";
+  });
+  const probe = run(async () => {
+    events.push("probe");
+    return "checked";
+  });
+  await Promise.resolve();
+  assert.deepEqual(events, ["save started"]);
+  release();
+  assert.deepEqual(await Promise.all([save, probe]), ["saved", "checked"]);
+  assert.deepEqual(events, ["save started", "save finished", "probe"]);
 });
 
-test("repeated edits preserve successful feedback until a save or check replaces it", () => {
-  const connected = reduceJudgmentEditor(initJudgmentEditor(), {
-    type: "checked",
-    connected: true,
-    message: "Ollama answered a decision successfully.",
+test("a failed provider probe cannot block later saves or checks", async () => {
+  const run = createProviderSettingsQueue();
+  const failure = new Error("Synthetic probe failure");
+  const probe = run(async () => {
+    throw failure;
   });
-  let state = connected;
-  for (let i = 0; i < 2; i++) {
-    state = reduceJudgmentEditor(state, { type: "edit" });
-    // Provider, URL, and key drafts are separate from this saved feedback.
-    state = reduceJudgmentEditor(state, { type: "cancel" });
-    assert.deepEqual(state, connected);
-  }
-});
-
-test("successful persistence closes the editor and invalidates the old connection result", () => {
-  let state = reduceJudgmentEditor(initJudgmentEditor(), {
-    type: "checked",
-    connected: false,
-    message: "The old saved connection failed.",
-  });
-  state = reduceJudgmentEditor(state, { type: "edit" });
-  state = reduceJudgmentEditor(state, {
-    type: "saved",
-    message: "Standard matching saved. AI-assisted matching is disabled.",
-  });
-  assert.deepEqual(state, {
-    editing: false,
-    connected: null,
-    message: "Standard matching saved. AI-assisted matching is disabled.",
-  });
-});
-
-test("a new AI check replaces both the old badge and explanation", () => {
-  let state = reduceJudgmentEditor(initJudgmentEditor(), {
-    type: "checked",
-    connected: true,
-    message: "Previous connection worked.",
-  });
-  state = reduceJudgmentEditor(state, { type: "checking" });
-  assert.deepEqual(state, {
-    editing: false,
-    connected: null,
-    message: null,
-  });
-  state = reduceJudgmentEditor(state, {
-    type: "checked",
-    connected: false,
-    message: "The server is now unavailable.",
-  });
-  assert.equal(state.connected, false);
-  assert.equal(state.message, "The server is now unavailable.");
+  const save = run(async () => "saved after failure");
+  await assert.rejects(probe, (error) => error === failure);
+  assert.equal(await save, "saved after failure");
+  assert.equal(
+    await run(async () => "checked after save"),
+    "checked after save",
+  );
 });

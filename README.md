@@ -109,6 +109,7 @@ Put the variables in `.env.local`.
 | `VELVARR_ALLOW_HTTP`          | no              | `1` allows plain HTTP to private and Docker-network addresses. |
 | `VELVARR_DISCORD_WEBHOOK_URL` | no              | Private Discord webhook (https only). |
 | `VELVARR_DISCORD_DETAIL`      | no              | `1` adds titles to notifications. By default, messages contain only identities. |
+| `VELVARR_WHISPARR_LIBRARY_LIMIT_MIB` | no      | Maximum size in MiB of the Whisparr library list (`/api/v3/movie`), as decoded JSON. A whole number from 2 to 256. Default 32, about 5,000 titles. Increase it for a larger library. An invalid value stops the Whisparr path lookups with `bad_whisparr_config`. |
 | `TPDB_API_TOKEN`              | no              | TPDB token for calls made without a token saved in Settings. A saved token wins. |
 | `STASHDB_API_KEY`             | no              | StashDB key for calls made without a key saved in Settings. A saved key wins. |
 | `TPDB_BASE_URL`               | no              | TPDB API root override. Default `https://api.theporndb.net`. |
@@ -157,6 +158,8 @@ Ollama can run on the same machine or a hosted server reachable from Velvarr. Ex
 Ollama never falls back to the paid TypeSafe service. If the connection fails, matching stays exact. You can also use the `VELVARR_JUDGMENT_PROVIDER`, `OLLAMA_BASE_URL`, and `OLLAMA_MODEL` variables. **Use environment settings** clears the stored provider selection, URL, and model. Environment-only Ollama supports title review and related-title ranking; tag suggestions send member search terms, so they start only after the Ollama choice is saved in Settings. Test some real title variants before you select a model.
 
 Select **Standard matching (no AI)** and **Save** to disable AI calls even when TypeSafe credentials or Ollama settings are present. The settings are preserved for later reuse. TypeSafe configuration also checks its connection after saving.
+
+**Rollback:** The stored `none` choice requires a build that supports it. Before rolling back to v0.40.0 or earlier, select **Use environment settings**, confirm `VELVARR_JUDGMENT_PROVIDER` is `typesafe` or `ollama` (or unset), and back up the configuration. Older builds do not recognize `none`; do not assume AI stays disabled after a rollback.
 
 ## Backup and recovery
 

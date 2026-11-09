@@ -572,14 +572,14 @@ export type WhisparrPathMapping = {
   jellyfinPrefix: string;
 };
 
-export type JudgmentProvider = "none" | "typesafe" | "ollama";
+/** "none" disables every AI-assisted call (standard matching only) while the
+ * stored TypeSafe key and Ollama settings stay for later re-enablement. */
+export type JudgmentProvider = "typesafe" | "ollama" | "none";
 
-/**
- * One shared guard for the provider value in storage, the admin PATCH, and
- * the effective configuration.
- */
+/** One shared guard for the provider value in storage, the admin PATCH, and
+ * the effective configuration (AGENTS.md §5: fix the shared root). */
 export function isJudgmentProvider(value: unknown): value is JudgmentProvider {
-  return value === "none" || value === "typesafe" || value === "ollama";
+  return value === "typesafe" || value === "ollama" || value === "none";
 }
 
 /** Ollama model names reach request URLs only; the allowlist keeps storage
@@ -617,11 +617,8 @@ export type IntegrationConfig = {
     stashdbApiKey?: string;
     /** TypeSafe credentials; used only when TypeSafe is selected. */
     typesafeApiKey?: string;
-    /**
-     * "none" disables AI even when credentials exist. An absent selection uses
-     * VELVARR_JUDGMENT_PROVIDER (default: TypeSafe); absent URL/model settings use
-     * OLLAMA_BASE_URL and OLLAMA_MODEL. Ollama needs no API key.
-     */
+    /** Absent settings use VELVARR_JUDGMENT_PROVIDER (default: TypeSafe),
+     * OLLAMA_BASE_URL, and OLLAMA_MODEL. Ollama needs no API key. */
     judgmentProvider?: JudgmentProvider;
     ollamaUrl?: string;
     ollamaModel?: string;
@@ -709,3 +706,23 @@ export type ProviderStatus = {
   tpdb: "not_configured" | "not_verified";
   stashdb: "not_configured" | "not_verified";
 };
+
+export type CredentialProvider = "tpdb" | "stashdb";
+
+/** GET /api/admin/providers/:provider — one provider's live credential
+ * check. A rejected key or an outage is status data (HTTP 200, verified:
+ * false), never a 401: the client signs out on any 401. */
+export type ProviderCheck =
+  | { provider: CredentialProvider; configured: false }
+  | {
+      provider: CredentialProvider;
+      configured: true;
+      verified: true;
+      account: string;
+    }
+  | {
+      provider: CredentialProvider;
+      configured: true;
+      verified: false;
+      error: { code: string; message: string };
+    };

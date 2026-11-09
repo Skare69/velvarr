@@ -61,7 +61,7 @@ export function judgmentConfiguration(options?: JudgmentOptions): {
   const errors: string[] = [];
   if (provider !== providerRaw) {
     errors.push(
-      `VELVARR_JUDGMENT_PROVIDER has an invalid value ${JSON.stringify(providerRaw)}; judgment features stay disabled until it is "none", "typesafe", or "ollama".`,
+      `VELVARR_JUDGMENT_PROVIDER has an invalid value ${JSON.stringify(providerRaw)}; judgment features stay disabled until it is "typesafe", "ollama", or "none".`,
     );
   }
   const rawUrl =
@@ -95,7 +95,6 @@ export function judgmentConfiguration(options?: JudgmentOptions): {
   const keyPresent = Boolean(
     stored?.typesafeApiKey?.trim() || process.env.TYPESAFE_API_KEY?.trim(),
   );
-  // Disabled AI must not be blocked by settings for an unused backend.
   const activeErrors = provider === "none" ? [] : errors;
   const valid = activeErrors.length === 0;
   return {

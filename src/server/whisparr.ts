@@ -363,10 +363,32 @@ export async function findWhisparrItemByPath(
 
 /** The /api/v3/movie list is the only full-list read. Radarr-family movie
  * resources run several KB each (Radarr #7423: 3,575 movies ≈ 19.6 MB), so
- * medium libraries pass the shared 2 MiB JSON cap; 32 MiB ≈ 5-6k titles.
- * ponytail: fixed bound — move to a per-id lookup or a paged endpoint if
- * lists outgrow it. */
+ * medium libraries pass the shared 2 MiB JSON cap; the 32 MiB default ≈
+ * 5-6k titles. VELVARR_WHISPARR_LIBRARY_LIMIT_MIB raises or lowers it for
+ * one deployment. The bound applies to the decoded body, so a compressed
+ * response cannot slip past it.
+ * ponytail: env-tuned bound — move to a per-id lookup or a paged endpoint
+ * if lists outgrow 256 MiB. */
 export const MOVIE_LIST_BYTES = 32 * 1024 * 1024;
+const MOVIE_LIST_MIB_MIN = 2;
+const MOVIE_LIST_MIB_MAX = 256;
+
+/** The configured movie-list bound in bytes. Unset or empty → the default;
+ * anything but a whole number of MiB in [2, 256] throws before any I/O, so
+ * a typo never silently falls back to a limit the operator did not choose. */
+export function movieListBytes(): number {
+  const raw = process.env.VELVARR_WHISPARR_LIBRARY_LIMIT_MIB?.trim() ?? "";
+  if (raw === "") return MOVIE_LIST_BYTES;
+  const mib = /^\d+$/.test(raw) ? Number(raw) : NaN;
+  if (!(mib >= MOVIE_LIST_MIB_MIN && mib <= MOVIE_LIST_MIB_MAX)) {
+    throw new AppError(
+      500,
+      "bad_whisparr_config",
+      `VELVARR_WHISPARR_LIBRARY_LIMIT_MIB must be a whole number from ${MOVIE_LIST_MIB_MIN} to ${MOVIE_LIST_MIB_MAX}.`,
+    );
+  }
+  return mib * 1024 * 1024;
+}
 
 // ponytail: in-memory, 30 s TTL, 4-server FIFO cap; a persisted index only
 // if one fetch per window still hurts.
@@ -374,20 +396,29 @@ const MOVIE_LIST_TTL_MS = 30_000;
 const MOVIE_LIST_CACHE_MAX = 4;
 // Keyed by Whisparr base URL. Entries hold the in-flight promise: the
 // prefetch that overlaps the Jellyfin read and the enrichment that follows
-// it share one fetch instead of two. A hit also needs the same API key, so
-// changed credentials never reuse another key's collection.
+// it share one fetch instead of two. A hit also needs the same API key and
+// size limit, so changed credentials never reuse another key's collection
+// and a changed limit takes effect on the next read.
 const movieListCache = new Map<
   string,
-  { at: number; apiKey: string; dtos: Promise<MovieResourceDto[]> }
+  {
+    at: number;
+    apiKey: string;
+    sizeLimit: number;
+    dtos: Promise<MovieResourceDto[]>;
+  }
 >();
 
+/** Throws synchronously on an invalid size limit (see movieListBytes). */
 function cachedMovieList(
   whisparr: NonNullable<IntegrationConfig["whisparr"]>,
 ): Promise<MovieResourceDto[]> {
+  const sizeLimit = movieListBytes();
   const hit = movieListCache.get(whisparr.url);
   if (
     hit !== undefined &&
     hit.apiKey === whisparr.apiKey &&
+    hit.sizeLimit === sizeLimit &&
     Date.now() - hit.at < MOVIE_LIST_TTL_MS
   ) {
     return hit.dtos;
@@ -400,7 +431,7 @@ function cachedMovieList(
     whisparr.url,
     "/api/v3/movie",
     whisparr.apiKey,
-    { service: "whisparr", sizeLimit: MOVIE_LIST_BYTES },
+    { service: "whisparr", sizeLimit },
   ).then((dto) =>
     asMovieResources(dto).map(
       ({ itemType, path, foreignId, tmdbId, tpdbId, stashId }) => ({
@@ -414,7 +445,12 @@ function cachedMovieList(
     ),
   );
   movieListCache.delete(whisparr.url);
-  movieListCache.set(whisparr.url, { at, apiKey: whisparr.apiKey, dtos });
+  movieListCache.set(whisparr.url, {
+    at,
+    apiKey: whisparr.apiKey,
+    sizeLimit,
+    dtos,
+  });
   if (movieListCache.size > MOVIE_LIST_CACHE_MAX) {
     const oldest = movieListCache.keys().next().value;
     if (oldest !== undefined) movieListCache.delete(oldest);
@@ -438,7 +474,12 @@ function cachedMovieList(
 export function prefetchWhisparrMovieList(config: IntegrationConfig): void {
   const whisparr = config?.whisparr;
   if (!whisparr?.url || !whisparr.apiKey) return;
-  void cachedMovieList(whisparr);
+  try {
+    void cachedMovieList(whisparr);
+  } catch {
+    // An invalid size limit: the enrichment call that follows throws the
+    // same named error and reports it, so the warm-up only skips.
+  }
 }
 
 /** One Whisparr sweep for a whole list of Jellyfin items: a single

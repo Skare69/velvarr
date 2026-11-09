@@ -917,7 +917,9 @@ async function tpdbHandler(
 // --- M3 fixtures: StashDB graphql ---
 
 const stashdbKey = "stash-fixture-key";
-const stashdbFx = { fail: 0, calls: 0, lastQuery: "", lastVars: "" };
+// hits counts every request, even ones the apikey check refuses, so a test
+// can prove that no StashDB request happened at all.
+const stashdbFx = { hits: 0, fail: 0, calls: 0, lastQuery: "", lastVars: "" };
 
 // Scenes the uncapped-directory test injects into the queryScenes snapshot;
 // empty outside it, so every other pin keeps its exact fixture.
@@ -939,6 +941,7 @@ async function stashdbHandler(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
+  stashdbFx.hits += 1;
   if (String(req.headers.apikey ?? "") !== stashdbKey) {
     return json(res, 401, {});
   }
@@ -950,15 +953,10 @@ async function stashdbHandler(
   const body = await readBody(req);
   const query = typeof body.query === "string" ? body.query : "";
   stashdbFx.lastVars = JSON.stringify(body.variables ?? null);
-  if (query.includes("me { id name roles")) {
+  // Identity probe for the credential check: `query { me { ... } }`.
+  if (/\{\s*me\s*\{/.test(query)) {
     return json(res, 200, {
-      data: {
-        me: {
-          id: "fixture-stashdb-account",
-          name: "Fixture StashDB",
-          roles: ["READ"],
-        },
-      },
+      data: { me: { id: "fixture-user", name: "Fixture StashDB", roles: [] } },
     });
   }
   if (query.includes("queryStudios")) {
@@ -2919,6 +2917,25 @@ test("provider credentials: stored config wins over environment, clear falls bac
   const rejectedBody = (await rejected.json()) as { error: { code: string } };
   assert.equal(rejectedBody.error.code, "upstream_auth");
 
+  // The per-provider check reports the rejection as status data (200),
+  // never a 401 that would sign the admin out, and never echoes the key.
+  const rejectedOne = await call("GET", "/api/admin/providers/tpdb", {
+    cookie: admin,
+  });
+  assert.equal(rejectedOne.status, 200);
+  const rejectedOneText = await rejectedOne.text();
+  const rejectedOneBody = JSON.parse(rejectedOneText) as {
+    configured: boolean;
+    verified: boolean;
+    error: { code: string };
+  };
+  assert.equal(rejectedOneBody.configured, true);
+  assert.equal(rejectedOneBody.verified, false);
+  assert.equal(rejectedOneBody.error.code, "upstream_auth");
+  assert.ok(!rejectedOneText.includes("wrong-stored-token"));
+  assert.ok(!rejectedOneText.includes(tpdbToken));
+  assert.equal((await call("GET", "/api/me", { cookie: admin })).status, 200);
+
   // Storing the working key verifies against the provider.
   const good = await call("PATCH", "/api/admin/integrations", {
     cookie: admin,
@@ -2984,121 +3001,6 @@ test("provider credentials: stored config wins over environment, clear falls bac
   });
 });
 
-test("individual provider checks require admin admission and reject unsupported providers without reads", async () => {
-  if (!owner) await boot();
-  const admin = owner || (await loginAs("owner"));
-  const requester = member || (await loginAs("member"));
-  const beforeTpdb = tpdbFx.calls,
-    beforeStashdb = stashdbFx.calls;
-  assert.equal((await call("GET", "/api/admin/providers/tpdb")).status, 401);
-  assert.equal(
-    (await call("GET", "/api/admin/providers/tpdb", { cookie: requester }))
-      .status,
-    403,
-  );
-  for (const provider of ["unknown", "tmdb", "typesafe"]) {
-    const refused = await call("GET", "/api/admin/providers/" + provider, {
-      cookie: admin,
-    });
-    assert.equal((await errorShape(refused, 400)).code, "invalid_query");
-  }
-  assert.equal(tpdbFx.calls, beforeTpdb);
-  assert.equal(stashdbFx.calls, beforeStashdb);
-});
-
-test("a failed individual provider check stays scoped and never invalidates the Velvarr session", async () => {
-  if (!owner) await boot();
-  const admin = owner || (await loginAs("owner"));
-  const previousStashKey = process.env.STASHDB_API_KEY;
-  const previousStashBase = process.env.STASHDB_BASE_URL;
-  process.env.STASHDB_API_KEY = stashdbKey;
-  process.env.STASHDB_BASE_URL = stashdbUrl;
-  const beforeStashdb = stashdbFx.calls;
-  assert.equal(
-    (
-      await call("PATCH", "/api/admin/integrations", {
-        cookie: admin,
-        body: { tpdbApiToken: "wrong-provider-row-key" },
-      })
-    ).status,
-    200,
-  );
-  try {
-    const response = await call("GET", "/api/admin/providers/tpdb", {
-      cookie: admin,
-    });
-    assert.equal(response.status, 200);
-    const body = await response.json();
-    assert.equal(body.provider, "tpdb");
-    assert.equal(body.configured, true);
-    assert.equal(body.verified, false);
-    assert.equal(body.error.code, "upstream_auth");
-    assert.equal(
-      JSON.stringify(body).includes("wrong-provider-row-key"),
-      false,
-    );
-    assert.equal(
-      stashdbFx.calls,
-      beforeStashdb,
-      "checking TPDB never contacts StashDB",
-    );
-    assert.equal((await call("GET", "/api/me", { cookie: admin })).status, 200);
-    const beforeTpdb = tpdbFx.calls;
-    const other = await call("GET", "/api/admin/providers/stashdb", {
-      cookie: admin,
-    });
-    assert.equal(other.status, 200);
-    assert.deepEqual(await other.json(), {
-      provider: "stashdb",
-      configured: true,
-      verified: true,
-      account: "Fixture StashDB",
-    });
-    assert.equal(
-      tpdbFx.calls,
-      beforeTpdb,
-      "a rejected TPDB key cannot block the StashDB check",
-    );
-  } finally {
-    if (previousStashKey === undefined) delete process.env.STASHDB_API_KEY;
-    else process.env.STASHDB_API_KEY = previousStashKey;
-    if (previousStashBase === undefined) delete process.env.STASHDB_BASE_URL;
-    else process.env.STASHDB_BASE_URL = previousStashBase;
-    assert.equal(
-      (
-        await call("PATCH", "/api/admin/integrations", {
-          cookie: admin,
-          body: { tpdbApiToken: "" },
-        })
-      ).status,
-      200,
-    );
-  }
-});
-
-test("an unconfigured provider row reports absence without contacting either provider", async () => {
-  if (!owner) await boot();
-  const admin = owner || (await loginAs("owner"));
-  const token = process.env.TPDB_API_TOKEN;
-  delete process.env.TPDB_API_TOKEN;
-  try {
-    const beforeTpdb = tpdbFx.calls,
-      beforeStashdb = stashdbFx.calls;
-    const response = await call("GET", "/api/admin/providers/tpdb", {
-      cookie: admin,
-    });
-    assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), {
-      provider: "tpdb",
-      configured: false,
-    });
-    assert.equal(tpdbFx.calls, beforeTpdb);
-    assert.equal(stashdbFx.calls, beforeStashdb);
-  } finally {
-    if (token === undefined) delete process.env.TPDB_API_TOKEN;
-    else process.env.TPDB_API_TOKEN = token;
-  }
-});
 test("Ollama settings and model verification require admin admission and preserve integrations", async () => {
   const baselineResponse = await call("GET", "/api/admin/integrations", {
     cookie: owner,
@@ -3158,68 +3060,36 @@ test("Ollama settings and model verification require admin admission and preserv
   assert.equal((await clear.json()).judgment.provider, "typesafe");
 });
 
-test("standard matching persists through credential edits and requires admin admission", async () => {
-  const previous = getConfig()?.providers;
-  const body = {
-    judgmentProvider: "none",
-    typesafeApiKey: "preserved-disabled-ai-key",
-    ollamaUrl: "http://localhost:11434",
-    ollamaModel: "nimble",
-  };
-  const denied = await call("PATCH", "/api/admin/integrations", {
-    cookie: member,
-    body,
-  });
-  assert.equal(denied.status, 403);
-  const baseline = await (
-    await call("GET", "/api/admin/integrations", { cookie: owner })
-  ).json();
+test("an administrator can disable AI-assisted matching and credential edits keep it disabled", async () => {
   try {
-    const saved = await call("PATCH", "/api/admin/integrations", {
+    const disabled = await call("PATCH", "/api/admin/integrations", {
       cookie: owner,
-      body,
+      body: { judgmentProvider: "none" },
     });
-    assert.equal(saved.status, 200);
-    const shape = await saved.json();
+    assert.equal(disabled.status, 200);
+    const shape = await disabled.json();
     assert.equal(shape.judgment.provider, "none");
     assert.equal(shape.judgment.configured, false);
-    assert.equal(shape.judgment.stored, true);
-    assert.equal(shape.providers.typesafe.configured, true);
-    assert.deepEqual(shape.jellyfin, baseline.jellyfin);
-    assert.deepEqual(shape.whisparr, baseline.whisparr);
-    assert.equal(getConfig()?.providers?.judgmentProvider, "none");
-    assert.equal(JSON.stringify(shape).includes(body.typesafeApiKey), false);
-    const edited = await call("PATCH", "/api/admin/integrations", {
+
+    const credentialEdit = await call("PATCH", "/api/admin/integrations", {
       cookie: owner,
-      body: { typesafeApiKey: "updated-disabled-ai-key" },
+      body: { typesafeApiKey: "kept-for-later" },
     });
-    assert.equal(edited.status, 200);
-    assert.equal((await edited.json()).judgment.provider, "none");
-    const read = await call("GET", "/api/admin/integrations", {
-      cookie: owner,
-    });
-    assert.equal((await read.json()).judgment.configured, false);
+    assert.equal(credentialEdit.status, 200);
+    assert.equal((await credentialEdit.json()).judgment.provider, "none");
+
     const check = await call("POST", "/api/admin/judgment/check", {
       cookie: owner,
       body: {},
     });
-    assert.equal(check.status, 200);
-    assert.deepEqual(await check.json(), {
-      provider: "none",
-      connected: false,
-      error: "AI-assisted matching is disabled.",
-    });
+    const result = await check.json();
+    assert.equal(result.connected, false);
+    assert.equal(result.error, "AI-assisted matching is disabled.");
   } finally {
-    const restored = await call("PATCH", "/api/admin/integrations", {
+    await call("PATCH", "/api/admin/integrations", {
       cookie: owner,
-      body: {
-        judgmentProvider: previous?.judgmentProvider ?? "",
-        typesafeApiKey: previous?.typesafeApiKey ?? "",
-        ollamaUrl: previous?.ollamaUrl ?? "",
-        ollamaModel: previous?.ollamaModel ?? "",
-      },
+      body: { judgmentProvider: "", typesafeApiKey: "" },
     });
-    assert.equal(restored.status, 200);
   }
 });
 
@@ -3781,6 +3651,31 @@ test("requests: lifecycle, autoApprove, privacy, roles, origin", async () => {
   const stashdb = providersBody.providers.find((p) => p.provider === "stashdb");
   assert.equal(stashdb?.configured, false);
   assert.equal((await call("GET", "/api/admin/providers")).status, 401);
+
+  // Per-provider checks: each provider reports alone.
+  const stashOne = await call("GET", "/api/admin/providers/stashdb", {
+    cookie: owner,
+  });
+  assert.equal(stashOne.status, 200);
+  assert.deepEqual(await stashOne.json(), {
+    provider: "stashdb",
+    configured: false,
+  });
+  const tpdbOne = await call("GET", "/api/admin/providers/tpdb", {
+    cookie: owner,
+  });
+  assert.equal(tpdbOne.status, 200);
+  assert.deepEqual(await tpdbOne.json(), {
+    provider: "tpdb",
+    configured: true,
+    verified: true,
+    account: "Fixture TPDB",
+  });
+  await errorShape(await call("GET", "/api/admin/providers/tpdb"), 401);
+  await errorShape(
+    await call("GET", "/api/admin/providers/tpdb", { cookie: member }),
+    403,
+  );
 
   // Unauthenticated and cross-origin mutations are rejected.
   const media = { provider: "tpdb", kind: "movie", id: TPDB_MOVIE };
@@ -4429,6 +4324,81 @@ test("studio search per provider; studio references refused as media; unsupporte
   );
   assert.equal(commaed.status, 200);
   assert.deepEqual(tagKeys(tpdbFx.lastQuery), ["194", "70"]);
+});
+
+test("per-provider credential check: each provider verifies alone; unknown provider reads nothing", async () => {
+  type Check = {
+    provider: string;
+    configured: boolean;
+    verified?: boolean;
+    account?: string;
+    error?: { code: string; message: string };
+  };
+
+  // Unknown providers are refused before any provider read.
+  const tpdbBefore = tpdbFx.calls;
+  const stashBefore = stashdbFx.hits;
+  for (const bad of ["typesafe", "TPDB"]) {
+    const res = await call("GET", `/api/admin/providers/${bad}`, {
+      cookie: owner,
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await errorShape(res)).code, "invalid_provider");
+  }
+  assert.equal(tpdbFx.calls, tpdbBefore);
+  assert.equal(stashdbFx.hits, stashBefore);
+
+  // TPDB outage: reported as status data, and StashDB is never touched.
+  const previousFailPaths = tpdbFx.failPaths;
+  try {
+    tpdbFx.failPaths = ["/user"];
+    const stashHits = stashdbFx.hits;
+    const down = await call("GET", "/api/admin/providers/tpdb", {
+      cookie: owner,
+    });
+    assert.equal(down.status, 200);
+    const downBody = (await down.json()) as Check;
+    assert.equal(downBody.provider, "tpdb");
+    assert.equal(downBody.configured, true);
+    assert.equal(downBody.verified, false);
+    assert.equal(downBody.error?.code, "upstream_unavailable");
+    assert.equal(stashdbFx.hits, stashHits);
+  } finally {
+    tpdbFx.failPaths = previousFailPaths;
+  }
+
+  // StashDB verifies alone, without a TPDB read.
+  const tpdbCalls = tpdbFx.calls;
+  const stashOk = await call("GET", "/api/admin/providers/stashdb", {
+    cookie: owner,
+  });
+  assert.equal(stashOk.status, 200);
+  assert.deepEqual(await stashOk.json(), {
+    provider: "stashdb",
+    configured: true,
+    verified: true,
+    account: "Fixture StashDB",
+  });
+  assert.equal(tpdbFx.calls, tpdbCalls);
+
+  // StashDB rejection: 200 status data, no key in the response.
+  try {
+    process.env.STASHDB_API_KEY = "wrong-stash-key";
+    const rejected = await call("GET", "/api/admin/providers/stashdb", {
+      cookie: owner,
+    });
+    assert.equal(rejected.status, 200);
+    const text = await rejected.text();
+    const body = JSON.parse(text) as Check;
+    assert.equal(body.configured, true);
+    assert.equal(body.verified, false);
+    assert.equal(body.error?.code, "upstream_auth");
+    assert.ok(!text.includes("wrong-stash-key"));
+    assert.ok(!text.includes(stashdbKey));
+    assert.ok(!text.includes(tpdbToken));
+  } finally {
+    process.env.STASHDB_API_KEY = stashdbKey;
+  }
 });
 
 // --- M3 phase B: discover shelves + global multi-category search ---

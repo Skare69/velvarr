@@ -1040,6 +1040,11 @@ body:has(.auth-page) {
   margin-top: 18px;
   padding: 16px 0;
 }
+/* Stacked provider cards share one divider instead of two. */
+.settings-connection-status + .settings-connection-status {
+  border-top: 0;
+  margin-top: 0;
+}
 .settings-connection-save {
   display: grid;
   gap: 16px;
@@ -1047,6 +1052,17 @@ body:has(.auth-page) {
 .settings-save-status {
   color: var(--color-ok);
   font-size: 0.875rem;
+}
+/* The probe of the saved AI-matching settings, apart from the save notice. */
+.judgment-check {
+  color: var(--color-muted);
+  font-size: 0.875rem;
+}
+.judgment-check[data-state="connected"] {
+  color: var(--color-ok);
+}
+.judgment-check[data-state="failed"] {
+  color: var(--color-danger);
 }
 .settings-connection-actions {
   display: flex;
