@@ -6,7 +6,13 @@
  * administrator accounts only.
  */
 
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useReducer,
+  useState,
+  type FormEvent,
+} from "react";
 import type {
   JudgmentProvider,
   ProviderStatus,
@@ -23,8 +29,21 @@ import {
   useSession,
 } from "./shared.tsx";
 import { LimitsPanel, ReleaseStatusPanel } from "./limits.tsx";
+import {
+  initJudgmentEditor,
+  providerSettingsActions,
+  reduceJudgmentEditor,
+  type JudgmentSettings,
+} from "../lib/judgment-editor.ts";
 
 /* ---------- App-local API view records (not in contracts.ts) ---------- */
+
+/** The `judgment` block of GET and PATCH /api/admin/integrations. */
+interface JudgmentShape extends JudgmentSettings {
+  configured: boolean;
+  stored: boolean;
+  error?: string;
+}
 
 interface WhisparrStatus {
   configured: boolean;
@@ -1153,93 +1172,104 @@ function ProvidersCard({
 
 /** Local model settings share the existing encrypted integration configuration. */
 function JudgmentCard({ refreshKey = 0 }: { refreshKey?: number }) {
-  const [provider, setProvider] = useState<JudgmentProvider>("typesafe");
-  const [url, setUrl] = useState("http://localhost:11434");
-  const [model, setModel] = useState("nimble");
+  const [editor, dispatch] = useReducer(
+    reduceJudgmentEditor,
+    undefined,
+    initJudgmentEditor,
+  );
+  const { draft, check } = editor;
   const [configured, setConfigured] = useState(false);
   const [stored, setStored] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [ready, setReady] = useState(false);
   const [forbidden, setForbidden] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const applyShape = useCallback((judgment: JudgmentShape) => {
+    setConfigured(judgment.configured);
+    setStored(judgment.stored);
+    setConfigError(judgment.error ?? null);
+    return {
+      provider: judgment.provider,
+      url: judgment.url,
+      model: judgment.model,
+    };
+  }, []);
   const load = useCallback(async () => {
     try {
-      const { judgment } = await api<{
-        judgment: {
-          provider: JudgmentProvider;
-          url: string;
-          model: string;
-          configured: boolean;
-          stored: boolean;
-          error?: string;
-        };
-      }>("/api/admin/integrations");
-      setProvider(judgment.provider);
-      setUrl(judgment.url);
-      setModel(judgment.model);
-      setConfigured(judgment.configured);
-      setStored(judgment.stored);
-      setConfigError(judgment.error ?? null);
+      const { judgment } = await api<{ judgment: JudgmentShape }>(
+        "/api/admin/integrations",
+      );
+      dispatch({ type: "loaded", settings: applyShape(judgment) });
+      setLoadError(null);
       setReady(true);
     } catch (error) {
       if (error instanceof ApiError && error.status === 403) setForbidden(true);
-      setMessage(messageOf(error));
+      setLoadError(messageOf(error));
     }
-  }, []);
+  }, [applyShape]);
   useEffect(() => {
     void load();
   }, [load, refreshKey]);
-  const save = async (clear = false) => {
-    setPending(true);
-    setMessage(null);
-    try {
-      await api("/api/admin/integrations", {
-        method: "PATCH",
-        body: JSON.stringify(
-          clear
-            ? { judgmentProvider: "", ollamaUrl: "", ollamaModel: "" }
-            : provider === "ollama"
-              ? {
-                  judgmentProvider: provider,
-                  ollamaUrl: url,
-                  ollamaModel: model,
-                }
-              : { judgmentProvider: provider },
-        ),
-      });
-      await load();
-      setMessage(
-        !clear && provider === "none"
-          ? "Settings saved. AI-assisted matching is off."
-          : "Settings saved. Test the connection to verify the selected model.",
-      );
-    } catch (error) {
-      setMessage(messageOf(error));
-    } finally {
-      setPending(false);
-    }
-  };
-  const check = async () => {
-    setPending(true);
-    setMessage(null);
+  // Probes only what is persisted: callers run it after a save succeeded or
+  // on demand for the settings already saved.
+  const probe = async () => {
+    dispatch({ type: "checking" });
     try {
       const result = await api<{
         provider: JudgmentProvider;
         connected: boolean;
         error?: string;
       }>("/api/admin/judgment/check", { method: "POST", body: "{}" });
-      setMessage(
-        result.connected
-          ? `${result.provider === "ollama" ? "Ollama" : "TypeSafe"} answered a decision successfully.`
-          : (result.error ?? "Connection failed."),
-      );
+      dispatch({
+        type: "checked",
+        result: result.connected
+          ? { connected: true, provider: result.provider }
+          : { connected: false, message: result.error ?? "Connection failed." },
+      });
     } catch (error) {
-      setMessage(messageOf(error));
+      dispatch({
+        type: "checked",
+        result: { connected: false, message: messageOf(error) },
+      });
+    }
+  };
+  const save = async (clear = false) => {
+    setPending(true);
+    let saved: JudgmentShape;
+    try {
+      ({ judgment: saved } = await api<{ judgment: JudgmentShape }>(
+        "/api/admin/integrations",
+        {
+          method: "PATCH",
+          body: JSON.stringify(
+            clear
+              ? { judgmentProvider: "", ollamaUrl: "", ollamaModel: "" }
+              : draft.provider === "ollama"
+                ? {
+                    judgmentProvider: draft.provider,
+                    ollamaUrl: draft.url,
+                    ollamaModel: draft.model,
+                  }
+                : { judgmentProvider: draft.provider },
+          ),
+        },
+      ));
+    } catch (error) {
+      dispatch({ type: "saveFailed", message: messageOf(error) });
+      return;
     } finally {
       setPending(false);
     }
+    dispatch({ type: "saved", settings: applyShape(saved) });
+    if (saved.configured && saved.error === undefined) await probe();
   };
+  const actions = providerSettingsActions(editor, {
+    ready,
+    pending,
+    configured,
+  });
+  const message = loadError ?? editor.notice;
   return (
     <div className="panel p-5">
       <h3 className="font-semibold">AI-assisted matching</h3>
@@ -1273,14 +1303,19 @@ function JudgmentCard({ refreshKey = 0 }: { refreshKey?: number }) {
             id="judgment-provider"
             className="input max-w-md"
             disabled={!ready || pending}
-            value={provider}
-            onChange={(e) => setProvider(e.target.value as JudgmentProvider)}
+            value={draft.provider}
+            onChange={(e) =>
+              dispatch({
+                type: "edit",
+                patch: { provider: e.target.value as JudgmentProvider },
+              })
+            }
           >
             <option value="typesafe">TypeSafe</option>
             <option value="ollama">Ollama (local)</option>
             <option value="none">None (standard matching)</option>
           </select>
-          {provider === "ollama" ? (
+          {draft.provider === "ollama" ? (
             <>
               <label className="label" htmlFor="ollama-url">
                 Ollama URL
@@ -1290,8 +1325,10 @@ function JudgmentCard({ refreshKey = 0 }: { refreshKey?: number }) {
                 className="input max-w-md"
                 type="url"
                 disabled={!ready || pending}
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
+                value={draft.url}
+                onChange={(e) =>
+                  dispatch({ type: "edit", patch: { url: e.target.value } })
+                }
               />
               <label className="label" htmlFor="ollama-model">
                 Decision model
@@ -1300,8 +1337,10 @@ function JudgmentCard({ refreshKey = 0 }: { refreshKey?: number }) {
                 id="ollama-model"
                 className="input max-w-md"
                 disabled={!ready || pending}
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
+                value={draft.model}
+                onChange={(e) =>
+                  dispatch({ type: "edit", patch: { model: e.target.value } })
+                }
               />
               <p className="text-sm text-muted">
                 Requires Ollama 0.35 or later and a downloaded decision model
@@ -1310,7 +1349,7 @@ function JudgmentCard({ refreshKey = 0 }: { refreshKey?: number }) {
                 VELVARR_ALLOW_HTTP=1.
               </p>
             </>
-          ) : provider === "none" ? (
+          ) : draft.provider === "none" ? (
             <p className="text-sm text-muted">
               AI-assisted matching is off. Velvarr uses standard (exact)
               matching only and sends nothing to TypeSafe or Ollama. The saved
@@ -1325,26 +1364,30 @@ function JudgmentCard({ refreshKey = 0 }: { refreshKey?: number }) {
           <div className="flex flex-wrap gap-2">
             <button
               className="btn btn-accent"
-              disabled={
-                !ready ||
-                pending ||
-                (provider === "ollama" && (!url.trim() || !model.trim()))
-              }
+              disabled={!actions.save}
               onClick={() => void save()}
             >
               Save settings
             </button>
+            {actions.cancel ? (
+              <button
+                className="btn"
+                onClick={() => dispatch({ type: "cancel" })}
+              >
+                Cancel
+              </button>
+            ) : null}
             <button
               className="btn"
-              disabled={!ready || pending || !configured}
-              onClick={() => void check()}
+              disabled={!actions.check}
+              onClick={() => void probe()}
             >
               Test saved connection
             </button>
             {stored ? (
               <button
                 className="btn"
-                disabled={!ready || pending}
+                disabled={!actions.reset}
                 onClick={() => void save(true)}
               >
                 Use environment settings
@@ -1356,6 +1399,19 @@ function JudgmentCard({ refreshKey = 0 }: { refreshKey?: number }) {
       {message ? (
         <p className="mt-3 text-sm text-muted" role="status">
           {message}
+        </p>
+      ) : null}
+      {check ? (
+        <p
+          className="judgment-check mt-2"
+          data-state={check.state}
+          role="status"
+        >
+          {check.state === "checking"
+            ? "Testing the saved connection…"
+            : check.state === "connected"
+              ? `${check.provider === "ollama" ? "Ollama" : "TypeSafe"} answered a decision successfully.`
+              : `Saved connection failed: ${check.message}`}
         </p>
       ) : null}
     </div>

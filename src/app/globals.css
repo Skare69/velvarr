@@ -1048,6 +1048,17 @@ body:has(.auth-page) {
   color: var(--color-ok);
   font-size: 0.875rem;
 }
+/* The probe of the saved AI-matching settings, apart from the save notice. */
+.judgment-check {
+  color: var(--color-muted);
+  font-size: 0.875rem;
+}
+.judgment-check[data-state="connected"] {
+  color: var(--color-ok);
+}
+.judgment-check[data-state="failed"] {
+  color: var(--color-danger);
+}
 .settings-connection-actions {
   display: flex;
   flex-wrap: wrap;

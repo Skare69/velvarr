@@ -146,8 +146,8 @@ ollama pull nimble
 ```
 
 1. Open **Settings → Metadata providers → AI-assisted matching** and select **Ollama (local)**.
-2. Enter the Ollama URL and the model name from `ollama list`, then save.
-3. Select **Test saved connection**.
+2. Enter the Ollama URL and the model name from `ollama list`, then select **Save settings**.
+3. Read the connection result below the buttons. After each successful save, Velvarr tests the saved settings. A failed test does not undo the save. To test again, select **Test saved connection**.
 
 Ollama URL:
 
