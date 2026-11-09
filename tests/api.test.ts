@@ -3032,6 +3032,39 @@ test("Ollama settings and model verification require admin admission and preserv
   assert.equal((await clear.json()).judgment.provider, "typesafe");
 });
 
+test("an administrator can disable AI-assisted matching and credential edits keep it disabled", async () => {
+  try {
+    const disabled = await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: { judgmentProvider: "none" },
+    });
+    assert.equal(disabled.status, 200);
+    const shape = await disabled.json();
+    assert.equal(shape.judgment.provider, "none");
+    assert.equal(shape.judgment.configured, false);
+
+    const credentialEdit = await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: { typesafeApiKey: "kept-for-later" },
+    });
+    assert.equal(credentialEdit.status, 200);
+    assert.equal((await credentialEdit.json()).judgment.provider, "none");
+
+    const check = await call("POST", "/api/admin/judgment/check", {
+      cookie: owner,
+      body: {},
+    });
+    const result = await check.json();
+    assert.equal(result.connected, false);
+    assert.equal(result.error, "AI-assisted matching is disabled.");
+  } finally {
+    await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: { judgmentProvider: "", typesafeApiKey: "" },
+    });
+  }
+});
+
 test("an invalid environment judgment provider degrades the integrations response", async () => {
   const before = process.env.VELVARR_JUDGMENT_PROVIDER;
   try {

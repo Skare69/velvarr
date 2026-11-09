@@ -572,12 +572,14 @@ export type WhisparrPathMapping = {
   jellyfinPrefix: string;
 };
 
-export type JudgmentProvider = "typesafe" | "ollama";
+/** "none" disables every AI-assisted call (standard matching only) while the
+ * stored TypeSafe key and Ollama settings stay for later re-enablement. */
+export type JudgmentProvider = "typesafe" | "ollama" | "none";
 
 /** One shared guard for the provider value in storage, the admin PATCH, and
  * the effective configuration (AGENTS.md §5: fix the shared root). */
 export function isJudgmentProvider(value: unknown): value is JudgmentProvider {
-  return value === "typesafe" || value === "ollama";
+  return value === "typesafe" || value === "ollama" || value === "none";
 }
 
 /** Ollama model names reach request URLs only; the allowlist keeps storage

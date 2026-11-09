@@ -1199,18 +1199,20 @@ function JudgmentCard({ refreshKey = 0 }: { refreshKey?: number }) {
         body: JSON.stringify(
           clear
             ? { judgmentProvider: "", ollamaUrl: "", ollamaModel: "" }
-            : provider === "typesafe"
-              ? { judgmentProvider: provider }
-              : {
+            : provider === "ollama"
+              ? {
                   judgmentProvider: provider,
                   ollamaUrl: url,
                   ollamaModel: model,
-                },
+                }
+              : { judgmentProvider: provider },
         ),
       });
       await load();
       setMessage(
-        "Settings saved. Test the connection to verify the selected model.",
+        !clear && provider === "none"
+          ? "Settings saved. AI-assisted matching is off."
+          : "Settings saved. Test the connection to verify the selected model.",
       );
     } catch (error) {
       setMessage(messageOf(error));
@@ -1243,10 +1245,11 @@ function JudgmentCard({ refreshKey = 0 }: { refreshKey?: number }) {
       <h3 className="font-semibold">AI-assisted matching</h3>
       <p className="mt-1 text-sm text-muted">
         Choose TypeSafe or your own Ollama decision model for title review, tag
-        suggestions, and related-title ranking. Tag suggestions send member
-        search terms to the backend you select, so they start only after this
-        choice is saved. Similarity still requires administrator review and
-        never grants playback access.
+        suggestions, and related-title ranking, or choose None to turn
+        AI-assisted matching off. Tag suggestions send member search terms to
+        the backend you select, so they start only after this choice is saved.
+        Similarity still requires administrator review and never grants playback
+        access.
       </p>
       {configError ? (
         <div className="mt-3">
@@ -1275,6 +1278,7 @@ function JudgmentCard({ refreshKey = 0 }: { refreshKey?: number }) {
           >
             <option value="typesafe">TypeSafe</option>
             <option value="ollama">Ollama (local)</option>
+            <option value="none">None (standard matching)</option>
           </select>
           {provider === "ollama" ? (
             <>
@@ -1306,6 +1310,12 @@ function JudgmentCard({ refreshKey = 0 }: { refreshKey?: number }) {
                 VELVARR_ALLOW_HTTP=1.
               </p>
             </>
+          ) : provider === "none" ? (
+            <p className="text-sm text-muted">
+              AI-assisted matching is off. Velvarr uses standard (exact)
+              matching only and sends nothing to TypeSafe or Ollama. The saved
+              TypeSafe key and Ollama settings stay stored for later.
+            </p>
           ) : (
             <p className="text-sm text-muted">
               Uses the TypeSafe key configured above. Without a key, ordinary

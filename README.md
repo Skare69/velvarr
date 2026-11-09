@@ -117,7 +117,7 @@ Put the variables in `.env.local`.
 | `TYPESAFE_BASE_URL`           | no              | TypeSafe cloud API root override. Unset uses the TypeSafe default. |
 | `TYPESAFE_DEFAULT_MODEL`      | no              | TypeSafe decision model override. Unset uses the TypeSafe default. |
 | `TYPESAFE_API_KEY`            | no              | TypeSafe key for AI-assisted matching. A key saved in Settings wins. Tag suggestions need a key saved in Settings. |
-| `VELVARR_JUDGMENT_PROVIDER`   | no              | `typesafe` (default) or `ollama`. A choice saved in Settings wins. Tag suggestions need a choice saved in Settings. |
+| `VELVARR_JUDGMENT_PROVIDER`   | no              | `typesafe` (default), `ollama`, or `none`. `none` turns off AI-assisted matching. A choice saved in Settings wins. Tag suggestions need a choice saved in Settings. |
 | `OLLAMA_BASE_URL`             | no              | Ollama API root. Default `http://localhost:11434`. |
 | `OLLAMA_MODEL`                | no              | Ollama decision model. Default `nimble`. |
 | `VELVARR_UPDATE_CHECK`        | no              | `0` disables the release check. Otherwise, the server asks `api.github.com` at most once an hour after a success and at most once every ten minutes after a failure. |
@@ -156,6 +156,8 @@ Ollama URL:
 - Ollama runs on a different host: use its private address. See the [Ollama network guide](https://docs.ollama.com/faq#how-do-i-configure-ollama-server).
 
 Ollama never falls back to the paid TypeSafe service. If the connection fails, matching stays exact. You can also use the `VELVARR_JUDGMENT_PROVIDER`, `OLLAMA_BASE_URL`, and `OLLAMA_MODEL` variables. Test some real title variants before you select a model.
+
+To turn off AI-assisted matching, select **None (standard matching)** and save. Velvarr then sends no data to TypeSafe or Ollama. The saved TypeSafe key and Ollama settings stay, so you can select a provider again later.
 
 ## Backup and recovery
 
