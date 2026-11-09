@@ -917,7 +917,9 @@ async function tpdbHandler(
 // --- M3 fixtures: StashDB graphql ---
 
 const stashdbKey = "stash-fixture-key";
-const stashdbFx = { fail: 0, calls: 0, lastQuery: "", lastVars: "" };
+// hits counts every request, even ones the apikey check refuses, so a test
+// can prove that no StashDB request happened at all.
+const stashdbFx = { hits: 0, fail: 0, calls: 0, lastQuery: "", lastVars: "" };
 
 // Scenes the uncapped-directory test injects into the queryScenes snapshot;
 // empty outside it, so every other pin keeps its exact fixture.
@@ -939,6 +941,7 @@ async function stashdbHandler(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
+  stashdbFx.hits += 1;
   if (String(req.headers.apikey ?? "") !== stashdbKey) {
     return json(res, 401, {});
   }
@@ -950,6 +953,12 @@ async function stashdbHandler(
   const body = await readBody(req);
   const query = typeof body.query === "string" ? body.query : "";
   stashdbFx.lastVars = JSON.stringify(body.variables ?? null);
+  // Identity probe for the credential check: `query { me { ... } }`.
+  if (/\{\s*me\s*\{/.test(query)) {
+    return json(res, 200, {
+      data: { me: { id: "fixture-user", name: "Fixture StashDB", roles: [] } },
+    });
+  }
   if (query.includes("queryStudios")) {
     // studioCounterpart matches the exact stored URL: the one published
     // theporndb.net/studios/<uuid> pair resolves; every other URL is
@@ -2908,6 +2917,25 @@ test("provider credentials: stored config wins over environment, clear falls bac
   const rejectedBody = (await rejected.json()) as { error: { code: string } };
   assert.equal(rejectedBody.error.code, "upstream_auth");
 
+  // The per-provider check reports the rejection as status data (200),
+  // never a 401 that would sign the admin out, and never echoes the key.
+  const rejectedOne = await call("GET", "/api/admin/providers/tpdb", {
+    cookie: admin,
+  });
+  assert.equal(rejectedOne.status, 200);
+  const rejectedOneText = await rejectedOne.text();
+  const rejectedOneBody = JSON.parse(rejectedOneText) as {
+    configured: boolean;
+    verified: boolean;
+    error: { code: string };
+  };
+  assert.equal(rejectedOneBody.configured, true);
+  assert.equal(rejectedOneBody.verified, false);
+  assert.equal(rejectedOneBody.error.code, "upstream_auth");
+  assert.ok(!rejectedOneText.includes("wrong-stored-token"));
+  assert.ok(!rejectedOneText.includes(tpdbToken));
+  assert.equal((await call("GET", "/api/me", { cookie: admin })).status, 200);
+
   // Storing the working key verifies against the provider.
   const good = await call("PATCH", "/api/admin/integrations", {
     cookie: admin,
@@ -3624,6 +3652,31 @@ test("requests: lifecycle, autoApprove, privacy, roles, origin", async () => {
   assert.equal(stashdb?.configured, false);
   assert.equal((await call("GET", "/api/admin/providers")).status, 401);
 
+  // Per-provider checks: each provider reports alone.
+  const stashOne = await call("GET", "/api/admin/providers/stashdb", {
+    cookie: owner,
+  });
+  assert.equal(stashOne.status, 200);
+  assert.deepEqual(await stashOne.json(), {
+    provider: "stashdb",
+    configured: false,
+  });
+  const tpdbOne = await call("GET", "/api/admin/providers/tpdb", {
+    cookie: owner,
+  });
+  assert.equal(tpdbOne.status, 200);
+  assert.deepEqual(await tpdbOne.json(), {
+    provider: "tpdb",
+    configured: true,
+    verified: true,
+    account: "Fixture TPDB",
+  });
+  await errorShape(await call("GET", "/api/admin/providers/tpdb"), 401);
+  await errorShape(
+    await call("GET", "/api/admin/providers/tpdb", { cookie: member }),
+    403,
+  );
+
   // Unauthenticated and cross-origin mutations are rejected.
   const media = { provider: "tpdb", kind: "movie", id: TPDB_MOVIE };
   assert.equal(
@@ -4271,6 +4324,81 @@ test("studio search per provider; studio references refused as media; unsupporte
   );
   assert.equal(commaed.status, 200);
   assert.deepEqual(tagKeys(tpdbFx.lastQuery), ["194", "70"]);
+});
+
+test("per-provider credential check: each provider verifies alone; unknown provider reads nothing", async () => {
+  type Check = {
+    provider: string;
+    configured: boolean;
+    verified?: boolean;
+    account?: string;
+    error?: { code: string; message: string };
+  };
+
+  // Unknown providers are refused before any provider read.
+  const tpdbBefore = tpdbFx.calls;
+  const stashBefore = stashdbFx.hits;
+  for (const bad of ["typesafe", "TPDB"]) {
+    const res = await call("GET", `/api/admin/providers/${bad}`, {
+      cookie: owner,
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await errorShape(res)).code, "invalid_provider");
+  }
+  assert.equal(tpdbFx.calls, tpdbBefore);
+  assert.equal(stashdbFx.hits, stashBefore);
+
+  // TPDB outage: reported as status data, and StashDB is never touched.
+  const previousFailPaths = tpdbFx.failPaths;
+  try {
+    tpdbFx.failPaths = ["/user"];
+    const stashHits = stashdbFx.hits;
+    const down = await call("GET", "/api/admin/providers/tpdb", {
+      cookie: owner,
+    });
+    assert.equal(down.status, 200);
+    const downBody = (await down.json()) as Check;
+    assert.equal(downBody.provider, "tpdb");
+    assert.equal(downBody.configured, true);
+    assert.equal(downBody.verified, false);
+    assert.equal(downBody.error?.code, "upstream_unavailable");
+    assert.equal(stashdbFx.hits, stashHits);
+  } finally {
+    tpdbFx.failPaths = previousFailPaths;
+  }
+
+  // StashDB verifies alone, without a TPDB read.
+  const tpdbCalls = tpdbFx.calls;
+  const stashOk = await call("GET", "/api/admin/providers/stashdb", {
+    cookie: owner,
+  });
+  assert.equal(stashOk.status, 200);
+  assert.deepEqual(await stashOk.json(), {
+    provider: "stashdb",
+    configured: true,
+    verified: true,
+    account: "Fixture StashDB",
+  });
+  assert.equal(tpdbFx.calls, tpdbCalls);
+
+  // StashDB rejection: 200 status data, no key in the response.
+  try {
+    process.env.STASHDB_API_KEY = "wrong-stash-key";
+    const rejected = await call("GET", "/api/admin/providers/stashdb", {
+      cookie: owner,
+    });
+    assert.equal(rejected.status, 200);
+    const text = await rejected.text();
+    const body = JSON.parse(text) as Check;
+    assert.equal(body.configured, true);
+    assert.equal(body.verified, false);
+    assert.equal(body.error?.code, "upstream_auth");
+    assert.ok(!text.includes("wrong-stash-key"));
+    assert.ok(!text.includes(stashdbKey));
+    assert.ok(!text.includes(tpdbToken));
+  } finally {
+    process.env.STASHDB_API_KEY = stashdbKey;
+  }
 });
 
 // --- M3 phase B: discover shelves + global multi-category search ---

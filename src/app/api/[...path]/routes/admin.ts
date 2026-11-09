@@ -14,6 +14,7 @@ import type {
   IntegrationConfig,
   WhisparrDelivery,
   WhisparrPathMapping,
+  ProviderCheck,
 } from "../../../../lib/contracts.ts";
 import {
   isJudgmentProvider,
@@ -512,6 +513,30 @@ export async function adminProviders(_ctx: AuthContext): Promise<Response> {
   return json({ providers: [tpdb, stashdb] });
 }
 
+export async function adminProviderCheck(
+  _ctx: AuthContext,
+  raw: string,
+): Promise<Response> {
+  if (raw !== "tpdb" && raw !== "stashdb") {
+    throw new AppError(400, "invalid_provider", "Unknown credential provider.");
+  }
+  const provider = raw;
+  try {
+    return json(await getProviderStatus(provider));
+  } catch (err) {
+    // A rejected key is status data for this provider, not a dead session.
+    if (err instanceof AppError) {
+      return json({
+        provider,
+        configured: true,
+        verified: false,
+        error: { code: err.code, message: err.message },
+      } satisfies ProviderCheck);
+    }
+    throw err;
+  }
+}
+
 import type { RouteDef } from "../admission.ts";
 
 export const routes: RouteDef[] = [
@@ -551,6 +576,12 @@ export const routes: RouteDef[] = [
     segments: ["admin", "providers"],
     auth: "admin",
     run: async (ctx) => adminProviders(ctx),
+  },
+  {
+    method: "GET",
+    segments: ["admin", "providers", ":provider"],
+    auth: "admin",
+    run: async (ctx, _request, p) => adminProviderCheck(ctx, p.provider!),
   },
   {
     method: "POST",

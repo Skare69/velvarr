@@ -706,3 +706,23 @@ export type ProviderStatus = {
   tpdb: "not_configured" | "not_verified";
   stashdb: "not_configured" | "not_verified";
 };
+
+export type CredentialProvider = "tpdb" | "stashdb";
+
+/** GET /api/admin/providers/:provider — one provider's live credential
+ * check. A rejected key or an outage is status data (HTTP 200, verified:
+ * false), never a 401: the client signs out on any 401. */
+export type ProviderCheck =
+  | { provider: CredentialProvider; configured: false }
+  | {
+      provider: CredentialProvider;
+      configured: true;
+      verified: true;
+      account: string;
+    }
+  | {
+      provider: CredentialProvider;
+      configured: true;
+      verified: false;
+      error: { code: string; message: string };
+    };

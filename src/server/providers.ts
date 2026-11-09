@@ -212,6 +212,9 @@ export async function requestJson<T>(
     service?: Service;
     timeoutMs?: number;
     cacheTtlMs?: number;
+    /** Live checks (credential verification) must reach the upstream: no
+     * cached hit, no stale-on-error fallback, no cache write. */
+    bypassCache?: boolean;
     validate?: (parsed: unknown) => void;
   } = {},
 ): Promise<T> {
@@ -220,7 +223,8 @@ export async function requestJson<T>(
   const ttl = options.cacheTtlMs ?? META_CACHE_TTL_MS;
   // ttl only governs fresh-hit refresh; 0 means "always revalidate", and the
   // stale-on-error fallback still applies.
-  const cacheable = isCacheable(service, method, options.body);
+  const cacheable =
+    options.bypassCache !== true && isCacheable(service, method, options.body);
   const key = cacheable
     ? `${service} ${method} ${baseUrl}${path} ${tokenTag(token)} ${JSON.stringify(options.body ?? null)}`
     : "";
@@ -297,13 +301,13 @@ function envBaseUrl(
   return typeof value === "string" && value.trim() !== "" ? value : fallback;
 }
 
-function tpdbGet<T>(path: string): Promise<T> {
+function tpdbGet<T>(path: string, bypassCache = false): Promise<T> {
   const token = credential("tpdb");
   if (token === undefined) {
     throw notConfigured("tpdb");
   }
   const base = envBaseUrl("TPDB_BASE_URL", "https://api.theporndb.net");
-  return requestJson<T>(base, path, token, { service: "tpdb" });
+  return requestJson<T>(base, path, token, { service: "tpdb", bypassCache });
 }
 
 function notConfigured(provider: "tpdb" | "stashdb"): AppError {
@@ -362,6 +366,7 @@ async function stashQuery(
   query: string,
   variables: Record<string, unknown>,
   dataKey: string,
+  bypassCache = false,
 ): Promise<unknown> {
   const token = credential("stashdb");
   if (token === undefined) {
@@ -374,6 +379,7 @@ async function stashQuery(
   }>(base, "/graphql", token, {
     service: "stashdb",
     method: "POST",
+    bypassCache,
     body: { query, variables },
     // The GraphQL verdict must land before the body is cached, or an error
     // body becomes the fresh shared entry for the whole TTL.
@@ -528,13 +534,15 @@ export type ProviderVerification =
 
 /** One cheap authenticated read-only call: TPDB GET /user, StashDB `me`.
  * Not-configured is returned, never faked; outages and auth failures throw
- * AppError so callers never confuse them with an empty catalog. */
+ * AppError so callers never confuse them with an empty catalog. The call
+ * bypasses the metadata cache: a cached or stale-on-error identity would
+ * report a dead key or an outage as verified. */
 export async function getProviderStatus(
   provider: "tpdb" | "stashdb",
 ): Promise<ProviderVerification> {
   try {
     if (provider === "tpdb") {
-      const res = await tpdbGet<{ data?: { name?: unknown } }>("/user");
+      const res = await tpdbGet<{ data?: { name?: unknown } }>("/user", true);
       const name = cleanString(res?.data?.name, 120);
       return {
         provider,
@@ -547,6 +555,7 @@ export async function getProviderStatus(
       "query { me { id name roles } }",
       {},
       "me",
+      true,
     )) as { name?: unknown } | null;
     if (res === null || typeof res !== "object") {
       throw new AppError(

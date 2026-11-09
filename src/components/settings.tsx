@@ -10,15 +10,24 @@ import {
   useCallback,
   useEffect,
   useReducer,
+  useRef,
   useState,
   type FormEvent,
 } from "react";
 import type {
+  CredentialProvider,
   JudgmentProvider,
-  ProviderStatus,
+  ProviderCheck,
   WhisparrDelivery,
   WhisparrPathMapping,
 } from "../lib/contracts.ts";
+import {
+  canClearCredential,
+  canSaveCredential,
+  canTestCredential,
+  CONNECTION_STATE_LABEL,
+  connectionState,
+} from "../lib/provider-settings.ts";
 import {
   ApiError,
   api,
@@ -75,15 +84,10 @@ interface IntegrationsInfo {
     pathMappings: WhisparrPathMapping[];
   } | null;
 }
-const PROVIDER_STATE: Record<ProviderStatus["tpdb"], string> = {
-  not_configured: "Not configured",
-  not_verified: "API key present — not verified",
-};
 
 /* ---------- Settings: integrations, Whisparr, providers ---------- */
 
 export function SettingsView() {
-  const { providers } = useSession();
   const [forbidden, setForbidden] = useState(false);
   const [section, setSection] = useState("connections");
   // Bumped when the Providers card stores a key so the AI-assisted matching
@@ -127,10 +131,7 @@ export function SettingsView() {
       </div>
       <div hidden={section !== "metadata"}>
         <div className="settings-content">
-          <ProvidersCard
-            providers={providers}
-            onSaved={() => setProvidersSavedAt((v) => v + 1)}
-          />
+          <ProvidersCard onSaved={() => setProvidersSavedAt((v) => v + 1)} />
           <JudgmentCard refreshKey={providersSavedAt} />
         </div>
       </div>
@@ -886,26 +887,196 @@ type ProviderConfigRow = {
   source: "stored" | "environment";
 };
 
-// Shape returned by GET /api/admin/providers (ProviderVerification).
-type ProviderCheckRow =
-  | { provider: "tpdb" | "stashdb"; configured: false }
-  | {
-      provider: "tpdb" | "stashdb";
-      configured: true;
-      verified: true;
-      account: string;
-    };
-
-function ProvidersCard({
-  providers,
+/** One metadata provider's credential: its own live check against
+ * GET /api/admin/providers/:provider and its own save, so a failed TPDB
+ * check never changes the StashDB card. */
+function ProviderCredentialCard({
+  id,
+  name,
+  field,
+  conf,
+  onForbidden,
   onSaved,
 }: {
-  providers: ProviderStatus | null;
-  onSaved?: () => void;
+  id: CredentialProvider;
+  name: string;
+  field: "tpdbApiToken" | "stashdbApiKey";
+  conf: ProviderConfigRow | undefined;
+  onForbidden: () => void;
+  onSaved: () => void;
 }) {
+  const [draft, setDraft] = useState("");
+  const [pending, setPending] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [check, setCheck] = useState<ProviderCheck | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [requestError, setRequestError] = useState<string | null>(null);
+  // Only the latest check may write state: a check started before a save
+  // must not overwrite the result for the newly saved key.
+  const checkSeq = useRef(0);
+
+  const runCheck = useCallback(() => {
+    const seq = ++checkSeq.current;
+    setChecking(true);
+    setRequestError(null);
+    api<ProviderCheck>(`/api/admin/providers/${id}`)
+      .then((d) => {
+        if (seq === checkSeq.current) setCheck(d);
+      })
+      .catch((e) => {
+        if (seq !== checkSeq.current) return;
+        if (e instanceof ApiError && e.status === 403) onForbidden();
+        else setRequestError(messageOf(e));
+      })
+      .finally(() => {
+        if (seq === checkSeq.current) setChecking(false);
+      });
+  }, [id, onForbidden]);
+
+  useEffect(runCheck, [runCheck]);
+
+  const apply = async (value: string) => {
+    setPending(true);
+    setSaveError(null);
+    setSaved(false);
+    try {
+      await api("/api/admin/integrations", {
+        method: "PATCH",
+        body: JSON.stringify({ [field]: value }),
+      });
+      setDraft("");
+      setSaved(true);
+      onSaved();
+      runCheck();
+    } catch (e) {
+      setSaveError(messageOf(e));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const save = () => {
+    if (canSaveCredential({ draft, pending })) apply(draft.trim());
+  };
+
+  const state = connectionState({ draft, checking, check, requestError });
+  const failure =
+    requestError ??
+    (check?.configured && !check.verified
+      ? `${check.error.code}: ${check.error.message}`
+      : null);
+
+  return (
+    <div className="settings-connection-status">
+      <div className="flex items-center justify-between gap-3">
+        <h4 className="font-semibold">{name}</h4>
+        <button
+          type="button"
+          className="btn"
+          onClick={runCheck}
+          disabled={
+            !canTestCredential({
+              draft,
+              pending,
+              checking,
+              configured: conf?.configured,
+            })
+          }
+        >
+          {checking ? "Testing…" : "Test connection"}
+        </button>
+      </div>
+
+      <div
+        className="mt-2 flex flex-wrap items-center gap-2 text-sm"
+        role="status"
+        aria-live="polite"
+        aria-label={`${name} connection`}
+      >
+        {conf && conf.source === "stored" ? (
+          <span className="chip chip-accent">Stored</span>
+        ) : conf && conf.configured ? (
+          <span className="chip">From environment</span>
+        ) : null}
+        <span className={state === "connected" ? "chip chip-accent" : "chip"}>
+          {CONNECTION_STATE_LABEL[state]}
+          {state === "connected" && check?.configured && check.verified
+            ? ` · ${check.account}`
+            : ""}
+        </span>
+      </div>
+
+      {state === "failed" && failure !== null ? (
+        <div className="mt-3">
+          <ErrorPanel
+            title={`${name} check failed`}
+            message={failure}
+            onRetry={runCheck}
+          />
+        </div>
+      ) : state === "not_configured" ? (
+        <p className="mt-3 text-sm text-muted">
+          Not configured. Save a key below to enable the connection check.
+        </p>
+      ) : null}
+
+      <div className="mt-3">
+        <label className="label" htmlFor={`provider-${id}`}>
+          {name} {id === "tpdb" ? "API token" : "API key"}
+        </label>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            id={`provider-${id}`}
+            className="input max-w-md"
+            type="password"
+            autoComplete="off"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={
+              conf && conf.source === "stored"
+                ? "Stored — leave blank to keep"
+                : conf && conf.configured
+                  ? "Configured via environment"
+                  : "Not configured"
+            }
+          />
+          <button
+            type="button"
+            className="btn btn-accent"
+            disabled={!canSaveCredential({ draft, pending })}
+            onClick={save}
+          >
+            Save
+          </button>
+          {conf && conf.source === "stored" ? (
+            <button
+              type="button"
+              className="btn"
+              disabled={!canClearCredential({ source: conf.source, pending })}
+              onClick={() => apply("")}
+            >
+              Clear stored
+            </button>
+          ) : null}
+        </div>
+      </div>
+      {saved ? <p className="mt-2 text-sm text-muted">Saved.</p> : null}
+      {saveError ? (
+        <div className="mt-3">
+          <ErrorPanel
+            title={`Saving the ${name} credential failed`}
+            message={saveError}
+            onRetry={save}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ProvidersCard({ onSaved }: { onSaved?: () => void }) {
   const { refreshSession } = useSession();
-  const [check, setCheck] = useState<ProviderCheckRow[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
   const [shape, setShape] = useState<{
     tpdb: ProviderConfigRow;
@@ -913,23 +1084,10 @@ function ProvidersCard({
     typesafe: ProviderConfigRow;
   } | null>(null);
   const [shapeError, setShapeError] = useState<string | null>(null);
-  const [tpdbToken, setTpdbToken] = useState("");
-  const [stashdbKey, setStashdbKey] = useState("");
   const [typesafeKey, setTypesafeKey] = useState("");
   const [pending, setPending] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-
-  const load = useCallback(() => {
-    setError(null);
-    setCheck(null);
-    api<{ providers: ProviderCheckRow[] }>("/api/admin/providers")
-      .then((d) => setCheck(d.providers))
-      .catch((e) => {
-        if (e instanceof ApiError && e.status === 403) setForbidden(true);
-        else setError(messageOf(e));
-      });
-  }, []);
 
   const loadShape = useCallback(() => {
     api<{
@@ -949,31 +1107,33 @@ function ProvidersCard({
       });
   }, []);
 
-  useEffect(load, [load]);
   useEffect(loadShape, [loadShape]);
 
-  const apply = async (body: Record<string, string>) => {
+  // Stable identity: each provider card's check useCallback depends on it.
+  const forbid = useCallback(() => setForbidden(true), []);
+
+  const credentialSaved = () => {
+    onSaved?.();
+    loadShape();
+    // The save/clear landed; this re-read only refreshes the session's
+    // provider status (not-configured claims elsewhere). If it fails the
+    // boot-time status stays until the next reload — never read as a failed
+    // save — and each card's live check still reports reality.
+    refreshSession().catch(() => undefined);
+  };
+
+  const applyTypesafe = async (value: string) => {
     setPending(true);
     setSaveError(null);
     setSaved(false);
     try {
       await api("/api/admin/integrations", {
         method: "PATCH",
-        body: JSON.stringify(body),
+        body: JSON.stringify({ typesafeApiKey: value }),
       });
-      setTpdbToken("");
-      setStashdbKey("");
       setTypesafeKey("");
       setSaved(true);
-      onSaved?.();
-      load();
-      loadShape();
-      // The save/clear landed; this re-read only refreshes the session's
-      // provider status (chips here and not-configured claims elsewhere).
-      // If it fails the boot-time chip stays until the next reload — never
-      // read as a failed save — and the live check above still reports
-      // reality.
-      refreshSession().catch(() => undefined);
+      credentialSaved();
     } catch (e) {
       setSaveError(messageOf(e));
     } finally {
@@ -981,182 +1141,121 @@ function ProvidersCard({
     }
   };
 
-  const save = () => {
-    const body: Record<string, string> = {};
-    if (tpdbToken.trim() !== "") body.tpdbApiToken = tpdbToken.trim();
-    if (stashdbKey.trim() !== "") body.stashdbApiKey = stashdbKey.trim();
-    if (typesafeKey.trim() !== "") body.typesafeApiKey = typesafeKey.trim();
-    if (Object.keys(body).length > 0) apply(body);
+  const saveTypesafe = () => {
+    if (canSaveCredential({ draft: typesafeKey, pending }))
+      applyTypesafe(typesafeKey.trim());
   };
 
-  const rows = [
-    {
-      id: "tpdb" as const,
-      name: "TPDB",
-      value: tpdbToken,
-      field: "tpdbApiToken" as const,
-      setValue: setTpdbToken,
-    },
-    {
-      id: "stashdb" as const,
-      name: "StashDB",
-      value: stashdbKey,
-      field: "stashdbApiKey" as const,
-      setValue: setStashdbKey,
-    },
-    {
-      id: "typesafe" as const,
-      name: "TypeSafe",
-      value: typesafeKey,
-      field: "typesafeApiKey" as const,
-      setValue: setTypesafeKey,
-    },
-  ];
+  const typesafe = shape?.typesafe;
 
   return (
     <div className="panel p-5">
       <h3 className="font-semibold">Metadata providers</h3>
       <p className="mt-1 text-sm text-muted">
-        Credentials saved here (encrypted) take precedence over the environment;
-        the live check against the provider is the real proof. A failed live
-        check is an outage or a bad key, never an empty catalog.
+        Credentials saved here (encrypted) take precedence over the environment.
+        Each provider is checked on its own against the provider itself. A
+        failed check is a bad key or an outage, never an empty catalog.
       </p>
-      <dl className="mt-3 space-y-2 text-sm">
-        {rows.map(({ id, name }) => {
-          const state = id === "typesafe" ? undefined : providers?.[id];
-          const live = check?.find((r) => r.provider === id);
-          const conf = shape?.[id];
-          return (
-            <div key={id} className="flex flex-wrap items-center gap-2">
-              <dt className="font-medium">{name}</dt>
-              <dd className="flex flex-wrap items-center gap-2">
-                {id === "typesafe" ? (
-                  <span className="chip">
-                    {conf?.configured
-                      ? "API key configured"
-                      : conf
-                        ? "Off — no key"
-                        : shapeError || forbidden
-                          ? "Unknown"
-                          : "Checking…"}
-                  </span>
-                ) : (
-                  <span className="chip">
-                    {state ? PROVIDER_STATE[state] : "Unknown"}
-                  </span>
-                )}
-                {conf && conf.source === "stored" ? (
-                  <span className="chip chip-accent">Stored</span>
-                ) : conf && conf.configured ? (
-                  <span className="chip">From environment</span>
-                ) : null}
-                {id === "typesafe" || forbidden ? null : live ? (
-                  live.configured ? (
-                    <span className="chip chip-accent">
-                      Verified · {live.account}
-                    </span>
-                  ) : (
-                    <span className="chip">Live check: not configured</span>
-                  )
-                ) : error ? (
-                  <span className="chip">Live check failed</span>
-                ) : (
-                  <span className="chip">Live check pending</span>
-                )}
-              </dd>
-            </div>
-          );
-        })}
-      </dl>
       {forbidden ? (
         <p className="mt-3 text-sm text-muted">
           Editing and live verification need an administrator account.
         </p>
       ) : (
-        <div className="mt-4 space-y-3">
-          {rows.map(({ id, name, value, field, setValue }) => {
-            const conf = shape?.[id];
-            return (
-              <div key={field}>
-                <label className="label" htmlFor={`provider-${id}`}>
-                  {name} {id === "tpdb" ? "API token" : "API key"}
-                  {id === "typesafe" ? " (optional)" : ""}
-                </label>
-                <div className="flex flex-wrap items-center gap-2">
-                  <input
-                    id={`provider-${id}`}
-                    className="input max-w-md"
-                    type="password"
-                    autoComplete="off"
-                    value={value}
-                    onChange={(e) => setValue(e.target.value)}
-                    placeholder={
-                      conf && conf.source === "stored"
-                        ? "Stored — leave blank to keep"
-                        : conf && conf.configured
-                          ? "Configured via environment"
-                          : "Not configured"
-                    }
-                  />
-                  {conf && conf.source === "stored" ? (
-                    <button
-                      type="button"
-                      className="btn"
-                      disabled={pending}
-                      onClick={() => apply({ [field]: "" })}
-                    >
-                      Clear stored
-                    </button>
-                  ) : null}
-                </div>
-                {id === "typesafe" ? (
-                  <p className="mt-1 text-sm text-muted">
-                    Enables AI-assisted matching: a Jellyfin item whose title
-                    only nearly matches a request is judged &ldquo;same
-                    work?&rdquo; and flagged for administrator review instead of
-                    counting as missing when TypeSafe is selected below. Ollama
-                    uses a local model and does not need this key.
-                  </p>
-                ) : null}
-              </div>
-            );
-          })}
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              className="btn btn-accent"
-              disabled={pending}
-              onClick={save}
-            >
-              Save credentials
-            </button>
-            <span className="text-sm text-muted">
-              Saving stores the key encrypted and re-runs the live check.
-            </span>
-          </div>
-          {saved ? (
-            <p className="text-sm text-muted">
-              Saved. Live check refreshed below.
-            </p>
-          ) : null}
-          {saveError ? (
-            <ErrorPanel
-              title="Saving provider credentials failed"
-              message={saveError}
-              onRetry={save}
-            />
-          ) : null}
-        </div>
-      )}
-      {forbidden ? null : error ? (
-        <div className="mt-3">
-          <ErrorPanel
-            title="Live provider check failed"
-            message={error}
-            onRetry={load}
+        <>
+          <ProviderCredentialCard
+            id="tpdb"
+            name="TPDB"
+            field="tpdbApiToken"
+            conf={shape?.tpdb}
+            onForbidden={forbid}
+            onSaved={credentialSaved}
           />
-        </div>
-      ) : null}
+          <ProviderCredentialCard
+            id="stashdb"
+            name="StashDB"
+            field="stashdbApiKey"
+            conf={shape?.stashdb}
+            onForbidden={forbid}
+            onSaved={credentialSaved}
+          />
+          <div className="mt-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <h4 className="font-semibold">TypeSafe</h4>
+              <span className="chip">
+                {typesafe?.configured
+                  ? "API key configured"
+                  : typesafe
+                    ? "Off — no key"
+                    : shapeError
+                      ? "Unknown"
+                      : "Checking…"}
+              </span>
+              {typesafe && typesafe.source === "stored" ? (
+                <span className="chip chip-accent">Stored</span>
+              ) : typesafe && typesafe.configured ? (
+                <span className="chip">From environment</span>
+              ) : null}
+            </div>
+            <label className="label mt-3" htmlFor="provider-typesafe">
+              TypeSafe API key (optional)
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                id="provider-typesafe"
+                className="input max-w-md"
+                type="password"
+                autoComplete="off"
+                value={typesafeKey}
+                onChange={(e) => setTypesafeKey(e.target.value)}
+                placeholder={
+                  typesafe && typesafe.source === "stored"
+                    ? "Stored — leave blank to keep"
+                    : typesafe && typesafe.configured
+                      ? "Configured via environment"
+                      : "Not configured"
+                }
+              />
+              <button
+                type="button"
+                className="btn btn-accent"
+                disabled={!canSaveCredential({ draft: typesafeKey, pending })}
+                onClick={saveTypesafe}
+              >
+                Save
+              </button>
+              {typesafe && typesafe.source === "stored" ? (
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={
+                    !canClearCredential({ source: typesafe.source, pending })
+                  }
+                  onClick={() => applyTypesafe("")}
+                >
+                  Clear stored
+                </button>
+              ) : null}
+            </div>
+            <p className="mt-1 text-sm text-muted">
+              Enables AI-assisted matching: a Jellyfin item whose title only
+              nearly matches a request is judged &ldquo;same work?&rdquo; and
+              flagged for administrator review instead of counting as missing
+              when TypeSafe is selected below. Ollama uses a local model and
+              does not need this key.
+            </p>
+            {saved ? <p className="mt-2 text-sm text-muted">Saved.</p> : null}
+            {saveError ? (
+              <div className="mt-3">
+                <ErrorPanel
+                  title="Saving the TypeSafe credential failed"
+                  message={saveError}
+                  onRetry={saveTypesafe}
+                />
+              </div>
+            ) : null}
+          </div>
+        </>
+      )}
       {forbidden ? null : shapeError ? (
         <div className="mt-3">
           <ErrorPanel
