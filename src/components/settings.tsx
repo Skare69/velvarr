@@ -34,6 +34,7 @@ import {
 import { LimitsPanel, ReleaseStatusPanel } from "./limits.tsx";
 import {
   initJudgmentEditor,
+  judgmentEditorSettings,
   providerSettingsActions,
   reduceJudgmentEditor,
 } from "../lib/judgment-editor.ts";
@@ -1302,17 +1303,10 @@ function JudgmentCard({
     pending: saving || forbidden,
     configured: Boolean(config?.configured),
   });
-  const savedProvider =
-    config && !config.configured && !config.stored && !config.error
-      ? "none"
-      : config?.provider;
+  const savedProvider = config && judgmentEditorSettings(config).provider;
   useEffect(() => {
     if (!config) return;
-    const settings = {
-      provider: savedProvider ?? "none",
-      url: config.url,
-      model: config.model,
-    };
+    const settings = judgmentEditorSettings(config);
     if (
       settings.provider !== editor.saved.provider ||
       settings.url !== editor.saved.url ||
@@ -1375,11 +1369,15 @@ function JudgmentCard({
     try {
       const data = await onSave(body);
       setApiKey("");
-      dispatch({ type: "saved", settings: data.judgment, notice: success });
+      dispatch({
+        type: "saved",
+        settings: judgmentEditorSettings(data.judgment),
+        notice: success,
+      });
       setEditing(false);
       // Probe only after persistence succeeds: the endpoint reads saved settings,
       // not the draft. A failed probe must not turn a successful save into an error.
-      if (verify) await check();
+      if (verify && data.judgment.configured) await check();
     } catch (error) {
       if (error instanceof ApiError && error.status === 403) setForbidden(true);
       else setSaveError(messageOf(error));

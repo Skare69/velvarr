@@ -15,6 +15,26 @@ export type JudgmentSettings = {
   model: string;
 };
 
+/** Use the same effective selection after a save and a configuration read.
+ * An absent backend is standard matching, unless a stored choice or error
+ * needs to remain visible so the operator can correct it. */
+export function judgmentEditorSettings(
+  config: JudgmentSettings & {
+    configured: boolean;
+    stored: boolean;
+    error?: string;
+  },
+): JudgmentSettings {
+  return {
+    provider:
+      !config.configured && !config.stored && !config.error
+        ? "none"
+        : config.provider,
+    url: config.url,
+    model: config.model,
+  };
+}
+
 export type JudgmentCheck =
   | { state: "checking" }
   | { state: "connected"; provider: JudgmentProvider }

@@ -9,6 +9,7 @@ import { test } from "node:test";
 
 import {
   initJudgmentEditor,
+  judgmentEditorSettings,
   providerSettingsActions,
   reduceJudgmentEditor,
   SAVED_NOTICE,
@@ -172,4 +173,57 @@ test("actions: cancel only for a real change, no save or reset during a probe", 
     providerSettingsActions(loaded, { ...idle, configured: false }).check,
     false,
   );
+});
+
+test("saving a cleared default backend agrees with the configuration sync", () => {
+  const config = {
+    ...ollama,
+    provider: "typesafe" as const,
+    configured: false,
+    stored: false,
+  };
+  const saved = judgmentEditorSettings(config);
+  const e = run({ type: "saved", settings: saved });
+  assert.equal(e.saved.provider, "none");
+  assert.deepEqual(e.saved, judgmentEditorSettings(config));
+  assert.equal(e.notice, SAVED_OFF_NOTICE);
+  assert.equal(e.check, null);
+  assert.equal(
+    providerSettingsActions(e, { ...idle, configured: false }).check,
+    false,
+  );
+});
+
+test("normalizing a saved backend keeps configured, stored, and invalid choices", () => {
+  for (const status of [
+    { configured: true, stored: false },
+    { configured: false, stored: true },
+    {
+      configured: false,
+      stored: false,
+      error: "Invalid provider configuration.",
+    },
+  ]) {
+    const config = { ...ollama, ...status };
+    assert.deepEqual(judgmentEditorSettings(config), ollama);
+  }
+});
+
+test("a normalized save and configuration sync preserve the subsequent probe result", () => {
+  const config = { ...ollama, configured: true, stored: true };
+  let e = run(
+    { type: "saved", settings: judgmentEditorSettings(config) },
+    { type: "checking" },
+  );
+  // The component only reloads when these effective settings differ.
+  assert.deepEqual(e.saved, judgmentEditorSettings(config));
+  e = reduceJudgmentEditor(e, {
+    type: "checked",
+    result: { connected: false, message: "Connection refused." },
+  });
+  assert.deepEqual(e.check, {
+    state: "failed",
+    message: "Connection refused.",
+  });
+  assert.equal(e.notice, SAVED_NOTICE);
 });
