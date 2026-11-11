@@ -1314,7 +1314,7 @@ function JudgmentCard({
     ) {
       dispatch({ type: "loaded", settings });
     }
-  }, [config, savedProvider, editor.saved]);
+  }, [config, editor.saved]);
   useEffect(() => {
     if (editing) selectRef.current?.focus();
   }, [editing]);
