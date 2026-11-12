@@ -45,8 +45,14 @@ import {
   canTestCredential,
   connectionState,
   createProviderSettingsQueue,
-  credentialSaveDecision,
 } from "../lib/provider-settings.ts";
+import {
+  applyCredentialSave,
+  credentialCardBusy,
+  credentialEditorView,
+  initCredentialCard,
+  reduceCredentialCard,
+} from "../lib/credential-card.ts";
 
 /* ---------- App-local API view records (not in contracts.ts) ---------- */
 
@@ -1056,40 +1062,34 @@ function ProviderCredentialCard({
   onSave: SaveProviderSettings;
   runOperation: RunProviderOperation;
 } & (typeof CREDENTIAL_ROWS)[number]) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
-  const [check, setCheck] = useState<ProviderCheck | null>(null);
+  const [editor, dispatch] = useReducer(
+    reduceCredentialCard,
+    undefined,
+    initCredentialCard,
+  );
   const inputRef = useRef<HTMLInputElement>(null);
-  const { editRef, noticeRef } = useEditorFocusReturn(editing);
+  const { editRef, noticeRef } = useEditorFocusReturn(editor.editing);
   // Deleting a stored credential is destructive, so the click first opens this
   // confirmation; the id must be unique — this card renders once per provider.
   const clearRef = useRef<HTMLDialogElement>(null);
   const clearTitleId = useId();
   useEffect(() => {
-    if (editing) inputRef.current?.focus();
-  }, [editing]);
-  const [checking, setChecking] = useState(false);
-  const [checkError, setCheckError] = useState<string | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [saved, setSaved] = useState<string | null>(null);
-  const [blankMessage, setBlankMessage] = useState<string | null>(null);
-  const [forbidden, setForbidden] = useState(false);
+    if (editor.editing) inputRef.current?.focus();
+  }, [editor.editing]);
 
   const verify = useCallback(async () => {
-    setChecking(true);
-    setCheck(null);
-    setCheckError(null);
+    dispatch({ type: "checking" });
     try {
-      setCheck(
-        await runOperation(() =>
+      dispatch({
+        type: "checked",
+        check: await runOperation(() =>
           api<ProviderCheck>("/api/admin/providers/" + id),
         ),
-      );
+      });
     } catch (error) {
-      if (error instanceof ApiError && error.status === 403) setForbidden(true);
-      else setCheckError(messageOf(error));
-    } finally {
-      setChecking(false);
+      if (error instanceof ApiError && error.status === 403)
+        dispatch({ type: "forbidden" });
+      else dispatch({ type: "checkFailed", message: messageOf(error) });
     }
   }, [id, runOperation]);
   useEffect(() => {
@@ -1097,68 +1097,44 @@ function ProviderCredentialCard({
   }, [verify]);
 
   function cancel() {
-    setDraft("");
-    setSaveError(null);
-    setBlankMessage(null);
-    setEditing(false);
+    dispatch({ type: "cancel" });
   }
 
   async function apply(clear = false) {
-    setSaveError(null);
-    setSaved(null);
-    setBlankMessage(null);
-    const save = credentialSaveDecision({
-      draft,
+    const { saved } = await applyCredentialSave({
+      draft: editor.draft,
       clear,
       configured: config?.configured,
       name,
       label,
+      performSave: (value) => onSave({ [field]: value }).then(() => undefined),
+      dispatch,
+      failureOf: (error) => ({
+        forbidden: error instanceof ApiError && error.status === 403,
+        message: messageOf(error),
+      }),
     });
-    // A blank edit of a configured credential is a Cancel: the disabled
-    // button normally blocks it, and an Enter submission lands here and
-    // keeps the editor open instead of faking a save. With nothing
-    // configured the click keeps the editor open and names the field.
-    if (save.action !== "save") {
-      if (save.action === "ask") setBlankMessage(save.message);
-      return;
-    }
-    try {
-      await onSave({ [field]: save.value });
-      setSaved(save.notice);
-      setDraft("");
-      setEditing(false);
-      await verify();
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 403) setForbidden(true);
-      else setSaveError(messageOf(error));
-    }
+    if (saved) await verify();
   }
 
   // Checks read persisted credentials; a replacement draft is not yet verified.
-  const unsaved = editing && draft.trim() !== "";
+  const unsaved = editor.editing && editor.draft.trim() !== "";
   const error =
-    checkError ??
-    (check?.configured && !check.verified ? check.error.message : null);
-  const busy = saving || checking || forbidden;
+    editor.checkError ??
+    (editor.check?.configured && !editor.check.verified
+      ? editor.check.error.message
+      : null);
+  const busy = credentialCardBusy(editor, saving);
   const actions = {
     canCheck: canTestCredential({
-      draft,
-      pending: saving || forbidden,
-      checking,
+      draft: editor.draft,
+      pending: saving || editor.forbidden,
+      checking: editor.checking,
       configured: config?.configured,
     }),
     canEdit: !busy && Boolean(config),
     canClear: canClearCredential({ source: config?.source, pending: busy }),
   };
-  // One decision drives the Save button's disabled state and the click,
-  // so they cannot drift apart.
-  const saveDecision = credentialSaveDecision({
-    draft,
-    clear: false,
-    configured: config?.configured,
-    name,
-    label,
-  });
   // Transient busy states are announced by the live status row instead.
   const checkDisabledReason = !actions.canCheck
     ? unsaved
@@ -1168,10 +1144,10 @@ function ProviderCredentialCard({
         : null
     : null;
   const state = connectionState({
-    draft: editing ? draft : "",
-    checking,
-    check,
-    requestError: checkError,
+    draft: editor.editing ? editor.draft : "",
+    checking: editor.checking,
+    check: editor.check,
+    requestError: editor.checkError,
   });
   const stateLabels = {
     unsaved: "Unsaved changes",
@@ -1201,16 +1177,13 @@ function ProviderCredentialCard({
           >
             Check connection
           </button>
-          {!editing && (
+          {!editor.editing && (
             <button
               type="button"
               ref={editRef}
               className="btn"
               disabled={!actions.canEdit}
-              onClick={() => {
-                setSaved(null);
-                setEditing(true);
-              }}
+              onClick={() => dispatch({ type: "edit" })}
             >
               Edit
             </button>
@@ -1224,8 +1197,8 @@ function ProviderCredentialCard({
       )}
       <div className="settings-service-status" aria-live="polite">
         <ConnectionState state={connectionStateLabel} />
-        {!unsaved && check?.configured && check.verified && (
-          <span className="text-muted">{check.account}</span>
+        {!unsaved && editor.check?.configured && editor.check.verified && (
+          <span className="text-muted">{editor.check.account}</span>
         )}
         {config?.configured && (
           <span className="chip">
@@ -1235,73 +1208,25 @@ function ProviderCredentialCard({
           </span>
         )}
       </div>
-      {editing && (
-        <form
-          id={"provider-editor-" + id}
-          className="settings-service-editor"
-          onSubmit={(event) => {
+      {editor.editing &&
+        credentialEditorView({
+          id,
+          name,
+          label,
+          maxLength,
+          configured: config?.configured,
+          state: editor,
+          canEdit: actions.canEdit,
+          busy,
+          inputRef,
+          onDraftChange: (value) => dispatch({ type: "draft", value }),
+          onCancel: cancel,
+          onSubmit: (event) => {
             event.preventDefault();
             if (!busy && config) void apply();
-          }}
-        >
-          <label className="label" htmlFor={"provider-" + id}>
-            {name} {label}
-          </label>
-          <input
-            id={"provider-" + id}
-            ref={inputRef}
-            className="input mt-2"
-            type="password"
-            autoComplete="off"
-            maxLength={maxLength}
-            disabled={!actions.canEdit}
-            aria-describedby={blankMessage ? "blank-hint-" + id : undefined}
-            value={draft}
-            onChange={(event) => {
-              setDraft(event.target.value);
-              setSaveError(null);
-              setBlankMessage(null);
-            }}
-            placeholder={
-              config?.configured
-                ? "Leave blank to keep the current credential"
-                : "Enter credential"
-            }
-          />
-          {blankMessage && (
-            <p
-              id={"blank-hint-" + id}
-              className="mt-2 text-sm text-muted"
-              role="status"
-            >
-              {blankMessage}
-            </p>
-          )}
-          <p className="mt-2 text-sm text-muted">
-            Saved credentials are encrypted and take precedence over the
-            environment. Connection checks use the saved credential or
-            environment fallback.
-          </p>
-          <div className="settings-service-buttons mt-4">
-            <button
-              type="submit"
-              className="btn btn-accent"
-              disabled={!actions.canEdit || saveDecision.action === "cancel"}
-            >
-              Save
-            </button>
-            <button
-              type="button"
-              className="btn"
-              disabled={busy}
-              onClick={cancel}
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      )}
-      {editing && config?.source === "stored" && (
+          },
+        })}
+      {editor.editing && config?.source === "stored" && (
         <>
           {/* Deleting the stored credential is destructive, so the action
               lives in its own row below the form and asks first. */}
@@ -1353,21 +1278,21 @@ function ProviderCredentialCard({
           </dialog>
         </>
       )}
-      {saved && (
+      {editor.saved && (
         <p
           ref={noticeRef}
           className="mt-3 text-sm text-muted"
           role="status"
           tabIndex={-1}
         >
-          {saved}
+          {editor.saved}
         </p>
       )}
-      {saveError && (
+      {editor.saveError && (
         <div className="mt-3">
           <ErrorPanel
             title={"Saving " + name + " credential failed"}
-            message={saveError}
+            message={editor.saveError}
           />
         </div>
       )}
@@ -1380,7 +1305,7 @@ function ProviderCredentialCard({
           />
         </div>
       )}
-      {forbidden && (
+      {editor.forbidden && (
         <p className="mt-3 text-sm text-muted">
           An administrator account is required to edit and verify credentials.
         </p>
