@@ -1133,6 +1133,14 @@ function ProviderCredentialCard({
     canEdit: !busy && Boolean(config),
     canClear: canClearCredential({ source: config?.source, pending: busy }),
   };
+  // Transient busy states are announced by the live status row instead.
+  const checkDisabledReason = !actions.canCheck
+    ? unsaved
+      ? "Save or cancel your changes before checking the connection."
+      : config?.configured === false
+        ? "Add a key to check the connection."
+        : null
+    : null;
   const state = connectionState({
     draft: editing ? draft : "",
     checking,
@@ -1160,10 +1168,8 @@ function ProviderCredentialCard({
             type="button"
             className="btn"
             disabled={!actions.canCheck}
-            title={
-              unsaved
-                ? "Save or cancel your changes before checking the connection."
-                : undefined
+            aria-describedby={
+              checkDisabledReason ? "check-help-" + id : undefined
             }
             onClick={() => void verify()}
           >
@@ -1185,6 +1191,11 @@ function ProviderCredentialCard({
           )}
         </div>
       </div>
+      {checkDisabledReason && (
+        <p id={"check-help-" + id} className="mt-3 text-sm text-muted">
+          {checkDisabledReason}
+        </p>
+      )}
       <div className="settings-service-status" aria-live="polite">
         <ConnectionState state={connectionStateLabel} />
         {!unsaved && check?.configured && check.verified && (
@@ -1502,7 +1513,7 @@ function JudgmentCard({
                 : "Not configured")}
         </p>
       )}
-      {!editing && checkDisabledReason && (
+      {checkDisabledReason && (
         <p id="judgment-check-help" className="mt-3 text-sm text-muted">
           {checkDisabledReason}
         </p>
@@ -1523,10 +1534,7 @@ function JudgmentCard({
       type="button"
       className="btn"
       disabled={busy || Boolean(checkDisabledReason)}
-      title={checkDisabledReason}
-      aria-describedby={
-        !editing && checkDisabledReason ? "judgment-check-help" : undefined
-      }
+      aria-describedby={checkDisabledReason ? "judgment-check-help" : undefined}
       onClick={() => void check()}
     >
       {checking ? "Checking…" : "Check connection"}
