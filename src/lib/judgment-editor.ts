@@ -15,15 +15,18 @@ export type JudgmentSettings = {
   model: string;
 };
 
+/** The server's view of the saved judgment configuration. */
+export type JudgmentConfig = JudgmentSettings & {
+  configured: boolean;
+  stored: boolean;
+  error?: string;
+};
+
 /** Use the same effective selection after a save and a configuration read.
  * An absent backend is standard matching, unless a stored choice or error
  * needs to remain visible so the operator can correct it. */
 export function judgmentEditorSettings(
-  config: JudgmentSettings & {
-    configured: boolean;
-    stored: boolean;
-    error?: string;
-  },
+  config: JudgmentConfig,
 ): JudgmentSettings {
   return {
     provider:
@@ -159,4 +162,25 @@ export function providerSettingsActions(
     cancel: idle && isDirty(e),
     check: idle && status.configured,
   };
+}
+
+/** Why the card's "Check connection" button is disabled, or undefined when
+ * the probe may run. `unsaved` says the draft differs from the saved
+ * settings; it comes first: the error panel hides while a draft is dirty,
+ * and a save always sends the provider, so stored values override the
+ * environment and the setup hint names the correct action. A configuration
+ * error beats the setup hint afterwards: the server reports an errored
+ * configuration as not configured, so the hint would otherwise send the
+ * operator after a credential that is not the problem. */
+export function judgmentCheckDisabledReason(
+  config: JudgmentConfig | undefined,
+  unsaved: boolean,
+  setupMessage: string,
+): string | undefined {
+  if (!config) return "Loading saved configuration.";
+  if (unsaved) return setupMessage;
+  if (config.error)
+    return "Fix the configuration error below, then check again.";
+  if (!config.configured) return setupMessage;
+  return undefined;
 }

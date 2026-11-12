@@ -9,11 +9,13 @@ import { test } from "node:test";
 
 import {
   initJudgmentEditor,
+  judgmentCheckDisabledReason,
   judgmentEditorSettings,
   providerSettingsActions,
   reduceJudgmentEditor,
   SAVED_NOTICE,
   SAVED_OFF_NOTICE,
+  type JudgmentConfig,
   type JudgmentEditor,
   type JudgmentEditorAction,
   type JudgmentSettings,
@@ -226,4 +228,57 @@ test("a normalized save and configuration sync preserve the subsequent probe res
     message: "Connection refused.",
   });
   assert.equal(e.notice, SAVED_NOTICE);
+});
+
+// The check button's disabled reason: settings.tsx renders it as the help
+// line under the saved settings and as the button's title.
+const setupHint =
+  "Enter your TypeSafe API key, then save to check the connection.";
+const erroredConfig: JudgmentConfig = {
+  ...ollama,
+  provider: "typesafe",
+  configured: false,
+  stored: false,
+  error:
+    'VELVARR_JUDGMENT_PROVIDER has an invalid value "bogus"; judgment features stay disabled until it is "typesafe", "ollama", or "none".',
+};
+
+test("a configuration error outranks the setup hint for the check reason", () => {
+  // v0.41.0 regression: the server reports an errored configuration as not
+  // configured, so the setup hint fired and told the operator to enter a
+  // key the "TypeSafe key: From environment" line says is already present.
+  assert.equal(
+    judgmentCheckDisabledReason(erroredConfig, false, setupHint),
+    "Fix the configuration error below, then check again.",
+  );
+});
+
+test("a dirty draft keeps the setup hint even with a configuration error", () => {
+  // The error panel hides while the draft is dirty, and a save always
+  // sends the provider: stored values override the environment, so the
+  // error reason would point at an error that is no longer below.
+  assert.equal(
+    judgmentCheckDisabledReason(erroredConfig, true, setupHint),
+    setupHint,
+  );
+});
+
+test("the check reason falls back to the setup hint and clears when ready", () => {
+  const unconfigured: JudgmentConfig = {
+    ...ollama,
+    provider: "typesafe",
+    configured: false,
+    stored: false,
+  };
+  assert.equal(
+    judgmentCheckDisabledReason(unconfigured, false, setupHint),
+    setupHint,
+  );
+  const ready: JudgmentConfig = { ...unconfigured, configured: true };
+  assert.equal(judgmentCheckDisabledReason(ready, false, setupHint), undefined);
+  assert.equal(judgmentCheckDisabledReason(ready, true, setupHint), setupHint);
+  assert.equal(
+    judgmentCheckDisabledReason(undefined, false, setupHint),
+    "Loading saved configuration.",
+  );
 });

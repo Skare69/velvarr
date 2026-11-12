@@ -35,6 +35,7 @@ import {
 import { LimitsPanel, ReleaseStatusPanel } from "./limits.tsx";
 import {
   initJudgmentEditor,
+  judgmentCheckDisabledReason,
   judgmentEditorSettings,
   providerSettingsActions,
   reduceJudgmentEditor,
@@ -1433,11 +1434,11 @@ function JudgmentCard({
     displayedProvider === "ollama"
       ? "Enter your Ollama URL and model, then save to check the connection."
       : "Enter your TypeSafe API key, then save to check the connection.";
-  const checkDisabledReason = !config
-    ? "Loading saved configuration."
-    : unsaved || !config.configured
-      ? setupMessage
-      : config.error;
+  const checkDisabledReason = judgmentCheckDisabledReason(
+    config,
+    unsaved,
+    setupMessage,
+  );
 
   function begin() {
     if (!config) return;
