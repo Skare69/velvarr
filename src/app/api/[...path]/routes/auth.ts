@@ -338,9 +338,11 @@ export async function updatePreferences(
 }
 
 // Coarse per-user signal: does a provider integration exist at all. Real
-// verification (verified flag + account) lives on the admin providers route;
-// here an outage must never claim a configured provider vanished, and an
-// unconfigured provider must never pretend otherwise.
+// verification (verified flag + account) lives on the admin providers route,
+// which keeps its live upstream check; here the read rides the metadata
+// cache, because /api/me fires on every app load for every signed-in
+// account. An outage must never claim a configured provider vanished, and
+// an unconfigured provider must never pretend otherwise.
 async function providerPresence(
   provider: "tpdb" | "stashdb",
 ): Promise<ProviderStatus["tpdb"]> {

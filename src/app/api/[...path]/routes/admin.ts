@@ -507,9 +507,11 @@ export async function adminJellyfin(ctx: AuthContext): Promise<Response> {
 }
 
 export async function adminProviders(_ctx: AuthContext): Promise<Response> {
+  // Live reads: the settings page shows the verified flag and account, and a
+  // cached or stale identity would report a dead key or an outage as valid.
   const [tpdb, stashdb] = await Promise.all([
-    getProviderStatus("tpdb"),
-    getProviderStatus("stashdb"),
+    getProviderStatus("tpdb", { live: true }),
+    getProviderStatus("stashdb", { live: true }),
   ]);
   return json({ providers: [tpdb, stashdb] });
 }
@@ -547,7 +549,9 @@ export async function adminProviderCheck(
   }
   const provider = raw;
   try {
-    return json(await getProviderStatus(provider));
+    // The operator pressed "Check connection": this read must reach the
+    // upstream, never a cached identity.
+    return json(await getProviderStatus(provider, { live: true }));
   } catch (err) {
     return json(providerCheckFailure(provider, err));
   }

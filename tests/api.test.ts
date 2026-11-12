@@ -4401,6 +4401,45 @@ test("per-provider credential check: each provider verifies alone; unknown provi
   }
 });
 
+test("repeated /api/me reads share one identity call per provider per TTL", async () => {
+  await boot();
+  const owner = await loginAs("owner");
+  // Identity reads ride the metadata cache; drop earlier tests' rows so the
+  // counts below are this test's own.
+  resetMetaCache();
+  const tpdbBefore = tpdbFx.calls;
+  const stashBefore = stashdbFx.calls;
+  const first = await call("GET", "/api/me", { cookie: owner });
+  assert.equal(first.status, 200);
+  const body = (await first.json()) as { providers: Record<string, string> };
+  assert.deepEqual(body.providers, {
+    tpdb: "not_verified",
+    stashdb: "not_verified",
+  });
+  await call("GET", "/api/me", { cookie: owner });
+  // Regression pin (49fe462 shipped both reads as cache bypasses): /api/me
+  // runs on every app load for every signed-in account, so the coarse
+  // presence signal costs at most one upstream identity read per provider
+  // per metadata TTL, shared across callers.
+  assert.equal(tpdbFx.calls, tpdbBefore + 1, "one TPDB identity read per TTL");
+  assert.equal(
+    stashdbFx.calls,
+    stashBefore + 1,
+    "one StashDB identity read per TTL",
+  );
+
+  // The admin surface keeps its live check even on a warm cache: a cached
+  // or stale-on-error identity must never report a dead key as verified.
+  const live = await call("GET", "/api/admin/providers", { cookie: owner });
+  assert.equal(live.status, 200);
+  assert.equal(tpdbFx.calls, tpdbBefore + 2, "admin check bypasses the cache");
+  assert.equal(
+    stashdbFx.calls,
+    stashBefore + 2,
+    "admin check bypasses the cache",
+  );
+});
+
 // --- M3 phase B: discover shelves + global multi-category search ---
 
 // Response wire shapes for the endpoints under test. Named boundary casts:
