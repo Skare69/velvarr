@@ -3093,6 +3093,24 @@ test("an administrator can disable AI-assisted matching and credential edits kee
   }
 });
 
+test("an explicit typesafe provider save is accepted and stored", async () => {
+  try {
+    const saved = await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: { judgmentProvider: "typesafe" },
+    });
+    assert.equal(saved.status, 200);
+    const shape = await saved.json();
+    assert.equal(shape.judgment.provider, "typesafe");
+    assert.equal(shape.judgment.stored, true);
+  } finally {
+    await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: { judgmentProvider: "", typesafeApiKey: "" },
+    });
+  }
+});
+
 test("an invalid environment judgment provider degrades the integrations response", async () => {
   const before = process.env.VELVARR_JUDGMENT_PROVIDER;
   try {
