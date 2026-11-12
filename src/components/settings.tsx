@@ -936,6 +936,28 @@ function ConnectionState({ state }: { state: ConnectionStateLabel }) {
   );
 }
 
+/** WCAG 2.4.3 (focus order): closing an inline editor must not drop keyboard
+ * focus on <body>. Focus returns to the card's Edit button; while the
+ * post-save probe keeps that button disabled, focus parks on the save
+ * notice line (tabIndex={-1}) instead. */
+function useEditorFocusReturn(editing: boolean) {
+  const editRef = useRef<HTMLButtonElement>(null);
+  const noticeRef = useRef<HTMLParagraphElement>(null);
+  const closePending = useRef(false);
+  useEffect(() => {
+    if (editing) {
+      closePending.current = true;
+      return;
+    }
+    if (!closePending.current) return;
+    closePending.current = false;
+    const edit = editRef.current;
+    if (edit && !edit.disabled) edit.focus();
+    else noticeRef.current?.focus();
+  }, [editing]);
+  return { editRef, noticeRef };
+}
+
 function MetadataSettings() {
   const { refreshSession } = useSession();
   const [info, setInfo] = useState<ProviderSettingsInfo | null>(null);
@@ -1036,6 +1058,7 @@ function ProviderCredentialCard({
   const [draft, setDraft] = useState("");
   const [check, setCheck] = useState<ProviderCheck | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const { editRef, noticeRef } = useEditorFocusReturn(editing);
   useEffect(() => {
     if (editing) inputRef.current?.focus();
   }, [editing]);
@@ -1149,6 +1172,7 @@ function ProviderCredentialCard({
           {!editing && (
             <button
               type="button"
+              ref={editRef}
               className="btn"
               disabled={!actions.canEdit}
               onClick={() => {
@@ -1240,7 +1264,12 @@ function ProviderCredentialCard({
         </form>
       )}
       {saved && (
-        <p className="mt-3 text-sm text-muted" role="status">
+        <p
+          ref={noticeRef}
+          className="mt-3 text-sm text-muted"
+          role="status"
+          tabIndex={-1}
+        >
           {saved}
         </p>
       )}
@@ -1294,6 +1323,7 @@ function JudgmentCard({
   const [forbidden, setForbidden] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const selectRef = useRef<HTMLSelectElement>(null);
+  const { editRef, noticeRef } = useEditorFocusReturn(editing);
   const { provider, url, model } = editor.draft;
   const checking = editor.check?.state === "checking";
   const connected = editor.check?.state === "connected";
@@ -1514,6 +1544,7 @@ function JudgmentCard({
             {!standard && checkButton}
             <button
               type="button"
+              ref={editRef}
               className="btn"
               disabled={busy || !config}
               onClick={begin}
@@ -1694,7 +1725,12 @@ function JudgmentCard({
         </form>
       )}
       {editor.notice && !unsaved && (
-        <p className="mt-3 text-sm text-muted" role="status">
+        <p
+          ref={noticeRef}
+          className="mt-3 text-sm text-muted"
+          role="status"
+          tabIndex={-1}
+        >
           {editor.notice}
         </p>
       )}
