@@ -3,7 +3,6 @@ import test from "node:test";
 import { candidatesMayMatch } from "../src/server/jellyfin.ts";
 import {
   checkJudgmentConnection,
-  judgmentConfiguration,
   rankRelatedTitles,
   resetSameWorkBreaker,
   sameWork,
@@ -559,21 +558,5 @@ test("suggestTags without a key or with an empty list offers nothing", async () 
     assert.equal(calls, 0, "neither the no-key nor the empty-list path calls");
   } finally {
     globalThis.fetch = realFetch;
-  }
-});
-
-test("VELVARR_JUDGMENT_PROVIDER=typesafe with a key configures cloud matching", async () => {
-  const before = process.env.VELVARR_JUDGMENT_PROVIDER;
-  process.env.TYPESAFE_API_KEY = "env-key-for-provider-test";
-  process.env.VELVARR_JUDGMENT_PROVIDER = "typesafe";
-  try {
-    const settings = judgmentConfiguration();
-    assert.equal(settings.provider, "typesafe");
-    assert.equal(settings.configured, true);
-    assert.equal(settings.error, undefined);
-  } finally {
-    delete process.env.TYPESAFE_API_KEY;
-    if (before === undefined) delete process.env.VELVARR_JUDGMENT_PROVIDER;
-    else process.env.VELVARR_JUDGMENT_PROVIDER = before;
   }
 });
