@@ -41,11 +41,45 @@ export function connectionState(input: {
   return check.verified ? "connected" : "failed";
 }
 
-export function canSaveCredential(input: {
+export const CREDENTIAL_SAVED_NOTICE = "Credential saved.";
+export const CREDENTIAL_CLEARED_NOTICE =
+  "Stored credential cleared. Environment settings apply.";
+
+/** What one Save click on a credential editor does, decided before any
+ * network call so the button's disabled state and the click cannot drift
+ * apart (settings.tsx renders both from this decision):
+ * - a non-blank draft saves the trimmed value;
+ * - the confirmed clear (destructive dialog) saves "" so the environment
+ *   settings apply again, even over a typed draft;
+ * - a blank draft keeps the current credential, so with a credential
+ *   configured ("true", or still loading) the decision is "cancel": the
+ *   button renders disabled and the click leaves the editor open instead
+ *   of closing it like a silent save (v0.41.0 regression, fde0b7b);
+ * - with nothing configured the blank editor is the setup path, so the
+ *   decision is "ask": the editor stays open and the message names the
+ *   missing field. */
+export type CredentialSaveDecision =
+  | { action: "save"; value: string; notice: string }
+  | { action: "cancel" }
+  | { action: "ask"; message: string };
+
+export function credentialSaveDecision(input: {
   draft: string;
-  pending: boolean;
-}): boolean {
-  return input.draft.trim() !== "" && !input.pending;
+  clear: boolean;
+  configured: boolean | undefined;
+  name: string;
+  label: string;
+}): CredentialSaveDecision {
+  if (input.clear)
+    return { action: "save", value: "", notice: CREDENTIAL_CLEARED_NOTICE };
+  const value = input.draft.trim();
+  if (value !== "")
+    return { action: "save", value, notice: CREDENTIAL_SAVED_NOTICE };
+  if (input.configured !== false) return { action: "cancel" };
+  return {
+    action: "ask",
+    message: "Enter a " + input.name + " " + input.label + ".",
+  };
 }
 
 /** Testing with an unsaved draft would test the old key, so a draft blocks

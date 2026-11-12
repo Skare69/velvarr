@@ -9,9 +9,9 @@ import {
   CONNECTION_STATE_LABEL,
   createProviderSettingsQueue,
   canClearCredential,
-  canSaveCredential,
   canTestCredential,
   connectionState,
+  credentialSaveDecision,
 } from "../src/lib/provider-settings.ts";
 
 const verified: ProviderCheck = {
@@ -97,14 +97,94 @@ test("the connection chip copy is pinned for every state", () => {
   });
 });
 
-test("save needs a non-blank draft", () => {
-  assert.equal(canSaveCredential({ draft: "key", pending: false }), true);
-  assert.equal(canSaveCredential({ draft: "   ", pending: false }), false);
-  assert.equal(canSaveCredential({ draft: "", pending: false }), false);
+// The blank-Save regression (v0.41.0, fde0b7b): a blank click closed the
+// editor without saving and without a message, so a not-configured provider
+// looked set up. A blank edit of a configured credential is a Cancel (the
+// button renders it disabled); with nothing configured the click keeps the
+// editor open and names the missing field. The old canSaveCredential
+// pending pin moved here: the component gates pending via actions.canEdit,
+// it never passed pending: true to the helper.
+
+test("a blank Save on a configured credential is a Cancel, so the button sits disabled", () => {
+  assert.deepEqual(
+    credentialSaveDecision({
+      draft: "",
+      clear: false,
+      configured: true,
+      name: "TPDB",
+      label: "API token",
+    }),
+    { action: "cancel" },
+  );
 });
 
-test("save is blocked while a request is pending", () => {
-  assert.equal(canSaveCredential({ draft: "key", pending: true }), false);
+test("a blank Save while the configuration is still loading is a Cancel too", () => {
+  assert.deepEqual(
+    credentialSaveDecision({
+      draft: "   ",
+      clear: false,
+      configured: undefined,
+      name: "StashDB",
+      label: "API key",
+    }),
+    { action: "cancel" },
+  );
+});
+
+test("a blank Save with nothing configured keeps the editor open and names the TPDB field", () => {
+  assert.deepEqual(
+    credentialSaveDecision({
+      draft: "",
+      clear: false,
+      configured: false,
+      name: "TPDB",
+      label: "API token",
+    }),
+    { action: "ask", message: "Enter a TPDB API token." },
+  );
+});
+
+test("a blank Save with nothing configured names the StashDB field", () => {
+  assert.deepEqual(
+    credentialSaveDecision({
+      draft: "",
+      clear: false,
+      configured: false,
+      name: "StashDB",
+      label: "API key",
+    }),
+    { action: "ask", message: "Enter a StashDB API key." },
+  );
+});
+
+test("a non-blank Save stores the trimmed draft", () => {
+  assert.deepEqual(
+    credentialSaveDecision({
+      draft: "  tok ",
+      clear: false,
+      configured: true,
+      name: "TPDB",
+      label: "API token",
+    }),
+    { action: "save", value: "tok", notice: "Credential saved." },
+  );
+});
+
+test("a confirmed clear stores an empty value even with a draft", () => {
+  assert.deepEqual(
+    credentialSaveDecision({
+      draft: "tok",
+      clear: true,
+      configured: true,
+      name: "StashDB",
+      label: "API key",
+    }),
+    {
+      action: "save",
+      value: "",
+      notice: "Stored credential cleared. Environment settings apply.",
+    },
+  );
 });
 
 const testable = {

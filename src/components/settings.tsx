@@ -42,10 +42,10 @@ import {
 } from "../lib/judgment-editor.ts";
 import {
   canClearCredential,
-  canSaveCredential,
   canTestCredential,
   connectionState,
   createProviderSettingsQueue,
+  credentialSaveDecision,
 } from "../lib/provider-settings.ts";
 
 /* ---------- App-local API view records (not in contracts.ts) ---------- */
@@ -1072,6 +1072,7 @@ function ProviderCredentialCard({
   const [checkError, setCheckError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const [blankMessage, setBlankMessage] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
 
   const verify = useCallback(async () => {
@@ -1098,25 +1099,35 @@ function ProviderCredentialCard({
   function cancel() {
     setDraft("");
     setSaveError(null);
+    setBlankMessage(null);
     setEditing(false);
   }
 
   async function apply(clear = false) {
     setSaveError(null);
     setSaved(null);
+    setBlankMessage(null);
+    const save = credentialSaveDecision({
+      draft,
+      clear,
+      configured: config?.configured,
+      name,
+      label,
+    });
+    // A blank edit of a configured credential is a Cancel: the disabled
+    // button normally blocks it, and an Enter submission lands here and
+    // keeps the editor open instead of faking a save. With nothing
+    // configured the click keeps the editor open and names the field.
+    if (save.action !== "save") {
+      if (save.action === "ask") setBlankMessage(save.message);
+      return;
+    }
     try {
-      // A blank edit keeps the current credential; removal is explicit.
-      if (clear || canSaveCredential({ draft, pending: false })) {
-        await onSave({ [field]: clear ? "" : draft.trim() });
-        setSaved(
-          clear
-            ? "Stored credential cleared. Environment settings apply."
-            : "Credential saved.",
-        );
-      }
+      await onSave({ [field]: save.value });
+      setSaved(save.notice);
       setDraft("");
       setEditing(false);
-      if (clear || draft.trim()) await verify();
+      await verify();
     } catch (error) {
       if (error instanceof ApiError && error.status === 403) setForbidden(true);
       else setSaveError(messageOf(error));
@@ -1139,6 +1150,15 @@ function ProviderCredentialCard({
     canEdit: !busy && Boolean(config),
     canClear: canClearCredential({ source: config?.source, pending: busy }),
   };
+  // One decision drives the Save button's disabled state and the click,
+  // so they cannot drift apart.
+  const saveDecision = credentialSaveDecision({
+    draft,
+    clear: false,
+    configured: config?.configured,
+    name,
+    label,
+  });
   // Transient busy states are announced by the live status row instead.
   const checkDisabledReason = !actions.canCheck
     ? unsaved
@@ -1235,10 +1255,12 @@ function ProviderCredentialCard({
             autoComplete="off"
             maxLength={maxLength}
             disabled={!actions.canEdit}
+            aria-describedby={blankMessage ? "blank-hint-" + id : undefined}
             value={draft}
             onChange={(event) => {
               setDraft(event.target.value);
               setSaveError(null);
+              setBlankMessage(null);
             }}
             placeholder={
               config?.configured
@@ -1246,6 +1268,15 @@ function ProviderCredentialCard({
                 : "Enter credential"
             }
           />
+          {blankMessage && (
+            <p
+              id={"blank-hint-" + id}
+              className="mt-2 text-sm text-muted"
+              role="status"
+            >
+              {blankMessage}
+            </p>
+          )}
           <p className="mt-2 text-sm text-muted">
             Saved credentials are encrypted and take precedence over the
             environment. Connection checks use the saved credential or
@@ -1255,7 +1286,7 @@ function ProviderCredentialCard({
             <button
               type="submit"
               className="btn btn-accent"
-              disabled={!actions.canEdit}
+              disabled={!actions.canEdit || saveDecision.action === "cancel"}
             >
               Save
             </button>
