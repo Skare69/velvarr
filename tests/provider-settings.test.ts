@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ProviderCheck } from "../src/lib/contracts.ts";
 import {
+  CONNECTION_STATE_LABEL,
   createProviderSettingsQueue,
   canClearCredential,
   canSaveCredential,
@@ -83,6 +84,17 @@ test("a rejected key is failed", () => {
 
 test("an accepted key is connected", () => {
   assert.equal(connectionState({ ...base, check: verified }), "connected");
+});
+
+test("the connection chip copy is pinned for every state", () => {
+  assert.deepEqual(CONNECTION_STATE_LABEL, {
+    unsaved: "Unsaved changes",
+    checking: "Checking…",
+    connected: "Connected",
+    failed: "Failed",
+    not_configured: "Not configured",
+    unknown: "Unknown",
+  });
 });
 
 test("save needs a non-blank draft", () => {

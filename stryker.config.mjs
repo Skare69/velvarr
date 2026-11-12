@@ -52,6 +52,8 @@ const config = {
       "tests/ollama.test.ts",
       "tests/judgment.test.ts",
       "tests/discovery.test.ts",
+      "tests/judgment-editor.test.ts",
+      "tests/provider-settings.test.ts",
     ],
     nodeArgs: [
       "--experimental-strip-types",
@@ -64,8 +66,9 @@ const config = {
     ],
     forceBail: true,
   },
-  // The tap dry run (19 suites, one node process each) nets 26.3 s on the
-  // Linux worker (5.4 s of it process overhead). Stryker's per-run budget is
+  // The tap dry run nets 26.3 s on the Linux worker with the first 19
+  // suites (5.4 s of it process overhead); judgment-editor and
+  // provider-settings add two ~0.15 s suites. Stryker's per-run budget is
   // timeoutFactor × net + timeoutMS (default factor 1.5); a per-mutant
   // selection of one to a few suites stays far inside it. timeoutMS is the
   // fixed slack on top of the measured net time, never the sole kill clock.

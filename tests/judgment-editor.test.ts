@@ -9,12 +9,11 @@ import { test } from "node:test";
 
 import {
   initJudgmentEditor,
+  isDirty,
   judgmentCheckDisabledReason,
   judgmentEditorSettings,
   providerSettingsActions,
   reduceJudgmentEditor,
-  SAVED_NOTICE,
-  SAVED_OFF_NOTICE,
   type JudgmentConfig,
   type JudgmentEditor,
   type JudgmentEditorAction,
@@ -38,6 +37,23 @@ const failedCheck: JudgmentEditorAction[] = [
   { type: "checked", result: { connected: false, message: "Model missing." } },
 ];
 
+test("the editor starts on the TypeSafe defaults", () => {
+  assert.deepEqual(initJudgmentEditor(), {
+    saved: {
+      provider: "typesafe",
+      url: "http://localhost:11434",
+      model: "nimble",
+    },
+    draft: {
+      provider: "typesafe",
+      url: "http://localhost:11434",
+      model: "nimble",
+    },
+    check: null,
+    notice: null,
+  });
+});
+
 test("a draft edit keeps the saved settings' failure message", () => {
   const e = run(...failedCheck, {
     type: "edit",
@@ -52,7 +68,7 @@ test("a save drops the old probe result and reports the save", () => {
   const next = { ...ollama, model: "tev1" };
   const e = run(...failedCheck, { type: "saved", settings: next });
   assert.equal(e.check, null);
-  assert.equal(e.notice, SAVED_NOTICE);
+  assert.equal(e.notice, "Settings saved.");
   assert.deepEqual(e.saved, next);
   assert.deepEqual(e.draft, next);
 });
@@ -64,7 +80,7 @@ test("a failed probe after a save leaves the save notice intact", () => {
     { type: "checking" },
     { type: "checked", result: { connected: false, message: "Timed out." } },
   );
-  assert.equal(e.notice, SAVED_NOTICE);
+  assert.equal(e.notice, "Settings saved.");
   assert.deepEqual(e.check, { state: "failed", message: "Timed out." });
 });
 
@@ -123,7 +139,7 @@ test("saving provider none says matching is off; an edit clears that too", () =>
     { type: "loaded", settings: ollama },
     { type: "saved", settings: off },
   );
-  assert.equal(e.notice, SAVED_OFF_NOTICE);
+  assert.equal(e.notice, "Settings saved. AI-assisted matching is off.");
   const edited = reduceJudgmentEditor(e, {
     type: "edit",
     patch: { provider: "typesafe" },
@@ -177,6 +193,60 @@ test("actions: cancel only for a real change, no save or reset during a probe", 
   );
 });
 
+test("a provider change or an ollama url change dirties the draft", () => {
+  const providerChanged = run(
+    { type: "loaded", settings: ollama },
+    { type: "edit", patch: { provider: "typesafe" } },
+  );
+  assert.equal(isDirty(providerChanged), true);
+  const urlOnly = run(
+    { type: "loaded", settings: ollama },
+    { type: "edit", patch: { url: "http://elsewhere:11434" } },
+  );
+  assert.equal(isDirty(urlOnly), true);
+  // TypeSafe saves only the provider, so url and model are not a change.
+  const typesafeUrl = run(
+    { type: "loaded", settings: { ...ollama, provider: "typesafe" } },
+    { type: "edit", patch: { url: "http://elsewhere:11434" } },
+  );
+  assert.equal(isDirty(typesafeUrl), false);
+});
+
+test("actions wait for ready and for the server round trip", () => {
+  const loaded = run({ type: "loaded", settings: ollama });
+  assert.deepEqual(providerSettingsActions(loaded, { ...idle, ready: false }), {
+    save: false,
+    reset: false,
+    cancel: false,
+    check: false,
+  });
+  assert.deepEqual(
+    providerSettingsActions(loaded, { ...idle, pending: true }),
+    {
+      save: false,
+      reset: false,
+      cancel: false,
+      check: false,
+    },
+  );
+});
+
+test("a typesafe draft is complete without url or model", () => {
+  const e = run({
+    type: "loaded",
+    settings: { provider: "typesafe", url: "", model: "" },
+  });
+  assert.equal(providerSettingsActions(e, idle).save, true);
+});
+
+test("an ollama draft needs a non-blank url", () => {
+  const e = run(
+    { type: "loaded", settings: ollama },
+    { type: "edit", patch: { url: "   " } },
+  );
+  assert.equal(providerSettingsActions(e, idle).save, false);
+});
+
 test("saving a cleared default backend agrees with the configuration sync", () => {
   const config = {
     ...ollama,
@@ -188,7 +258,7 @@ test("saving a cleared default backend agrees with the configuration sync", () =
   const e = run({ type: "saved", settings: saved });
   assert.equal(e.saved.provider, "none");
   assert.deepEqual(e.saved, judgmentEditorSettings(config));
-  assert.equal(e.notice, SAVED_OFF_NOTICE);
+  assert.equal(e.notice, "Settings saved. AI-assisted matching is off.");
   assert.equal(e.check, null);
   assert.equal(
     providerSettingsActions(e, { ...idle, configured: false }).check,
@@ -227,7 +297,7 @@ test("a normalized save and configuration sync preserve the subsequent probe res
     state: "failed",
     message: "Connection refused.",
   });
-  assert.equal(e.notice, SAVED_NOTICE);
+  assert.equal(e.notice, "Settings saved.");
 });
 
 // The check button's disabled reason: settings.tsx renders it as the help
