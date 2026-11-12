@@ -4401,11 +4401,11 @@ test("per-provider credential check: each provider verifies alone; unknown provi
   }
 });
 
-test("repeated /api/me reads share one identity call per provider per TTL", async () => {
+test("/api/me reads provider presence from stored config, never upstream", async () => {
   await boot();
   const owner = await loginAs("owner");
-  // Identity reads ride the metadata cache; drop earlier tests' rows so the
-  // counts below are this test's own.
+  // Cold cache, warm cache, outage: the coarse signal reads the stored
+  // credential, so none of them may spend an upstream identity call.
   resetMetaCache();
   const tpdbBefore = tpdbFx.calls;
   const stashBefore = stashdbFx.calls;
@@ -4417,27 +4417,44 @@ test("repeated /api/me reads share one identity call per provider per TTL", asyn
     stashdb: "not_verified",
   });
   await call("GET", "/api/me", { cookie: owner });
-  // Regression pin (49fe462 shipped both reads as cache bypasses): /api/me
-  // runs on every app load for every signed-in account, so the coarse
-  // presence signal costs at most one upstream identity read per provider
-  // per metadata TTL, shared across callers.
-  assert.equal(tpdbFx.calls, tpdbBefore + 1, "one TPDB identity read per TTL");
-  assert.equal(
-    stashdbFx.calls,
-    stashBefore + 1,
-    "one StashDB identity read per TTL",
-  );
+  // Regression pin: 49fe462 shipped both reads as cache bypasses, so every
+  // app load fired two live identity reads on the operator's credentials; a
+  // warm metadata cache only hid that for ten minutes (a cold cache, an
+  // expired TTL, and a rejected key have no cached answer to serve).
+  assert.equal(tpdbFx.calls, tpdbBefore, "no TPDB call on /api/me");
+  assert.equal(stashdbFx.calls, stashBefore, "no StashDB call on /api/me");
 
-  // The admin surface keeps its live check even on a warm cache: a cached
-  // or stale-on-error identity must never report a dead key as verified.
+  // A failing provider keeps the shell honest and unstalled: /api/me stays
+  // silent upstream and still reports the provider as configured.
+  tpdbFx.fail = 5;
+  stashdbFx.fail = 5;
+  try {
+    const during = await call("GET", "/api/me", { cookie: owner });
+    assert.equal(during.status, 200);
+    const duringBody = (await during.json()) as {
+      providers: Record<string, string>;
+    };
+    assert.deepEqual(duringBody.providers, {
+      tpdb: "not_verified",
+      stashdb: "not_verified",
+    });
+    assert.equal(tpdbFx.calls, tpdbBefore, "no TPDB call during an outage");
+    assert.equal(
+      stashdbFx.calls,
+      stashBefore,
+      "no StashDB call during an outage",
+    );
+  } finally {
+    tpdbFx.fail = 0;
+    stashdbFx.fail = 0;
+  }
+
+  // The admin surface keeps its live check: it reaches the upstream and
+  // verifies against the fixtures.
   const live = await call("GET", "/api/admin/providers", { cookie: owner });
   assert.equal(live.status, 200);
-  assert.equal(tpdbFx.calls, tpdbBefore + 2, "admin check bypasses the cache");
-  assert.equal(
-    stashdbFx.calls,
-    stashBefore + 2,
-    "admin check bypasses the cache",
-  );
+  assert.equal(tpdbFx.calls, tpdbBefore + 1, "admin check is live");
+  assert.equal(stashdbFx.calls, stashBefore + 1, "admin check is live");
 });
 
 // --- M3 phase B: discover shelves + global multi-category search ---

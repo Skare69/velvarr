@@ -534,23 +534,17 @@ export type ProviderVerification =
 
 /** One cheap authenticated read-only call: TPDB GET /user, StashDB `me`.
  * Not-configured is returned, never faked; outages and auth failures throw
- * AppError so callers never confuse them with an empty catalog. The default
- * read rides the metadata cache (10-minute TTL, in-flight dedupe,
- * stale-on-error fallback): /api/me fires on every app load for every
- * signed-in account and needs only the coarse configured signal, so two
- * live identity reads per page load on the operator's credentials would
- * spend the providers' rate limits and stall the shell on a slow provider.
- * `live: true` (admin credential checks) must reach the upstream: a cached
- * or stale-on-error identity would report a dead key or an outage as
- * verified. */
+ * AppError so callers never confuse them with an empty catalog. The call
+ * bypasses the metadata cache: a cached or stale-on-error identity would
+ * report a dead key or an outage as verified. Only the admin credential
+ * routes call it; /api/me reads providerConfigured() instead, so the shell
+ * never waits on this round trip. */
 export async function getProviderStatus(
   provider: "tpdb" | "stashdb",
-  options: { live?: boolean } = {},
 ): Promise<ProviderVerification> {
-  const live = options.live === true;
   try {
     if (provider === "tpdb") {
-      const res = await tpdbGet<{ data?: { name?: unknown } }>("/user", live);
+      const res = await tpdbGet<{ data?: { name?: unknown } }>("/user", true);
       const name = cleanString(res?.data?.name, 120);
       return {
         provider,
@@ -563,7 +557,7 @@ export async function getProviderStatus(
       "query { me { id name roles } }",
       {},
       "me",
-      live,
+      true,
     )) as { name?: unknown } | null;
     if (res === null || typeof res !== "object") {
       throw new AppError(

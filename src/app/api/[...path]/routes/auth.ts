@@ -40,7 +40,7 @@ import {
   listLibraries,
   listUsers,
 } from "../../../../server/jellyfin.ts";
-import { getProviderStatus } from "../../../../server/providers.ts";
+import { providerConfigured } from "../../../../server/providers.ts";
 import { availableUpdate } from "../../../../server/update.ts";
 
 export function setupReady(): boolean {
@@ -313,13 +313,19 @@ export async function logout(request: Request): Promise<Response> {
 // --- user routes ---
 
 export async function me(ctx: AuthContext): Promise<Response> {
-  const [tpdb, stashdb] = await Promise.all([
-    providerPresence("tpdb"),
-    providerPresence("stashdb"),
-  ]);
+  // Coarse per-user presence from the stored credential alone: no upstream
+  // call in any state, so a slow, down, or rejecting provider can never
+  // stall the shell that loads this on every app start. Real verification
+  // (verified flag + account) lives on the admin providers route;
+  // "not_verified" says exactly that.
   return json({
     account: ctx.account,
-    providers: { tpdb, stashdb } satisfies ProviderStatus,
+    providers: {
+      tpdb: providerConfigured("tpdb") ? "not_verified" : "not_configured",
+      stashdb: providerConfigured("stashdb")
+        ? "not_verified"
+        : "not_configured",
+    } satisfies ProviderStatus,
   });
 }
 
@@ -335,24 +341,6 @@ export async function updatePreferences(
   ctx: AuthContext,
 ): Promise<Response> {
   return json(saveContentPreferences(ctx.account.id, await readJson(request)));
-}
-
-// Coarse per-user signal: does a provider integration exist at all. Real
-// verification (verified flag + account) lives on the admin providers route,
-// which keeps its live upstream check; here the read rides the metadata
-// cache, because /api/me fires on every app load for every signed-in
-// account. An outage must never claim a configured provider vanished, and
-// an unconfigured provider must never pretend otherwise.
-async function providerPresence(
-  provider: "tpdb" | "stashdb",
-): Promise<ProviderStatus["tpdb"]> {
-  try {
-    return (await getProviderStatus(provider)).configured
-      ? "not_verified"
-      : "not_configured";
-  } catch {
-    return "not_verified";
-  }
 }
 
 import { userAvatar } from "./admin.ts";
