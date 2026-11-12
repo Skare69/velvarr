@@ -27,6 +27,7 @@ import {
   normalizeItemId,
   validateUser,
 } from "../src/server/jellyfin.ts";
+import { providerCheckFailure } from "../src/app/api/[...path]/routes/admin.ts";
 import { getWhisparrStatus } from "../src/server/whisparr.ts";
 import type { IntegrationConfig, LibraryItem } from "../src/lib/contracts.ts";
 import {
@@ -4255,4 +4256,42 @@ test("resolvePlaybackAccess keeps proven rejections, outages, and auth deaths di
       );
     },
   );
+});
+
+test("provider checks report only upstream failures as credential status", () => {
+  for (const code of [
+    "upstream_auth",
+    "upstream_forbidden",
+    "upstream_not_found",
+    "upstream_unavailable",
+    "upstream_timeout",
+    "upstream_bad_response",
+  ]) {
+    assert.deepEqual(
+      providerCheckFailure(
+        "tpdb",
+        new AppError(502, code, "Synthetic upstream failure"),
+      ),
+      {
+        provider: "tpdb",
+        configured: true,
+        verified: false,
+        error: { code, message: "Synthetic upstream failure" },
+      },
+    );
+  }
+});
+
+test("provider checks preserve storage, decryption, configuration and unexpected errors", () => {
+  for (const error of [
+    new AppError(500, "secret_key_mismatch", "Cannot decrypt configuration"),
+    new AppError(400, "invalid_config", "Invalid settings"),
+    new AppError(500, "invalid_secret_key", "Invalid encryption key"),
+    new Error("Unexpected storage fault"),
+  ]) {
+    assert.throws(
+      () => providerCheckFailure("stashdb", error),
+      (thrown) => thrown === error,
+    );
+  }
 });

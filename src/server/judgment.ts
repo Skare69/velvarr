@@ -95,7 +95,8 @@ export function judgmentConfiguration(options?: JudgmentOptions): {
   const keyPresent = Boolean(
     stored?.typesafeApiKey?.trim() || process.env.TYPESAFE_API_KEY?.trim(),
   );
-  const valid = errors.length === 0;
+  const activeErrors = provider === "none" ? [] : errors;
+  const valid = activeErrors.length === 0;
   return {
     provider,
     url,
@@ -106,7 +107,7 @@ export function judgmentConfiguration(options?: JudgmentOptions): {
       stored?.judgmentProvider !== undefined ||
       stored?.ollamaUrl !== undefined ||
       stored?.ollamaModel !== undefined,
-    ...(errors.length > 0 ? { error: errors.join(" ") } : {}),
+    ...(activeErrors.length > 0 ? { error: activeErrors.join(" ") } : {}),
   };
 }
 
@@ -119,7 +120,7 @@ export function judgmentConfiguration(options?: JudgmentOptions): {
  * gate for another backend the environment selected. */
 export function tagSuggestionsAllowed(options?: JudgmentOptions): boolean {
   const settings = judgmentConfiguration(options);
-  if (settings.provider === "none") return false;
+  if (!settings.configured) return false;
   if (settings.provider === "ollama")
     return options?.judgmentProvider === "ollama";
   return Boolean(options?.typesafeApiKey?.trim());

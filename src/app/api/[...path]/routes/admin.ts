@@ -15,6 +15,7 @@ import type {
   WhisparrDelivery,
   WhisparrPathMapping,
   ProviderCheck,
+  CredentialProvider,
 } from "../../../../lib/contracts.ts";
 import {
   isJudgmentProvider,
@@ -513,6 +514,30 @@ export async function adminProviders(_ctx: AuthContext): Promise<Response> {
   return json({ providers: [tpdb, stashdb] });
 }
 
+/** Only upstream failures are credential-status data. Storage, decryption,
+ * and local configuration failures retain their original HTTP error. */
+export function providerCheckFailure(
+  provider: CredentialProvider,
+  error: unknown,
+): ProviderCheck {
+  const upstreamCodes = new Set([
+    "upstream_auth",
+    "upstream_forbidden",
+    "upstream_not_found",
+    "upstream_unavailable",
+    "upstream_timeout",
+    "upstream_bad_response",
+  ]);
+  if (!(error instanceof AppError) || !upstreamCodes.has(error.code))
+    throw error;
+  return {
+    provider,
+    configured: true,
+    verified: false,
+    error: { code: error.code, message: error.message },
+  };
+}
+
 export async function adminProviderCheck(
   _ctx: AuthContext,
   raw: string,
@@ -524,16 +549,7 @@ export async function adminProviderCheck(
   try {
     return json(await getProviderStatus(provider));
   } catch (err) {
-    // A rejected key is status data for this provider, not a dead session.
-    if (err instanceof AppError) {
-      return json({
-        provider,
-        configured: true,
-        verified: false,
-        error: { code: err.code, message: err.message },
-      } satisfies ProviderCheck);
-    }
-    throw err;
+    return json(providerCheckFailure(provider, err));
   }
 }
 

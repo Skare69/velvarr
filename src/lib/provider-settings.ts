@@ -71,3 +71,17 @@ export function canClearCredential(input: {
 }): boolean {
   return input.source === "stored" && !input.pending;
 }
+
+/** Saves and live probes share persisted configuration. Queue both kinds of
+ * operation, including same-tick calls, and recover after a failed request. */
+export function createProviderSettingsQueue() {
+  let tail = Promise.resolve();
+  return function run<T>(operation: () => Promise<T>): Promise<T> {
+    const result = tail.then(operation);
+    tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  };
+}

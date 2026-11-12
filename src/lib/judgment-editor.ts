@@ -15,6 +15,26 @@ export type JudgmentSettings = {
   model: string;
 };
 
+/** Use the same effective selection after a save and a configuration read.
+ * An absent backend is standard matching, unless a stored choice or error
+ * needs to remain visible so the operator can correct it. */
+export function judgmentEditorSettings(
+  config: JudgmentSettings & {
+    configured: boolean;
+    stored: boolean;
+    error?: string;
+  },
+): JudgmentSettings {
+  return {
+    provider:
+      !config.configured && !config.stored && !config.error
+        ? "none"
+        : config.provider,
+    url: config.url,
+    model: config.model,
+  };
+}
+
 export type JudgmentCheck =
   | { state: "checking" }
   | { state: "connected"; provider: JudgmentProvider }
@@ -38,7 +58,7 @@ export type JudgmentEditorAction =
   | { type: "edit"; patch: Partial<JudgmentSettings> }
   | { type: "cancel" }
   /** The PATCH succeeded with these effective settings. */
-  | { type: "saved"; settings: JudgmentSettings }
+  | { type: "saved"; settings: JudgmentSettings; notice?: string }
   | { type: "saveFailed"; message: string }
   | { type: "checking" }
   | {
@@ -93,7 +113,8 @@ export function reduceJudgmentEditor(
         draft: a.settings,
         check: null,
         notice:
-          a.settings.provider === "none" ? SAVED_OFF_NOTICE : SAVED_NOTICE,
+          a.notice ??
+          (a.settings.provider === "none" ? SAVED_OFF_NOTICE : SAVED_NOTICE),
       };
     case "saveFailed":
       return { ...e, notice: a.message };

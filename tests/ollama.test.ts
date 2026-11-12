@@ -1432,3 +1432,30 @@ test("disabling judgment keeps stored backend settings for re-enablement", async
     assert.equal(on?.ollamaUrl, "http://localhost:11434");
   });
 });
+
+test("environment standard matching ignores invalid settings for unused AI backends", async () => {
+  await withEnv(
+    {
+      VELVARR_JUDGMENT_PROVIDER: "none",
+      TYPESAFE_API_KEY: "unused-key",
+      OLLAMA_BASE_URL: "not a URL",
+      OLLAMA_MODEL: "invalid model!",
+    },
+    async () => {
+      const settings = judgmentConfiguration();
+      assert.equal(settings.provider, "none");
+      assert.equal(settings.configured, false);
+      assert.equal(settings.error, undefined);
+      assert.equal(judgmentConfigured(), false);
+      assert.equal(
+        tagSuggestionsAllowed({ typesafeApiKey: "preserved-key" }),
+        false,
+      );
+      assert.deepEqual(await checkJudgmentConnection(), {
+        provider: "none",
+        connected: false,
+        error: "AI-assisted matching is disabled.",
+      });
+    },
+  );
+});

@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ProviderCheck } from "../src/lib/contracts.ts";
 import {
+  createProviderSettingsQueue,
   canClearCredential,
   canSaveCredential,
   canTestCredential,
@@ -134,4 +135,43 @@ test("clear is allowed only for a stored key", () => {
 
 test("clear is blocked while a request is pending", () => {
   assert.equal(canClearCredential({ source: "stored", pending: true }), false);
+});
+
+test("provider saves and probes share one queue even when requested in the same tick", async () => {
+  const run = createProviderSettingsQueue();
+  const events: string[] = [];
+  let release!: () => void;
+  const barrier = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const save = run(async () => {
+    events.push("save started");
+    await barrier;
+    events.push("save finished");
+    return "saved";
+  });
+  const probe = run(async () => {
+    events.push("probe");
+    return "checked";
+  });
+  await Promise.resolve();
+  assert.deepEqual(events, ["save started"]);
+  release();
+  assert.deepEqual(await Promise.all([save, probe]), ["saved", "checked"]);
+  assert.deepEqual(events, ["save started", "save finished", "probe"]);
+});
+
+test("a failed provider probe cannot block later saves or checks", async () => {
+  const run = createProviderSettingsQueue();
+  const failure = new Error("Synthetic probe failure");
+  const probe = run(async () => {
+    throw failure;
+  });
+  const save = run(async () => "saved after failure");
+  await assert.rejects(probe, (error) => error === failure);
+  assert.equal(await save, "saved after failure");
+  assert.equal(
+    await run(async () => "checked after save"),
+    "checked after save",
+  );
 });

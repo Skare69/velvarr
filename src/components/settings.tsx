@@ -9,25 +9,19 @@
 import {
   useCallback,
   useEffect,
-  useReducer,
   useRef,
+  useReducer,
   useState,
   type FormEvent,
 } from "react";
 import type {
   CredentialProvider,
-  JudgmentProvider,
   ProviderCheck,
+  IntegrationConfig,
+  JudgmentProvider,
   WhisparrDelivery,
   WhisparrPathMapping,
 } from "../lib/contracts.ts";
-import {
-  canClearCredential,
-  canSaveCredential,
-  canTestCredential,
-  CONNECTION_STATE_LABEL,
-  connectionState,
-} from "../lib/provider-settings.ts";
 import {
   ApiError,
   api,
@@ -40,19 +34,19 @@ import {
 import { LimitsPanel, ReleaseStatusPanel } from "./limits.tsx";
 import {
   initJudgmentEditor,
+  judgmentEditorSettings,
   providerSettingsActions,
   reduceJudgmentEditor,
-  type JudgmentSettings,
 } from "../lib/judgment-editor.ts";
+import {
+  canClearCredential,
+  canSaveCredential,
+  canTestCredential,
+  connectionState,
+  createProviderSettingsQueue,
+} from "../lib/provider-settings.ts";
 
 /* ---------- App-local API view records (not in contracts.ts) ---------- */
-
-/** The `judgment` block of GET and PATCH /api/admin/integrations. */
-interface JudgmentShape extends JudgmentSettings {
-  configured: boolean;
-  stored: boolean;
-  error?: string;
-}
 
 interface WhisparrStatus {
   configured: boolean;
@@ -84,15 +78,11 @@ interface IntegrationsInfo {
     pathMappings: WhisparrPathMapping[];
   } | null;
 }
-
 /* ---------- Settings: integrations, Whisparr, providers ---------- */
 
 export function SettingsView() {
   const [forbidden, setForbidden] = useState(false);
   const [section, setSection] = useState("connections");
-  // Bumped when the Providers card stores a key so the AI-assisted matching
-  // card re-reads its configuration without a page reload.
-  const [providersSavedAt, setProvidersSavedAt] = useState(0);
   // Stable identity: IntegrationsForm's load useCallback depends on this, so a
   // fresh arrow on every render would refetch and wipe unsaved draft edits.
   const forbid = useCallback(() => setForbidden(true), []);
@@ -131,8 +121,7 @@ export function SettingsView() {
       </div>
       <div hidden={section !== "metadata"}>
         <div className="settings-content">
-          <ProvidersCard onSaved={() => setProvidersSavedAt((v) => v + 1)} />
-          <JudgmentCard refreshKey={providersSavedAt} />
+          <MetadataSettings />
         </div>
       </div>
       <div hidden={section !== "system"}>
@@ -881,445 +870,553 @@ function JellyfinCard({ onForbidden }: { onForbidden: () => void }) {
   );
 }
 
-// Shape of one entry in GET /api/admin/integrations → providers.
+// Shape of the settings response; credentials themselves are never returned.
 type ProviderConfigRow = {
   configured: boolean;
   source: "stored" | "environment";
 };
+type JudgmentConfig = {
+  provider: JudgmentProvider;
+  url: string;
+  model: string;
+  configured: boolean;
+  stored: boolean;
+  error?: string;
+};
+type ProviderSettingsInfo = {
+  providers: Record<CredentialProvider | "typesafe", ProviderConfigRow>;
+  judgment: JudgmentConfig;
+};
+type ProviderSettingsPatch = Partial<
+  Omit<NonNullable<IntegrationConfig["providers"]>, "judgmentProvider"> & {
+    judgmentProvider: JudgmentProvider | "";
+  }
+>;
+type SaveProviderSettings = (
+  body: ProviderSettingsPatch,
+) => Promise<ProviderSettingsInfo>;
+type RunProviderOperation = <T>(operation: () => Promise<T>) => Promise<T>;
 
-/** One metadata provider's credential: its own live check against
- * GET /api/admin/providers/:provider and its own save, so a failed TPDB
- * check never changes the StashDB card. */
+const CREDENTIAL_ROWS = [
+  {
+    id: "tpdb",
+    name: "TPDB",
+    field: "tpdbApiToken",
+    label: "API token",
+    maxLength: 1024,
+    description: "Movie metadata, performers, studios, and tags.",
+  },
+  {
+    id: "stashdb",
+    name: "StashDB",
+    field: "stashdbApiKey",
+    label: "API key",
+    maxLength: 512,
+    description: "Scene metadata, performers, studios, and tags.",
+  },
+] as const;
+
+const CONNECTION_STATE_CLASSES = {
+  "Loading configuration…": "",
+  "Checking…": "",
+  "Unsaved changes": "",
+  "Not configured": "",
+  "Not checked": "",
+  Connected: "is-ok",
+  "Connection failed": "is-error",
+  "Configuration error": "is-error",
+} as const;
+type ConnectionStateLabel = keyof typeof CONNECTION_STATE_CLASSES;
+
+function ConnectionState({ state }: { state: ConnectionStateLabel }) {
+  return (
+    <span className={"connection-state " + CONNECTION_STATE_CLASSES[state]}>
+      {state}
+    </span>
+  );
+}
+
+function MetadataSettings() {
+  const { refreshSession } = useSession();
+  const [info, setInfo] = useState<ProviderSettingsInfo | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [forbidden, setForbidden] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [runQueued] = useState(createProviderSettingsQueue);
+  const operationCount = useRef(0);
+  const runOperation: RunProviderOperation = useCallback(
+    async (operation) => {
+      operationCount.current++;
+      setSaving(true);
+      try {
+        return await runQueued(operation);
+      } finally {
+        operationCount.current--;
+        if (operationCount.current === 0) setSaving(false);
+      }
+    },
+    [runQueued],
+  );
+
+  const load = useCallback(() => {
+    setLoadError(null);
+    api<ProviderSettingsInfo>("/api/admin/integrations")
+      .then(setInfo)
+      .catch((error) => {
+        if (error instanceof ApiError && error.status === 403)
+          setForbidden(true);
+        else setLoadError(messageOf(error));
+      });
+  }, []);
+  useEffect(load, [load]);
+
+  const save: SaveProviderSettings = (body) =>
+    runOperation(async () => {
+      // All metadata/AI saves and probes use one queue. A probe always reads
+      // persisted settings, and a failed operation cannot block the next one.
+      const data = await api<ProviderSettingsInfo>("/api/admin/integrations", {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      });
+      setInfo(data);
+      setLoadError(null);
+      refreshSession().catch(() => undefined);
+      return data;
+    });
+
+  if (forbidden) return <ForbiddenPanel />;
+  return (
+    <>
+      {loadError && (
+        <ErrorPanel
+          title="Provider configuration read failed"
+          message={loadError}
+          onRetry={load}
+        />
+      )}
+      {CREDENTIAL_ROWS.map((row) => (
+        <ProviderCredentialCard
+          key={row.id}
+          {...row}
+          config={info?.providers[row.id]}
+          saving={saving}
+          runOperation={runOperation}
+          onSave={save}
+        />
+      ))}
+      <JudgmentCard
+        config={info?.judgment}
+        keyConfig={info?.providers.typesafe}
+        saving={saving}
+        runOperation={runOperation}
+        onSave={save}
+      />
+    </>
+  );
+}
+
 function ProviderCredentialCard({
   id,
   name,
   field,
-  conf,
-  onForbidden,
-  onSaved,
+  label,
+  maxLength,
+  description,
+  config,
+  saving,
+  onSave,
+  runOperation,
 }: {
-  id: CredentialProvider;
-  name: string;
-  field: "tpdbApiToken" | "stashdbApiKey";
-  conf: ProviderConfigRow | undefined;
-  onForbidden: () => void;
-  onSaved: () => void;
-}) {
+  config?: ProviderConfigRow;
+  saving: boolean;
+  onSave: SaveProviderSettings;
+  runOperation: RunProviderOperation;
+} & (typeof CREDENTIAL_ROWS)[number]) {
+  const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
-  const [pending, setPending] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
   const [check, setCheck] = useState<ProviderCheck | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
   const [checking, setChecking] = useState(false);
-  const [requestError, setRequestError] = useState<string | null>(null);
-  // Only the latest check may write state: a check started before a save
-  // must not overwrite the result for the newly saved key.
-  const checkSeq = useRef(0);
+  const [checkError, setCheckError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saved, setSaved] = useState<string | null>(null);
+  const [forbidden, setForbidden] = useState(false);
 
-  const runCheck = useCallback(() => {
-    const seq = ++checkSeq.current;
+  const verify = useCallback(async () => {
     setChecking(true);
-    setRequestError(null);
-    api<ProviderCheck>(`/api/admin/providers/${id}`)
-      .then((d) => {
-        if (seq === checkSeq.current) setCheck(d);
-      })
-      .catch((e) => {
-        if (seq !== checkSeq.current) return;
-        if (e instanceof ApiError && e.status === 403) onForbidden();
-        else setRequestError(messageOf(e));
-      })
-      .finally(() => {
-        if (seq === checkSeq.current) setChecking(false);
-      });
-  }, [id, onForbidden]);
-
-  useEffect(runCheck, [runCheck]);
-
-  const apply = async (value: string) => {
-    setPending(true);
-    setSaveError(null);
-    setSaved(false);
+    setCheck(null);
+    setCheckError(null);
     try {
-      await api("/api/admin/integrations", {
-        method: "PATCH",
-        body: JSON.stringify({ [field]: value }),
-      });
-      setDraft("");
-      setSaved(true);
-      onSaved();
-      runCheck();
-    } catch (e) {
-      setSaveError(messageOf(e));
+      setCheck(
+        await runOperation(() =>
+          api<ProviderCheck>("/api/admin/providers/" + id),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 403) setForbidden(true);
+      else setCheckError(messageOf(error));
     } finally {
-      setPending(false);
+      setChecking(false);
     }
+  }, [id, runOperation]);
+  useEffect(() => {
+    void verify();
+  }, [verify]);
+
+  function cancel() {
+    setDraft("");
+    setSaveError(null);
+    setEditing(false);
+  }
+
+  async function apply(clear = false) {
+    setSaveError(null);
+    setSaved(null);
+    try {
+      // A blank edit keeps the current credential; removal is explicit.
+      if (clear || canSaveCredential({ draft, pending: false })) {
+        await onSave({ [field]: clear ? "" : draft.trim() });
+        setSaved(
+          clear
+            ? "Stored credential cleared. Environment settings apply."
+            : "Credential saved.",
+        );
+      }
+      setDraft("");
+      setEditing(false);
+      if (clear || draft.trim()) await verify();
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 403) setForbidden(true);
+      else setSaveError(messageOf(error));
+    }
+  }
+
+  // Checks read persisted credentials; a replacement draft is not yet verified.
+  const unsaved = editing && draft.trim() !== "";
+  const error =
+    checkError ??
+    (check?.configured && !check.verified ? check.error.message : null);
+  const busy = saving || checking || forbidden;
+  const actions = {
+    canCheck: canTestCredential({
+      draft,
+      pending: saving || forbidden,
+      checking,
+      configured: config?.configured,
+    }),
+    canEdit: !busy && Boolean(config),
+    canClear: canClearCredential({ source: config?.source, pending: busy }),
   };
-
-  const save = () => {
-    if (canSaveCredential({ draft, pending })) apply(draft.trim());
-  };
-
-  const state = connectionState({ draft, checking, check, requestError });
-  const failure =
-    requestError ??
-    (check?.configured && !check.verified
-      ? `${check.error.code}: ${check.error.message}`
-      : null);
-
+  const state = connectionState({
+    draft: editing ? draft : "",
+    checking,
+    check,
+    requestError: checkError,
+  });
+  const stateLabels = {
+    unsaved: "Unsaved changes",
+    checking: "Checking…",
+    connected: "Connected",
+    failed: "Connection failed",
+    not_configured: "Not configured",
+    unknown: "Not checked",
+  } as const;
+  const connectionStateLabel: ConnectionStateLabel = stateLabels[state];
   return (
-    <div className="settings-connection-status">
-      <div className="flex items-center justify-between gap-3">
-        <h4 className="font-semibold">{name}</h4>
-        <button
-          type="button"
-          className="btn"
-          onClick={runCheck}
-          disabled={
-            !canTestCredential({
-              draft,
-              pending,
-              checking,
-              configured: conf?.configured,
-            })
-          }
-        >
-          {checking ? "Testing…" : "Test connection"}
-        </button>
-      </div>
-
-      <div
-        className="mt-2 flex flex-wrap items-center gap-2 text-sm"
-        role="status"
-        aria-live="polite"
-        aria-label={`${name} connection`}
-      >
-        {conf && conf.source === "stored" ? (
-          <span className="chip chip-accent">Stored</span>
-        ) : conf && conf.configured ? (
-          <span className="chip">From environment</span>
-        ) : null}
-        <span className={state === "connected" ? "chip chip-accent" : "chip"}>
-          {CONNECTION_STATE_LABEL[state]}
-          {state === "connected" && check?.configured && check.verified
-            ? ` · ${check.account}`
-            : ""}
-        </span>
-      </div>
-
-      {state === "failed" && failure !== null ? (
-        <div className="mt-3">
-          <ErrorPanel
-            title={`${name} check failed`}
-            message={failure}
-            onRetry={runCheck}
-          />
+    <section className="panel p-5" aria-labelledby={"provider-heading-" + id}>
+      <div className="settings-service-summary">
+        <div className="settings-service-heading">
+          <h2 id={"provider-heading-" + id}>{name}</h2>
+          <p>{description}</p>
         </div>
-      ) : state === "not_configured" ? (
-        <p className="mt-3 text-sm text-muted">
-          Not configured. Save a key below to enable the connection check.
-        </p>
-      ) : null}
-
-      <div className="mt-3">
-        <label className="label" htmlFor={`provider-${id}`}>
-          {name} {id === "tpdb" ? "API token" : "API key"}
-        </label>
-        <div className="flex flex-wrap items-center gap-2">
-          <input
-            id={`provider-${id}`}
-            className="input max-w-md"
-            type="password"
-            autoComplete="off"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder={
-              conf && conf.source === "stored"
-                ? "Stored — leave blank to keep"
-                : conf && conf.configured
-                  ? "Configured via environment"
-                  : "Not configured"
-            }
-          />
+        <div className="settings-service-buttons">
           <button
             type="button"
-            className="btn btn-accent"
-            disabled={!canSaveCredential({ draft, pending })}
-            onClick={save}
+            className="btn"
+            disabled={!actions.canCheck}
+            title={
+              unsaved
+                ? "Save or cancel your changes before checking the connection."
+                : undefined
+            }
+            onClick={() => void verify()}
           >
-            Save
+            Check connection
           </button>
-          {conf && conf.source === "stored" ? (
+          {!editing && (
             <button
               type="button"
               className="btn"
-              disabled={!canClearCredential({ source: conf.source, pending })}
-              onClick={() => apply("")}
+              disabled={!actions.canEdit}
+              onClick={() => {
+                setSaved(null);
+                setEditing(true);
+              }}
             >
-              Clear stored
+              Edit
             </button>
-          ) : null}
+          )}
         </div>
       </div>
-      {saved ? <p className="mt-2 text-sm text-muted">Saved.</p> : null}
-      {saveError ? (
-        <div className="mt-3">
-          <ErrorPanel
-            title={`Saving the ${name} credential failed`}
-            message={saveError}
-            onRetry={save}
+      <div className="settings-service-status" aria-live="polite">
+        <ConnectionState state={connectionStateLabel} />
+        {!unsaved && check?.configured && check.verified && (
+          <span className="text-muted">{check.account}</span>
+        )}
+        {config?.configured && (
+          <span className="chip">
+            {config.source === "stored"
+              ? "Stored credential"
+              : "From environment"}
+          </span>
+        )}
+      </div>
+      {editing && (
+        <form
+          id={"provider-editor-" + id}
+          className="settings-service-editor"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!busy && config) void apply();
+          }}
+        >
+          <label className="label" htmlFor={"provider-" + id}>
+            {name} {label}
+          </label>
+          <input
+            id={"provider-" + id}
+            ref={inputRef}
+            className="input mt-2"
+            type="password"
+            autoComplete="off"
+            maxLength={maxLength}
+            disabled={!actions.canEdit}
+            value={draft}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              setSaveError(null);
+            }}
+            placeholder={
+              config?.configured
+                ? "Leave blank to keep the current credential"
+                : "Enter credential"
+            }
           />
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function ProvidersCard({ onSaved }: { onSaved?: () => void }) {
-  const { refreshSession } = useSession();
-  const [forbidden, setForbidden] = useState(false);
-  const [shape, setShape] = useState<{
-    tpdb: ProviderConfigRow;
-    stashdb: ProviderConfigRow;
-    typesafe: ProviderConfigRow;
-  } | null>(null);
-  const [shapeError, setShapeError] = useState<string | null>(null);
-  const [typesafeKey, setTypesafeKey] = useState("");
-  const [pending, setPending] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
-
-  const loadShape = useCallback(() => {
-    api<{
-      providers: {
-        tpdb: ProviderConfigRow;
-        stashdb: ProviderConfigRow;
-        typesafe: ProviderConfigRow;
-      };
-    }>("/api/admin/integrations")
-      .then((d) => {
-        setShape(d.providers);
-        setShapeError(null);
-      })
-      .catch((e) => {
-        setShape(null);
-        setShapeError(messageOf(e));
-      });
-  }, []);
-
-  useEffect(loadShape, [loadShape]);
-
-  // Stable identity: each provider card's check useCallback depends on it.
-  const forbid = useCallback(() => setForbidden(true), []);
-
-  const credentialSaved = () => {
-    onSaved?.();
-    loadShape();
-    // The save/clear landed; this re-read only refreshes the session's
-    // provider status (not-configured claims elsewhere). If it fails the
-    // boot-time status stays until the next reload — never read as a failed
-    // save — and each card's live check still reports reality.
-    refreshSession().catch(() => undefined);
-  };
-
-  const applyTypesafe = async (value: string) => {
-    setPending(true);
-    setSaveError(null);
-    setSaved(false);
-    try {
-      await api("/api/admin/integrations", {
-        method: "PATCH",
-        body: JSON.stringify({ typesafeApiKey: value }),
-      });
-      setTypesafeKey("");
-      setSaved(true);
-      credentialSaved();
-    } catch (e) {
-      setSaveError(messageOf(e));
-    } finally {
-      setPending(false);
-    }
-  };
-
-  const saveTypesafe = () => {
-    if (canSaveCredential({ draft: typesafeKey, pending }))
-      applyTypesafe(typesafeKey.trim());
-  };
-
-  const typesafe = shape?.typesafe;
-
-  return (
-    <div className="panel p-5">
-      <h3 className="font-semibold">Metadata providers</h3>
-      <p className="mt-1 text-sm text-muted">
-        Credentials saved here (encrypted) take precedence over the environment.
-        Each provider is checked on its own against the provider itself. A
-        failed check is a bad key or an outage, never an empty catalog.
-      </p>
-      {forbidden ? (
-        <p className="mt-3 text-sm text-muted">
-          Editing and live verification need an administrator account.
-        </p>
-      ) : (
-        <>
-          <ProviderCredentialCard
-            id="tpdb"
-            name="TPDB"
-            field="tpdbApiToken"
-            conf={shape?.tpdb}
-            onForbidden={forbid}
-            onSaved={credentialSaved}
-          />
-          <ProviderCredentialCard
-            id="stashdb"
-            name="StashDB"
-            field="stashdbApiKey"
-            conf={shape?.stashdb}
-            onForbidden={forbid}
-            onSaved={credentialSaved}
-          />
-          <div className="mt-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <h4 className="font-semibold">TypeSafe</h4>
-              <span className="chip">
-                {typesafe?.configured
-                  ? "API key configured"
-                  : typesafe
-                    ? "Off — no key"
-                    : shapeError
-                      ? "Unknown"
-                      : "Checking…"}
-              </span>
-              {typesafe && typesafe.source === "stored" ? (
-                <span className="chip chip-accent">Stored</span>
-              ) : typesafe && typesafe.configured ? (
-                <span className="chip">From environment</span>
-              ) : null}
-            </div>
-            <label className="label mt-3" htmlFor="provider-typesafe">
-              TypeSafe API key (optional)
-            </label>
-            <div className="flex flex-wrap items-center gap-2">
-              <input
-                id="provider-typesafe"
-                className="input max-w-md"
-                type="password"
-                autoComplete="off"
-                value={typesafeKey}
-                onChange={(e) => setTypesafeKey(e.target.value)}
-                placeholder={
-                  typesafe && typesafe.source === "stored"
-                    ? "Stored — leave blank to keep"
-                    : typesafe && typesafe.configured
-                      ? "Configured via environment"
-                      : "Not configured"
-                }
-              />
+          <p className="mt-2 text-sm text-muted">
+            Saved credentials are encrypted and take precedence over the
+            environment. Connection checks use the saved credential or
+            environment fallback.
+          </p>
+          <div className="settings-service-buttons mt-4">
+            <button
+              type="submit"
+              className="btn btn-accent"
+              disabled={!actions.canEdit}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy}
+              onClick={cancel}
+            >
+              Cancel
+            </button>
+            {config?.source === "stored" && (
               <button
                 type="button"
-                className="btn btn-accent"
-                disabled={!canSaveCredential({ draft: typesafeKey, pending })}
-                onClick={saveTypesafe}
+                className="btn"
+                disabled={!actions.canClear}
+                onClick={() => void apply(true)}
               >
-                Save
+                Clear stored credential
               </button>
-              {typesafe && typesafe.source === "stored" ? (
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={
-                    !canClearCredential({ source: typesafe.source, pending })
-                  }
-                  onClick={() => applyTypesafe("")}
-                >
-                  Clear stored
-                </button>
-              ) : null}
-            </div>
-            <p className="mt-1 text-sm text-muted">
-              Enables AI-assisted matching: a Jellyfin item whose title only
-              nearly matches a request is judged &ldquo;same work?&rdquo; and
-              flagged for administrator review instead of counting as missing
-              when TypeSafe is selected below. Ollama uses a local model and
-              does not need this key.
-            </p>
-            {saved ? <p className="mt-2 text-sm text-muted">Saved.</p> : null}
-            {saveError ? (
-              <div className="mt-3">
-                <ErrorPanel
-                  title="Saving the TypeSafe credential failed"
-                  message={saveError}
-                  onRetry={saveTypesafe}
-                />
-              </div>
-            ) : null}
+            )}
           </div>
-        </>
+        </form>
       )}
-      {forbidden ? null : shapeError ? (
+      {saved && (
+        <p className="mt-3 text-sm text-muted" role="status">
+          {saved}
+        </p>
+      )}
+      {saveError && (
         <div className="mt-3">
           <ErrorPanel
-            title="Provider configuration read failed"
-            message={shapeError}
-            onRetry={loadShape}
+            title={"Saving " + name + " credential failed"}
+            message={saveError}
           />
         </div>
-      ) : null}
-    </div>
+      )}
+      {error && !unsaved && (
+        <div className="mt-3">
+          <ErrorPanel
+            title={name + " connection check failed"}
+            message={error}
+            onRetry={busy ? undefined : () => void verify()}
+          />
+        </div>
+      )}
+      {forbidden && (
+        <p className="mt-3 text-sm text-muted">
+          An administrator account is required to edit and verify credentials.
+        </p>
+      )}
+    </section>
   );
 }
 
-/** Local model settings share the existing encrypted integration configuration. */
-function JudgmentCard({ refreshKey = 0 }: { refreshKey?: number }) {
+/** Metadata credentials stay separate from the optional AI provider. */
+function JudgmentCard({
+  config,
+  keyConfig,
+  saving,
+  onSave,
+  runOperation,
+}: {
+  config?: JudgmentConfig;
+  keyConfig?: ProviderConfigRow;
+  saving: boolean;
+  onSave: SaveProviderSettings;
+  runOperation: RunProviderOperation;
+}) {
   const [editor, dispatch] = useReducer(
     reduceJudgmentEditor,
     undefined,
     initJudgmentEditor,
   );
-  const { draft, check } = editor;
-  const [configured, setConfigured] = useState(false);
-  const [stored, setStored] = useState(false);
-  const [configError, setConfigError] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
-  const [ready, setReady] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [apiKey, setApiKey] = useState("");
   const [forbidden, setForbidden] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const applyShape = useCallback((judgment: JudgmentShape) => {
-    setConfigured(judgment.configured);
-    setStored(judgment.stored);
-    setConfigError(judgment.error ?? null);
-    return {
-      provider: judgment.provider,
-      url: judgment.url,
-      model: judgment.model,
-    };
-  }, []);
-  const load = useCallback(async () => {
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const selectRef = useRef<HTMLSelectElement>(null);
+  const { provider, url, model } = editor.draft;
+  const checking = editor.check?.state === "checking";
+  const connected = editor.check?.state === "connected";
+  const busy = saving || checking || forbidden;
+  const actions = providerSettingsActions(editor, {
+    ready: Boolean(config),
+    pending: saving || forbidden,
+    configured: Boolean(config?.configured),
+  });
+  const savedProvider = config && judgmentEditorSettings(config).provider;
+  useEffect(() => {
+    if (!config) return;
+    const settings = judgmentEditorSettings(config);
+    if (
+      settings.provider !== editor.saved.provider ||
+      settings.url !== editor.saved.url ||
+      settings.model !== editor.saved.model
+    ) {
+      dispatch({ type: "loaded", settings });
+    }
+  }, [config, editor.saved]);
+  useEffect(() => {
+    if (editing) selectRef.current?.focus();
+  }, [editing]);
+  const displayedProvider = editing ? provider : savedProvider;
+  const standard = displayedProvider === "none";
+  const providerName = standard
+    ? "Standard matching"
+    : displayedProvider === "ollama"
+      ? "Ollama"
+      : "TypeSafe";
+  const displayedUrl = editing ? url.trim() : config?.url;
+  const displayedModel = editing ? model.trim() : config?.model;
+  const unsaved =
+    editing &&
+    Boolean(config) &&
+    (provider !== savedProvider ||
+      (provider === "typesafe"
+        ? apiKey.trim() !== ""
+        : provider === "ollama" &&
+          (url.trim() !== config?.url || model.trim() !== config?.model)));
+  const setupMessage =
+    displayedProvider === "ollama"
+      ? "Enter your Ollama URL and model, then save to check the connection."
+      : "Enter your TypeSafe API key, then save to check the connection.";
+  const checkDisabledReason = !config
+    ? "Loading saved configuration."
+    : unsaved || !config.configured
+      ? setupMessage
+      : config.error;
+
+  function begin() {
+    if (!config) return;
+    dispatch({ type: "cancel" });
+    setApiKey("");
+    setSaveError(null);
+    setEditing(true);
+  }
+
+  function cancel() {
+    setApiKey("");
+    setSaveError(null);
+    dispatch({ type: "cancel" });
+    setEditing(false);
+  }
+
+  async function apply(
+    body: ProviderSettingsPatch,
+    success: string,
+    verify = false,
+  ) {
+    setSaveError(null);
     try {
-      const { judgment } = await api<{ judgment: JudgmentShape }>(
-        "/api/admin/integrations",
-      );
-      dispatch({ type: "loaded", settings: applyShape(judgment) });
-      setLoadError(null);
-      setReady(true);
+      const data = await onSave(body);
+      setApiKey("");
+      dispatch({
+        type: "saved",
+        settings: judgmentEditorSettings(data.judgment),
+        notice: success,
+      });
+      setEditing(false);
+      // Probe only after persistence succeeds: the endpoint reads saved settings,
+      // not the draft. A failed probe must not turn a successful save into an error.
+      if (verify && data.judgment.configured) await check();
     } catch (error) {
       if (error instanceof ApiError && error.status === 403) setForbidden(true);
-      setLoadError(messageOf(error));
+      else setSaveError(messageOf(error));
     }
-  }, [applyShape]);
-  useEffect(() => {
-    void load();
-  }, [load, refreshKey]);
-  // Probes only what is persisted: callers run it after a save succeeded or
-  // on demand for the settings already saved.
-  const probe = async () => {
+  }
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    if (busy || !config) return;
+    await apply(
+      provider === "ollama"
+        ? {
+            judgmentProvider: provider,
+            ollamaUrl: url.trim(),
+            ollamaModel: model.trim(),
+          }
+        : {
+            judgmentProvider: provider,
+            ...(provider === "typesafe" && apiKey.trim()
+              ? { typesafeApiKey: apiKey.trim() }
+              : {}),
+          },
+      standard
+        ? "Standard matching saved. AI-assisted matching is disabled."
+        : "Settings saved.",
+      !standard,
+    );
+  }
+
+  async function check() {
     dispatch({ type: "checking" });
     try {
-      const result = await api<{
-        provider: JudgmentProvider;
-        connected: boolean;
-        error?: string;
-      }>("/api/admin/judgment/check", { method: "POST", body: "{}" });
+      const result = await runOperation(() =>
+        api<{
+          provider: JudgmentProvider;
+          connected: boolean;
+          error?: string;
+        }>("/api/admin/judgment/check", { method: "POST", body: "{}" }),
+      );
       dispatch({
         type: "checked",
         result: result.connected
@@ -1327,192 +1424,303 @@ function JudgmentCard({ refreshKey = 0 }: { refreshKey?: number }) {
           : { connected: false, message: result.error ?? "Connection failed." },
       });
     } catch (error) {
+      if (error instanceof ApiError && error.status === 403) setForbidden(true);
       dispatch({
         type: "checked",
         result: { connected: false, message: messageOf(error) },
       });
     }
-  };
-  const save = async (clear = false) => {
-    setPending(true);
-    let saved: JudgmentShape;
-    try {
-      ({ judgment: saved } = await api<{ judgment: JudgmentShape }>(
-        "/api/admin/integrations",
-        {
-          method: "PATCH",
-          body: JSON.stringify(
-            clear
-              ? { judgmentProvider: "", ollamaUrl: "", ollamaModel: "" }
-              : draft.provider === "ollama"
-                ? {
-                    judgmentProvider: draft.provider,
-                    ollamaUrl: draft.url,
-                    ollamaModel: draft.model,
-                  }
-                : { judgmentProvider: draft.provider },
-          ),
-        },
-      ));
-    } catch (error) {
-      dispatch({ type: "saveFailed", message: messageOf(error) });
-      return;
-    } finally {
-      setPending(false);
-    }
-    dispatch({ type: "saved", settings: applyShape(saved) });
-    if (saved.configured && saved.error === undefined) await probe();
-  };
-  const actions = providerSettingsActions(editor, {
-    ready,
-    pending,
-    configured,
-  });
-  const message = loadError ?? editor.notice;
-  return (
-    <div className="panel p-5">
-      <h3 className="font-semibold">AI-assisted matching</h3>
-      <p className="mt-1 text-sm text-muted">
-        Choose TypeSafe or your own Ollama decision model for title review, tag
-        suggestions, and related-title ranking, or choose None to turn
-        AI-assisted matching off. Tag suggestions send member search terms to
-        the backend you select, so they start only after this choice is saved.
-        Similarity still requires administrator review and never grants playback
-        access.
-      </p>
-      {configError ? (
+  }
+
+  const connectionState: ConnectionStateLabel = (() => {
+    if (checking) return "Checking…";
+    if (unsaved) return "Unsaved changes";
+    if (config?.error) return "Configuration error";
+    if (editor.check?.state === "failed") return "Connection failed";
+    if (connected) return "Connected";
+    return config?.configured ? "Not checked" : "Not configured";
+  })();
+  const status = (
+    <div className="settings-service-status" aria-live="polite">
+      {config && !standard && <ConnectionState state={connectionState} />}
+      {!editing && (
+        <span className={config && !standard ? "text-muted" : "chip"}>
+          {config
+            ? standard
+              ? "Standard matching (no AI)"
+              : providerName
+            : "Loading configuration…"}
+        </span>
+      )}
+    </div>
+  );
+
+  const details = (
+    <>
+      {status}
+      {!editing && (
+        <p className="mt-3 text-sm text-muted">
+          {displayedProvider === "ollama"
+            ? (displayedUrl || "URL not set") +
+              " · " +
+              (displayedModel || "Model not set")
+            : "TypeSafe key: " +
+              (keyConfig?.configured
+                ? keyConfig.source === "stored"
+                  ? "Stored"
+                  : "From environment"
+                : "Not configured")}
+        </p>
+      )}
+      {!editing && checkDisabledReason && (
+        <p id="judgment-check-help" className="mt-3 text-sm text-muted">
+          {checkDisabledReason}
+        </p>
+      )}
+      {config?.error && !unsaved && (
         <div className="mt-3">
           <ErrorPanel
             title="Judgment configuration error"
-            message={configError}
-            onRetry={load}
+            message={config.error}
           />
         </div>
-      ) : null}
-      {forbidden ? (
-        <p className="mt-3 text-sm text-muted">
-          An administrator account is required to configure the model.
-        </p>
-      ) : (
-        <div className="mt-4 space-y-3">
-          <label className="label" htmlFor="judgment-provider">
-            Provider
-          </label>
-          <select
-            id="judgment-provider"
-            className="input max-w-md"
-            disabled={!ready || pending}
-            value={draft.provider}
-            onChange={(e) =>
-              dispatch({
-                type: "edit",
-                patch: { provider: e.target.value as JudgmentProvider },
-              })
-            }
-          >
-            <option value="typesafe">TypeSafe</option>
-            <option value="ollama">Ollama (local)</option>
-            <option value="none">None (standard matching)</option>
-          </select>
-          {draft.provider === "ollama" ? (
-            <>
-              <label className="label" htmlFor="ollama-url">
-                Ollama URL
-              </label>
-              <input
-                id="ollama-url"
-                className="input max-w-md"
-                type="url"
-                disabled={!ready || pending}
-                value={draft.url}
-                onChange={(e) =>
-                  dispatch({ type: "edit", patch: { url: e.target.value } })
-                }
-              />
-              <label className="label" htmlFor="ollama-model">
-                Decision model
-              </label>
-              <input
-                id="ollama-model"
-                className="input max-w-md"
-                disabled={!ready || pending}
-                value={draft.model}
-                onChange={(e) =>
-                  dispatch({ type: "edit", patch: { model: e.target.value } })
-                }
-              />
-              <p className="text-sm text-muted">
-                Requires Ollama 0.35 or later and a downloaded decision model
-                such as nimble or tev1. From Docker Desktop on a Mac, use
-                http://host.docker.internal:11434 and enable
-                VELVARR_ALLOW_HTTP=1.
-              </p>
-            </>
-          ) : draft.provider === "none" ? (
-            <p className="text-sm text-muted">
-              AI-assisted matching is off. Velvarr uses standard (exact)
-              matching only and sends nothing to TypeSafe or Ollama. The saved
-              TypeSafe key and Ollama settings stay stored for later.
-            </p>
-          ) : (
-            <p className="text-sm text-muted">
-              Uses the TypeSafe key configured above. Without a key, ordinary
-              matching remains active.
-            </p>
-          )}
-          <div className="flex flex-wrap gap-2">
+      )}
+    </>
+  );
+
+  const checkButton = (
+    <button
+      type="button"
+      className="btn"
+      disabled={busy || Boolean(checkDisabledReason)}
+      title={checkDisabledReason}
+      aria-describedby={
+        !editing && checkDisabledReason ? "judgment-check-help" : undefined
+      }
+      onClick={() => void check()}
+    >
+      {checking ? "Checking…" : "Check connection"}
+    </button>
+  );
+
+  return (
+    <section className="panel p-5" aria-labelledby="judgment-heading">
+      <div className="settings-service-summary">
+        <div className="settings-service-heading">
+          <h2 id="judgment-heading">AI-assisted matching</h2>
+        </div>
+        {!editing && (
+          <div className="settings-service-buttons">
+            {!standard && checkButton}
             <button
-              className="btn btn-accent"
-              disabled={!actions.save}
-              onClick={() => void save()}
+              type="button"
+              className="btn"
+              disabled={busy || !config}
+              onClick={begin}
             >
-              Save settings
+              Edit
             </button>
-            {actions.cancel ? (
+          </div>
+        )}
+      </div>
+      {!editing &&
+        (standard ? (
+          <>
+            {status}
+            <p className="mt-3 text-sm text-muted">
+              Use standard matching without calling an AI service.
+            </p>
+          </>
+        ) : (
+          <div className="mt-3">{details}</div>
+        ))}
+      {editing && (
+        <form
+          id="judgment-editor"
+          className="settings-service-editor"
+          onSubmit={(event) => void save(event)}
+        >
+          <div className="space-y-3">
+            <label className="label" htmlFor="judgment-provider">
+              Provider
+            </label>
+            <div className="settings-select max-w-md">
+              <select
+                id="judgment-provider"
+                ref={selectRef}
+                className="input"
+                disabled={busy}
+                value={provider}
+                onChange={(event) => {
+                  dispatch({
+                    type: "edit",
+                    patch: { provider: event.target.value as JudgmentProvider },
+                  });
+                  setSaveError(null);
+                }}
+              >
+                <option value="none">Standard matching (no AI)</option>
+                <option value="typesafe">TypeSafe</option>
+                <option value="ollama">Ollama</option>
+              </select>
+            </div>
+            {standard ? (
+              <p className="text-sm text-muted">
+                Use standard matching without calling an AI service.
+              </p>
+            ) : (
+              <>
+                {details}
+                {provider === "typesafe" ? (
+                  <>
+                    <label className="label" htmlFor="typesafe-key">
+                      TypeSafe API key
+                    </label>
+                    <input
+                      id="typesafe-key"
+                      className="input"
+                      type="password"
+                      autoComplete="off"
+                      maxLength={512}
+                      disabled={busy}
+                      value={apiKey}
+                      onChange={(event) => setApiKey(event.target.value)}
+                      placeholder={
+                        keyConfig?.configured
+                          ? "Leave blank to keep the current credential"
+                          : "Enter your TypeSafe API key"
+                      }
+                    />
+                    <p className="text-sm text-muted">
+                      Optional. Without a key, standard matching remains active.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <label className="label" htmlFor="ollama-url">
+                      Ollama URL
+                    </label>
+                    <input
+                      id="ollama-url"
+                      className="input"
+                      type="url"
+                      required
+                      disabled={busy}
+                      value={url}
+                      onChange={(event) =>
+                        dispatch({
+                          type: "edit",
+                          patch: { url: event.target.value },
+                        })
+                      }
+                    />
+                    <label className="label" htmlFor="ollama-model">
+                      Decision model
+                    </label>
+                    <input
+                      id="ollama-model"
+                      className="input"
+                      required
+                      disabled={busy}
+                      value={model}
+                      onChange={(event) =>
+                        dispatch({
+                          type: "edit",
+                          patch: { model: event.target.value },
+                        })
+                      }
+                    />
+                    <p className="text-sm text-muted">
+                      Use a reachable Ollama server with a decision model such
+                      as nimble or tev1.
+                    </p>
+                  </>
+                )}
+                <p className="text-sm text-muted">
+                  Tag suggestions send search terms to {providerName}. Matches
+                  still require administrator review.
+                </p>
+              </>
+            )}
+            <div className="settings-service-buttons">
               <button
+                type="submit"
+                className="btn btn-accent"
+                disabled={!actions.save}
+              >
+                Save
+              </button>
+              <button
+                type="button"
                 className="btn"
-                onClick={() => dispatch({ type: "cancel" })}
+                disabled={busy}
+                onClick={cancel}
               >
                 Cancel
               </button>
-            ) : null}
-            <button
-              className="btn"
-              disabled={!actions.check}
-              onClick={() => void probe()}
-            >
-              Test saved connection
-            </button>
-            {stored ? (
-              <button
-                className="btn"
-                disabled={!actions.reset}
-                onClick={() => void save(true)}
-              >
-                Use environment settings
-              </button>
-            ) : null}
+              {!standard && checkButton}
+              {provider === "typesafe" && keyConfig?.source === "stored" && (
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={busy}
+                  onClick={() =>
+                    void apply(
+                      { typesafeApiKey: "" },
+                      "Stored TypeSafe credential cleared. Environment settings apply.",
+                    )
+                  }
+                >
+                  Clear stored credential
+                </button>
+              )}
+              {config?.stored && (
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={busy}
+                  onClick={() =>
+                    void apply(
+                      { judgmentProvider: "", ollamaUrl: "", ollamaModel: "" },
+                      "Using environment settings. Check the saved connection to verify the selected model.",
+                    )
+                  }
+                >
+                  Use environment settings
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+        </form>
       )}
-      {message ? (
+      {editor.notice && !unsaved && (
         <p className="mt-3 text-sm text-muted" role="status">
-          {message}
+          {editor.notice}
         </p>
-      ) : null}
-      {check ? (
+      )}
+      {editor.check && !unsaved && (
         <p
           className="judgment-check mt-2"
-          data-state={check.state}
+          data-state={editor.check.state}
           role="status"
         >
-          {check.state === "checking"
-            ? "Testing the saved connection…"
-            : check.state === "connected"
-              ? `${check.provider === "ollama" ? "Ollama" : "TypeSafe"} answered a decision successfully.`
-              : `Saved connection failed: ${check.message}`}
+          {editor.check.state === "checking"
+            ? "Checking the saved connection…"
+            : editor.check.state === "connected"
+              ? `${editor.check.provider === "ollama" ? "Ollama" : "TypeSafe"} answered a decision successfully.`
+              : editor.check.message}
         </p>
-      ) : null}
-    </div>
+      )}
+      {saveError && (
+        <div className="mt-3">
+          <ErrorPanel title="Saving AI settings failed" message={saveError} />
+        </div>
+      )}
+      {forbidden && (
+        <p className="mt-3 text-sm text-muted">
+          An administrator account is required to configure the model.
+        </p>
+      )}
+    </section>
   );
 }
