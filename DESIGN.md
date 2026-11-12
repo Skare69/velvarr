@@ -50,6 +50,12 @@ components:
     textColor: "{colors.parchment-ink}"
     rounded: "{rounded.md}"
     padding: "0.5rem 0.95rem"
+  button-danger:
+    backgroundColor: "{colors.plum-raised}"
+    textColor: "{colors.ember-danger}"
+    borderColor: "color-mix(in srgb, {colors.ember-danger} 45%, {colors.plum-edge})"
+    rounded: "{rounded.md}"
+    padding: "0.5rem 0.95rem"
   input:
     backgroundColor: "oklch(18.4% 0.024 325)"
     textColor: "{colors.parchment-ink}"
@@ -99,7 +105,7 @@ Quietly rounded, never pill-exuberant: chips 5px, buttons/inputs 7px, panels/car
 
 ## Components
 
-- **Buttons** (`.btn`): 38px min-height, secondary = raised on edge hairline; `.btn-accent` = marquee magenta fill with magenta-ink text; hover lightens via `color-mix`; active nudges down 1px; disabled at 0.45 opacity.
+- **Buttons** (`.btn`): 38px min-height, secondary = raised on edge hairline; `.btn-accent` = marquee magenta fill with magenta-ink text; hover lightens via `color-mix`; active nudges down 1px; disabled at 0.45 opacity. `.btn-danger` is destructive-only: Ember Danger as text on the raised fill, edge mixed 45% toward danger, hover tints the surface 12% toward danger. Destructive settings actions (clear a stored credential, return to environment settings) never sit in the Save row: they live in their own row below the form, separated by an edge hairline, and every press opens a confirmation `<dialog>` with named buttons ("Keep credential" / "Clear credential").
 - **Cards** (`.card`, `.media-card`): panel tone, 1px edge, 10px radius; hover turns the edge magenta and lifts the poster with shadow; the whole card is the click target (Seerr-style).
 - **Inputs** (`.input`): canvas/panel mix fill, edge hairline, magenta focus border; placeholders mixed from muted at 78%.
 - **Chips** (`.chip`): 5px radius status/label pills; `.chip-accent` on magenta-soft.

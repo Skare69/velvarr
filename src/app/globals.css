@@ -160,6 +160,16 @@ summary:focus-visible,
   background: var(--color-accent-hover);
   border-color: var(--color-accent-hover);
 }
+/* Destructive controls only (clear stored credentials, reset to environment):
+   Ember Danger speaks in text and edge, the surface stays raised until hover. */
+.btn-danger {
+  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 45%, var(--color-edge));
+}
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 12%, var(--color-raised));
+  border-color: color-mix(in srgb, var(--color-danger) 70%, var(--color-edge));
+}
 .icon-button {
   display: inline-flex;
   align-items: center;
@@ -1104,6 +1114,17 @@ body:has(.auth-page) {
 .settings-service-status {
   margin-top: 18px;
   font-size: 0.875rem;
+}
+/* Destructive settings actions sit apart from Save/Cancel so a mis-tap in the
+   main row cannot delete a stored credential. */
+.settings-destructive-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-edge);
 }
 .connection-state {
   display: inline-flex;

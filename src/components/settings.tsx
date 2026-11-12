@@ -9,6 +9,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useRef,
   useReducer,
   useState,
@@ -1059,6 +1060,10 @@ function ProviderCredentialCard({
   const [check, setCheck] = useState<ProviderCheck | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const { editRef, noticeRef } = useEditorFocusReturn(editing);
+  // Deleting a stored credential is destructive, so the click first opens this
+  // confirmation; the id must be unique — this card renders once per provider.
+  const clearRef = useRef<HTMLDialogElement>(null);
+  const clearTitleId = useId();
   useEffect(() => {
     if (editing) inputRef.current?.focus();
   }, [editing]);
@@ -1261,18 +1266,60 @@ function ProviderCredentialCard({
             >
               Cancel
             </button>
-            {config?.source === "stored" && (
-              <button
-                type="button"
-                className="btn"
-                disabled={!actions.canClear}
-                onClick={() => void apply(true)}
-              >
-                Clear stored credential
-              </button>
-            )}
           </div>
         </form>
+      )}
+      {editing && config?.source === "stored" && (
+        <>
+          {/* Deleting the stored credential is destructive, so the action
+              lives in its own row below the form and asks first. */}
+          <div className="settings-destructive-row">
+            <button
+              type="button"
+              className="btn btn-danger"
+              disabled={!actions.canClear}
+              onClick={() => clearRef.current?.showModal()}
+            >
+              Clear stored credential
+            </button>
+          </div>
+          <dialog
+            ref={clearRef}
+            className="bulk-dialog"
+            aria-labelledby={clearTitleId}
+          >
+            <div className="p-5">
+              <h3 id={clearTitleId} className="font-semibold">
+                Clear the stored {name} credential?
+              </h3>
+              <p className="mt-2 text-sm text-muted">
+                The encrypted credential is deleted from storage. {name} then
+                falls back to the environment settings, and connection checks
+                use that fallback.
+              </p>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => clearRef.current?.close()}
+                >
+                  Keep credential
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  disabled={!actions.canClear}
+                  onClick={() => {
+                    clearRef.current?.close();
+                    void apply(true);
+                  }}
+                >
+                  Clear credential
+                </button>
+              </div>
+            </div>
+          </dialog>
+        </>
       )}
       {saved && (
         <p
@@ -1335,6 +1382,12 @@ function JudgmentCard({
   const [saveError, setSaveError] = useState<string | null>(null);
   const selectRef = useRef<HTMLSelectElement>(null);
   const { editRef, noticeRef } = useEditorFocusReturn(editing);
+  // Both actions below delete stored settings, so each click first opens a
+  // confirmation dialog (unique ids: dialogs resolve aria-labelledby by id).
+  const clearKeyRef = useRef<HTMLDialogElement>(null);
+  const useEnvRef = useRef<HTMLDialogElement>(null);
+  const clearKeyTitleId = useId();
+  const useEnvTitleId = useId();
   const { provider, url, model } = editor.draft;
   const checking = editor.check?.state === "checking";
   const connected = editor.check?.state === "connected";
@@ -1698,17 +1751,23 @@ function JudgmentCard({
                 Cancel
               </button>
               {!standard && checkButton}
+            </div>
+          </div>
+        </form>
+      )}
+      {editing &&
+        ((provider === "typesafe" && keyConfig?.source === "stored") ||
+          config?.stored) && (
+          <>
+            {/* Both actions delete stored settings, so they live in their own
+                row below the form and each asks first. */}
+            <div className="settings-destructive-row">
               {provider === "typesafe" && keyConfig?.source === "stored" && (
                 <button
                   type="button"
-                  className="btn"
+                  className="btn btn-danger"
                   disabled={busy}
-                  onClick={() =>
-                    void apply(
-                      { typesafeApiKey: "" },
-                      "Stored TypeSafe credential cleared. Environment settings apply.",
-                    )
-                  }
+                  onClick={() => clearKeyRef.current?.showModal()}
                 >
                   Clear stored credential
                 </button>
@@ -1716,22 +1775,97 @@ function JudgmentCard({
               {config?.stored && (
                 <button
                   type="button"
-                  className="btn"
+                  className="btn btn-danger"
                   disabled={busy}
-                  onClick={() =>
-                    void apply(
-                      { judgmentProvider: "", ollamaUrl: "", ollamaModel: "" },
-                      "Using environment settings. Check the saved connection to verify the selected model.",
-                    )
-                  }
+                  onClick={() => useEnvRef.current?.showModal()}
                 >
                   Use environment settings
                 </button>
               )}
             </div>
-          </div>
-        </form>
-      )}
+            <dialog
+              ref={clearKeyRef}
+              className="bulk-dialog"
+              aria-labelledby={clearKeyTitleId}
+            >
+              <div className="p-5">
+                <h3 id={clearKeyTitleId} className="font-semibold">
+                  Clear the stored TypeSafe credential?
+                </h3>
+                <p className="mt-2 text-sm text-muted">
+                  The stored key is deleted from storage. Environment settings
+                  apply; without a key, standard matching remains active.
+                </p>
+                <div className="mt-4 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => clearKeyRef.current?.close()}
+                  >
+                    Keep credential
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-danger"
+                    disabled={busy}
+                    onClick={() => {
+                      clearKeyRef.current?.close();
+                      void apply(
+                        { typesafeApiKey: "" },
+                        "Stored TypeSafe credential cleared. Environment settings apply.",
+                      );
+                    }}
+                  >
+                    Clear credential
+                  </button>
+                </div>
+              </div>
+            </dialog>
+            <dialog
+              ref={useEnvRef}
+              className="bulk-dialog"
+              aria-labelledby={useEnvTitleId}
+            >
+              <div className="p-5">
+                <h3 id={useEnvTitleId} className="font-semibold">
+                  Use environment settings?
+                </h3>
+                <p className="mt-2 text-sm text-muted">
+                  The stored AI settings are deleted. The provider, URL and
+                  model then come from the environment. Check the saved
+                  connection afterwards to verify the selected model.
+                </p>
+                <div className="mt-4 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => useEnvRef.current?.close()}
+                  >
+                    Keep AI settings
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-danger"
+                    disabled={busy}
+                    onClick={() => {
+                      useEnvRef.current?.close();
+                      void apply(
+                        {
+                          judgmentProvider: "",
+                          ollamaUrl: "",
+                          ollamaModel: "",
+                        },
+                        "Using environment settings. Check the saved connection to verify the selected model.",
+                      );
+                    }}
+                  >
+                    Use environment settings
+                  </button>
+                </div>
+              </div>
+            </dialog>
+          </>
+        )}
       {editor.notice && !unsaved && (
         <p
           ref={noticeRef}
