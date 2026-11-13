@@ -260,35 +260,53 @@ export function nextProviderCredentials(
   return providers;
 }
 
+/** The stored key follows its URL only within one origin: a cross-origin
+ * move must present the key again, and the check runs before any upstream
+ * call so the stored secret never reaches the new host. Shared by the save
+ * paths and the draft connection tests, so the two can never drift. Both
+ * URLs are validateBaseUrl outputs, so they always parse. */
+function savedKeyForUrl(input: {
+  url: string;
+  saved: { url: string; apiKey: string } | undefined;
+  supplied: string | undefined;
+  messages: { missing: string; moved: string };
+}): string {
+  if (input.supplied !== undefined && input.supplied !== "")
+    return input.supplied;
+  if (
+    input.saved !== undefined &&
+    new URL(input.url).origin === new URL(input.saved.url).origin
+  )
+    return input.saved.apiKey;
+  throw new AppError(
+    400,
+    "invalid_field",
+    input.saved === undefined ? input.messages.missing : input.messages.moved,
+  );
+}
+
 /** Jellyfin connection patch: address and key may change, server identity
  * may not. Authorization for this change is the admin session itself:
  * requireAdmin re-validates the caller upstream on every request (identity,
  * disabled, remote access) and guardMutation rejects foreign origins. No
  * password re-auth: it would re-authenticate under the shared DeviceId,
- * invalidating the caller's own Jellyfin token and logging the admin out.
- * A stored key follows the URL only within one origin: a cross-origin move
- * must present the key again, and the check runs before any upstream call
- * so nothing — not even /System/Info/Public — reaches the new host. Both
- * URLs are validateBaseUrl outputs, so they always parse. */
+ * invalidating the caller's own Jellyfin token and logging the admin out. */
 async function nextJellyfin(
   current: IntegrationConfig["jellyfin"],
   body: Record<string, unknown>,
 ): Promise<IntegrationConfig["jellyfin"]> {
   const url = fieldUrl(body, "jellyfinUrl");
   const externalUrl = fieldUrl(body, "jellyfinExternalUrl");
-  const supplied = optionalText(body, "jellyfinApiKey", 512);
-  let apiKey: string;
-  if (supplied !== undefined && supplied !== "") {
-    apiKey = supplied;
-  } else if (new URL(url).origin === new URL(current.url).origin) {
-    apiKey = current.apiKey;
-  } else {
-    throw new AppError(
-      400,
-      "invalid_field",
-      "jellyfinApiKey is required when jellyfinUrl moves to a different origin.",
-    );
-  }
+  const apiKey = savedKeyForUrl({
+    url,
+    saved: current,
+    supplied: optionalText(body, "jellyfinApiKey", 512),
+    messages: {
+      missing: "jellyfinApiKey is required.",
+      moved:
+        "jellyfinApiKey is required when jellyfinUrl moves to a different origin.",
+    },
+  });
   const server = await getServer(url);
   if (server.id !== current.serverId) {
     throw new AppError(
@@ -388,26 +406,19 @@ export function nextWhisparr(
     whisparr = undefined;
   } else if (url !== undefined) {
     const supplied = optionalText(body, "whisparrApiKey", 512);
-    // Same origin rule as Jellyfin: a stored key follows its URL only
-    // within one origin; a move to a new host must present the key again.
-    // Both URLs are validateBaseUrl outputs, so they always parse.
-    let apiKey: string;
-    if (supplied !== undefined && supplied !== "") {
-      apiKey = supplied;
-    } else if (
-      whisparr !== undefined &&
-      new URL(url).origin === new URL(whisparr.url).origin
-    ) {
-      apiKey = whisparr.apiKey;
-    } else {
-      throw new AppError(
-        400,
-        "invalid_field",
-        whisparr === undefined
-          ? "Whisparr API key is required with a Whisparr URL."
-          : "Whisparr API key is required when the Whisparr URL moves to a different origin.",
-      );
-    }
+    // Same origin rule as Jellyfin (savedKeyForUrl): a stored key follows
+    // its URL only within one origin; a move to a new host must present the
+    // key again, before any upstream call.
+    const apiKey = savedKeyForUrl({
+      url,
+      saved: whisparr,
+      supplied,
+      messages: {
+        missing: "Whisparr API key is required with a Whisparr URL.",
+        moved:
+          "Whisparr API key is required when the Whisparr URL moves to a different origin.",
+      },
+    });
     whisparr = { url: validateBaseUrl(url), apiKey };
   }
   const delivery = parseDelivery(body.delivery) ?? whisparr?.delivery;
@@ -474,36 +485,31 @@ export async function adminUpdateIntegrations(
   return json(integrationsShape(config));
 }
 
-export async function adminWhisparr(ctx: AuthContext): Promise<Response> {
+/** Upstream rejection or outage is status information, never a dead Velvarr
+ * session: an HTTP 401 here would fire the client's global sign-out and
+ * bounce the admin off the settings page in a loop. Storage, decryption, and
+ * local configuration failures keep their original HTTP error. */
+async function upstreamAsStatus(
+  probe: () => Promise<unknown>,
+): Promise<unknown> {
   try {
-    return json(await getWhisparrStatus(ctx.config));
+    return await probe();
   } catch (err) {
-    // Upstream rejection or outage is status information, never a dead
-    // Velvarr session: an HTTP 401 here would fire the client's global
-    // sign-out and bounce the admin off the settings page in a loop.
     if (err instanceof AppError && err.status >= 400) {
-      return json({
+      return {
         configured: true,
         error: { code: err.code, message: err.message },
-      });
+      };
     }
     throw err;
   }
 }
+
+export async function adminWhisparr(ctx: AuthContext): Promise<Response> {
+  return json(await upstreamAsStatus(() => getWhisparrStatus(ctx.config)));
+}
 export async function adminJellyfin(ctx: AuthContext): Promise<Response> {
-  try {
-    return json(await getJellyfinStatus(ctx.config));
-  } catch (err) {
-    // Same as the Whisparr probe: upstream rejection is status information,
-    // not a dead Velvarr session.
-    if (err instanceof AppError && err.status >= 400) {
-      return json({
-        configured: true,
-        error: { code: err.code, message: err.message },
-      });
-    }
-    throw err;
-  }
+  return json(await upstreamAsStatus(() => getJellyfinStatus(ctx.config)));
 }
 
 export async function adminProviders(_ctx: AuthContext): Promise<Response> {
@@ -551,6 +557,121 @@ export async function adminProviderCheck(
   } catch (err) {
     return json(providerCheckFailure(provider, err));
   }
+}
+
+/** --- draft connection tests (POST .../test) ---
+ * Validated exactly like the save path — including the origin rule on the
+ * stored key — and persisted nowhere: nothing reaches storage, so the
+ * rejected-key auto-delete can never run on a test result. A blank secret
+ * field means "use the saved secret" within the saved URL's origin.
+ * Upstream failures come back inside a 200 status (never a 401, which would
+ * sign the admin out). */
+
+export async function adminProviderTest(
+  request: Request,
+  raw: string,
+): Promise<Response> {
+  if (raw !== "tpdb" && raw !== "stashdb") {
+    throw new AppError(400, "invalid_provider", "Unknown credential provider.");
+  }
+  const provider = raw;
+  const body = await readJson(request);
+  // The save path's token rules: the same caps as nextProviderCredentials,
+  // and a trimmed value. Blank or omitted tests the saved credential.
+  const key = optionalText(body, "key", provider === "tpdb" ? 1024 : 512);
+  const override =
+    key !== undefined && key.trim() !== "" ? key.trim() : undefined;
+  try {
+    return json(await getProviderStatus(provider, override));
+  } catch (err) {
+    return json(providerCheckFailure(provider, err));
+  }
+}
+
+export async function adminJellyfinTest(
+  request: Request,
+  ctx: AuthContext,
+): Promise<Response> {
+  const body = await readJson(request);
+  const url = fieldUrl(body, "url");
+  const suppliedExternal = optionalText(body, "externalUrl", 2048);
+  // The same origin rule as the save path: a blank key reuses the saved one
+  // only within one origin, so the stored secret never reaches a new host.
+  const apiKey = savedKeyForUrl({
+    url,
+    saved: ctx.config.jellyfin,
+    supplied: optionalText(body, "apiKey", 512),
+    messages: {
+      missing: "jellyfinApiKey is required.",
+      moved:
+        "jellyfinApiKey is required when jellyfinUrl moves to a different origin.",
+    },
+  });
+  // The draft: saved values wherever the form is blank. The test keeps no
+  // state: the upstream verdict is the answer, stored nowhere.
+  const jellyfin = {
+    ...ctx.config.jellyfin,
+    url,
+    externalUrl:
+      suppliedExternal !== undefined && suppliedExternal.trim() !== ""
+        ? validateBaseUrl(suppliedExternal)
+        : "",
+    apiKey,
+  };
+  return json(
+    await upstreamAsStatus(() =>
+      getJellyfinStatus({ ...ctx.config, jellyfin }),
+    ),
+  );
+}
+
+export async function adminWhisparrTest(
+  request: Request,
+  ctx: AuthContext,
+): Promise<Response> {
+  const body = await readJson(request);
+  const rawUrl = optionalText(body, "url", 2048);
+  const suppliedKey = optionalText(body, "apiKey", 512);
+  // The save path's rule: a key without a URL is a malformed draft.
+  if (
+    (rawUrl === undefined || rawUrl.trim() === "") &&
+    suppliedKey !== undefined &&
+    suppliedKey.trim() !== ""
+  ) {
+    throw new AppError(
+      400,
+      "invalid_field",
+      "A Whisparr API key requires a Whisparr URL; clear the key to remove Whisparr.",
+    );
+  }
+  // A blank URL means "no Whisparr": the draft removes it, like a save would.
+  if (rawUrl === undefined || rawUrl.trim() === "") {
+    return json(
+      await getWhisparrStatus({ ...ctx.config, whisparr: undefined }),
+    );
+  }
+  const whisparrDraftUrl = validateBaseUrl(rawUrl);
+  const whisparr = {
+    ...ctx.config.whisparr,
+    url: whisparrDraftUrl,
+    // The same origin rule as the save path: a blank key reuses the saved
+    // one only within one origin, before any upstream call.
+    apiKey: savedKeyForUrl({
+      url: whisparrDraftUrl,
+      saved: ctx.config.whisparr,
+      supplied: suppliedKey,
+      messages: {
+        missing: "Whisparr API key is required with a Whisparr URL.",
+        moved:
+          "Whisparr API key is required when the Whisparr URL moves to a different origin.",
+      },
+    }),
+  };
+  return json(
+    await upstreamAsStatus(() =>
+      getWhisparrStatus({ ...ctx.config, whisparr }),
+    ),
+  );
 }
 
 import type { RouteDef } from "../admission.ts";
@@ -605,6 +726,24 @@ export const routes: RouteDef[] = [
     auth: "admin",
     run: async (ctx) =>
       json(await checkJudgmentConnection(ctx.config.providers)),
+  },
+  {
+    method: "POST",
+    segments: ["admin", "providers", ":provider", "test"],
+    auth: "admin",
+    run: async (_ctx, request, p) => adminProviderTest(request, p.provider!),
+  },
+  {
+    method: "POST",
+    segments: ["admin", "jellyfin", "test"],
+    auth: "admin",
+    run: async (ctx, request) => adminJellyfinTest(request, ctx),
+  },
+  {
+    method: "POST",
+    segments: ["admin", "whisparr", "test"],
+    auth: "admin",
+    run: async (ctx, request) => adminWhisparrTest(request, ctx),
   },
   {
     method: "POST",

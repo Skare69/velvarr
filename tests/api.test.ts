@@ -17,6 +17,7 @@ import { Buffer } from "node:buffer";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resetMetaCache } from "../src/server/providers.ts";
 import { normalizeFacetName } from "../src/lib/contracts.ts";
+import type { ProviderCheck } from "../src/lib/contracts.ts";
 import {
   DISCOVER_CACHE_TTL_MS,
   releasesCacheKey,
@@ -3033,6 +3034,319 @@ test("provider credentials: stored config wins over environment, clear falls bac
     configured: Boolean(process.env.TYPESAFE_API_KEY),
     source: "environment",
   });
+});
+
+test("provider test route: typed key wins, blank key uses the saved one, nothing stores", async () => {
+  const admin = owner;
+  // Store a WRONG TPDB key, so the saved credential differs from the
+  // environment fallback and the two paths are distinguishable.
+  const store = await call("PATCH", "/api/admin/integrations", {
+    cookie: admin,
+    body: { tpdbApiToken: "wrong-stored-token" },
+  });
+  assert.equal(store.status, 200);
+
+  // Blank key: the saved (wrong) credential is tested, not the environment's.
+  const blank = await call("POST", "/api/admin/providers/tpdb/test", {
+    cookie: admin,
+    body: {},
+  });
+  assert.equal(blank.status, 200);
+  const blankText = await blank.text();
+  const blankBody = JSON.parse(blankText) as {
+    provider: string;
+    configured: boolean;
+    verified: boolean;
+    error?: { code: string; message: string };
+  };
+  assert.equal(blankBody.provider, "tpdb");
+  assert.equal(blankBody.configured, true);
+  assert.equal(blankBody.verified, false);
+  assert.equal(blankBody.error?.code, "upstream_auth");
+  // The secret never echoes back.
+  assert.ok(!blankText.includes("wrong-stored-token"));
+  assert.ok(!blankText.includes(tpdbToken));
+
+  // Typed key: the draft value is tested.
+  const typed = await call("POST", "/api/admin/providers/tpdb/test", {
+    cookie: admin,
+    body: { key: tpdbToken },
+  });
+  assert.equal(typed.status, 200);
+  assert.deepEqual(await typed.json(), {
+    provider: "tpdb",
+    configured: true,
+    verified: true,
+    account: "Fixture TPDB",
+  } satisfies ProviderCheck);
+
+  // Nothing was stored: the shape still names the stored source, and the
+  // saved probe still rejects — a rejected test result never auto-deletes.
+  const shape = (await (
+    await call("GET", "/api/admin/integrations", { cookie: admin })
+  ).json()) as { providers: { tpdb: { source: string } } };
+  assert.equal(shape.providers.tpdb.source, "stored");
+  const savedProbe = await call("GET", "/api/admin/providers/tpdb", {
+    cookie: admin,
+  });
+  assert.equal(savedProbe.status, 200);
+  const savedProbeBody = (await savedProbe.json()) as { verified: boolean };
+  assert.equal(
+    savedProbeBody.verified,
+    false,
+    "the saved key must survive its rejection in a draft test",
+  );
+
+  // Restore the environment state the earlier tests left.
+  const clear = await call("PATCH", "/api/admin/integrations", {
+    cookie: admin,
+    body: { tpdbApiToken: "" },
+  });
+  assert.equal(clear.status, 200);
+});
+
+test("provider test route: stashdb falls back to the environment key", async () => {
+  // The suite keeps StashDB's environment key unset until a later test arms
+  // it; arm key and fixture base here and restore, so only this test leans
+  // on the fallback.
+  const prev = process.env.STASHDB_API_KEY;
+  const prevBase = process.env.STASHDB_BASE_URL;
+  process.env.STASHDB_API_KEY = stashdbKey;
+  process.env.STASHDB_BASE_URL = stashdbUrl;
+  try {
+    const check = await call("POST", "/api/admin/providers/stashdb/test", {
+      cookie: owner,
+      body: {},
+    });
+    assert.equal(check.status, 200);
+    assert.deepEqual(await check.json(), {
+      provider: "stashdb",
+      configured: true,
+      verified: true,
+      account: "Fixture StashDB",
+    } satisfies ProviderCheck);
+  } finally {
+    if (prev === undefined) delete process.env.STASHDB_API_KEY;
+    else process.env.STASHDB_API_KEY = prev;
+    if (prevBase === undefined) delete process.env.STASHDB_BASE_URL;
+    else process.env.STASHDB_BASE_URL = prevBase;
+  }
+});
+
+test("connection tests validate input exactly like the save path", async () => {
+  const admin = owner;
+  const badProvider = await call("POST", "/api/admin/providers/bogus/test", {
+    cookie: admin,
+    body: {},
+  });
+  assert.equal((await errorShape(badProvider)).code, "invalid_provider");
+  const badKeyType = await call("POST", "/api/admin/providers/tpdb/test", {
+    cookie: admin,
+    body: { key: 42 },
+  });
+  assert.equal((await errorShape(badKeyType)).code, "invalid_field");
+  const overlongKey = await call("POST", "/api/admin/providers/tpdb/test", {
+    cookie: admin,
+    body: { key: "x".repeat(1025) },
+  });
+  assert.equal((await errorShape(overlongKey)).code, "invalid_field");
+  const badUrl = await call("POST", "/api/admin/jellyfin/test", {
+    cookie: admin,
+    body: { url: "not a url" },
+  });
+  assert.equal((await errorShape(badUrl)).code, "invalid_url");
+  const badExternal = await call("POST", "/api/admin/jellyfin/test", {
+    cookie: admin,
+    body: { url: jellyfinUrl, externalUrl: "https://ok.example/path query" },
+  });
+  assert.equal((await errorShape(badExternal)).code, "invalid_url");
+  const missingUrl = await call("POST", "/api/admin/whisparr/test", {
+    cookie: admin,
+    body: { apiKey: whisparrKey },
+  });
+  assert.equal((await errorShape(missingUrl)).code, "invalid_field");
+  const overlongWhisparrKey = await call("POST", "/api/admin/whisparr/test", {
+    cookie: admin,
+    body: { url: whisparrUrl, apiKey: "x".repeat(513) },
+  });
+  assert.equal((await errorShape(overlongWhisparrKey)).code, "invalid_field");
+});
+
+test("jellyfin and whisparr tests: draft URLs and keys, saved fallback, upstream failure stays a 200", async () => {
+  const admin = owner;
+
+  // Saved key with the saved URL (blank key = saved secret).
+  const jfBlank = await call("POST", "/api/admin/jellyfin/test", {
+    cookie: admin,
+    body: { url: jellyfinUrl },
+  });
+  assert.equal(jfBlank.status, 200);
+  assert.deepEqual(await jfBlank.json(), {
+    configured: true,
+    serverName: "FixtureJF",
+    version: "10.9.0",
+  });
+
+  // Blank key + a same-origin moved path: the saved key still applies.
+  const jfMovedPath = await call("POST", "/api/admin/jellyfin/test", {
+    cookie: admin,
+    body: { url: jellyfinUrl + "/jf" },
+  });
+  assert.equal(jfMovedPath.status, 200);
+  assert.deepEqual(await jfMovedPath.json(), {
+    configured: true,
+    serverName: "FixtureJF",
+    version: "10.9.0",
+  });
+
+  // A moved draft URL with a typed key is tested as-is, stored nowhere.
+  const jfTyped = await call("POST", "/api/admin/jellyfin/test", {
+    cookie: admin,
+    body: { url: jellyfinUrl + "/jf", apiKey: fx.adminKey },
+  });
+  assert.equal(jfTyped.status, 200);
+  const jfTypedBody = (await jfTyped.json()) as { configured: boolean };
+  assert.equal(jfTypedBody.configured, true);
+
+  // A rejected draft key is upstream status data inside a 200 — never the
+  // 401 that would sign the admin out mid-edit.
+  const jfWrong = await call("POST", "/api/admin/jellyfin/test", {
+    cookie: admin,
+    body: { url: jellyfinUrl, apiKey: "not-the-saved-key" },
+  });
+  assert.equal(jfWrong.status, 200);
+  const jfWrongBody = (await jfWrong.json()) as {
+    configured: boolean;
+    error?: { code: string };
+  };
+  assert.equal(jfWrongBody.configured, true);
+  assert.equal(jfWrongBody.error?.code, "upstream_auth");
+  assert.equal((await call("GET", "/api/me", { cookie: admin })).status, 200);
+
+  // Whisparr: store a connection so a blank key has a saved secret to find,
+  // then restore the absent state this suite runs with. The full-save shape
+  // needs the Jellyfin fields on every non-provider PATCH.
+  const add = await call("PATCH", "/api/admin/integrations", {
+    cookie: admin,
+    body: {
+      jellyfinUrl,
+      jellyfinExternalUrl: jellyfinUrl,
+      whisparrUrl: whisparrUrl,
+      whisparrApiKey: whisparrKey,
+    },
+  });
+  assert.equal(add.status, 200);
+  const wBlank = await call("POST", "/api/admin/whisparr/test", {
+    cookie: admin,
+    body: { url: whisparrUrl },
+  });
+  assert.equal(wBlank.status, 200);
+  assert.deepEqual(await wBlank.json(), {
+    configured: true,
+    version: "3.4.0.1387",
+    appName: "Whisparr",
+    rootFolders: [{ id: 1, path: "/movies" }],
+    profiles: [{ id: 1, name: "HD" }],
+  });
+  // Blank key + a same-origin moved path: the saved key still applies.
+  const wMovedPath = await call("POST", "/api/admin/whisparr/test", {
+    cookie: admin,
+    body: { url: whisparrUrl + "/wh" },
+  });
+  assert.equal(wMovedPath.status, 200);
+  assert.equal(
+    ((await wMovedPath.json()) as { configured: boolean }).configured,
+    true,
+  );
+
+  // The save path's origin rule holds for the drafts: a blank key with a
+  // cross-origin URL is refused 400 before any upstream call, so the stored
+  // secret can never reach the new host. The journal proves zero requests
+  // reached either fixture (the cross-origin draft URLs point at them).
+  fx.journalOn = true;
+  try {
+    const beforeJournal = fx.journal.length;
+    const jfCrossOrigin = await call("POST", "/api/admin/jellyfin/test", {
+      cookie: admin,
+      body: { url: whisparrUrl },
+    });
+    const jfCrossOriginError = await errorShape(jfCrossOrigin);
+    assert.equal(jfCrossOriginError.code, "invalid_field");
+    const wCrossOrigin = await call("POST", "/api/admin/whisparr/test", {
+      cookie: admin,
+      body: { url: jellyfinUrl },
+    });
+    const wCrossOriginError = await errorShape(wCrossOrigin);
+    assert.equal(wCrossOriginError.code, "invalid_field");
+    assert.equal(
+      fx.journal.length,
+      beforeJournal,
+      "a cross-origin blank-key draft must not touch any upstream",
+    );
+  } finally {
+    fx.journalOn = false;
+  }
+  const wWrong = await call("POST", "/api/admin/whisparr/test", {
+    cookie: admin,
+    body: { url: whisparrUrl, apiKey: "not-the-saved-key" },
+  });
+  assert.equal(wWrong.status, 200);
+  const wWrongBody = (await wWrong.json()) as { error?: { code: string } };
+  assert.equal(wWrongBody.error?.code, "upstream_auth");
+  // A blank URL means "no Whisparr": the draft reports configured: false.
+  const wNone = await call("POST", "/api/admin/whisparr/test", {
+    cookie: admin,
+    body: { url: "" },
+  });
+  assert.equal(wNone.status, 200);
+  assert.deepEqual(await wNone.json(), { configured: false });
+
+  const remove = await call("PATCH", "/api/admin/integrations", {
+    cookie: admin,
+    body: {
+      jellyfinUrl,
+      jellyfinExternalUrl: jellyfinUrl,
+      whisparrUrl: "",
+    },
+  });
+  assert.equal(remove.status, 200);
+  const restored = (await (
+    await call("GET", "/api/admin/integrations", { cookie: admin })
+  ).json()) as { whisparr: unknown };
+  assert.equal(restored.whisparr, null);
+});
+
+test("connection tests are admin-only and origin protected", async () => {
+  const csrfProvider = await call("POST", "/api/admin/providers/tpdb/test", {
+    origin: null,
+    body: {},
+  });
+  await errorShape(csrfProvider, 403);
+  const csrfJellyfin = await call("POST", "/api/admin/jellyfin/test", {
+    origin: null,
+    body: { url: jellyfinUrl },
+  });
+  await errorShape(csrfJellyfin, 403);
+  const csrfWhisparr = await call("POST", "/api/admin/whisparr/test", {
+    origin: null,
+    body: { url: "" },
+  });
+  await errorShape(csrfWhisparr, 403);
+  const memberProvider = await call("POST", "/api/admin/providers/tpdb/test", {
+    cookie: member,
+    body: {},
+  });
+  await errorShape(memberProvider, 403);
+  const memberJellyfin = await call("POST", "/api/admin/jellyfin/test", {
+    cookie: member,
+    body: { url: jellyfinUrl },
+  });
+  await errorShape(memberJellyfin, 403);
+  const memberWhisparr = await call("POST", "/api/admin/whisparr/test", {
+    cookie: member,
+    body: { url: "" },
+  });
+  await errorShape(memberWhisparr, 403);
 });
 
 test("Ollama settings and model verification require admin admission and preserve integrations", async () => {

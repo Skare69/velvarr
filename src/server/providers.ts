@@ -301,8 +301,12 @@ function envBaseUrl(
   return typeof value === "string" && value.trim() !== "" ? value : fallback;
 }
 
-function tpdbGet<T>(path: string, bypassCache = false): Promise<T> {
-  const token = credential("tpdb");
+function tpdbGet<T>(
+  path: string,
+  bypassCache = false,
+  tokenOverride?: string,
+): Promise<T> {
+  const token = tokenOverride ?? credential("tpdb");
   if (token === undefined) {
     throw notConfigured("tpdb");
   }
@@ -367,8 +371,9 @@ async function stashQuery(
   variables: Record<string, unknown>,
   dataKey: string,
   bypassCache = false,
+  tokenOverride?: string,
 ): Promise<unknown> {
-  const token = credential("stashdb");
+  const token = tokenOverride ?? credential("stashdb");
   if (token === undefined) {
     throw notConfigured("stashdb");
   }
@@ -541,10 +546,15 @@ export type ProviderVerification =
  * never waits on this round trip. */
 export async function getProviderStatus(
   provider: "tpdb" | "stashdb",
+  keyOverride?: string,
 ): Promise<ProviderVerification> {
   try {
     if (provider === "tpdb") {
-      const res = await tpdbGet<{ data?: { name?: unknown } }>("/user", true);
+      const res = await tpdbGet<{ data?: { name?: unknown } }>(
+        "/user",
+        true,
+        keyOverride,
+      );
       const name = cleanString(res?.data?.name, 120);
       return {
         provider,
@@ -558,6 +568,7 @@ export async function getProviderStatus(
       {},
       "me",
       true,
+      keyOverride,
     )) as { name?: unknown } | null;
     if (res === null || typeof res !== "object") {
       throw new AppError(
@@ -1588,8 +1599,10 @@ export async function getCatalogDetail(
     return detail;
   }
   if (kind === "performer") {
+    // death_date (a plain "YYYY[-MM[-DD]]" string) exists on stashdb.org;
+    // verified with a read-only query on 2026-11-13.
     const row = await stashQuery(
-      "query($id: ID!) { findPerformer(id: $id) { id name deleted aliases urls { url type } images { url } gender birthdate { date accuracy } ethnicity country eye_color hair_color height cup_size band_size waist_size hip_size breast_type career_start_year career_end_year tattoos { location description } piercings { location description } } }",
+      "query($id: ID!) { findPerformer(id: $id) { id name deleted aliases urls { url type } images { url } gender birthdate { date accuracy } death_date ethnicity country eye_color hair_color height cup_size band_size waist_size hip_size breast_type career_start_year career_end_year tattoos { location description } piercings { location description } } }",
       { id },
       "findPerformer",
     );

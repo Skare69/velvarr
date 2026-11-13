@@ -9,7 +9,6 @@ import {
   CONNECTION_STATE_LABEL,
   createProviderSettingsQueue,
   canClearCredential,
-  canTestCredential,
   connectionState,
   credentialSaveDecision,
 } from "../src/lib/provider-settings.ts";
@@ -185,32 +184,6 @@ test("a confirmed clear stores an empty value even with a draft", () => {
       notice: "Stored credential cleared. Environment settings apply.",
     },
   );
-});
-
-const testable = {
-  draft: "",
-  pending: false,
-  checking: false,
-  configured: true as boolean | undefined,
-};
-
-test("test is allowed with no draft and a configured key", () => {
-  assert.equal(canTestCredential(testable), true);
-});
-
-test("test is blocked by a draft, but not by whitespace", () => {
-  assert.equal(canTestCredential({ ...testable, draft: "new" }), false);
-  assert.equal(canTestCredential({ ...testable, draft: "  " }), true);
-});
-
-test("test is blocked while pending or checking", () => {
-  assert.equal(canTestCredential({ ...testable, pending: true }), false);
-  assert.equal(canTestCredential({ ...testable, checking: true }), false);
-});
-
-test("test is blocked when not configured, allowed while unknown", () => {
-  assert.equal(canTestCredential({ ...testable, configured: false }), false);
-  assert.equal(canTestCredential({ ...testable, configured: undefined }), true);
 });
 
 test("clear is allowed only for a stored key", () => {

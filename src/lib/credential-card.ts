@@ -9,7 +9,13 @@
 // names the missing field (v0.41.0 regression, fde0b7b).
 
 import { createElement } from "react";
-import type { ChangeEvent, FormEvent, ReactElement, Ref } from "react";
+import type {
+  ChangeEvent,
+  FormEvent,
+  ReactElement,
+  ReactNode,
+  Ref,
+} from "react";
 import type { ProviderCheck } from "./contracts.ts";
 import { credentialSaveDecision } from "./provider-settings.ts";
 
@@ -22,6 +28,12 @@ export type CredentialCardState = {
   check: ProviderCheck | null;
   checking: boolean;
   checkError: string | null;
+  /** The editor's POST test of the draft values. Kept apart from `check` so
+   * a test result can never drive the rejected-key auto-delete: only the
+   * saved probe may. */
+  draftCheck: ProviderCheck | null;
+  draftChecking: boolean;
+  draftCheckError: string | null;
   saveError: string | null;
   saved: string | null;
   /** Why a blank Save could not act: shown under the input. */
@@ -37,6 +49,9 @@ export function initCredentialCard(): CredentialCardState {
     check: null,
     checking: false,
     checkError: null,
+    draftCheck: null,
+    draftChecking: false,
+    draftCheckError: null,
     saveError: null,
     saved: null,
     blankMessage: null,
@@ -54,6 +69,10 @@ export type CredentialCardAction =
   | { type: "checking" }
   | { type: "checked"; check: ProviderCheck }
   | { type: "checkFailed"; message: string }
+  /** A draft test of the editor's values started or landed. */
+  | { type: "draftChecking" }
+  | { type: "draftChecked"; check: ProviderCheck }
+  | { type: "draftCheckFailed"; message: string }
   | { type: "forbidden" }
   /** One Save click starts by dropping the previous save outcome. */
   | { type: "saveStarted" }
@@ -64,16 +83,31 @@ export type CredentialCardAction =
    * not a message. */
   | { type: "saveFailed"; message: string; forbidden: boolean };
 
+/** The draft's own result dies with the draft: a changed or cleared editor
+ * would otherwise show a verdict for values nobody can see anymore. */
+function dropDraftResult(state: CredentialCardState): CredentialCardState {
+  return state.draftCheck === null &&
+    !state.draftChecking &&
+    state.draftCheckError === null
+    ? state
+    : {
+        ...state,
+        draftCheck: null,
+        draftChecking: false,
+        draftCheckError: null,
+      };
+}
+
 export function reduceCredentialCard(
   state: CredentialCardState,
   action: CredentialCardAction,
 ): CredentialCardState {
   switch (action.type) {
     case "edit":
-      return { ...state, editing: true, saved: null };
+      return { ...dropDraftResult(state), editing: true, saved: null };
     case "cancel":
       return {
-        ...state,
+        ...dropDraftResult(state),
         draft: "",
         saveError: null,
         blankMessage: null,
@@ -81,7 +115,7 @@ export function reduceCredentialCard(
       };
     case "draft":
       return {
-        ...state,
+        ...dropDraftResult(state),
         draft: action.value,
         saveError: null,
         blankMessage: null,
@@ -89,17 +123,57 @@ export function reduceCredentialCard(
     case "checking":
       return { ...state, checking: true, check: null, checkError: null };
     case "checked":
-      return { ...state, checking: false, check: action.check };
+      return {
+        ...state,
+        checking: false,
+        check: action.check,
+        // Only a proven rejection reopens the editor: the key is wrong and
+        // needs replacing. An outage or timeout says nothing about the key.
+        editing:
+          state.editing ||
+          (action.check.configured &&
+            !action.check.verified &&
+            action.check.error.code === "upstream_auth"),
+      };
     case "checkFailed":
       return { ...state, checking: false, checkError: action.message };
+    case "draftChecking":
+      return {
+        ...state,
+        draftChecking: true,
+        draftCheck: null,
+        draftCheckError: null,
+      };
+    case "draftChecked":
+      return {
+        ...state,
+        draftChecking: false,
+        draftCheck: action.check,
+      };
+    case "draftCheckFailed":
+      return {
+        ...state,
+        draftChecking: false,
+        draftCheckError: action.message,
+      };
     case "forbidden":
-      return { ...state, forbidden: true, checking: false };
+      return {
+        ...state,
+        forbidden: true,
+        checking: false,
+        draftChecking: false,
+      };
     case "saveStarted":
       return { ...state, saveError: null, saved: null, blankMessage: null };
     case "blankRejected":
       return { ...state, blankMessage: action.message };
     case "saved":
-      return { ...state, saved: action.notice, draft: "", editing: false };
+      return {
+        ...dropDraftResult(state),
+        saved: action.notice,
+        draft: "",
+        editing: false,
+      };
     case "saveFailed":
       return action.forbidden
         ? { ...state, forbidden: true }
@@ -112,7 +186,41 @@ export function credentialCardBusy(
   state: CredentialCardState,
   saving: boolean,
 ): boolean {
-  return saving || state.checking || state.forbidden;
+  return saving || state.checking || state.draftChecking || state.forbidden;
+}
+
+/** Which Check connection a service card shows, decided before render so the
+ * button and the click cannot drift apart:
+ * - the editor is open → "draft": the button POSTs the form's values (a
+ *   blank secret field means "use the saved secret");
+ * - closed with a failed saved check → "retry": the GET probe of the saved
+ *   settings again;
+ * - otherwise hidden: the page probes every saved connection on load, and
+ *   the status chip beside the title carries the result. */
+export function checkConnectionAction(input: {
+  editorOpen: boolean;
+  savedCheckFailed: boolean;
+}): "draft" | "retry" | null {
+  if (input.editorOpen) return "draft";
+  return input.savedCheckFailed ? "retry" : null;
+}
+
+/** The one rejected check that deletes the stored credential on its own:
+ * the provider answered "unauthorized", so the stored key is proven wrong
+ * and keeping it only fails every later call. Nothing else may clear:
+ * an environment key cannot be deleted, and any other error code
+ * (timeout, unavailable, forbidden, not_found, bad_response) says nothing
+ * about the key. */
+export function shouldAutoClearOnReject(input: {
+  check: ProviderCheck;
+  source: "stored" | "environment" | undefined;
+}): boolean {
+  return (
+    input.source === "stored" &&
+    input.check.configured &&
+    !input.check.verified &&
+    input.check.error.code === "upstream_auth"
+  );
 }
 
 /** One Save click's full flow, shared by the Save button's form submit and
@@ -129,6 +237,9 @@ export async function applyCredentialSave(input: {
   /** Performs the network save or clear for the already trimmed value. */
   performSave: (value: string) => Promise<void>;
   dispatch: (action: CredentialCardAction) => void;
+  /** Replaces the decision's notice for one clear: the rejected-key
+   * auto-clear explains the deletion, not the generic cleared text. */
+  clearNotice?: string;
   /** Classifies a failed performSave; messageOf stays the caller's job so
    * this module never imports client code. */
   failureOf: (error: unknown) => { forbidden: boolean; message: string };
@@ -153,7 +264,7 @@ export async function applyCredentialSave(input: {
   }
   try {
     await input.performSave(save.value);
-    input.dispatch({ type: "saved", notice: save.notice });
+    input.dispatch({ type: "saved", notice: input.clearNotice ?? save.notice });
     return { saved: true };
   } catch (error) {
     const failure = input.failureOf(error);
@@ -179,11 +290,17 @@ export function credentialEditorView(input: {
   state: CredentialCardState;
   canEdit: boolean;
   busy: boolean;
+  /** A save is in flight: Save reads "Saving…" and sets aria-busy. */
+  saving: boolean;
   /** Focus returns to this input when the editor opens. */
   inputRef: Ref<HTMLInputElement>;
   onDraftChange: (value: string) => void;
   onCancel: () => void;
   onSubmit: (event: FormEvent) => void;
+  /** House icons for Save and Cancel; lib code cannot import the .tsx set. */
+  icons?: { save: ReactNode; cancel: ReactNode };
+  /** Card actions that share the editor's action row (Check connection). */
+  trailing?: ReactNode;
 }): ReactElement {
   const saveDecision = credentialSaveDecision({
     draft: input.state.draft,
@@ -202,7 +319,9 @@ export function credentialEditorView(input: {
     createElement(
       "label",
       { className: "label", htmlFor: "provider-" + input.id },
-      input.name + " " + input.label,
+      // Rule 9: a configured key may stay as-is when left blank, so the
+      // label says so (the .label style already carries the muted tone).
+      input.name + " " + input.label + (input.configured ? " (optional)" : ""),
     ),
     createElement("input", {
       id: "provider-" + input.id,
@@ -215,6 +334,8 @@ export function credentialEditorView(input: {
       "aria-describedby": input.state.blankMessage
         ? "blank-hint-" + input.id
         : undefined,
+      // Rule 35: the failed field itself carries the state.
+      "aria-invalid": input.state.blankMessage ? true : undefined,
       value: input.state.draft,
       onChange: (event: ChangeEvent<HTMLInputElement>) =>
         input.onDraftChange(event.target.value),
@@ -240,26 +361,36 @@ export function credentialEditorView(input: {
     ),
     createElement(
       "div",
-      { className: "settings-service-buttons mt-4" },
+      { className: "settings-service-buttons settings-card-actions" },
       createElement(
         "button",
         {
           type: "submit",
-          className: "btn btn-accent",
+          // Rule 1: the accent fill marks the decision; a blank draft keeps
+          // Save a plain secondary button (a blank Save explains itself).
+          className: input.state.draft.trim() !== "" ? "btn btn-accent" : "btn",
           disabled: !input.canEdit || saveDecision.action === "cancel",
+          "aria-busy": input.saving || undefined,
         },
-        "Save",
+        input.icons?.save ?? null,
+        input.saving ? "Saving…" : "Save",
       ),
-      createElement(
-        "button",
-        {
-          type: "button",
-          className: "btn",
-          disabled: input.busy,
-          onClick: input.onCancel,
-        },
-        "Cancel",
-      ),
+      // With nothing configured the editor is the card's only state, so a
+      // Cancel that cannot close it is omitted.
+      input.configured === false
+        ? null
+        : createElement(
+            "button",
+            {
+              type: "button",
+              className: "btn",
+              disabled: input.busy,
+              onClick: input.onCancel,
+            },
+            input.icons?.cancel ?? null,
+            "Cancel",
+          ),
+      input.trailing ?? null,
     ),
   );
 }

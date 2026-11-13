@@ -82,22 +82,6 @@ export function credentialSaveDecision(input: {
   };
 }
 
-/** Testing with an unsaved draft would test the old key, so a draft blocks
- * it. `configured` is undefined while the config shape is still loading. */
-export function canTestCredential(input: {
-  draft: string;
-  pending: boolean;
-  checking: boolean;
-  configured: boolean | undefined;
-}): boolean {
-  return (
-    !input.pending &&
-    !input.checking &&
-    input.draft.trim() === "" &&
-    input.configured !== false
-  );
-}
-
 /** Only a stored key can be cleared; an environment key stays. */
 export function canClearCredential(input: {
   source: "stored" | "environment" | undefined;

@@ -14,6 +14,7 @@ import {
   useReducer,
   useState,
   type FormEvent,
+  type ReactNode,
 } from "react";
 import type {
   CredentialProvider,
@@ -28,6 +29,7 @@ import {
   api,
   ErrorPanel,
   ForbiddenPanel,
+  Icon,
   messageOf,
   useApiGet,
   useSession,
@@ -42,16 +44,17 @@ import {
 } from "../lib/judgment-editor.ts";
 import {
   canClearCredential,
-  canTestCredential,
   connectionState,
   createProviderSettingsQueue,
 } from "../lib/provider-settings.ts";
 import {
   applyCredentialSave,
+  checkConnectionAction,
   credentialCardBusy,
   credentialEditorView,
   initCredentialCard,
   reduceCredentialCard,
+  shouldAutoClearOnReject,
 } from "../lib/credential-card.ts";
 
 /* ---------- App-local API view records (not in contracts.ts) ---------- */
@@ -71,6 +74,24 @@ interface JellyfinStatus {
   version?: string;
   error?: { code: string; message: string };
 }
+
+/** One editor's POST connection test of the form's current values. The saved
+ * status chip never reads it: the chip describes the saved connection only. */
+type DraftTest = {
+  checking: boolean;
+  /** Success line, e.g. "Connection works: 10.9.0". */
+  ok: string | null;
+  /** Upstream rejection, delivered inside the 200 status payload. */
+  failed: string | null;
+  /** The request itself failed, or the draft is not configured. */
+  error: string | null;
+};
+const noDraftTest: DraftTest = {
+  checking: false,
+  ok: null,
+  failed: null,
+  error: null,
+};
 interface IntegrationsInfo {
   jellyfin: {
     url: string;
@@ -161,7 +182,44 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
   );
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Each editor's own POST test of the values on screen; results never feed
+  // the saved status chip and never persist anything.
+  const [jellyfinTest, setJellyfinTest] = useState<DraftTest>(noDraftTest);
+  const [whisparrTest, setWhisparrTest] = useState<DraftTest>(noDraftTest);
+  // Rule 35: each field's validation error shows at that field. The save-row
+  // ErrorPanel stays for server errors only.
+  const [fieldErrors, setFieldErrors] = useState<
+    Partial<
+      Record<
+        "jellyfinUrl" | "externalUrl" | "whisparrUrl" | "profile" | "root",
+        string
+      >
+    >
+  >({});
   const [saved, setSaved] = useState<string | null>(null);
+  // Each connection card shows its fields only while editing, like the
+  // provider cards. Save submits the whole form; unchanged fields resave as
+  // loaded.
+  const [editing, setEditing] = useState({ jellyfin: false, whisparr: false });
+  const jellyfinFocus = useEditorFocusReturn(editing.jellyfin);
+  const whisparrFocus = useEditorFocusReturn(editing.whisparr);
+
+  const applyJellyfin = (d: IntegrationsInfo) => {
+    setJellyfinUrl(d.jellyfin.url);
+    setExternalUrl(d.jellyfin.externalUrl);
+    setJellyfinApiKey("");
+  };
+  const applyWhisparr = (d: IntegrationsInfo) => {
+    setWhisparrUrl(d.whisparr?.url ?? "");
+    setWhisparrApiKey("");
+    setDeliveryEnabled(d.whisparr?.delivery?.enabled ?? false);
+    setRootFolderPath(d.whisparr?.delivery?.rootFolderPath ?? "");
+    setQualityProfileId(
+      d.whisparr?.delivery ? String(d.whisparr.delivery.qualityProfileId) : "",
+    );
+    setSearchOnAdd(d.whisparr?.delivery?.searchOnAdd ?? true);
+    setMappings(d.whisparr?.pathMappings ?? []);
+  };
 
   const load = useCallback(() => {
     setLoading(true);
@@ -169,18 +227,8 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
     api<IntegrationsInfo>("/api/admin/integrations")
       .then((d) => {
         setInfo(d);
-        setJellyfinUrl(d.jellyfin.url);
-        setExternalUrl(d.jellyfin.externalUrl);
-        setWhisparrUrl(d.whisparr?.url ?? "");
-        setDeliveryEnabled(d.whisparr?.delivery?.enabled ?? false);
-        setRootFolderPath(d.whisparr?.delivery?.rootFolderPath ?? "");
-        setQualityProfileId(
-          d.whisparr?.delivery
-            ? String(d.whisparr.delivery.qualityProfileId)
-            : "",
-        );
-        setSearchOnAdd(d.whisparr?.delivery?.searchOnAdd ?? true);
-        setMappings(d.whisparr?.pathMappings ?? []);
+        applyJellyfin(d);
+        applyWhisparr(d);
       })
       .catch((e) => {
         if (e instanceof ApiError && e.status === 403) onForbidden();
@@ -192,14 +240,151 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
     api<WhisparrStatus>("/api/admin/whisparr")
       .then(setWhisparrStatus)
       .catch(() => setWhisparrStatus(null));
+    // apply* only call stable state setters, so they need no dependency.
   }, [onForbidden]);
 
   useEffect(load, [load]);
 
-  // Select choices; the currently stored value is always offered so a stale
-  // status can never silently change what will be saved.
+  // A card with a field error, or Whisparr with nothing configured yet,
+  // stays open: hiding the field that needs input would hide the fix.
+  const jellyfinOpen =
+    editing.jellyfin || !!fieldErrors.jellyfinUrl || !!fieldErrors.externalUrl;
+  const whisparrOpen =
+    editing.whisparr ||
+    (info !== null && info.whisparr === null) ||
+    !!fieldErrors.whisparrUrl ||
+    !!fieldErrors.profile ||
+    !!fieldErrors.root;
+  const cancelJellyfin = () => {
+    if (info) applyJellyfin(info);
+    setJellyfinTest(noDraftTest);
+    setFieldErrors(({ jellyfinUrl: _u, externalUrl: _e, ...rest }) => rest);
+    setEditing((s) => ({ ...s, jellyfin: false }));
+  };
+  const cancelWhisparr = () => {
+    if (info) applyWhisparr(info);
+    setWhisparrTest(noDraftTest);
+    setFieldErrors(
+      ({ whisparrUrl: _u, profile: _p, root: _r, ...rest }) => rest,
+    );
+    setError(null);
+    setEditing((s) => ({ ...s, whisparr: false }));
+  };
+
   const hasUrl = whisparrUrl.trim() !== "";
   const fieldsDisabled = pending || loading || !!loadError;
+
+  // The POST tests fire the values currently in the form, saved secret
+  // included by omission (a blank key field means "use the saved one").
+  // Nothing is stored: the saved configuration only changes on Save.
+  async function testJellyfin() {
+    setJellyfinTest({ ...noDraftTest, checking: true });
+    try {
+      const status = await api<JellyfinStatus>("/api/admin/jellyfin/test", {
+        method: "POST",
+        body: JSON.stringify({
+          url: jellyfinUrl.trim(),
+          externalUrl: externalUrl.trim(),
+          ...(jellyfinApiKey ? { apiKey: jellyfinApiKey } : {}),
+        }),
+      });
+      setJellyfinTest({
+        checking: false,
+        ok: status.configured
+          ? status.version
+            ? "Connection works: " + status.version
+            : "Connection works."
+          : null,
+        failed: status.error?.message ?? null,
+        error: status.configured
+          ? null
+          : "Not configured — enter the API key to test.",
+      });
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 403) {
+        onForbidden();
+        return;
+      }
+      setJellyfinTest({ ...noDraftTest, error: messageOf(err) });
+    }
+  }
+  async function testWhisparr() {
+    setWhisparrTest({ ...noDraftTest, checking: true });
+    try {
+      const status = await api<WhisparrStatus>("/api/admin/whisparr/test", {
+        method: "POST",
+        body: JSON.stringify({
+          url: whisparrUrl.trim(),
+          ...(whisparrApiKey ? { apiKey: whisparrApiKey } : {}),
+        }),
+      });
+      setWhisparrTest({
+        checking: false,
+        ok: status.configured
+          ? status.version
+            ? "Connection works: " + status.version
+            : "Connection works."
+          : null,
+        failed: status.error?.message ?? null,
+        // A blank URL means "no Whisparr", and the test reports it as such.
+        error: status.configured ? null : "Whisparr is not configured.",
+      });
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 403) {
+        onForbidden();
+        return;
+      }
+      setWhisparrTest({ ...noDraftTest, error: messageOf(err) });
+    }
+  }
+  // A result describes the values it tested; a changed field invalidates it.
+  const jellyfinTestResult =
+    jellyfinTest.failed || jellyfinTest.error ? (
+      <div className="mt-3">
+        <ErrorPanel
+          title="Jellyfin connection test failed"
+          message={jellyfinTest.failed ?? jellyfinTest.error ?? ""}
+        />
+      </div>
+    ) : jellyfinTest.ok ? (
+      <p className="mt-2 text-sm text-muted">{jellyfinTest.ok}</p>
+    ) : null;
+  const whisparrTestResult =
+    whisparrTest.failed || whisparrTest.error ? (
+      <div className="mt-3">
+        <ErrorPanel
+          title="Whisparr connection test failed"
+          message={whisparrTest.failed ?? whisparrTest.error ?? ""}
+        />
+      </div>
+    ) : whisparrTest.ok ? (
+      <p className="mt-2 text-sm text-muted">{whisparrTest.ok}</p>
+    ) : null;
+  const jellyfinCheck = (
+    <button
+      type="button"
+      className="btn"
+      disabled={fieldsDisabled || jellyfinTest.checking}
+      onClick={() => void testJellyfin()}
+    >
+      <Icon name="refresh" />
+      {jellyfinTest.checking ? "Checking…" : "Check connection"}
+    </button>
+  );
+  const whisparrCheck = (
+    <button
+      type="button"
+      className="btn"
+      disabled={fieldsDisabled || whisparrTest.checking}
+      onClick={() => void testWhisparr()}
+    >
+      <Icon name="refresh" />
+      {whisparrTest.checking ? "Checking…" : "Check connection"}
+    </button>
+  );
+
+  // Select choices; the currently stored value is always offered so a stale
+  // status can never silently change what will be saved.
   const rootChoices = (() => {
     const paths = whisparrStatus?.rootFolders?.map((rf) => rf.path) ?? [];
     if (rootFolderPath !== "" && !paths.includes(rootFolderPath))
@@ -230,15 +415,14 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
     if (!info || loadError || loading || pending) return;
     setError(null);
     setSaved(null);
-    if (!jellyfinUrl.trim() || !externalUrl.trim()) {
-      setError("Jellyfin URL and external URL are required.");
-      return;
-    }
+    setFieldErrors({});
+    const fe: typeof fieldErrors = {};
+    if (!jellyfinUrl.trim()) fe.jellyfinUrl = "Enter the Jellyfin URL.";
+    if (!externalUrl.trim())
+      fe.externalUrl = "Enter the Jellyfin external URL.";
     if (!hasUrl && whisparrApiKey.trim() !== "") {
-      setError(
-        "A Whisparr API key needs the Whisparr URL — the URL is the connection, the key authenticates it.",
-      );
-      return;
+      fe.whisparrUrl =
+        "A Whisparr API key needs the Whisparr URL — the URL is the connection, the key authenticates it.";
     }
     const profile = Number(effectiveProfile);
     if (
@@ -246,11 +430,13 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
       (deliveryEnabled || info?.whisparr?.delivery) &&
       (!Number.isInteger(profile) || profile < 1)
     ) {
-      setError("Choose a quality profile (a positive whole number).");
-      return;
+      fe.profile = "Choose a quality profile (a positive whole number).";
     }
     if (hasUrl && deliveryEnabled && !effectiveRoot.trim()) {
-      setError("A root folder is required while delivery is enabled.");
+      fe.root = "A root folder is required while delivery is enabled.";
+    }
+    if (Object.keys(fe).length > 0) {
+      setFieldErrors(fe);
       return;
     }
     if (hasUrl && halfMappings.length > 0) {
@@ -297,7 +483,10 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
       });
       setJellyfinApiKey("");
       setWhisparrApiKey("");
+      setJellyfinTest(noDraftTest);
+      setWhisparrTest(noDraftTest);
       setSaved("Integrations updated.");
+      setEditing({ jellyfin: false, whisparr: false });
       load();
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) onForbidden();
@@ -314,347 +503,509 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
       noValidate
     >
       <section className="panel p-5" aria-labelledby="jellyfin-settings-title">
-        <div className="settings-service-heading">
-          <h2 id="jellyfin-settings-title">Jellyfin</h2>
-          <p>Your media server, accounts, and playback connection.</p>
-        </div>
-        <JellyfinCard onForbidden={onForbidden} />
-        {info ? (
-          <>
+        <JellyfinCard
+          onForbidden={onForbidden}
+          open={jellyfinOpen}
+          check={jellyfinCheck}
+          testResult={jellyfinTestResult}
+          actions={
+            !info ? null : jellyfinOpen ? (
+              <>
+                <button
+                  type="submit"
+                  className="btn btn-accent"
+                  disabled={fieldsDisabled}
+                  aria-busy={pending || undefined}
+                >
+                  <Icon name="check" />
+                  {pending ? "Saving…" : "Save"}
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={pending}
+                  onClick={cancelJellyfin}
+                >
+                  <Icon name="close" />
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                ref={jellyfinFocus.editRef}
+                className="btn"
+                disabled={fieldsDisabled}
+                onClick={() => setEditing((s) => ({ ...s, jellyfin: true }))}
+              >
+                <Icon name="edit" />
+                Edit
+              </button>
+            )
+          }
+        >
+          {info && (
             <p className="mt-3 text-sm text-muted">
               Server <span className="chip">{info.jellyfin.serverId}</span> ·{" "}
               {info.jellyfin.libraryIds.length} configured librar
               {info.jellyfin.libraryIds.length === 1 ? "y" : "ies"} (grants are
               not changed here)
             </p>
-            <div className="mt-4 grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="label" htmlFor="int-jf-url">
-                  Jellyfin URL
-                </label>
-                <input
-                  id="int-jf-url"
-                  type="text"
-                  className="input"
-                  autoComplete="off"
-                  maxLength={300}
-                  value={jellyfinUrl}
-                  disabled={fieldsDisabled}
-                  onChange={(e) => setJellyfinUrl(e.target.value)}
-                />
-              </div>
-              <div>
-                <label className="label" htmlFor="int-jf-ext">
-                  Jellyfin external URL
-                </label>
-                <input
-                  id="int-jf-ext"
-                  type="text"
-                  className="input"
-                  autoComplete="off"
-                  maxLength={300}
-                  value={externalUrl}
-                  disabled={fieldsDisabled}
-                  onChange={(e) => setExternalUrl(e.target.value)}
-                />
-              </div>
-              <div>
-                <label className="label" htmlFor="int-jf-key">
-                  Jellyfin API key
-                </label>
-                <input
-                  id="int-jf-key"
-                  type="password"
-                  className="input"
-                  autoComplete="off"
-                  placeholder={
-                    info.jellyfin.apiKeyConfigured
-                      ? "Configured — leave blank to keep"
-                      : "Not set"
-                  }
-                  value={jellyfinApiKey}
-                  disabled={fieldsDisabled}
-                  onChange={(e) => setJellyfinApiKey(e.target.value)}
-                />
-              </div>
-            </div>
-          </>
-        ) : (
-          <ConnectionSettingsPlaceholder
-            service="Jellyfin"
-            failed={!!loadError}
-          />
-        )}
+          )}
+          {info ? (
+            jellyfinOpen && (
+              <>
+                <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="label" htmlFor="int-jf-url">
+                      Jellyfin URL
+                    </label>
+                    <input
+                      id="int-jf-url"
+                      type="url"
+                      autoComplete="url"
+                      className="input"
+                      maxLength={300}
+                      value={jellyfinUrl}
+                      disabled={fieldsDisabled}
+                      onChange={(e) => {
+                        setJellyfinUrl(e.target.value);
+                        setJellyfinTest(noDraftTest);
+                      }}
+                      aria-invalid={fieldErrors.jellyfinUrl ? true : undefined}
+                      aria-describedby={
+                        fieldErrors.jellyfinUrl ? "int-jf-url-error" : undefined
+                      }
+                    />
+                    {fieldErrors.jellyfinUrl && (
+                      <p
+                        id="int-jf-url-error"
+                        className="mt-2 text-sm text-danger"
+                      >
+                        {fieldErrors.jellyfinUrl}
+                      </p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="label" htmlFor="int-jf-ext">
+                      Jellyfin external URL
+                    </label>
+                    <input
+                      id="int-jf-ext"
+                      type="url"
+                      autoComplete="url"
+                      className="input"
+                      maxLength={300}
+                      value={externalUrl}
+                      disabled={fieldsDisabled}
+                      onChange={(e) => {
+                        setExternalUrl(e.target.value);
+                        setJellyfinTest(noDraftTest);
+                      }}
+                      aria-invalid={fieldErrors.externalUrl ? true : undefined}
+                      aria-describedby={
+                        fieldErrors.externalUrl ? "int-jf-ext-error" : undefined
+                      }
+                    />
+                    {fieldErrors.externalUrl && (
+                      <p
+                        id="int-jf-ext-error"
+                        className="mt-2 text-sm text-danger"
+                      >
+                        {fieldErrors.externalUrl}
+                      </p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="label" htmlFor="int-jf-key">
+                      Jellyfin API key (optional)
+                    </label>
+                    <input
+                      id="int-jf-key"
+                      type="password"
+                      className="input"
+                      autoComplete="off"
+                      placeholder={
+                        info.jellyfin.apiKeyConfigured
+                          ? "Configured — leave blank to keep"
+                          : "Not set"
+                      }
+                      value={jellyfinApiKey}
+                      disabled={fieldsDisabled}
+                      onChange={(e) => {
+                        setJellyfinApiKey(e.target.value);
+                        setJellyfinTest(noDraftTest);
+                      }}
+                    />
+                  </div>
+                </div>
+              </>
+            )
+          ) : (
+            <ConnectionSettingsPlaceholder
+              service="Jellyfin"
+              failed={!!loadError}
+            />
+          )}
+        </JellyfinCard>
       </section>
       <section className="panel p-5" aria-labelledby="whisparr-settings-title">
-        <div className="settings-service-heading">
-          <h2 id="whisparr-settings-title">Whisparr</h2>
-          <p>
-            Your download connection, delivery settings, and library path
-            mappings.
-          </p>
-        </div>
-        <WhisparrCard onForbidden={onForbidden} />
-        {info ? (
-          <>
-            <div className="mt-4 grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="label" htmlFor="int-w-url">
-                  Whisparr URL (blank removes it, with delivery settings)
-                </label>
-                <input
-                  id="int-w-url"
-                  type="text"
-                  className="input"
-                  autoComplete="off"
-                  maxLength={300}
-                  value={whisparrUrl}
+        <WhisparrCard
+          onForbidden={onForbidden}
+          open={whisparrOpen}
+          check={whisparrCheck}
+          testResult={whisparrTestResult}
+          actions={
+            !info ? null : whisparrOpen ? (
+              <>
+                <button
+                  type="submit"
+                  className="btn btn-accent"
                   disabled={fieldsDisabled}
-                  onChange={(e) => setWhisparrUrl(e.target.value)}
-                />
-              </div>
-              <div>
-                <label className="label" htmlFor="int-w-key">
-                  Whisparr API key
-                </label>
-                <input
-                  id="int-w-key"
-                  type="password"
-                  className="input"
-                  autoComplete="off"
-                  placeholder={
-                    info.whisparr?.apiKeyConfigured
-                      ? "Configured — leave blank to keep"
-                      : "Not set"
-                  }
-                  value={whisparrApiKey}
-                  disabled={fieldsDisabled}
-                  onChange={(e) => setWhisparrApiKey(e.target.value)}
-                />
-              </div>
-            </div>
-
-            <fieldset className="mt-4 border-t border-edge pt-4">
-              <legend className="label">Whisparr delivery</legend>
-              <p className="mt-1 text-sm text-muted">
-                With delivery disabled, approved requests are held inside
-                Velvarr — never dropped, never sent to Whisparr until you enable
-                this.
-              </p>
-              <div className="mt-3 grid gap-4 sm:grid-cols-2">
-                <div className="sm:col-span-2">
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      className="check"
-                      checked={deliveryEnabled}
-                      disabled={!hasUrl || fieldsDisabled}
-                      onChange={(e) => setDeliveryEnabled(e.target.checked)}
-                    />
-                    Send approved requests to Whisparr
-                  </label>
-                </div>
-                <div>
-                  <label className="label" htmlFor="int-w-root">
-                    Root folder
-                  </label>
-                  {rootChoices.length > 0 ? (
-                    <select
-                      id="int-w-root"
-                      className="input"
-                      value={effectiveRoot}
-                      disabled={!hasUrl || fieldsDisabled}
-                      onChange={(e) => setRootFolderPath(e.target.value)}
-                    >
-                      {rootChoices.map((path) => (
-                        <option key={path} value={path}>
-                          {path}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      id="int-w-root"
-                      type="text"
-                      className="input"
-                      autoComplete="off"
-                      maxLength={1024}
-                      placeholder="Whisparr download root, e.g. /data/adult"
-                      value={rootFolderPath}
-                      disabled={!hasUrl || fieldsDisabled}
-                      onChange={(e) => setRootFolderPath(e.target.value)}
-                    />
-                  )}
-                </div>
-                <div>
-                  <label className="label" htmlFor="int-w-profile">
-                    Quality profile
-                  </label>
-                  {profileChoices.length > 0 ? (
-                    <select
-                      id="int-w-profile"
-                      className="input"
-                      value={effectiveProfile}
-                      disabled={!hasUrl || fieldsDisabled}
-                      onChange={(e) => setQualityProfileId(e.target.value)}
-                    >
-                      {profileChoices.map((p) => (
-                        <option key={p.id} value={String(p.id)}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      id="int-w-profile"
-                      type="number"
-                      min={1}
-                      step={1}
-                      className="input"
-                      value={qualityProfileId}
-                      disabled={!hasUrl || fieldsDisabled}
-                      onChange={(e) => setQualityProfileId(e.target.value)}
-                    />
-                  )}
-                </div>
-                <div className="sm:col-span-2">
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      className="check"
-                      checked={searchOnAdd}
-                      disabled={!hasUrl || fieldsDisabled}
-                      onChange={(e) => setSearchOnAdd(e.target.checked)}
-                    />
-                    Search Whisparr as soon as a request is sent
-                  </label>
-                </div>
-              </div>
-            </fieldset>
-
-            <fieldset className="mt-4 border-t border-edge pt-4">
-              <legend className="label">
-                Path mappings (Whisparr → Jellyfin)
-              </legend>
-              <p className="mt-1 text-sm text-muted">
-                Prefix pairs that line Whisparr download paths up with Jellyfin
-                library paths. Only needed when the two roots differ.
-              </p>
-              {mappings.map((m, i) => (
-                <div key={i} className="mt-2 flex flex-wrap items-end gap-2">
-                  <div className="min-w-40 flex-1">
-                    <label className="label" htmlFor={`map-w-${i}`}>
-                      Whisparr prefix
-                    </label>
-                    <input
-                      id={`map-w-${i}`}
-                      type="text"
-                      className="input"
-                      autoComplete="off"
-                      maxLength={1024}
-                      value={m.whisparrPrefix}
-                      disabled={!hasUrl || fieldsDisabled}
-                      onChange={(e) =>
-                        setMappings((cur) =>
-                          cur.map((x, j) =>
-                            j === i
-                              ? { ...x, whisparrPrefix: e.target.value }
-                              : x,
-                          ),
-                        )
-                      }
-                    />
-                  </div>
-                  <div className="min-w-40 flex-1">
-                    <label className="label" htmlFor={`map-j-${i}`}>
-                      Jellyfin prefix
-                    </label>
-                    <input
-                      id={`map-j-${i}`}
-                      type="text"
-                      className="input"
-                      autoComplete="off"
-                      maxLength={1024}
-                      value={m.jellyfinPrefix}
-                      disabled={!hasUrl || fieldsDisabled}
-                      onChange={(e) =>
-                        setMappings((cur) =>
-                          cur.map((x, j) =>
-                            j === i
-                              ? { ...x, jellyfinPrefix: e.target.value }
-                              : x,
-                          ),
-                        )
-                      }
-                    />
-                  </div>
+                  aria-busy={pending || undefined}
+                >
+                  <Icon name="check" />
+                  {pending ? "Saving…" : "Save"}
+                </button>
+                {info.whisparr !== null && (
                   <button
                     type="button"
                     className="btn"
-                    disabled={!hasUrl || fieldsDisabled}
-                    onClick={() =>
-                      setMappings((cur) => cur.filter((_, j) => j !== i))
-                    }
+                    disabled={pending}
+                    onClick={cancelWhisparr}
                   >
-                    Remove
+                    <Icon name="close" />
+                    Cancel
                   </button>
-                </div>
-              ))}
+                )}
+              </>
+            ) : (
               <button
                 type="button"
-                className="btn mt-3"
-                disabled={!hasUrl || fieldsDisabled || mappings.length >= 50}
-                onClick={() =>
-                  setMappings((cur) => [
-                    ...cur,
-                    { whisparrPrefix: "", jellyfinPrefix: "" },
-                  ])
-                }
+                ref={whisparrFocus.editRef}
+                className="btn"
+                disabled={fieldsDisabled}
+                onClick={() => setEditing((s) => ({ ...s, whisparr: true }))}
               >
-                Add mapping
+                <Icon name="edit" />
+                Edit
               </button>
-            </fieldset>
-          </>
-        ) : (
-          <ConnectionSettingsPlaceholder
-            service="Whisparr"
-            failed={!!loadError}
-          />
-        )}
-      </section>
-      <div className="panel p-5 settings-connection-save">
-        {loadError && (
-          <ErrorPanel
-            title={
-              saved
-                ? "Saved, but settings could not be reloaded"
-                : "Connection settings unavailable"
-            }
-            message={loadError}
-            onRetry={load}
-          />
-        )}
-        {error && <ErrorPanel title="Changes not saved" message={error} />}
-        <div
-          role="status"
-          aria-atomic="true"
-          className={saved ? "settings-save-status" : "sr-only"}
+            )
+          }
         >
-          {saved}
+          {info ? (
+            whisparrOpen && (
+              <>
+                <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="label" htmlFor="int-w-url">
+                      Whisparr URL (blank removes it, with delivery settings)
+                    </label>
+                    <input
+                      id="int-w-url"
+                      type="url"
+                      autoComplete="url"
+                      className="input"
+                      maxLength={300}
+                      value={whisparrUrl}
+                      disabled={fieldsDisabled}
+                      onChange={(e) => {
+                        setWhisparrUrl(e.target.value);
+                        setWhisparrTest(noDraftTest);
+                      }}
+                      aria-invalid={fieldErrors.whisparrUrl ? true : undefined}
+                      aria-describedby={
+                        fieldErrors.whisparrUrl ? "int-w-url-error" : undefined
+                      }
+                    />
+                    {fieldErrors.whisparrUrl && (
+                      <p
+                        id="int-w-url-error"
+                        className="mt-2 text-sm text-danger"
+                      >
+                        {fieldErrors.whisparrUrl}
+                      </p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="label" htmlFor="int-w-key">
+                      Whisparr API key (optional)
+                    </label>
+                    <input
+                      id="int-w-key"
+                      type="password"
+                      className="input"
+                      autoComplete="off"
+                      placeholder={
+                        info.whisparr?.apiKeyConfigured
+                          ? "Configured — leave blank to keep"
+                          : "Not set"
+                      }
+                      value={whisparrApiKey}
+                      disabled={fieldsDisabled}
+                      onChange={(e) => {
+                        setWhisparrApiKey(e.target.value);
+                        setWhisparrTest(noDraftTest);
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <fieldset className="mt-4 border-t border-edge pt-4">
+                  <legend className="label">Whisparr delivery</legend>
+                  <p className="mt-1 text-sm text-muted">
+                    With delivery disabled, approved requests are held inside
+                    Velvarr — never dropped, never sent to Whisparr until you
+                    enable this.
+                  </p>
+                  <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                    <div className="sm:col-span-2">
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          className="check"
+                          checked={deliveryEnabled}
+                          disabled={!hasUrl || fieldsDisabled}
+                          onChange={(e) => setDeliveryEnabled(e.target.checked)}
+                        />
+                        Send approved requests to Whisparr
+                      </label>
+                    </div>
+                    <div>
+                      <label className="label" htmlFor="int-w-root">
+                        Root folder
+                      </label>
+                      {rootChoices.length > 0 ? (
+                        <select
+                          id="int-w-root"
+                          className="input"
+                          value={effectiveRoot}
+                          disabled={!hasUrl || fieldsDisabled}
+                          onChange={(e) => setRootFolderPath(e.target.value)}
+                          aria-invalid={fieldErrors.root ? true : undefined}
+                          aria-describedby={
+                            fieldErrors.root ? "int-w-root-error" : undefined
+                          }
+                        >
+                          {rootChoices.map((path) => (
+                            <option key={path} value={path}>
+                              {path}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          id="int-w-root"
+                          type="text"
+                          className="input"
+                          autoComplete="off"
+                          maxLength={1024}
+                          placeholder="Whisparr download root, e.g. /data/adult"
+                          value={rootFolderPath}
+                          disabled={!hasUrl || fieldsDisabled}
+                          onChange={(e) => setRootFolderPath(e.target.value)}
+                          aria-invalid={fieldErrors.root ? true : undefined}
+                          aria-describedby={
+                            fieldErrors.root ? "int-w-root-error" : undefined
+                          }
+                        />
+                      )}
+                      {fieldErrors.root && (
+                        <p
+                          id="int-w-root-error"
+                          className="mt-2 text-sm text-danger"
+                        >
+                          {fieldErrors.root}
+                        </p>
+                      )}
+                    </div>
+                    <div>
+                      <label className="label" htmlFor="int-w-profile">
+                        Quality profile
+                      </label>
+                      {profileChoices.length > 0 ? (
+                        <select
+                          id="int-w-profile"
+                          className="input"
+                          value={effectiveProfile}
+                          disabled={!hasUrl || fieldsDisabled}
+                          onChange={(e) => setQualityProfileId(e.target.value)}
+                          aria-invalid={fieldErrors.profile ? true : undefined}
+                          aria-describedby={
+                            fieldErrors.profile
+                              ? "int-w-profile-error"
+                              : undefined
+                          }
+                        >
+                          {profileChoices.map((p) => (
+                            <option key={p.id} value={String(p.id)}>
+                              {p.name}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          id="int-w-profile"
+                          type="number"
+                          min={1}
+                          step={1}
+                          className="input"
+                          value={qualityProfileId}
+                          disabled={!hasUrl || fieldsDisabled}
+                          onChange={(e) => setQualityProfileId(e.target.value)}
+                          aria-invalid={fieldErrors.profile ? true : undefined}
+                          aria-describedby={
+                            fieldErrors.profile
+                              ? "int-w-profile-error"
+                              : undefined
+                          }
+                        />
+                      )}
+                      {fieldErrors.profile && (
+                        <p
+                          id="int-w-profile-error"
+                          className="mt-2 text-sm text-danger"
+                        >
+                          {fieldErrors.profile}
+                        </p>
+                      )}
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          className="check"
+                          checked={searchOnAdd}
+                          disabled={!hasUrl || fieldsDisabled}
+                          onChange={(e) => setSearchOnAdd(e.target.checked)}
+                        />
+                        Search Whisparr as soon as a request is sent
+                      </label>
+                    </div>
+                  </div>
+                </fieldset>
+
+                <fieldset className="mt-4 border-t border-edge pt-4">
+                  <legend className="label">
+                    Path mappings (Whisparr → Jellyfin)
+                  </legend>
+                  <p className="mt-1 text-sm text-muted">
+                    Prefix pairs that line Whisparr download paths up with
+                    Jellyfin library paths. Only needed when the two roots
+                    differ.
+                  </p>
+                  {mappings.map((m, i) => (
+                    <div
+                      key={i}
+                      className="mt-2 flex flex-wrap items-end gap-2"
+                    >
+                      <div className="min-w-40 flex-1">
+                        <label className="label" htmlFor={`map-w-${i}`}>
+                          Whisparr prefix
+                        </label>
+                        <input
+                          id={`map-w-${i}`}
+                          type="text"
+                          className="input"
+                          autoComplete="off"
+                          maxLength={1024}
+                          value={m.whisparrPrefix}
+                          disabled={!hasUrl || fieldsDisabled}
+                          onChange={(e) =>
+                            setMappings((cur) =>
+                              cur.map((x, j) =>
+                                j === i
+                                  ? { ...x, whisparrPrefix: e.target.value }
+                                  : x,
+                              ),
+                            )
+                          }
+                        />
+                      </div>
+                      <div className="min-w-40 flex-1">
+                        <label className="label" htmlFor={`map-j-${i}`}>
+                          Jellyfin prefix
+                        </label>
+                        <input
+                          id={`map-j-${i}`}
+                          type="text"
+                          className="input"
+                          autoComplete="off"
+                          maxLength={1024}
+                          value={m.jellyfinPrefix}
+                          disabled={!hasUrl || fieldsDisabled}
+                          onChange={(e) =>
+                            setMappings((cur) =>
+                              cur.map((x, j) =>
+                                j === i
+                                  ? { ...x, jellyfinPrefix: e.target.value }
+                                  : x,
+                              ),
+                            )
+                          }
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={!hasUrl || fieldsDisabled}
+                        onClick={() =>
+                          setMappings((cur) => cur.filter((_, j) => j !== i))
+                        }
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    className="btn mt-3"
+                    disabled={
+                      !hasUrl || fieldsDisabled || mappings.length >= 50
+                    }
+                    onClick={() =>
+                      setMappings((cur) => [
+                        ...cur,
+                        { whisparrPrefix: "", jellyfinPrefix: "" },
+                      ])
+                    }
+                  >
+                    Add mapping
+                  </button>
+                </fieldset>
+              </>
+            )
+          ) : (
+            <ConnectionSettingsPlaceholder
+              service="Whisparr"
+              failed={!!loadError}
+            />
+          )}
+        </WhisparrCard>
+      </section>
+      {(loadError || error || saved) && (
+        <div className="panel p-5 settings-connection-save">
+          {loadError && (
+            <ErrorPanel
+              title={
+                saved
+                  ? "Saved, but settings could not be reloaded"
+                  : "Connection settings unavailable"
+              }
+              message={loadError}
+              onRetry={load}
+            />
+          )}
+          {error && <ErrorPanel title="Changes not saved" message={error} />}
         </div>
-        <div className="settings-connection-actions">
-          <p className="text-sm text-muted">
-            Save changes to both connections together. Leave configured API keys
-            blank to keep them.
-          </p>
-          <button
-            type="submit"
-            className="btn btn-accent"
-            disabled={fieldsDisabled || !info}
-          >
-            {pending ? "Saving…" : "Save integrations"}
-          </button>
-        </div>
+      )}
+      {/* Always mounted, so a screen reader announces the save result. */}
+      <div
+        role="status"
+        aria-atomic="true"
+        className={saved ? "settings-save-status" : "sr-only"}
+      >
+        {saved}
       </div>
     </form>
   );
@@ -686,7 +1037,26 @@ function ConnectionSettingsPlaceholder({
   );
 }
 
-function WhisparrCard({ onForbidden }: { onForbidden: () => void }) {
+function WhisparrCard({
+  onForbidden,
+  children,
+  actions,
+  open,
+  check,
+  testResult,
+}: {
+  onForbidden: () => void;
+  /** The card's settings fields. */
+  children: ReactNode;
+  /** Edit, or Save and Cancel while open. */
+  actions: ReactNode;
+  /** The settings editor is open. */
+  open: boolean;
+  /** The open editor's Check connection button (POSTs the form draft). */
+  check: ReactNode;
+  /** The draft test's result, shown under the action row. */
+  testResult?: ReactNode;
+}) {
   const {
     data: status,
     error,
@@ -694,75 +1064,41 @@ function WhisparrCard({ onForbidden }: { onForbidden: () => void }) {
     revalidating,
     reload,
   } = useApiGet<WhisparrStatus>("/api/admin/whisparr", []);
-  const [checkedAt, setCheckedAt] = useState<string | null>(null);
   const ready = status !== null || error !== null;
-
-  // Stamp only a check that finished: a remount revalidating the cached
-  // snapshot must not present it as "Checked <now>".
-  useEffect(() => {
-    if (status !== null && !revalidating)
-      setCheckedAt(new Date().toLocaleTimeString());
-  }, [status, revalidating]);
+  const savedCheckFailed = Boolean(error ?? status?.error);
 
   useEffect(() => {
     if (err !== null && err.status === 403) onForbidden();
   }, [err, onForbidden]);
 
   return (
-    <div className="settings-connection-status">
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="font-semibold">
-          <span className="sr-only">Whisparr </span>Connection status
-        </h3>
-        <button
-          type="button"
-          className="btn"
-          onClick={reload}
-          disabled={revalidating}
-        >
-          {revalidating ? "Checking…" : "Refresh"}
-        </button>
-      </div>
-
-      {!ready ? (
-        <div
-          className="mt-3 space-y-2"
-          role="status"
-          aria-label="Checking Whisparr"
-        >
-          <div className="skel h-5 w-1/2" />
-          <div className="skel h-5 w-2/3" />
-        </div>
-      ) : (error ?? status?.error) ? (
+    <>
+      <ServiceHeading
+        id="whisparr-settings-title"
+        title="Whisparr"
+        description="Your download connection, delivery settings, and library path mappings."
+        state={serviceState(ready, savedCheckFailed, status)}
+        detail={
+          status?.configured && !savedCheckFailed
+            ? `${status.appName ?? "Whisparr"} ${status.version ?? ""}`.trim()
+            : null
+        }
+      />
+      {savedCheckFailed ? (
         <div className="mt-3">
           <ErrorPanel
             title="Whisparr unavailable"
             message={
               error ?? `${status?.error?.code}: ${status?.error?.message}`
             }
-            onRetry={reload}
           />
         </div>
-      ) : !status?.configured ? (
+      ) : ready && !status?.configured ? (
         <p className="mt-3 text-sm text-muted">
-          Not configured. Add the Whisparr URL and API key below to enable
-          read-only status.
+          Add the Whisparr URL and API key below to enable read-only status.
         </p>
-      ) : (
+      ) : !status?.configured ? null : (
         <dl className="mt-3 space-y-2 text-sm">
-          <div className="flex gap-2">
-            <dt className="text-muted">Application</dt>
-            <dd className="font-medium">
-              {status.appName ?? "Whisparr"}
-              {status.version ? ` ${status.version}` : ""}
-            </dd>
-          </div>
-          {checkedAt && (
-            <div className="flex gap-2">
-              <dt className="text-muted">Checked</dt>
-              <dd>{checkedAt}</dd>
-            </div>
-          )}
           <div>
             <dt className="text-muted">Root folders</dt>
             <dd className="mt-1">
@@ -793,10 +1129,44 @@ function WhisparrCard({ onForbidden }: { onForbidden: () => void }) {
           </div>
         </dl>
       )}
-    </div>
+      {children}
+      <CheckConnectionRow
+        reload={reload}
+        checking={revalidating}
+        retry={
+          checkConnectionAction({
+            editorOpen: open,
+            savedCheckFailed,
+          }) === "retry"
+        }
+        check={open ? check : null}
+      >
+        {actions}
+      </CheckConnectionRow>
+      {open ? testResult : null}
+    </>
   );
 }
-function JellyfinCard({ onForbidden }: { onForbidden: () => void }) {
+function JellyfinCard({
+  onForbidden,
+  children,
+  actions,
+  open,
+  check,
+  testResult,
+}: {
+  onForbidden: () => void;
+  /** The card's settings fields. */
+  children: ReactNode;
+  /** Edit, or Save and Cancel while open. */
+  actions: ReactNode;
+  /** The settings editor is open. */
+  open: boolean;
+  /** The open editor's Check connection button (POSTs the form draft). */
+  check: ReactNode;
+  /** The draft test's result, shown under the action row. */
+  testResult?: ReactNode;
+}) {
   const {
     data: status,
     error,
@@ -804,75 +1174,128 @@ function JellyfinCard({ onForbidden }: { onForbidden: () => void }) {
     revalidating,
     reload,
   } = useApiGet<JellyfinStatus>("/api/admin/jellyfin", []);
-  const [checkedAt, setCheckedAt] = useState<string | null>(null);
   const ready = status !== null || error !== null;
-
-  // Stamp only a check that finished: a remount revalidating the cached
-  // snapshot must not present it as "Checked <now>".
-  useEffect(() => {
-    if (status !== null && !revalidating)
-      setCheckedAt(new Date().toLocaleTimeString());
-  }, [status, revalidating]);
+  const savedCheckFailed = Boolean(error ?? status?.error);
 
   useEffect(() => {
     if (err !== null && err.status === 403) onForbidden();
   }, [err, onForbidden]);
 
   return (
-    <div className="settings-connection-status">
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="font-semibold">
-          <span className="sr-only">Jellyfin </span>Connection status
-        </h3>
-        <button
-          type="button"
-          className="btn"
-          onClick={reload}
-          disabled={revalidating}
-        >
-          {revalidating ? "Testing…" : "Test connection"}
-        </button>
-      </div>
-
-      {!ready ? (
-        <div
-          className="mt-3 space-y-2"
-          role="status"
-          aria-label="Checking Jellyfin"
-        >
-          <div className="skel h-5 w-1/2" />
-        </div>
-      ) : (error ?? status?.error) ? (
+    <>
+      <ServiceHeading
+        id="jellyfin-settings-title"
+        title="Jellyfin"
+        description="Your media server, accounts, and playback connection."
+        state={serviceState(ready, savedCheckFailed, status)}
+        detail={
+          status?.configured && !savedCheckFailed
+            ? `${status.serverName ?? "Jellyfin"} ${status.version ?? ""}`.trim()
+            : null
+        }
+      />
+      {savedCheckFailed ? (
         <div className="mt-3">
           <ErrorPanel
             title="Jellyfin unavailable"
             message={
               error ?? `${status?.error?.code}: ${status?.error?.message}`
             }
-            onRetry={reload}
           />
         </div>
-      ) : !status?.configured ? (
-        <p className="mt-3 text-sm text-muted">
-          Not configured. Save the Jellyfin URL and API key below to enable the
-          connection check.
-        </p>
       ) : (
-        <dl className="mt-3 space-y-2 text-sm">
-          <div className="flex gap-2">
-            <dt className="text-muted">Connected</dt>
-            <dd className="font-medium">
-              {status.serverName ?? "Jellyfin"}
-              {status.version ? ` ${status.version}` : ""}
-            </dd>
-          </div>
-          {checkedAt && (
-            <div className="flex gap-2">
-              <dt className="text-muted">Checked</dt>
-              <dd>{checkedAt}</dd>
-            </div>
-          )}
-        </dl>
+        ready &&
+        !status?.configured && (
+          <p className="mt-3 text-sm text-muted">
+            Save the Jellyfin URL and API key below to enable the connection
+            check.
+          </p>
+        )
+      )}
+      {children}
+      <CheckConnectionRow
+        reload={reload}
+        checking={revalidating}
+        retry={
+          checkConnectionAction({
+            editorOpen: open,
+            savedCheckFailed,
+          }) === "retry"
+        }
+        check={open ? check : null}
+      >
+        {actions}
+      </CheckConnectionRow>
+      {open ? testResult : null}
+    </>
+  );
+}
+
+/** Title with its status chip beside it, then the description, as on the
+ * provider cards. `detail` names the connected server and version; it shows
+ * only while the saved check is Connected, and absent fields are dropped. */
+function ServiceHeading({
+  id,
+  title,
+  description,
+  state,
+  detail,
+}: {
+  id: string;
+  title: string;
+  description: string;
+  state: ConnectionStateLabel;
+  detail?: string | null;
+}) {
+  return (
+    <div className="settings-service-heading">
+      <div className="settings-title-row">
+        <h2 id={id}>{title}</h2>
+        <div className="settings-service-status" aria-live="polite">
+          <ConnectionState state={state} />
+          {state === "Connected" && detail ? (
+            <span className="text-muted">{detail}</span>
+          ) : null}
+        </div>
+      </div>
+      <p>{description}</p>
+    </div>
+  );
+}
+
+/** The card's one action row, right-aligned after its content without a
+ * divider: Edit (or Save and Cancel plus the editor's Check connection while
+ * open), then — on a closed card whose saved check failed — the GET probe
+ * again. */
+function CheckConnectionRow({
+  reload,
+  checking,
+  retry,
+  check,
+  children,
+}: {
+  reload: () => void;
+  checking: boolean;
+  /** Closed card with a failed saved check: show the GET retry. */
+  retry: boolean;
+  /** The open editor's Check connection button, if the editor is open. */
+  check: ReactNode | null;
+  children: ReactNode;
+}) {
+  return (
+    <div className="settings-service-buttons settings-card-actions">
+      {children}
+      {check}
+      {retry && (
+        <button
+          type="button"
+          className="btn"
+          onClick={reload}
+          disabled={checking}
+        >
+          <Icon name="refresh" />
+          {checking ? "Checking…" : "Check connection"}
+        </button>
       )}
     </div>
   );
@@ -913,6 +1336,8 @@ const CREDENTIAL_ROWS = [
     label: "API token",
     maxLength: 1024,
     description: "Movie metadata, performers, studios, and tags.",
+    keyUrl: "https://theporndb.net/user/api-tokens",
+    keyHelp: "Create a token under API tokens on ThePornDB.",
   },
   {
     id: "stashdb",
@@ -921,6 +1346,10 @@ const CREDENTIAL_ROWS = [
     label: "API key",
     maxLength: 512,
     description: "Scene metadata, performers, studios, and tags.",
+    // The key lives on the account's own user page (/users/<name>), which
+    // Velvarr cannot know, so the link opens the site and the text says where.
+    keyUrl: "https://stashdb.org/",
+    keyHelp: "Sign in, open your user page, and copy the API key there.",
   },
 ] as const;
 
@@ -942,6 +1371,17 @@ function ConnectionState({ state }: { state: ConnectionStateLabel }) {
       {state}
     </span>
   );
+}
+
+/** Jellyfin and Whisparr speak the same status chip as the provider cards. */
+function serviceState(
+  ready: boolean,
+  failed: boolean,
+  status: { configured?: boolean } | null,
+): ConnectionStateLabel {
+  if (!ready) return "Checking…";
+  if (failed) return "Connection failed";
+  return status?.configured ? "Connected" : "Not configured";
 }
 
 /** WCAG 2.4.3 (focus order): closing an inline editor must not drop keyboard
@@ -1052,6 +1492,8 @@ function ProviderCredentialCard({
   label,
   maxLength,
   description,
+  keyUrl,
+  keyHelp,
   config,
   saving,
   onSave,
@@ -1068,7 +1510,10 @@ function ProviderCredentialCard({
     initCredentialCard,
   );
   const inputRef = useRef<HTMLInputElement>(null);
-  const { editRef, noticeRef } = useEditorFocusReturn(editor.editing);
+  // A missing key has nothing to show but its input, so the editor stays open.
+  const editorOpen = editor.editing || config?.configured === false;
+  // Focus returns when the editor closes, also after a first key's save.
+  const { editRef, noticeRef } = useEditorFocusReturn(editorOpen);
   // Deleting a stored credential is destructive, so the click first opens this
   // confirmation; the id must be unique — this card renders once per provider.
   const clearRef = useRef<HTMLDialogElement>(null);
@@ -1092,6 +1537,29 @@ function ProviderCredentialCard({
       else dispatch({ type: "checkFailed", message: messageOf(error) });
     }
   }, [id, runOperation]);
+
+  // The editor's test: POSTs the values on screen (blank key = saved
+  // credential), stores nothing. Its result lands in draftCheck, which the
+  // rejected-key auto-delete never reads — only the saved probe (`check`) is.
+  const testDraft = useCallback(async () => {
+    dispatch({ type: "draftChecking" });
+    try {
+      const key = editor.draft.trim();
+      dispatch({
+        type: "draftChecked",
+        check: await runOperation(() =>
+          api<ProviderCheck>("/api/admin/providers/" + id + "/test", {
+            method: "POST",
+            body: JSON.stringify(key === "" ? {} : { key }),
+          }),
+        ),
+      });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 403)
+        dispatch({ type: "forbidden" });
+      else dispatch({ type: "draftCheckFailed", message: messageOf(error) });
+    }
+  }, [id, runOperation, editor.draft]);
   useEffect(() => {
     void verify();
   }, [verify]);
@@ -1099,6 +1567,13 @@ function ProviderCredentialCard({
   function cancel() {
     dispatch({ type: "cancel" });
   }
+
+  // One classifier for every save/clear path, so a 403 always becomes the
+  // card's forbidden state, never an error row.
+  const failureOf = (error: unknown) => ({
+    forbidden: error instanceof ApiError && error.status === 403,
+    message: messageOf(error),
+  });
 
   async function apply(clear = false) {
     const { saved } = await applyCredentialSave({
@@ -1109,16 +1584,53 @@ function ProviderCredentialCard({
       label,
       performSave: (value) => onSave({ [field]: value }).then(() => undefined),
       dispatch,
-      failureOf: (error) => ({
-        forbidden: error instanceof ApiError && error.status === 403,
-        message: messageOf(error),
-      }),
+      failureOf,
     });
     if (saved) await verify();
   }
 
+  // A stored credential the provider just rejected deletes itself at once —
+  // no dialog, the provider proved the key wrong. An environment source never
+  // enters here. One delete at a time: results that land while a clear and
+  // its re-check are in flight (a config refresh, a duplicate check, the
+  // re-check itself) are skipped, so a rejected fallback cannot loop.
+  const clearing = useRef(false);
+  useEffect(() => {
+    if (!editor.check || !config || clearing.current) return;
+    if (
+      !shouldAutoClearOnReject({ check: editor.check, source: config.source })
+    )
+      return;
+    clearing.current = true;
+    void (async () => {
+      try {
+        const { saved } = await applyCredentialSave({
+          draft: "",
+          clear: true,
+          configured: config.configured,
+          name,
+          label,
+          clearNotice:
+            name +
+            " rejected the stored " +
+            label +
+            ", so Velvarr deleted it. Add a new " +
+            label +
+            ".",
+          performSave: (value) =>
+            onSave({ [field]: value }).then(() => undefined),
+          dispatch,
+          failureOf,
+        });
+        if (saved) await verify();
+      } finally {
+        clearing.current = false;
+      }
+    })();
+  }, [editor.check, config]);
+
   // Checks read persisted credentials; a replacement draft is not yet verified.
-  const unsaved = editor.editing && editor.draft.trim() !== "";
+  const unsaved = editorOpen && editor.draft.trim() !== "";
   const error =
     editor.checkError ??
     (editor.check?.configured && !editor.check.verified
@@ -1126,25 +1638,11 @@ function ProviderCredentialCard({
       : null);
   const busy = credentialCardBusy(editor, saving);
   const actions = {
-    canCheck: canTestCredential({
-      draft: editor.draft,
-      pending: saving || editor.forbidden,
-      checking: editor.checking,
-      configured: config?.configured,
-    }),
     canEdit: !busy && Boolean(config),
     canClear: canClearCredential({ source: config?.source, pending: busy }),
   };
-  // Transient busy states are announced by the live status row instead.
-  const checkDisabledReason = !actions.canCheck
-    ? unsaved
-      ? "Save or cancel your changes before checking the connection."
-      : config?.configured === false
-        ? "Add a key to check the connection."
-        : null
-    : null;
   const state = connectionState({
-    draft: editor.editing ? editor.draft : "",
+    draft: editorOpen ? editor.draft : "",
     checking: editor.checking,
     check: editor.check,
     requestError: editor.checkError,
@@ -1158,57 +1656,106 @@ function ProviderCredentialCard({
     unknown: "Not checked",
   } as const;
   const connectionStateLabel: ConnectionStateLabel = stateLabels[state];
+  // One Check connection at a time: the open editor's POST of the draft
+  // values, or — on a closed card whose saved check failed — the GET retry.
+  // A connected or unchecked closed card shows no Check: the page probed the
+  // saved connection on load, and the chip beside the title carries it.
+  const checkMode = checkConnectionAction({
+    editorOpen,
+    savedCheckFailed: error !== null,
+  });
+  const checkButton =
+    checkMode === null ? null : (
+      <button
+        type="button"
+        className="btn"
+        disabled={busy}
+        onClick={() => void (checkMode === "draft" ? testDraft() : verify())}
+      >
+        <Icon name="refresh" />
+        {editor.draftChecking || editor.checking
+          ? "Checking…"
+          : "Check connection"}
+      </button>
+    );
+  // The draft test's verdict, under the editor's action row. It dies with
+  // the draft (reduceCredentialCard clears it on edit/cancel/save), and the
+  // auto-clear never reads it.
+  const draftTest = editor.draftCheckError
+    ? { ok: null as string | null, failed: editor.draftCheckError }
+    : editor.draftCheck === null
+      ? null
+      : !editor.draftCheck.configured
+        ? { ok: name + " is not configured.", failed: null }
+        : editor.draftCheck.verified
+          ? {
+              ok: "Connection works: " + editor.draftCheck.account,
+              failed: null,
+            }
+          : { ok: null, failed: editor.draftCheck.error.message };
   return (
     <section className="panel p-5" aria-labelledby={"provider-heading-" + id}>
       <div className="settings-service-summary">
         <div className="settings-service-heading">
-          <h2 id={"provider-heading-" + id}>{name}</h2>
+          {/* The status sits right beside the title it describes. */}
+          <div className="settings-title-row">
+            <h2 id={"provider-heading-" + id}>{name}</h2>
+            <div className="settings-service-status" aria-live="polite">
+              <ConnectionState state={connectionStateLabel} />
+              {/* A stored key is the default; only the environment source
+                  needs saying (it is why no Clear button shows). */}
+              {config?.configured && config.source === "environment" && (
+                <span className="chip">From environment</span>
+              )}
+            </div>
+          </div>
           <p>{description}</p>
-        </div>
-        <div className="settings-service-buttons">
-          <button
-            type="button"
-            className="btn"
-            disabled={!actions.canCheck}
-            aria-describedby={
-              checkDisabledReason ? "check-help-" + id : undefined
-            }
-            onClick={() => void verify()}
-          >
-            Check connection
-          </button>
-          {!editor.editing && (
-            <button
-              type="button"
-              ref={editRef}
-              className="btn"
-              disabled={!actions.canEdit}
-              onClick={() => dispatch({ type: "edit" })}
-            >
-              Edit
-            </button>
+          {/* Where to get a key matters only while none is configured. */}
+          {config?.configured === false && (
+            <p>
+              {keyHelp}{" "}
+              <a
+                className="settings-key-link"
+                href={keyUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Open {new URL(keyUrl).host}
+                <span className="sr-only"> (opens in a new tab)</span>
+              </a>
+            </p>
           )}
         </div>
       </div>
-      {checkDisabledReason && (
-        <p id={"check-help-" + id} className="mt-3 text-sm text-muted">
-          {checkDisabledReason}
-        </p>
+      {/* Rule 26: a check failure sits right under the status it explains,
+       * above the editor. The "Check connection" button is the retry. */}
+      {error && !unsaved && (
+        <div className="mt-3">
+          <ErrorPanel
+            title={name + " connection check failed"}
+            message={error}
+          />
+        </div>
       )}
-      <div className="settings-service-status" aria-live="polite">
-        <ConnectionState state={connectionStateLabel} />
-        {!unsaved && editor.check?.configured && editor.check.verified && (
-          <span className="text-muted">{editor.check.account}</span>
-        )}
-        {config?.configured && (
-          <span className="chip">
-            {config.source === "stored"
-              ? "Stored credential"
-              : "From environment"}
-          </span>
-        )}
-      </div>
-      {editor.editing &&
+      {/* One action row, right-aligned after the content, no divider:
+          Edit and Check connection; while editing, the editor's own row
+          holds Save, Cancel, and Check connection. */}
+      {!editorOpen && (
+        <div className="settings-service-buttons settings-card-actions">
+          <button
+            type="button"
+            ref={editRef}
+            className="btn"
+            disabled={!actions.canEdit}
+            onClick={() => dispatch({ type: "edit" })}
+          >
+            <Icon name="edit" />
+            Edit
+          </button>
+          {checkButton}
+        </div>
+      )}
+      {editorOpen &&
         credentialEditorView({
           id,
           name,
@@ -1218,6 +1765,7 @@ function ProviderCredentialCard({
           state: editor,
           canEdit: actions.canEdit,
           busy,
+          saving,
           inputRef,
           onDraftChange: (value) => dispatch({ type: "draft", value }),
           onCancel: cancel,
@@ -1225,11 +1773,29 @@ function ProviderCredentialCard({
             event.preventDefault();
             if (!busy && config) void apply();
           },
+          trailing: checkButton,
+          icons: {
+            save: <Icon name="check" />,
+            cancel: <Icon name="close" />,
+          },
         })}
-      {editor.editing && config?.source === "stored" && (
+      {/* The draft test's verdict, under the editor's action row. */}
+      {editorOpen && draftTest?.failed && (
+        <div className="mt-3">
+          <ErrorPanel
+            title={name + " connection test failed"}
+            message={draftTest.failed}
+          />
+        </div>
+      )}
+      {editorOpen && draftTest?.ok && (
+        <p className="mt-2 text-sm text-muted">{draftTest.ok}</p>
+      )}
+      {config?.configured && config.source === "stored" && (
         <>
           {/* Deleting the stored credential is destructive, so the action
-              lives in its own row below the form and asks first. */}
+              lives in its own row below the card's content and asks first.
+              It shows without Edit: removing a key needs no new one. */}
           <div className="settings-destructive-row">
             <button
               type="button"
@@ -1237,6 +1803,7 @@ function ProviderCredentialCard({
               disabled={!actions.canClear}
               onClick={() => clearRef.current?.showModal()}
             >
+              <Icon name="trash" />
               Clear stored credential
             </button>
           </div>
@@ -1296,15 +1863,6 @@ function ProviderCredentialCard({
           />
         </div>
       )}
-      {error && !unsaved && (
-        <div className="mt-3">
-          <ErrorPanel
-            title={name + " connection check failed"}
-            message={error}
-            onRetry={busy ? undefined : () => void verify()}
-          />
-        </div>
-      )}
       {editor.forbidden && (
         <p className="mt-3 text-sm text-muted">
           An administrator account is required to edit and verify credentials.
@@ -1337,7 +1895,9 @@ function JudgmentCard({
   const [apiKey, setApiKey] = useState("");
   const [forbidden, setForbidden] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const selectRef = useRef<HTMLSelectElement>(null);
+  // The provider choice is a segmented control now; opening the editor puts
+  // the focus on the selected segment.
+  const selectRef = useRef<HTMLButtonElement>(null);
   const { editRef, noticeRef } = useEditorFocusReturn(editing);
   // Both actions below delete stored settings, so each click first opens a
   // confirmation dialog (unique ids: dialogs resolve aria-labelledby by id).
@@ -1508,7 +2068,6 @@ function JudgmentCard({
 
   const details = (
     <>
-      {status}
       {!editing && (
         <p className="mt-3 text-sm text-muted">
           {displayedProvider === "ollama"
@@ -1547,6 +2106,7 @@ function JudgmentCard({
       aria-describedby={checkDisabledReason ? "judgment-check-help" : undefined}
       onClick={() => void check()}
     >
+      <Icon name="refresh" />
       {checking ? "Checking…" : "Check connection"}
     </button>
   );
@@ -1555,34 +2115,37 @@ function JudgmentCard({
     <section className="panel p-5" aria-labelledby="judgment-heading">
       <div className="settings-service-summary">
         <div className="settings-service-heading">
-          <h2 id="judgment-heading">AI-assisted matching</h2>
-        </div>
-        {!editing && (
-          <div className="settings-service-buttons">
-            {!standard && checkButton}
-            <button
-              type="button"
-              ref={editRef}
-              className="btn"
-              disabled={busy || !config}
-              onClick={begin}
-            >
-              Edit
-            </button>
+          <div className="settings-title-row">
+            <h2 id="judgment-heading">AI-assisted matching</h2>
+            {status}
           </div>
-        )}
+        </div>
       </div>
       {!editing &&
         (standard ? (
           <>
-            {status}
             <p className="mt-3 text-sm text-muted">
               Use standard matching without calling an AI service.
             </p>
           </>
         ) : (
-          <div className="mt-3">{details}</div>
+          details
         ))}
+      {!editing && (
+        <div className="settings-service-buttons settings-card-actions">
+          <button
+            type="button"
+            ref={editRef}
+            className="btn"
+            disabled={busy || !config}
+            onClick={begin}
+          >
+            <Icon name="edit" />
+            Edit
+          </button>
+          {!standard && checkButton}
+        </div>
+      )}
       {editing && (
         <form
           id="judgment-editor"
@@ -1590,28 +2153,37 @@ function JudgmentCard({
           onSubmit={(event) => void save(event)}
         >
           <div className="space-y-3">
-            <label className="label" htmlFor="judgment-provider">
+            <span className="label" id="judgment-provider-label">
               Provider
-            </label>
-            <div className="settings-select max-w-md">
-              <select
-                id="judgment-provider"
-                ref={selectRef}
-                className="input"
-                disabled={busy}
-                value={provider}
-                onChange={(event) => {
-                  dispatch({
-                    type: "edit",
-                    patch: { provider: event.target.value as JudgmentProvider },
-                  });
-                  setSaveError(null);
-                }}
-              >
-                <option value="none">Standard matching (no AI)</option>
-                <option value="typesafe">TypeSafe</option>
-                <option value="ollama">Ollama</option>
-              </select>
+            </span>
+            {/* Rule 39: three exclusive options show at once as a segmented
+             * control, not a dropdown. */}
+            <div
+              role="group"
+              aria-labelledby="judgment-provider-label"
+              className="segmented"
+            >
+              {(
+                [
+                  ["none", "Standard matching"],
+                  ["typesafe", "TypeSafe"],
+                  ["ollama", "Ollama"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  ref={provider === value ? selectRef : undefined}
+                  aria-pressed={provider === value}
+                  disabled={busy}
+                  onClick={() => {
+                    dispatch({ type: "edit", patch: { provider: value } });
+                    setSaveError(null);
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
             {standard ? (
               <p className="text-sm text-muted">
@@ -1623,7 +2195,7 @@ function JudgmentCard({
                 {provider === "typesafe" ? (
                   <>
                     <label className="label" htmlFor="typesafe-key">
-                      TypeSafe API key
+                      TypeSafe API key (optional)
                     </label>
                     <input
                       id="typesafe-key"
@@ -1691,12 +2263,13 @@ function JudgmentCard({
                 </p>
               </>
             )}
-            <div className="settings-service-buttons">
+            <div className="settings-service-buttons settings-card-actions">
               <button
                 type="submit"
                 className="btn btn-accent"
                 disabled={!actions.save}
               >
+                <Icon name="check" />
                 Save
               </button>
               <button
@@ -1705,6 +2278,7 @@ function JudgmentCard({
                 disabled={busy}
                 onClick={cancel}
               >
+                <Icon name="close" />
                 Cancel
               </button>
               {!standard && checkButton}
@@ -1726,6 +2300,7 @@ function JudgmentCard({
                   disabled={busy}
                   onClick={() => clearKeyRef.current?.showModal()}
                 >
+                  <Icon name="trash" />
                   Clear stored credential
                 </button>
               )}
@@ -1736,6 +2311,7 @@ function JudgmentCard({
                   disabled={busy}
                   onClick={() => useEnvRef.current?.showModal()}
                 >
+                  <Icon name="undo" />
                   Use environment settings
                 </button>
               )}
