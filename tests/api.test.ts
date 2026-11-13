@@ -10789,6 +10789,35 @@ test("concurrent wrong-password logins for one name: at most ACCOUNT_LIMIT reach
   }
 });
 
+test(
+  "wrong passwords from one client do not block a correct sign-in from another",
+  {
+    // VELV-137 validated: the account bucket is keyed by the name alone, so
+    // client B's correct password gets 429. The fix design waits on a human
+    // decision (auth hard stop); drop this todo when the fix lands.
+    todo: "VELV-137: correct sign-in from client B gets 429 today",
+  },
+  async () => {
+    resetLoginBuckets();
+    try {
+      for (let i = 0; i < 5; i++) {
+        const guess = await call("POST", "/api/login", {
+          headers: { "x-forwarded-for": "203.0.113.66" },
+          body: { username: "owner", password: `wrong-${i}` },
+        });
+        assert.equal(guess.status, 502);
+      }
+      const correct = await call("POST", "/api/login", {
+        headers: { "x-forwarded-for": "198.51.100.20" },
+        body: { username: "owner", password: "pass-owner" },
+      });
+      assert.equal(correct.status, 200);
+    } finally {
+      resetLoginBuckets();
+    }
+  },
+);
+
 test("failed sign-in attempts leave an audit line with the reported client ip", async () => {
   // Seerr-parity detection: every credential rejection logs the attempted
   // name and the client address the hop in front reported — never the
