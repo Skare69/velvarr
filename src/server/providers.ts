@@ -549,6 +549,16 @@ export async function fetchProviderArtwork(
         "Artwork content type is not an image.",
       );
     }
+    // The cache budget counts body bytes, so an empty body would cache a row
+    // that costs nothing; member-chosen keys could then grow the cache
+    // without bound. An empty body is no image either way.
+    if (bytes.length === 0) {
+      throw new AppError(
+        502,
+        "upstream_bad_response",
+        "Artwork response is empty.",
+      );
+    }
     return { bytes, contentType };
   };
 

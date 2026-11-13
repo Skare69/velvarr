@@ -1792,6 +1792,30 @@ test("artwork fetch: same URL twice hits upstream once; resetMetaCache clears th
   }
 });
 
+test("artwork fetch: an empty 200 image is refused and never cached", async () => {
+  // The cache budget counts body bytes only, so a cached empty body would add
+  // a row that costs nothing and member-chosen keys could grow the cache
+  // without bound (audit run-10 artwork-cache-zero-byte-cardinality).
+  let upstreamCount = 0;
+  const fixture = await startFixture((_req, res) => {
+    upstreamCount++;
+    sendBytes(res, 200, Buffer.alloc(0), "image/png");
+  });
+  try {
+    const url = `${fixture.origin}/empty.png`;
+    for (const expected of [1, 2]) {
+      await assert.rejects(fetchProviderArtwork(url), (err: unknown) => {
+        assertProviderError(err, 502, "upstream_bad_response");
+        return true;
+      });
+      // A cached entry would answer the second call without an upstream hit.
+      assert.equal(upstreamCount, expected);
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("tpdb filmography pages the canonical performer route and rejects mixed filters", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
   const fixture = await startFixture((req, res) => {
