@@ -1737,7 +1737,12 @@ const TAG_EXPANSION_MAX_ROWS = 5000;
 const TAG_EXPANSION_MAX_PAGES = TAG_EXPANSION_MAX_ROWS / 100;
 
 interface TagListing {
+  /** Unique by id (the walk dedupes). */
   rows: { id: string; name: string }[];
+  /** normalizeFacetName of rows[i].name, folded once per walk: every
+   * expansion term, picker keystroke and counterpart lookup reads the same
+   * listing, and refolding thousands of names per read blocks the server. */
+  folded: string[];
   complete: boolean;
 }
 
@@ -1995,7 +2000,12 @@ async function walkTagListing(
       }
     }
   }
-  const listing: TagListing = { rows: dedupeBy(rows, (t) => t.id), complete };
+  const unique = dedupeBy(rows, (t) => t.id);
+  const listing: TagListing = {
+    rows: unique,
+    folded: unique.map((t) => normalizeFacetName(t.name)),
+    complete,
+  };
   const at = Date.now();
   tagListingMemo.set(provider, { at, listing });
   return { ...listing, at };
@@ -2029,16 +2039,17 @@ export async function expandCatalogTagTerm(
 ): Promise<{ ids: string[]; dropped: boolean; complete: boolean }> {
   const needle = normalizeFacetName(term);
   if (needle === "") return { ids: [], dropped: false, complete: false };
-  const { rows, complete } = await catalogTagListing(provider);
+  const { rows, folded, complete } = await catalogTagListing(provider);
   const ids: string[] = [];
   let dropped = false;
-  for (const row of rows) {
-    if (!normalizeFacetName(row.name).includes(needle)) continue;
+  // Rows are unique by id, so each match pushes without a duplicate scan.
+  for (const [i, row] of rows.entries()) {
+    if (!folded[i]!.includes(needle)) continue;
     if (!isUuid(row.id)) {
       dropped = true;
       continue;
     }
-    if (!ids.includes(row.id)) ids.push(row.id);
+    ids.push(row.id);
   }
   return { ids, dropped, complete };
 }
@@ -2086,8 +2097,8 @@ export async function searchCatalogTags(
         const exact: { id: string; name: string }[] = [];
         const prefixed: typeof exact = [];
         const contained: typeof exact = [];
-        for (const row of memo.listing.rows) {
-          const folded = normalizeFacetName(row.name);
+        for (const [i, row] of memo.listing.rows.entries()) {
+          const folded = memo.listing.folded[i]!;
           if (!folded.includes(needle)) continue;
           if (folded === needle) exact.push(row);
           else if (folded.startsWith(needle)) prefixed.push(row);
@@ -2421,12 +2432,12 @@ export async function tagCounterpart(
   const other: CatalogProvider = from === "tpdb" ? "stashdb" : "tpdb";
   const listing = await catalogTagListing(other);
   const exact = (r: { name: string }) => normalizeFacetName(r.name) === target;
-  const nativeRow = listing.rows.find((r) => exact(r) && isUuid(r.id));
+  const labelRows = listing.rows.filter((_, i) => listing.folded[i] === target);
+  const nativeRow = labelRows.find((r) => isUuid(r.id));
   if (nativeRow !== undefined) {
     return { provider: other, id: nativeRow.id, native: true };
   }
-  const labelRow = listing.rows.find(exact);
-  if (labelRow !== undefined) return { provider: other, native: false };
+  if (labelRows.length > 0) return { provider: other, native: false };
   // An incomplete listing hides rows below the walk cap: its absence is not
   // evidence. The native exact-term search does not depend on the walk, so
   // it decides; its upstream failures throw like the listing's do.

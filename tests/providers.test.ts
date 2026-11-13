@@ -3535,6 +3535,51 @@ test("the listing walk stops at the 50-page ceiling and reports the rows incompl
   }
 });
 
+test("25 free-text terms expand over a 10 000-tag listing inside a time budget", async () => {
+  // The audit's worst case: every term matches every walked row. Folding
+  // each name per term and a linear duplicate scan per match took ~1.1 s
+  // of blocked event loop here (one side, Node 24); with one fold per walk
+  // and a plain push the whole test, walk included, runs in ~100 ms.
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  const tags = Array.from({ length: 10_000 }, (_, i) => ({
+    id: `d0d20000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+    name: `Tag ${i}`,
+  }));
+  const fixture = await startFixture((_req, res, body) => {
+    const parsed = JSON.parse(body) as { variables?: { p?: number } };
+    const p = parsed.variables?.p ?? 1;
+    sendJson(res, 200, {
+      data: {
+        queryTags: {
+          count: tags.length,
+          tags: tags.slice((p - 1) * 100, p * 100),
+        },
+      },
+    });
+  });
+  try {
+    process.env.STASHDB_BASE_URL = fixture.origin;
+    await warmCatalogTagListing("stashdb"); // the walk is not under test
+    const terms = Array.from(
+      { length: 25 },
+      (_, i) => ["t", "a", "g", "ta", "ag", "tag"][i % 6]!,
+    );
+    const started = performance.now();
+    for (const term of terms) {
+      const expansion = await expandCatalogTagTerm("stashdb", term);
+      // The walk stops at its 5000-row cap, so every term matches 5000 ids.
+      assert.equal(expansion.ids.length, 5000);
+      assert.equal(new Set(expansion.ids).size, 5000);
+      assert.equal(expansion.complete, false);
+    }
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed < 250, `25 expansions took ${elapsed.toFixed(0)} ms`);
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
 // A failed walk arms a per-provider cooldown: the picker's keystrokes and
 // the refresh-ahead read re-walk nothing until the window passes, so an
 // outage is not prolonged by one fresh burst per keystroke. Foreground cold
