@@ -611,7 +611,8 @@ function compareByDateCreatedDesc(a: BaseItemDto, b: BaseItemDto): number {
 // ponytail: cross-library pages are a k-way merge of per-library SortName
 // streams, so aggregate pagination stays globally ordered and never skips or
 // duplicates items. Cost is O(start+limit) upstream rows per library; if that
-// ever matters, move the cursor state into a per-request cache.
+// ever matters, move the cursor state into a per-request cache. A start at or
+// past the known total stops after the first chunks: no walk can reach a row.
 async function mergeAcrossLibraries(
   config: IntegrationConfig,
   userToken: string,
@@ -665,6 +666,7 @@ async function mergeAcrossLibraries(
       total += first.total;
     }),
   );
+  if (start >= total) return { items: [], total, start, limit };
 
   const refill = async (cursor: Cursor): Promise<void> => {
     const next = await fetchItems(config, userToken, user.id, {

@@ -977,6 +977,41 @@ test("cross-library merge refills per-library chunks for deep pages", async () =
   );
 });
 
+test("cross-library merge answers a start at or past the total with one read per library", async () => {
+  // 300 items per library is five merge chunks each: walking to the start
+  // would cost ten Items reads, the known total answers it after the two
+  // first-chunk reads.
+  const library = (offset: number) =>
+    Array.from({ length: 300 }, (_v, index) =>
+      movieItem(
+        offset + index + 1,
+        `m${String(offset + index).padStart(4, "0")}`,
+      ),
+    );
+  await withFixture(
+    itemsByParentHandler({ [LIB_A]: library(0), [LIB_B]: library(300) }),
+    async (fx) => {
+      const config = jellyfinConfig(fx.origin, [LIB_A, LIB_B]);
+      const grants = account([LIB_A, LIB_B]);
+      for (const start of [600, 100_000]) {
+        fx.log.length = 0;
+        const page = await listLibraryItems(config, TOKEN, grants, {
+          start,
+          limit: 24,
+          search: "",
+        });
+        assert.deepEqual(page.items, []);
+        assert.equal(page.total, 600);
+        assert.equal(page.start, start);
+        const itemReads = fx.log.filter((r) =>
+          pathOf(r.url).endsWith("/items"),
+        );
+        assert.equal(itemReads.length, 2, `start=${start}`);
+      }
+    },
+  );
+});
+
 test("listLibraryItems sort=dateAdded orders by DateCreated, not SortName", async () => {
   // Fixture order is the server's DateCreated-desc stream (what
   // sortBy=DateCreated asks for); SortName would put Alpha first, so the
