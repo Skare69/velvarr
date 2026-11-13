@@ -91,12 +91,44 @@ if (targets.length === 0) {
   process.exit(0);
 }
 
+// Stryker reads every mutate entry as a glob, and git paths can contain
+// glob metacharacters: the [...path] route segment is a character class to
+// the matcher (it matches one character from {., p, a, t, h}), so the raw
+// path would select no file and the run would report a score over a
+// smaller mutant set than the diff asked for. Replace the brackets with
+// ?, which matches one character. A leading ! would flip an entry into an
+// exclusion, so a file with such a name fails the run instead.
+function toStrykerPattern(target) {
+  if (target.startsWith("!")) {
+    console.error(
+      `test:mutation:delta: ${target} starts with "!", which Stryker reads as an exclusion; mutate it by hand.`,
+    );
+    process.exit(1);
+  }
+  return target.replace(/[[\]]/g, "?");
+}
+
+const patterns = targets.map(toStrykerPattern);
+
+// Each pattern must still match the file it was derived from. A pattern
+// that matches nothing would silently shrink the mutant set.
+const unmatched = patterns.filter(
+  (pattern, i) => !globToRegExp(pattern).regexp.test(targets[i]),
+);
+if (unmatched.length > 0) {
+  console.error(
+    "test:mutation:delta: a mutate pattern does not match its file; fix the pattern before running:",
+  );
+  for (const pattern of unmatched) console.error(`  ${pattern}`);
+  process.exit(1);
+}
+
 console.log(
   `test:mutation:delta: ${targets.length} file(s) changed since ${tag} are under the mutate globs:`,
 );
 for (const name of targets) console.log(`  ${name}`);
 
-// A generated config file carries the targets and the report-only
+// A generated config file carries the patterns and the report-only
 // thresholds; it imports the repo config, so the runner options stay
 // single-sourced.
 const deltaConfigPath = join(
@@ -109,7 +141,7 @@ writeFileSync(
   `import base from "${repoConfigUrl.href}";
 const deltaConfig = {
   ...base,
-  mutate: ${JSON.stringify(targets)},
+  mutate: ${JSON.stringify(patterns)},
   thresholds: { ...base.thresholds, break: null },
 };
 export default deltaConfig;
