@@ -1612,20 +1612,21 @@ test("the autoApprove grant approves only the granted user's own request", () =>
   const [imported] = storage.importAccounts([otherUser()]);
   assert.ok(imported);
   const plain = admit(imported.id);
+  const owner = storage.getAccount(ownerUser().id) as Account;
+
+  // Without the grant a requester cannot decide at all. Checked before the
+  // grant exists: decideRequest reads the stored account, not the snapshot.
+  const own = storage.createRequest(plain.id, MOVIE);
+  assert.throws(
+    () => storage.decideRequest(plain, own.id, "approved"),
+    (e: { code: string }) => e.code === "forbidden",
+  );
   const granted = storage.updateAccount(imported.id, {
     enabled: true,
     role: "requester",
     libraryIds: [],
     autoApprove: true,
   });
-  const owner = storage.getAccount(ownerUser().id) as Account;
-
-  // Without the grant a requester cannot decide at all.
-  const own = storage.createRequest(plain.id, MOVIE);
-  assert.throws(
-    () => storage.decideRequest(plain, own.id, "approved"),
-    (e: { code: string }) => e.code === "forbidden",
-  );
 
   // With it, self-approval works and enqueues the shared work.
   assert.equal(
@@ -1650,6 +1651,63 @@ test("the autoApprove grant approves only the granted user's own request", () =>
   assert.throws(
     () => storage.decideRequest(granted, second.id, "declined"),
     (e: { code: string }) => e.code === "forbidden",
+  );
+});
+
+test("decisions re-read the actor: a stale session snapshot cannot approve after a demotion, disable or revoked grant", () => {
+  freshDir();
+  storage.bootstrap(deliveryConfig(true), ownerUser(), "jf-owner-token");
+  const [imported] = storage.importAccounts([otherUser()]);
+  assert.ok(imported);
+  const owner = storage.getAccount(ownerUser().id) as Account;
+  const update = (
+    role: Account["role"],
+    enabled: boolean,
+    autoApprove: boolean,
+  ) =>
+    storage.updateAccount(imported.id, {
+      enabled,
+      role,
+      libraryIds: [],
+      autoApprove,
+    });
+  const forbidden = (e: { code: string }) => e.code === "forbidden";
+
+  // Snapshot taken at dispatch as a moderator, demoted before the decision.
+  const moderator = update("moderator", true, false);
+  const ownersRequest = storage.createRequest(owner.id, MOVIE);
+  update("requester", true, false);
+  assert.throws(
+    () => storage.decideRequest(moderator, ownersRequest.id, "approved"),
+    forbidden,
+  );
+
+  // Snapshot taken as an enabled moderator, disabled before the decision.
+  const enabledModerator = update("moderator", true, false);
+  update("moderator", false, false);
+  assert.throws(
+    () => storage.decideRequest(enabledModerator, ownersRequest.id, "declined"),
+    forbidden,
+  );
+  assert.equal(storage.getRequest(ownersRequest.id, owner).decision, "pending");
+
+  // Snapshot carrying the autoApprove grant, revoked before the decision.
+  const granted = update("requester", true, true);
+  const own = storage.createRequest(granted.id, SCENE);
+  update("requester", true, false);
+  assert.throws(
+    () => storage.decideRequest(granted, own.id, "approved"),
+    forbidden,
+  );
+  assert.equal(storage.getRequest(own.id, owner).decision, "pending");
+  assert.equal(storage.listDueAcquisitions(Date.now() + 60_000).length, 0);
+
+  // A stale snapshot from before a promotion decides with the stored role.
+  const requester = update("requester", true, false);
+  update("moderator", true, false);
+  assert.equal(
+    storage.decideRequest(requester, ownersRequest.id, "declined").decision,
+    "declined",
   );
 });
 

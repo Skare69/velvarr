@@ -2360,22 +2360,33 @@ export function hasEligibleRequester(media: MediaReference): boolean {
 }
 
 /** Approval is transactional with the shared-acquisition attachment: two
- * approvers converge on one acquisition row per instance+identity. */
+ * approvers converge on one acquisition row per instance+identity. The actor
+ * is re-read inside the transaction: the session snapshot can predate a
+ * demotion, a disable or a revoked autoApprove grant while the request was in
+ * flight (body read, provider pages of a bulk scan). */
 export function decideRequest(
   actor: Account,
   requestId: string,
   decision: "approved" | "declined",
 ): RequestRecord {
-  const elevated = actor.role === "admin" || actor.role === "moderator";
-  // The autoApprove grant is exactly permission to approve one's own request.
-  // Declining someone's request still requires an elevated role.
-  const selfApproving =
-    decision === "approved" && actor.autoApprove === true && !elevated;
-  if (!elevated && !selfApproving) {
-    throw new AppError(403, "forbidden", "decisions require elevated role");
-  }
   const d = open();
   return inTransaction(d, () => {
+    const current = getAccount(actor.id);
+    if (!current?.enabled) {
+      throw new AppError(
+        403,
+        "forbidden",
+        "decisions require an enabled account",
+      );
+    }
+    const elevated = current.role === "admin" || current.role === "moderator";
+    // The autoApprove grant is exactly permission to approve one's own request.
+    // Declining someone's request still requires an elevated role.
+    const selfApproving =
+      decision === "approved" && current.autoApprove === true && !elevated;
+    if (!elevated && !selfApproving) {
+      throw new AppError(403, "forbidden", "decisions require elevated role");
+    }
     const row = S().getRequest.get(requestId) as RequestRow | undefined;
     if (!row) {
       throw new AppError(404, "request_not_found", "request not found");

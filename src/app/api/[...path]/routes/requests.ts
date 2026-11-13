@@ -6,9 +6,11 @@ import {
 } from "../parse.ts";
 import { type AuthContext, json } from "../admission.ts";
 import type {
+  Account,
   CatalogDetail,
   MediaReference,
   RequestListItem,
+  RequestRecord,
 } from "../../../../lib/contracts.ts";
 import {
   isDeliverableMedia,
@@ -38,16 +40,27 @@ export async function createRequestRoute(
 ): Promise<Response> {
   const media = mediaFromBody(await readJson(request));
   const record = createRequest(ctx.account.id, media);
-  if (ctx.account.autoApprove || ctx.account.role === "admin") {
-    return json(
-      {
-        request: decideRequest(ctx.account, record.id, "approved"),
-        autoApproved: true,
-      },
-      201,
-    );
+  const approved = autoApprove(ctx.account, record);
+  if (approved) {
+    return json({ request: approved, autoApproved: true }, 201);
   }
   return json({ request: record }, 201);
+}
+
+/** decideRequest re-reads the actor, so a grant or admin role revoked while
+ * this request was in flight refuses the approval. The request was already
+ * created: it stays pending for a moderator instead of failing the call. */
+function autoApprove(
+  account: Account,
+  record: RequestRecord,
+): RequestRecord | null {
+  if (!account.autoApprove && account.role !== "admin") return null;
+  try {
+    return decideRequest(account, record.id, "approved");
+  } catch (err) {
+    if (err instanceof AppError && err.code === "forbidden") return null;
+    throw err;
+  }
 }
 
 /** Approved rows carry the SHARED acquisition state for their identity, so a
@@ -205,10 +218,7 @@ export async function bulkRequestRoute(
     try {
       const record = createRequest(ctx.account.id, media);
       requested += 1;
-      if (ctx.account.autoApprove || ctx.account.role === "admin") {
-        decideRequest(ctx.account, record.id, "approved");
-        autoApproved += 1;
-      }
+      if (autoApprove(ctx.account, record)) autoApproved += 1;
     } catch (err) {
       if (err instanceof AppError && err.code === "request_exists") {
         skipped += 1;
