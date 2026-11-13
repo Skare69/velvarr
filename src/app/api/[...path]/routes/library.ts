@@ -102,7 +102,13 @@ export async function libraryItem(
  * a 304 instead of a full refetch, and a private max-age so ordinary
  * navigation serves from the browser cache. Only for bytes that every account
  * may see (provider artwork): the browser cache keys on the URL, never the
- * session, so a cached copy outlives a sign-out. */
+ * session, so a cached copy outlives a sign-out.
+ *
+ * Cross-Origin-Resource-Policy: same-origin, on the 304 too (a revalidation
+ * updates the cached headers). SameSite=Strict still sends the session cookie
+ * on an <img> from a same-site sibling (another homelab app on this host), so
+ * load-vs-error would tell that page whether the visitor is signed in. CORP
+ * makes every cross-origin load an error. */
 export function imageResponse(
   image: { bytes: Uint8Array; contentType: string },
   request: Request,
@@ -113,7 +119,11 @@ export function imageResponse(
   if (request.headers.get("if-none-match") === etag) {
     return new Response(null, {
       status: 304,
-      headers: { etag, "cache-control": cache },
+      headers: {
+        etag,
+        "cache-control": cache,
+        "cross-origin-resource-policy": "same-origin",
+      },
     });
   }
   return new Response(image.bytes as unknown as BodyInit, {
@@ -123,6 +133,7 @@ export function imageResponse(
       etag,
       "cache-control": cache,
       "x-content-type-options": "nosniff",
+      "cross-origin-resource-policy": "same-origin",
     },
   });
 }
@@ -131,7 +142,9 @@ export function imageResponse(
  * browser. A stored copy is served to whoever uses this browser next, with
  * no request, so the per-request access check never runs for them; Chromium
  * also serves `Vary: Cookie` images from its memory cache after the cookie
- * changes, so only no-store keeps every use behind the server check. */
+ * changes, so only no-store keeps every use behind the server check. CORP
+ * as on imageResponse: a same-site sibling's load/error must not reveal
+ * sign-in state, item grants or the staff role (the staff avatar door). */
 export function privateImageResponse(image: {
   bytes: Uint8Array;
   contentType: string;
@@ -142,6 +155,7 @@ export function privateImageResponse(image: {
       "content-type": image.contentType,
       "cache-control": "private, no-store",
       "x-content-type-options": "nosniff",
+      "cross-origin-resource-policy": "same-origin",
     },
   });
 }

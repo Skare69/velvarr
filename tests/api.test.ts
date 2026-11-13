@@ -2403,6 +2403,12 @@ test("library access is bounded by grants; no path leakage; protected images", a
   // request and no grant check (VELV-148).
   assert.equal(image.headers.get("cache-control"), "private, no-store");
   assert.equal(image.headers.get("x-content-type-options"), "nosniff");
+  // A same-site sibling app's <img> carries the Strict session cookie; CORP
+  // keeps its load/error from revealing sign-in state or item grants.
+  assert.equal(
+    image.headers.get("cross-origin-resource-policy"),
+    "same-origin",
+  );
   assert.ok((await image.arrayBuffer()).byteLength > 0);
 
   const deniedImage = await call("GET", `/api/images/${ITEM_SHOW}`, {
@@ -4284,6 +4290,9 @@ test("catalog artwork proxy: provider-only, no credentials, cacheable with reval
   assert.match(ok.headers.get("content-type") ?? "", /^image\//);
   assert.equal(ok.headers.get("cache-control"), "private, max-age=604800");
   assert.equal(ok.headers.get("x-content-type-options"), "nosniff");
+  // A same-site sibling app's <img> carries the Strict session cookie; CORP
+  // keeps its load/error from revealing whether the visitor is signed in.
+  assert.equal(ok.headers.get("cross-origin-resource-policy"), "same-origin");
   assert.deepEqual(new Uint8Array(await ok.arrayBuffer()), PNG_1PX);
   const etag = ok.headers.get("etag");
   assert.match(etag ?? "", /^"/);
@@ -4297,6 +4306,11 @@ test("catalog artwork proxy: provider-only, no credentials, cacheable with reval
   });
   assert.equal(revalidate.status, 304);
   assert.equal(revalidate.headers.get("etag"), etag);
+  // The 304 refreshes the cached headers, so it carries CORP as well.
+  assert.equal(
+    revalidate.headers.get("cross-origin-resource-policy"),
+    "same-origin",
+  );
   assert.equal((await revalidate.arrayBuffer()).byteLength, 0);
 
   // A changed representation (different ETag) refetches in full.
@@ -8967,6 +8981,7 @@ test("user avatar proxy serves admins any row and every account its own", async 
   );
   assert.equal(ok.status, 200);
   assert.match(ok.headers.get("content-type") ?? "", /^image\//);
+  assert.equal(ok.headers.get("cross-origin-resource-policy"), "same-origin");
   assert.ok(Buffer.from(await ok.arrayBuffer()).equals(PNG_1PX));
 
   const refused = await call(
@@ -8988,6 +9003,7 @@ test("user avatar proxy serves admins any row and every account its own", async 
   const own = await call("GET", "/api/me/avatar", { cookie: member2 });
   assert.equal(own.status, 200);
   assert.equal(own.headers.get("cache-control"), "private, no-store");
+  assert.equal(own.headers.get("cross-origin-resource-policy"), "same-origin");
   assert.ok(Buffer.from(await own.arrayBuffer()).equals(PNG_1PX));
   assert.equal(
     (await call("GET", "/api/me/avatar", { cookie: member })).status,
@@ -9005,6 +9021,11 @@ test("staff avatar route serves staff any account and a requester only itself", 
   });
   assert.equal(staff.status, 200);
   assert.match(staff.headers.get("content-type") ?? "", /^image\//);
+  // CORP: a same-site sibling's <img> must not learn the visitor is staff.
+  assert.equal(
+    staff.headers.get("cross-origin-resource-policy"),
+    "same-origin",
+  );
   assert.ok(Buffer.from(await staff.arrayBuffer()).equals(PNG_1PX));
 
   const moderator = await call("GET", `/api/users/${MEMBER2_ID}/avatar`, {
