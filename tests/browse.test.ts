@@ -41,7 +41,12 @@ import {
   searchBrowseTags,
   searchVisibleCatalog,
 } from "../src/server/browse.ts";
-import { hiddenTitleMatcher } from "../src/server/catalog-visibility.ts";
+import {
+  FoldedTags,
+  hiddenTitleMatcher,
+  tagMatcher,
+} from "../src/server/catalog-visibility.ts";
+import fc from "fast-check";
 import type { BrowsePage, BrowseQuery } from "../src/server/browse.ts";
 import type {
   CatalogDetail,
@@ -4026,6 +4031,111 @@ test("hiddenTitleMatcher matches UUID, whole label, or word family; never raw su
     isHiddenTitle(detail([{ id: uuid(12), name: "Anal" }]), [{ name: "   " }]),
     false,
   ); // a blank selection label hides nothing
+});
+
+test("property: matchers compiled once per request agree with a per-title fold on every title", () => {
+  // Oracle: a plain reference that refolds the selection and every tag name
+  // for each title x selection pair (the rule before the per-request
+  // compile). One compiled matcher and one FoldedTags per title must give
+  // the same verdict for every title, in every mode, so no fold state leaks
+  // between titles or between selections.
+  const fold = (v: string) =>
+    v
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[^a-z0-9]/g, "");
+  const words = (v: string) =>
+    v
+      .toLowerCase()
+      .normalize("NFKD")
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w !== "");
+  const reference = (
+    d: CatalogDetail,
+    sel: CatalogTagSelection,
+    mode: "exact" | "family" | "substring",
+  ): boolean => {
+    const id = d.reference.provider === "tpdb" ? sel.tpdb : sel.stashdb;
+    if (id !== undefined && d.tags.some((t) => t.id === id)) return true;
+    const label = fold(sel.name);
+    if (label === "") return false;
+    if (mode === "exact") return d.tags.some((t) => fold(t.name) === label);
+    if (mode === "substring") {
+      return d.tags.some((t) => fold(t.name).includes(label));
+    }
+    const want = words(sel.name);
+    return d.tags.some((t) => {
+      const have = words(t.name);
+      for (let i = 0; i + want.length <= have.length; i++) {
+        if (want.every((w, j) => have[i + j] === w)) return true;
+      }
+      return false;
+    });
+  };
+  // A small overlapping vocabulary (case, accents, punctuation, a word that
+  // contains another) so matches, near-misses and blank labels all occur.
+  const label = fc
+    .array(
+      fc.tuple(
+        fc.constantFrom("Anal", "ÁNAL", "analingus", "Double", "pen", "4K", ""),
+        fc.constantFrom(" ", "-", "!", "  ", "_", "é"),
+      ),
+      { maxLength: 4 },
+    )
+    .map((parts) => parts.flat().join(""));
+  const id = fc.option(fc.constantFrom(uuid(1), uuid(2), uuid(3)), {
+    nil: undefined,
+  });
+  const selection = fc.record({ name: label, tpdb: id, stashdb: id });
+  const title = fc.record({
+    provider: fc.constantFrom<CatalogProvider>("tpdb", "stashdb"),
+    tags: fc.array(
+      fc.record({
+        id: fc.constantFrom(uuid(1), uuid(2), uuid(3), uuid(4)),
+        name: label,
+      }),
+      { maxLength: 5 },
+    ),
+  });
+  fc.assert(
+    fc.property(
+      fc.array(selection, { maxLength: 4 }),
+      fc.array(title, { minLength: 1, maxLength: 6 }),
+      (sels, rows) => {
+        const details = rows.map(
+          (r, i) =>
+            ({
+              reference: {
+                provider: r.provider,
+                kind: r.provider === "tpdb" ? "movie" : "scene",
+                id: uuid(100 + i),
+              },
+              title: "t",
+              tags: r.tags,
+              credits: [],
+              related: [],
+              links: [],
+              aliases: [],
+            }) as CatalogDetail,
+        );
+        const modes = ["exact", "family", "substring"] as const;
+        const compiled = modes.flatMap((mode) =>
+          sels.map((sel) => ({ sel, mode, match: tagMatcher(sel, mode) })),
+        );
+        const hidden = hiddenTitleMatcher(sels);
+        for (const d of details) {
+          const tags = new FoldedTags(d);
+          for (const { sel, mode, match } of compiled) {
+            assert.equal(match(tags), reference(d, sel, mode));
+          }
+          assert.equal(
+            hidden(d),
+            sels.some((sel) => reference(d, sel, "family")),
+          );
+        }
+      },
+    ),
+  );
 });
 
 // --- family matching in browse: hidden/exclude catch word sequences, includes stay exact ---
