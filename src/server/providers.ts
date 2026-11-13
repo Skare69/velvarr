@@ -2129,9 +2129,30 @@ export async function listCatalogTags(
 /** Process-lifetime memo of computed performer auto-links, keyed by
  * provider:kind:id. Each miss costs a name search plus per-candidate detail
  * reads for a verdict that only changes when a provider republishes links,
- * so every reference is computed once per process. Cleared by
+ * so a reference is computed once while its entry stays. FIFO-capped like
+ * tpdbTagNumbers: each detail view or follow of a new performer adds an
+ * entry, so the cap bounds heap growth over a long uptime. Cleared by
  * resetMetaCache so tests start cold. */
+export const COUNTERPART_MEMO_MAX = 10_000;
 const counterpartMemo = new Map<string, CrossProviderLink | null>();
+
+/** The memo's only writer: evicts the oldest entry at the cap. */
+export function rememberCounterpart(
+  memoKey: string,
+  result: CrossProviderLink,
+): void {
+  if (
+    !counterpartMemo.has(memoKey) &&
+    counterpartMemo.size >= COUNTERPART_MEMO_MAX
+  )
+    counterpartMemo.delete(counterpartMemo.keys().next().value!);
+  counterpartMemo.set(memoKey, result);
+}
+
+/** Test seam: the memo size the cap bounds. */
+export function counterpartMemoSizeForTest(): number {
+  return counterpartMemo.size;
+}
 
 /** The other provider's performer record for one performer detail. The
  * explicit cross-provider URL on the record wins outright; otherwise a name
@@ -2208,7 +2229,7 @@ export async function linkedPerformerCounterpart(
           : {
               unlinkedReason: `${explicit.unlinkedReason}; ${matches.length} searched ${otherName} performers share profile links with this record — ambiguous, refusing to guess`,
             };
-    counterpartMemo.set(memoKey, result);
+    rememberCounterpart(memoKey, result);
     return result;
   } catch (err) {
     // Outage/not-configured/bad payload: the explicit reason stands beside

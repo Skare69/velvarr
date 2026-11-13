@@ -31,6 +31,9 @@ import {
   getProviderStatus,
   isProviderImageUrl,
   linkedPerformerCounterpart,
+  rememberCounterpart,
+  COUNTERPART_MEMO_MAX,
+  counterpartMemoSizeForTest,
   rejectedKeyClearAllowed,
   resolveSort,
   requestJson,
@@ -4816,6 +4819,47 @@ test("linkedPerformerCounterpart auto-links on exactly one shared identity URL a
       fixture.log.filter((r) => r.body.includes("searchPerformers")).length,
       2,
     );
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
+test("the performer counterpart memo stays at its cap and evicts the oldest verdict first", async () => {
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  const fixture = await startStashPerformerFixture({
+    [STASH_MATCH_ID]: [
+      {
+        url: "https://iafd.com/PERSON.RME/gender=f/PERFID=RossVax",
+        type: "IAFD",
+      },
+    ],
+  });
+  try {
+    process.env.STASHDB_BASE_URL = fixture.origin;
+    // The oldest entry is a stale verdict for the auto-link fixture.
+    rememberCounterpart(`tpdb:performer:${TPDB_AUTO_ID}`, {
+      unlinkedReason: "stale memoized verdict",
+    });
+    for (let i = 0; i < COUNTERPART_MEMO_MAX; i++) {
+      rememberCounterpart(`stashdb:performer:filler-${i}`, {
+        unlinkedReason: "filler",
+      });
+    }
+    assert.equal(counterpartMemoSizeForTest(), COUNTERPART_MEMO_MAX);
+
+    // The stale verdict was evicted, so the lookup searches afresh.
+    const result = await linkedPerformerCounterpart(tpdbAutoLinkDetail());
+    assert.deepEqual(result.linked, {
+      provider: "stashdb",
+      kind: "performer",
+      id: STASH_MATCH_ID,
+    });
+    assert.equal(
+      fixture.log.filter((r) => r.body.includes("searchPerformers")).length,
+      1,
+    );
+    assert.equal(counterpartMemoSizeForTest(), COUNTERPART_MEMO_MAX);
   } finally {
     await fixture.close();
     restore();
