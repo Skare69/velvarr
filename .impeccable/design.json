@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-09-30T00:00:00Z",
+  "generatedAt": "2026-11-13T00:00:00Z",
   "title": "Design System: Velvarr",
   "extensions": {
     "colorMeta": {
@@ -56,10 +56,11 @@
       { "name": "overlay-veil", "value": "rgb(0 0 0 / 0.66)", "purpose": "Dialog/sheet ::backdrop scrim (More sheet, preferences dialog); the catalog drawer and bulk/user dialogs use a canvas-toned scrim, color-mix(in srgb, var(--color-canvas) 72%, transparent)." }
     ],
     "motion": [
-      { "name": "state-fade", "value": "160ms ease", "purpose": "Background, border, color, box-shadow state transitions." },
-      { "name": "sheet-rise", "value": "200ms ease-out", "purpose": "More sheet / modal entrance." },
-      { "name": "art-zoom", "value": "220ms", "purpose": "Poster image scale on card hover." },
-      { "name": "skeleton-sweep", "value": "1.2s linear infinite", "purpose": "Loading shimmer; clamped by prefers-reduced-motion." }
+      { "name": "ease-out", "value": "cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "--ease-out: the one easing for every transition and entrance." },
+      { "name": "dur-fast", "value": "160ms", "purpose": "--dur-fast: control feedback (background, border, color, box-shadow)." },
+      { "name": "dur-base", "value": "220ms", "purpose": "--dur-base: sheet rise, poster zoom, skeleton and .delayed-reveal fade-in." },
+      { "name": "reveal-delay", "value": "1s", "purpose": "Skeletons and .delayed-reveal stay invisible for 1s so fast loads show nothing." },
+      { "name": "skeleton-sweep", "value": "2s linear infinite", "purpose": "Loading shimmer, the one linear loop; clamped by prefers-reduced-motion." }
     ],
     "breakpoints": [
       { "name": "phone", "value": "600px" },
@@ -104,9 +105,25 @@
       "name": "Chip",
       "kind": "chip",
       "refersTo": "chip",
-      "description": "Small status/label pill; accent variant on magenta-soft.",
-      "html": "<span class=\"chip chip-accent\">Requested</span>",
+      "description": "Small label; neutral for passive states (Owner, Active, Not configured, counts); accent variant only for intent; request decisions use .state-badge[data-state].",
+      "html": "<span class=\"chip\">Not configured</span>",
       "css": ".chip { display:inline-block; padding:0.15rem 0.55rem; border-radius:5px; border:1px solid var(--color-edge); font-size:0.75rem; color:var(--color-muted); background:var(--color-raised); } .chip-accent { color:var(--color-accent-text); border-color:color-mix(in oklab, var(--color-accent) 45%, var(--color-panel)); background:var(--color-accent-soft); }"
+    },
+    {
+      "name": "Segmented Choice",
+      "kind": "custom",
+      "refersTo": "segmented",
+      "description": "2–5 exclusive options as aria-pressed buttons under a visible label; equal 1fr segments; selected on magenta-soft.",
+      "html": "<div role=\"group\" aria-label=\"Type\" class=\"segmented\"><button type=\"button\" aria-pressed=\"true\">All</button><button type=\"button\" aria-pressed=\"false\">Movies</button><button type=\"button\" aria-pressed=\"false\">Scenes</button></div>",
+      "css": ".segmented { display:inline-grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:4px; max-width:100%; overflow-x:auto; } .segmented button { min-height:38px; padding:0.5rem 0.95rem; border-radius:7px; border:1px solid var(--color-edge); background:var(--color-raised); color:var(--color-ink); font-size:0.875rem; font-weight:600; white-space:nowrap; } .segmented button[aria-pressed=\"true\"] { background:var(--color-accent-soft); border-color:color-mix(in oklab, var(--color-accent) 45%, var(--color-panel)); color:var(--color-accent-text); }"
+    },
+    {
+      "name": "Missing Key Line",
+      "kind": "custom",
+      "refersTo": "chip",
+      "description": "NotConfiguredLine: neutral chip, honest sentence, underlined accent link to the provider's Settings card for admins.",
+      "html": "<p class=\"discovery-setup-line text-sm text-muted\"><span class=\"chip\">Not configured</span>StashDB has no API key on this server, so this shelf cannot be filled: a missing credential, not an outage. <a class=\"discovery-setup-link\" href=\"/?view=settings#provider-heading-stashdb\">Add the key in Settings →</a></p>",
+      "css": ".discovery-setup-line { max-width:75ch; } .discovery-setup-line .chip { margin-right:0.5rem; } .discovery-setup-link { display:inline-flex; align-items:center; gap:0.25rem; color:var(--color-accent-text); font-weight:600; text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:0.2em; }"
     }
   ],
   "narrative": {
@@ -120,14 +137,19 @@
     ],
     "rules": [
       { "name": "The Artwork Owns the Light", "body": "Chrome chroma ≤ 0.04; the only saturated, bright thing on screen is provider artwork.", "section": "colors" },
-      { "name": "The One Voice Rule", "body": "Magenta means intent — actions, focus, hover, selection — and nothing else.", "section": "colors" },
+      { "name": "The One Voice Rule", "body": "Magenta means intent — actions, focus, hover, selection — and nothing else; at most one filled button per surface.", "section": "colors" },
       { "name": "Earned Depth", "body": "Tone + 1px edge at rest; shadows appear on touch or as overlay scrims only.", "section": "elevation" },
       { "name": "Truth in Status", "body": "Badges render real state from src/lib/status.ts; never fake or embellish a status.", "section": "components" }
     ],
     "dos": [
       "Do separate with tone distance + 1px edge (color-mix for blends)",
       "Do keep focus rings 2px accent at 4px offset, :focus-visible only; Discover's dense grids pull the offset to 3px (browse icon) and 2px (tiles, scroll buttons, shelf cards) in src/components/discover.css",
-      "Do respect prefers-reduced-motion"
+      "Do respect prefers-reduced-motion",
+      "Do use --ease-out, --dur-fast and --dur-base for every transition",
+      "Do use .segmented for 2–5 exclusive options and a labelled select for longer lists",
+      "Do underline links inside running text and keep prose to about 75ch",
+      "Do put each field error under its field (aria-invalid + aria-describedby)",
+      "Do state a missing or rejected key with NotConfiguredLine or a source note, never as an outage"
     ],
     "donts": [
       "Don't fake data or status — honesty is the product",
