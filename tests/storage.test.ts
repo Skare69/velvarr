@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
-import { createCipheriv, createHash, randomBytes } from "node:crypto";
+import {
+  createCipheriv,
+  createHash,
+  randomBytes,
+  randomUUID,
+} from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   copyFileSync,
@@ -24,8 +29,11 @@ import type {
   IntegrationConfig,
   MediaKind,
   MediaReference,
+  RequestRecord,
 } from "../src/lib/contracts.ts";
 import { DISCOVER_SHELVES } from "../src/lib/contracts.ts";
+import { acquisitionPhase } from "../src/lib/status.ts";
+import type { RequestPageQuery } from "../src/server/storage.ts";
 
 process.env.VELVARR_ORIGIN = "http://127.0.0.1:5577";
 process.env.VELVARR_SETUP_SECRET = "setup-secret-for-tests-0123456789abcdef";
@@ -105,6 +113,19 @@ function dbFiles(dir: string): string {
     .map((f) => readFileSync(join(dir, f), "latin1"))
     .join("\n");
 }
+
+// A rewind below version 14 must shed migration 14's indexes: they never
+// existed at that version, and replaying their CREATE INDEX must succeed.
+const MIGRATION_14_INDEXES = [
+  "requests_created",
+  "requests_account_created",
+  "requests_modified",
+  "requests_account_modified",
+  "requests_pending",
+];
+const DROP_MIGRATION_14 = MIGRATION_14_INDEXES.map(
+  (name) => `DROP INDEX IF EXISTS ${name};`,
+).join("\n");
 
 test("import is lazy: no data dir or sqlite file is created", () => {
   const dir = freshDir();
@@ -828,6 +849,17 @@ function admit(id: string, libraryIds: string[] = []): Account {
   });
 }
 
+/** Every request the viewer may see; these tests stay under one page. */
+function visibleRequests(viewer: Account): RequestRecord[] {
+  return storage.listRequestPage(viewer, {
+    type: "all",
+    status: "all",
+    sort: "recent",
+    cursor: null,
+    limit: 200,
+  }).requests;
+}
+
 /** Encrypts like storage does, to fabricate readable rows in a v1 database. */
 function encryptForTest(plaintext: string): Buffer {
   const iv = randomBytes(12);
@@ -1069,8 +1101,8 @@ test("v1 database migrates in place preserving config, accounts, sessions, and g
     raw.prepare("PRAGMA user_version").get() as { user_version: number }
   ).user_version;
   raw.close();
-  // Schema 13 admits the terminal failed_permanent acquisition state.
-  assert.equal(version, 13, "v1 database must migrate to the current schema");
+  // Schema 14 adds the request paging indexes.
+  assert.equal(version, 14, "v1 database must migrate to the current schema");
   // A v1 database never contained the removal tables (current migration 5
   // creates none), so nothing here can assert about them; the schema-10 test
   // below owns the claim that migration 11 drops them. Migration 12 is a
@@ -1256,9 +1288,10 @@ test("a schema-10 database migrates to 11: every removal object is dropped, rows
     )
     .run(ownerUser().id, ownerUser().id, MOVIE.id, now);
   // The rewind must shed what migrations after 10 add: migration 12's
-  // discover_cache exists in the bootstrapped database but never existed at
-  // version 10, and replaying its CREATE TABLE must succeed.
+  // discover_cache and migration 14's indexes exist in the bootstrapped
+  // database but never existed at version 10, and replaying them must succeed.
   raw.exec("DROP TABLE IF EXISTS discover_cache;");
+  raw.exec(DROP_MIGRATION_14);
   raw.exec("PRAGMA user_version = 10");
   raw.close();
   storage.closeStorage();
@@ -1292,7 +1325,7 @@ test("a schema-10 database migrates to 11: every removal object is dropped, rows
   );
   assert.equal(
     versionRow.user_version,
-    13,
+    14,
     "schema 10 database must migrate to the current schema",
   );
   assert.ok(
@@ -1426,7 +1459,7 @@ test("two admitted users share one acquisition per identity; active intent is un
   // Shared work stays private per user: neither requester sees the other's
   // request history for the same target.
   assert.ok(
-    storage.listRequests(other).every((r) => r.accountId === other.id),
+    visibleRequests(other).every((r) => r.accountId === other.id),
     "a requester's history view never includes the other approver's request",
   );
   assert.throws(
@@ -1480,10 +1513,10 @@ test("request lifecycle authorization: role checks, privacy, own-cancellation is
     (e: { code: string }) => e.code === "request_not_found",
   );
   assert.ok(
-    storage.listRequests(other).every((r) => r.accountId === other.id),
+    visibleRequests(other).every((r) => r.accountId === other.id),
     "a requester's durable view never includes another user's history",
   );
-  assert.equal(storage.listRequests(owner).length >= 2, true);
+  assert.equal(visibleRequests(owner).length >= 2, true);
 
   // Only the owning user can cancel, even though an admin approved nothing yet.
   assert.throws(
@@ -2675,7 +2708,7 @@ test("migration 13 admits failed_permanent and preserves acquisition rows", () =
 
   fabricateV3(dir);
   // fabricateV3 seeds a duplicate identity on purpose (it powers the
-  // rollback test above); resolve it so migrations run through to 13.
+  // rollback test above); resolve it so migrations run through to the end.
   const repair = new DatabaseSync(join(dir, "velvarr.sqlite"));
   repair.prepare("DELETE FROM catalog_identities WHERE id = 'cat-v3-2'").run();
   repair.close();
@@ -2686,7 +2719,7 @@ test("migration 13 admits failed_permanent and preserves acquisition rows", () =
     const versionRow = raw.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(versionRow.user_version, 13);
+    assert.equal(versionRow.user_version, 14);
     // The fabricated row survives the rebuild intact.
     const row = raw
       .prepare(
@@ -3482,6 +3515,7 @@ test("schema 9 preferences survive the schema 10 upgrade: hidden tags kept, orde
     CREATE UNIQUE INDEX accounts_single_owner ON accounts (is_owner)
       WHERE is_owner = 1;
     DROP TABLE IF EXISTS discover_cache;
+    ${DROP_MIGRATION_14}
     PRAGMA user_version = 9;
   `);
   raw.close();
@@ -3523,4 +3557,571 @@ test("schema 9 preferences survive the schema 10 upgrade: hidden tags kept, orde
       .get() as { user_version: number }
   ).user_version;
   assert.ok(version >= 10, "schema 9 database must be migrated forward");
+});
+
+// --- request pages, counts, and the pending cap ---
+
+type SeedRequest = {
+  id: string;
+  account: string;
+  created: number;
+  kind?: MediaKind;
+  decision?: "pending" | "approved" | "declined" | "cancelled";
+  decided?: number | null;
+  externalId?: string;
+};
+
+/** Writes request rows straight into the live database file, one transaction. */
+function seedRequests(rows: readonly SeedRequest[]): void {
+  const raw = new DatabaseSync(join(currentDir, "velvarr.sqlite"));
+  try {
+    raw.exec("BEGIN");
+    const insert = raw.prepare(
+      "INSERT INTO requests (id, account_id, provider, kind, external_id, decision, created_at, decided_at) VALUES (?, ?, 'tpdb', ?, ?, ?, ?, ?)",
+    );
+    for (const r of rows) {
+      insert.run(
+        r.id,
+        r.account,
+        r.kind ?? "movie",
+        r.externalId ?? randomUUID(),
+        r.decision ?? "pending",
+        r.created,
+        r.decided ?? null,
+      );
+    }
+    raw.exec("COMMIT");
+  } finally {
+    raw.close();
+  }
+}
+
+/** Ids newest first by `key`, ties by id descending (SQLite BINARY order). */
+function newestFirst(
+  rows: readonly SeedRequest[],
+  key: (r: SeedRequest) => number,
+): string[] {
+  return [...rows]
+    .sort((a, b) => key(b) - key(a) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
+    .map((r) => r.id);
+}
+
+/** Follows nextCursor to the end; every page but the last is full. */
+function walkPages(
+  viewer: Account,
+  q: Omit<RequestPageQuery, "cursor" | "limit">,
+  limit: number,
+): string[] {
+  const ids: string[] = [];
+  let cursor: string | null = null;
+  for (let pages = 0; pages < 1000; pages++) {
+    const page = storage.listRequestPage(viewer, { ...q, cursor, limit });
+    assert.ok(page.requests.length <= limit, "a page never exceeds its limit");
+    ids.push(...page.requests.map((r) => r.id));
+    if (page.nextCursor === null) return ids;
+    assert.equal(page.requests.length, limit, "only the last page is short");
+    cursor = page.nextCursor;
+  }
+  assert.fail("paging did not terminate");
+}
+
+const RECENT = { type: "all", status: "all", sort: "recent" } as const;
+
+function pagingSetup(): { owner: Account; other: Account } {
+  freshDir();
+  storage.bootstrap(deliveryConfig(false), ownerUser(), "jf-owner-token");
+  const [imported] = storage.importAccounts([otherUser()]);
+  assert.ok(imported);
+  return {
+    owner: storage.getAccount(ownerUser().id) as Account,
+    other: admit(imported.id),
+  };
+}
+
+test("request pages split the history newest first with no gap or overlap; requesters page only their own rows", () => {
+  const { owner, other } = pagingSetup();
+  const o = owner.id;
+  const r = other.id;
+  // Equal created_at values force the id tie-break across page boundaries.
+  const rows: SeedRequest[] = [
+    { id: "r-01", account: o, created: 1000 },
+    { id: "r-02", account: r, created: 1000 },
+    { id: "r-03", account: o, created: 1000 },
+    { id: "r-04", account: o, created: 2000 },
+    { id: "r-05", account: r, created: 3000 },
+    { id: "r-06", account: o, created: 3000 },
+    { id: "r-07", account: o, created: 4000 },
+    { id: "r-08", account: r, created: 5000 },
+    { id: "r-09", account: o, created: 6000 },
+    { id: "r-10", account: r, created: 6000 },
+    { id: "r-11", account: o, created: 7000 },
+  ];
+  seedRequests(rows);
+  const all = newestFirst(rows, (x) => x.created);
+  const own = newestFirst(
+    rows.filter((x) => x.account === r),
+    (x) => x.created,
+  );
+
+  for (const limit of [1, 2, 3, 10, 11, 200]) {
+    assert.deepEqual(
+      walkPages(owner, RECENT, limit),
+      all,
+      `staff, limit ${limit}`,
+    );
+    assert.deepEqual(
+      walkPages(other, RECENT, limit),
+      own,
+      `requester, limit ${limit}`,
+    );
+  }
+
+  const exact = storage.listRequestPage(owner, {
+    ...RECENT,
+    cursor: null,
+    limit: 11,
+  });
+  assert.equal(exact.requests.length, 11);
+  assert.equal(
+    exact.nextCursor,
+    null,
+    "a page that holds the rest has no next",
+  );
+  const first = storage.listRequestPage(owner, {
+    ...RECENT,
+    cursor: null,
+    limit: 4,
+  });
+  assert.ok(first.nextCursor);
+  const second = storage.listRequestPage(owner, {
+    ...RECENT,
+    cursor: first.nextCursor,
+    limit: 4,
+  });
+  assert.deepEqual(
+    second.requests.map((x) => x.id),
+    all.slice(4, 8),
+    "a cursor continues exactly where its page ended",
+  );
+
+  for (const cursor of [
+    "",
+    "abc",
+    "1000",
+    "1000:",
+    ":r-01",
+    "-1:r-01",
+    "1000:r 01",
+    "1000:r-01;DROP TABLE requests",
+    `${"9".repeat(17)}:r-01`,
+    `1000:${"a".repeat(65)}`,
+  ]) {
+    assert.throws(
+      () => storage.listRequestPage(owner, { ...RECENT, cursor, limit: 5 }),
+      (e: AppError) =>
+        e instanceof AppError && e.status === 400 && e.code === "invalid_field",
+      `cursor ${JSON.stringify(cursor)} is rejected`,
+    );
+  }
+});
+
+test("the modified sort orders by the later of created and decided, ties by id, and pages consistently", () => {
+  const { owner } = pagingSetup();
+  const o = owner.id;
+  const rows: SeedRequest[] = [
+    // Oldest request, decided last: it rises to the top under "modified".
+    {
+      id: "m-a",
+      account: o,
+      created: 1000,
+      decision: "declined",
+      decided: 9000,
+    },
+    { id: "m-b", account: o, created: 5000 },
+    // Decided at m-b's creation time: equal keys break ties by id.
+    {
+      id: "m-c",
+      account: o,
+      created: 3000,
+      decision: "approved",
+      decided: 5000,
+    },
+    { id: "m-d", account: o, created: 8000 },
+    {
+      id: "m-e",
+      account: o,
+      created: 2000,
+      decision: "cancelled",
+      decided: 2000,
+    },
+  ];
+  seedRequests(rows);
+  const modified = { type: "all", status: "all", sort: "modified" } as const;
+  for (const limit of [1, 2, 3, 5]) {
+    assert.deepEqual(
+      walkPages(owner, modified, limit),
+      ["m-a", "m-d", "m-c", "m-b", "m-e"],
+      `modified, limit ${limit}`,
+    );
+    assert.deepEqual(
+      walkPages(owner, RECENT, limit),
+      ["m-d", "m-b", "m-c", "m-e", "m-a"],
+      `recent, limit ${limit}`,
+    );
+  }
+});
+
+test("request pages filter by type and decision status on the server", () => {
+  const { owner, other } = pagingSetup();
+  const o = owner.id;
+  const rows: SeedRequest[] = [
+    { id: "f-1", account: o, created: 1000, kind: "movie" },
+    { id: "f-2", account: other.id, created: 2000, kind: "scene" },
+    {
+      id: "f-3",
+      account: o,
+      created: 3000,
+      kind: "movie",
+      decision: "approved",
+      decided: 3500,
+    },
+    {
+      id: "f-4",
+      account: other.id,
+      created: 4000,
+      kind: "scene",
+      decision: "declined",
+      decided: 4500,
+    },
+    {
+      id: "f-5",
+      account: o,
+      created: 5000,
+      kind: "movie",
+      decision: "cancelled",
+      decided: 5500,
+    },
+    {
+      id: "f-6",
+      account: o,
+      created: 6000,
+      kind: "scene",
+      decision: "approved",
+      decided: 6500,
+    },
+    {
+      id: "f-7",
+      account: other.id,
+      created: 7000,
+      kind: "movie",
+      decision: "approved",
+      decided: 7500,
+    },
+  ];
+  seedRequests(rows);
+  for (const type of ["all", "movie", "scene"] as const) {
+    for (const status of [
+      "all",
+      "pending",
+      "approved",
+      "declined",
+      "cancelled",
+    ] as const) {
+      const match = (x: SeedRequest): boolean =>
+        (type === "all" || x.kind === type) &&
+        (status === "all" || (x.decision ?? "pending") === status);
+      assert.deepEqual(
+        walkPages(owner, { type, status, sort: "recent" }, 2),
+        newestFirst(rows.filter(match), (x) => x.created),
+        `staff ${type}/${status}`,
+      );
+      assert.deepEqual(
+        walkPages(other, { type, status, sort: "recent" }, 2),
+        newestFirst(
+          rows.filter((x) => x.account === other.id && match(x)),
+          (x) => x.created,
+        ),
+        `requester ${type}/${status}`,
+      );
+    }
+  }
+});
+
+test("phase status filters agree with acquisitionPhase for every state and monitored value", () => {
+  const { owner, other } = pagingSetup();
+  const instance = storage.getConfig()?.whisparr?.instanceId;
+  assert.ok(instance);
+  const states = [
+    "unsent",
+    "submitting",
+    "uncertain",
+    "monitoring",
+    "downloading",
+    "imported",
+    "failed",
+    "failed_permanent",
+    "blocked",
+  ];
+  const phases = ["processing", "failed", "library", "paused"] as const;
+  const expected = new Map<string, string[]>(phases.map((p) => [p, []]));
+  const rows: SeedRequest[] = [];
+  const acquisitions: [string, string, string, number | null][] = [];
+  let n = 0;
+  for (const state of states) {
+    for (const monitored of [null, 0, 1]) {
+      n++;
+      const externalId = randomUUID();
+      const id = `p-${String(n).padStart(2, "0")}`;
+      rows.push({
+        id,
+        account: owner.id,
+        created: n,
+        decision: "approved",
+        decided: n,
+        externalId,
+      });
+      // Non-approved intents on the same identity never match a phase.
+      rows.push({
+        id: `${id}-pending`,
+        account: other.id,
+        created: n,
+        externalId,
+      });
+      rows.push({
+        id: `${id}-declined`,
+        account: owner.id,
+        created: n,
+        decision: "declined",
+        decided: n,
+        externalId,
+      });
+      acquisitions.push([instance, externalId, state, monitored]);
+      const phase = acquisitionPhase({
+        state,
+        monitored: monitored === null ? null : monitored === 1,
+      });
+      if (phase !== null) expected.get(phase)?.push(id);
+    }
+  }
+  // An acquisition on another instance is not the configured one's phase.
+  const foreign = randomUUID();
+  rows.push({
+    id: "p-foreign",
+    account: owner.id,
+    created: 100,
+    decision: "approved",
+    decided: 100,
+    externalId: foreign,
+  });
+  acquisitions.push(["other-instance", foreign, "imported", 1]);
+  seedRequests(rows);
+  const raw = new DatabaseSync(join(currentDir, "velvarr.sqlite"));
+  try {
+    const insert = raw.prepare(
+      "INSERT INTO acquisitions (id, instance_id, provider, kind, external_id, state, whisparr_monitored, created_at, updated_at) VALUES (?, ?, 'tpdb', 'movie', ?, ?, ?, 1, 1)",
+    );
+    for (const [inst, externalId, state, monitored] of acquisitions) {
+      insert.run(randomUUID(), inst, externalId, state, monitored);
+    }
+  } finally {
+    raw.close();
+  }
+
+  for (const phase of phases) {
+    const want = (expected.get(phase) ?? []).toSorted();
+    assert.ok(want.length > 0, `the grid reaches the ${phase} phase`);
+    const got = walkPages(
+      owner,
+      { type: "all", status: phase, sort: "recent" },
+      7,
+    );
+    assert.deepEqual(got.toSorted(), want, `staff ${phase}`);
+    assert.deepEqual(
+      walkPages(other, { type: "all", status: phase, sort: "recent" }, 7),
+      [],
+      `the requester holds only pending rows, so no ${phase} row`,
+    );
+  }
+});
+
+test("countDecidablePending counts what the viewer may decide", () => {
+  const { owner, other } = pagingSetup();
+  storage.importAccounts([
+    { ...otherUser(), id: "b".repeat(32), name: "Moderator" },
+    { ...otherUser(), id: "c".repeat(32), name: "Auto" },
+  ]);
+  const mod = storage.updateAccount("b".repeat(32), {
+    enabled: true,
+    role: "moderator",
+    libraryIds: [],
+  });
+  const auto = storage.updateAccount("c".repeat(32), {
+    enabled: true,
+    role: "requester",
+    libraryIds: [],
+    autoApprove: true,
+  });
+  seedRequests([
+    { id: "c-1", account: owner.id, created: 1 },
+    { id: "c-2", account: auto.id, created: 2 },
+    { id: "c-3", account: auto.id, created: 3 },
+    {
+      id: "c-4",
+      account: auto.id,
+      created: 4,
+      decision: "approved",
+      decided: 5,
+    },
+    { id: "c-5", account: other.id, created: 5 },
+    { id: "c-6", account: other.id, created: 6 },
+    { id: "c-7", account: other.id, created: 7 },
+    {
+      id: "c-8",
+      account: other.id,
+      created: 8,
+      decision: "declined",
+      decided: 9,
+    },
+    {
+      id: "c-9",
+      account: other.id,
+      created: 9,
+      decision: "cancelled",
+      decided: 10,
+    },
+  ]);
+  assert.equal(
+    storage.countDecidablePending(owner),
+    6,
+    "admin: every pending row",
+  );
+  assert.equal(
+    storage.countDecidablePending(mod),
+    6,
+    "moderator: every pending row",
+  );
+  assert.equal(
+    storage.countDecidablePending(auto),
+    2,
+    "autoApprove: own pending rows",
+  );
+  assert.equal(
+    storage.countDecidablePending(other),
+    0,
+    "no grant: nothing to decide",
+  );
+});
+
+test("getActiveRequest finds only the account's own pending or approved request", () => {
+  const { owner, other } = pagingSetup();
+  const pending = storage.createRequest(owner.id, MOVIE);
+  assert.equal(storage.getActiveRequest(owner.id, MOVIE)?.id, pending.id);
+  storage.decideRequest(owner, pending.id, "approved");
+  assert.equal(storage.getActiveRequest(owner.id, MOVIE)?.decision, "approved");
+  assert.equal(
+    storage.getActiveRequest(other.id, MOVIE),
+    null,
+    "never another account's row",
+  );
+
+  const theirs = storage.createRequest(other.id, SCENE);
+  assert.equal(storage.getActiveRequest(owner.id, SCENE), null);
+  assert.equal(storage.getActiveRequest(other.id, SCENE)?.id, theirs.id);
+  storage.cancelRequest(other, theirs.id);
+  assert.equal(
+    storage.getActiveRequest(other.id, SCENE),
+    null,
+    "cancelled is not active",
+  );
+
+  const declined = storage.createRequest(owner.id, SCENE);
+  storage.decideRequest(owner, declined.id, "declined");
+  assert.equal(
+    storage.getActiveRequest(owner.id, SCENE),
+    null,
+    "declined is not active",
+  );
+});
+
+test("createRequest refuses a request past OPEN_REQUEST_CAP pending rows; decided rows and other accounts do not count", () => {
+  const { owner, other } = pagingSetup();
+  const cap = storage.OPEN_REQUEST_CAP;
+  const seed: SeedRequest[] = [];
+  for (let i = 0; i < cap - 1; i++) {
+    seed.push({ id: `cap-${i}`, account: other.id, created: i });
+  }
+  for (let i = 0; i < 50; i++) {
+    seed.push({
+      id: `cap-approved-${i}`,
+      account: other.id,
+      created: i,
+      decision: "approved",
+      decided: i,
+    });
+  }
+  seedRequests(seed);
+
+  // cap - 1 pending plus approved rows: one more pending request still fits.
+  storage.createRequest(other.id, MOVIE);
+  assert.throws(
+    () => storage.createRequest(other.id, SCENE),
+    (e: AppError) =>
+      e instanceof AppError &&
+      e.status === 429 &&
+      e.code === "request_limit" &&
+      e.message.includes(String(cap)),
+  );
+  assert.equal(
+    storage.getActiveRequest(other.id, SCENE),
+    null,
+    "the refused request writes nothing",
+  );
+  assert.equal(
+    storage.createRequest(owner.id, SCENE).decision,
+    "pending",
+    "another account is unaffected",
+  );
+});
+
+test("migration 14 adds the request indexes to a schema 13 database and keeps every request row", () => {
+  const { owner, other } = pagingSetup();
+  const first = storage.createRequest(other.id, MOVIE);
+  storage.decideRequest(owner, first.id, "approved");
+  storage.createRequest(owner.id, SCENE);
+  const indexes = MIGRATION_14_INDEXES;
+  storage.closeStorage();
+
+  // Schema 13 is schema 14 without the five indexes.
+  const file = join(currentDir, "velvarr.sqlite");
+  const v13 = new DatabaseSync(file);
+  for (const name of indexes) v13.exec(`DROP INDEX ${name}`);
+  v13.exec("PRAGMA user_version = 13");
+  const before = v13.prepare("SELECT * FROM requests ORDER BY id").all();
+  v13.close();
+  assert.equal(before.length, 2);
+
+  assert.equal(storage.isInitialized(), true);
+  const raw = new DatabaseSync(file);
+  try {
+    const version = raw.prepare("PRAGMA user_version").get() as {
+      user_version: number;
+    };
+    assert.equal(version.user_version, 14);
+    const present = (
+      raw
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'requests'",
+        )
+        .all() as { name: string }[]
+    ).map((row) => row.name);
+    for (const name of indexes)
+      assert.ok(present.includes(name), `${name} exists`);
+    assert.deepEqual(
+      raw.prepare("SELECT * FROM requests ORDER BY id").all(),
+      before,
+      "every request row survives unchanged",
+    );
+  } finally {
+    raw.close();
+  }
 });

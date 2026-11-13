@@ -1,11 +1,11 @@
-// The sidebar badge's decision gate, pinned directly: elevated roles decide
-// anyone's pending rows, an autoApprove grant only the account's own. Mirrors
-// countPendingApprovals's two audiences so a flipped comparison or a broken
-// staff short-circuit changes a number here instead of a wrong badge.
+// The Requests view's decision gate, pinned directly: elevated roles decide
+// anyone's pending row, an autoApprove grant only the account's own. A flipped
+// comparison or a broken staff short-circuit changes a boolean here instead of
+// offering a button the server refuses.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { countPendingApprovals } from "../src/lib/approvals.ts";
+import { canApproveRequest } from "../src/lib/approvals.ts";
 import type { Account, RequestRecord } from "../src/lib/contracts.ts";
 
 const account = (over: Partial<Account>): Account =>
@@ -21,35 +21,48 @@ const account = (over: Partial<Account>): Account =>
     ...over,
   }) as Account;
 
-// The function reads only decision and accountId; the rest of the record is
+// The predicate reads only decision and accountId; the rest of the record is
 // fixture noise for this unit.
 const request = (decision: string, accountId: string): RequestRecord =>
   ({ decision, accountId }) as unknown as RequestRecord;
 
-test("the badge counts only rows this account may decide", () => {
-  const rows = [
-    request("pending", "me"),
-    request("pending", "them"),
-    request("pending", "someone-else"),
-  ];
-
-  // Auto-approve is a grant for one's own rows only: one of three.
-  assert.equal(countPendingApprovals(rows, account({ autoApprove: true })), 1);
-
-  // Elevated roles decide every pending row, grant or not: all three.
-  assert.equal(countPendingApprovals(rows, account({ role: "moderator" })), 3);
-  assert.equal(countPendingApprovals(rows, account({ role: "admin" })), 3);
-
-  // A plain requester with no grant may decide none of them.
-  assert.equal(countPendingApprovals(rows, account({})), 0);
+test("staff may decide any pending row", () => {
+  for (const role of ["admin", "moderator"] as const) {
+    assert.equal(
+      canApproveRequest(request("pending", "them"), account({ role })),
+      true,
+    );
+    assert.equal(
+      canApproveRequest(request("pending", "me"), account({ role })),
+      true,
+    );
+  }
 });
 
-test("decided rows never count, for staff and granted accounts alike", () => {
-  const rows = [
-    request("pending", "me"),
-    request("approved", "me"),
-    request("declined", "them"),
-  ];
-  assert.equal(countPendingApprovals(rows, account({ role: "admin" })), 1);
-  assert.equal(countPendingApprovals(rows, account({ autoApprove: true })), 1);
+test("an autoApprove grant reaches only the account's own pending rows", () => {
+  const granted = account({ autoApprove: true });
+  assert.equal(canApproveRequest(request("pending", "me"), granted), true);
+  assert.equal(canApproveRequest(request("pending", "them"), granted), false);
+});
+
+test("a plain requester may decide nothing, not even its own row", () => {
+  const plain = account({});
+  assert.equal(canApproveRequest(request("pending", "me"), plain), false);
+  assert.equal(canApproveRequest(request("pending", "them"), plain), false);
+});
+
+test("decided rows are never decidable, for staff and granted accounts alike", () => {
+  for (const decision of ["approved", "declined", "cancelled"]) {
+    assert.equal(
+      canApproveRequest(request(decision, "me"), account({ role: "admin" })),
+      false,
+    );
+    assert.equal(
+      canApproveRequest(
+        request(decision, "me"),
+        account({ autoApprove: true }),
+      ),
+      false,
+    );
+  }
 });

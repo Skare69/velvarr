@@ -7,7 +7,11 @@ import {
 } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { DatabaseSync, type StatementSync } from "node:sqlite";
+import {
+  DatabaseSync,
+  type SQLInputValue,
+  type StatementSync,
+} from "node:sqlite";
 import type {
   Account,
   AttemptOutcome,
@@ -38,10 +42,15 @@ import type {
 import { AppError } from "./http.ts";
 import { isJudgmentProvider, isOllamaModel } from "../lib/contracts.ts";
 import { DISCOVER_SHELVES, normalizeFacetName } from "../lib/contracts.ts";
+import type {
+  RequestSort,
+  RequestStatusFilter,
+  RequestTypeFilter,
+} from "../lib/decisions.ts";
 
 // Schema identity: application_id spells 'VLVR', user_version is the schema version.
 const APP_ID = 0x564c5652;
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 // ponytail: fixed 7-day session TTL; make it an env knob only if an operator asks.
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const BUSY_TIMEOUT_MS = 5000;
@@ -165,7 +174,12 @@ type Statements = {
   insertRequest: StatementSync;
   getRequest: StatementSync;
   listAllRequests: StatementSync;
-  listAccountRequests: StatementSync;
+  // Request pages are built from fixed fragments; one prepared statement per shape.
+  requestPages: Map<string, StatementSync>;
+  getActiveRequest: StatementSync;
+  listActiveIntents: StatementSync;
+  countPending: StatementSync;
+  countAccountPending: StatementSync;
   decideRequest: StatementSync;
   cancelOwnRequest: StatementSync;
   countActiveRequestsExcept: StatementSync;
@@ -424,6 +438,18 @@ const MIGRATIONS: Record<number, string> = {
       ON acquisitions (instance_id, provider, kind, external_id);
     CREATE INDEX acquisitions_due ON acquisitions (due_at);
   `,
+  14: `
+    -- Additive: indexes for keyset request pages (both sort keys, all rows
+    -- and per account) and for the per-account pending count. The sort-key
+    -- expressions match listRequestPage's text exactly, or SQLite skips them.
+    CREATE INDEX requests_created ON requests (created_at, id);
+    CREATE INDEX requests_account_created ON requests (account_id, created_at, id);
+    CREATE INDEX requests_modified
+      ON requests (MAX(created_at, COALESCE(decided_at, 0)), id);
+    CREATE INDEX requests_account_modified
+      ON requests (account_id, MAX(created_at, COALESCE(decided_at, 0)), id);
+    CREATE INDEX requests_pending ON requests (account_id) WHERE decision = 'pending';
+  `,
 };
 
 let db: DatabaseSync | null = null;
@@ -581,8 +607,18 @@ function S(): Statements {
       listAllRequests: d.prepare(
         "SELECT * FROM requests ORDER BY created_at DESC, id DESC",
       ),
-      listAccountRequests: d.prepare(
-        "SELECT * FROM requests WHERE account_id = ? ORDER BY created_at DESC, id DESC",
+      requestPages: new Map(),
+      getActiveRequest: d.prepare(
+        "SELECT * FROM requests WHERE account_id = ? AND provider = ? AND kind = ? AND external_id = ? AND decision IN ('pending', 'approved')",
+      ),
+      listActiveIntents: d.prepare(
+        "SELECT provider, kind, external_id FROM requests WHERE account_id = ? AND decision IN ('pending', 'approved')",
+      ),
+      countPending: d.prepare(
+        "SELECT COUNT(*) AS n FROM requests WHERE decision = 'pending'",
+      ),
+      countAccountPending: d.prepare(
+        "SELECT COUNT(*) AS n FROM requests WHERE account_id = ? AND decision = 'pending'",
       ),
       decideRequest: d.prepare(
         "UPDATE requests SET decision = ?, decided_at = ? WHERE id = ? AND decision = 'pending'",
@@ -1618,6 +1654,9 @@ export function getCatalogRecordByReference(
   return row ? rowToCatalog(row) : null;
 }
 
+/** Pending requests one account may hold at a time. ponytail: fixed cap. */
+export const OPEN_REQUEST_CAP = 500;
+
 /** Records one user's intent. Admission is read from the current stored
  * account, never from a caller-supplied stale Account. */
 export function createRequest(
@@ -1633,6 +1672,14 @@ export function createRequest(
         403,
         "account_not_admitted",
         "only admitted accounts may request",
+      );
+    }
+    const pending = S().countAccountPending.get(accountId) as { n: number };
+    if (pending.n >= OPEN_REQUEST_CAP) {
+      throw new AppError(
+        429,
+        "request_limit",
+        `You have ${OPEN_REQUEST_CAP} requests waiting for a decision. Wait until some are decided, then request more.`,
       );
     }
     const id = randomUUID();
@@ -1667,14 +1714,14 @@ export function createRequest(
  * keys, so a caller can pre-skip exactly what createRequest would refuse
  * without re-deriving the index's rule. */
 export function listActiveIntentKeys(accountId: string): Set<string> {
-  const rows = S().listAccountRequests.all(accountId) as RequestRow[];
-  const keys = new Set<string>();
-  for (const row of rows) {
-    if (row.decision === "pending" || row.decision === "approved") {
-      keys.add(`${row.provider}:${row.kind}:${row.external_id}`);
-    }
-  }
-  return keys;
+  // Reads only the active rows, through the requests_active_intent index.
+  const rows = S().listActiveIntents.all(accountId) as Pick<
+    RequestRow,
+    "provider" | "kind" | "external_id"
+  >[];
+  return new Set(
+    rows.map((row) => `${row.provider}:${row.kind}:${row.external_id}`),
+  );
 }
 
 // --- performer follows ---
@@ -1827,7 +1874,7 @@ export function followPerformerPair(
 }
 
 /** Follows are personal: own rows only, newest first. There is deliberately
- * no elevated sees-everything variant here, unlike listRequests.
+ * no elevated sees-everything variant here, unlike listRequestPage.
  *
  * A linked pair is one performer, so it is one entry. The link is written on
  * one side only — the row the user actually followed names its counterpart —
@@ -2343,14 +2390,136 @@ export function saveContentPreferences(
   return { hiddenTags, discoverOrder: effectiveDiscoverOrder(discoverOrder) };
 }
 
-/** Durable request view, filtered by the viewer's role: requesters see only
- * their own history; moderators and administrators see all. */
-export function listRequests(viewer: Account): RequestRecord[] {
-  const rows =
-    viewer.role === "requester"
-      ? (S().listAccountRequests.all(viewer.id) as RequestRow[])
-      : (S().listAllRequests.all() as RequestRow[]);
-  return rows.map(rowToRequest);
+export type RequestPageQuery = {
+  type: RequestTypeFilter;
+  status: RequestStatusFilter;
+  sort: RequestSort;
+  cursor: string | null;
+  limit: number;
+};
+
+// Sort-key text must equal the migration 14 index expressions.
+const REQUEST_SORT_KEYS: Record<RequestSort, string> = {
+  recent: "created_at",
+  modified: "MAX(created_at, COALESCE(decided_at, 0))",
+};
+
+// SQL mirror of acquisitionPhase (src/lib/status.ts) over the acquisition row
+// `a`: imported is library, then unmonitored is paused, then downloading,
+// then failed. A test pins this against acquisitionPhase.
+const REQUEST_PHASE_CONDITIONS: Record<
+  "processing" | "failed" | "library" | "paused",
+  string
+> = {
+  library: "a.state = 'imported'",
+  paused: "a.state <> 'imported' AND a.whisparr_monitored = 0",
+  processing: "a.state = 'downloading' AND a.whisparr_monitored IS NOT 0",
+  failed:
+    "a.state IN ('failed', 'failed_permanent') AND a.whisparr_monitored IS NOT 0",
+};
+
+const REQUEST_CURSOR = /^(\d{1,16}):([0-9A-Za-z-]{1,64})$/;
+
+function decodeRequestCursor(cursor: string): { key: number; id: string } {
+  const match = REQUEST_CURSOR.exec(cursor);
+  if (!match?.[1] || !match[2]) {
+    throw new AppError(400, "invalid_field", "Invalid cursor.");
+  }
+  return { key: Number(match[1]), id: match[2] };
+}
+
+/** One keyset page of the request view, newest first by the sort key, ties by
+ * id. Requesters see only their own history; moderators and administrators
+ * see all. Phase statuses match approved requests by their acquisition on the
+ * configured instance, so with no instance they match nothing. */
+export function listRequestPage(
+  viewer: Account,
+  q: RequestPageQuery,
+): { requests: RequestRecord[]; nextCursor: string | null } {
+  const key = REQUEST_SORT_KEYS[q.sort];
+  const where: string[] = [];
+  const params: SQLInputValue[] = [];
+  if (viewer.role === "requester") {
+    where.push("account_id = ?");
+    params.push(viewer.id);
+  }
+  if (q.type !== "all") {
+    where.push("kind = ?");
+    params.push(q.type);
+  }
+  const cursor = q.cursor === null ? null : decodeRequestCursor(q.cursor);
+  if (q.status !== "all") {
+    if (
+      q.status === "pending" ||
+      q.status === "approved" ||
+      q.status === "declined" ||
+      q.status === "cancelled"
+    ) {
+      where.push("decision = ?");
+      params.push(q.status);
+    } else {
+      const instance = getConfig()?.whisparr?.instanceId;
+      if (!instance) return { requests: [], nextCursor: null };
+      where.push(
+        `decision = 'approved' AND EXISTS (SELECT 1 FROM acquisitions a WHERE a.instance_id = ? AND a.provider = requests.provider AND a.kind = requests.kind AND a.external_id = requests.external_id AND ${REQUEST_PHASE_CONDITIONS[q.status]})`,
+      );
+      params.push(instance);
+    }
+  }
+  if (cursor !== null) {
+    // The redundant `key <= ?` lets SQLite seek the index instead of
+    // scanning every newer row; row values do not match expression indexes.
+    where.push(`${key} <= ? AND (${key} < ? OR (${key} = ? AND id < ?))`);
+    params.push(cursor.key, cursor.key, cursor.key, cursor.id);
+  }
+  // ponytail: a filter that matches few rows walks the sort index in SQLite
+  // (~13 ms for 50 000 non-matching rows, measured); add per-filter indexes
+  // only if that grows.
+  const sql = `SELECT * FROM requests${where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY ${key} DESC, id DESC LIMIT ?`;
+  params.push(q.limit + 1);
+  const pages = S().requestPages;
+  let stmt = pages.get(sql);
+  if (stmt === undefined) {
+    stmt = open().prepare(sql);
+    pages.set(sql, stmt);
+  }
+  const rows = stmt.all(...params) as RequestRow[];
+  const next = rows.length > q.limit ? rows[q.limit - 1] : undefined;
+  const page = rows.slice(0, q.limit).map(rowToRequest);
+  if (next === undefined) return { requests: page, nextCursor: null };
+  const nextKey =
+    q.sort === "recent"
+      ? next.created_at
+      : Math.max(next.created_at, next.decided_at ?? 0);
+  return { requests: page, nextCursor: `${nextKey}:${next.id}` };
+}
+
+/** Pending requests the viewer may decide: every pending row for moderators
+ * and administrators, own pending rows under the autoApprove grant, else 0. */
+export function countDecidablePending(viewer: Account): number {
+  let count: { n: number } | undefined;
+  if (viewer.role === "admin" || viewer.role === "moderator") {
+    count = S().countPending.get() as { n: number };
+  } else if (viewer.autoApprove) {
+    count = S().countAccountPending.get(viewer.id) as { n: number };
+  }
+  return count?.n ?? 0;
+}
+
+/** The account's own active (pending or approved) request for this media, or
+ * null. At most one exists: requests_active_intent is unique. */
+export function getActiveRequest(
+  accountId: string,
+  media: MediaReference,
+): RequestRecord | null {
+  assertMediaReference(media);
+  const row = S().getActiveRequest.get(
+    accountId,
+    media.provider,
+    media.kind,
+    media.id,
+  ) as RequestRow | undefined;
+  return row ? rowToRequest(row) : null;
 }
 
 export function getRequest(id: string, viewer: Account): RequestRecord {

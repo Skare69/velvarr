@@ -830,7 +830,16 @@ export async function buildShelf(
         base,
         await Promise.allSettled([
           Promise.resolve().then(() =>
-            railOf(listRequestItems(ctx), (r) => ({ media: r.media })),
+            railOf(
+              listRequestItems(ctx, {
+                type: "all",
+                status: "all",
+                sort: "recent",
+                cursor: null,
+                limit: SHELF_ITEMS + MORE_PREVIEWS,
+              }).requests,
+              (r) => ({ media: r.media }),
+            ),
           ),
         ]).then((r) => r[0]!),
       );

@@ -370,6 +370,16 @@ export type RequestListItem = RequestRecord & {
   acquisition?: RequestAcquisition | null;
 };
 
+/** GET /api/requests: one keyset page, newest first by the chosen sort.
+ * `nextCursor` continues the same filters and sort; null on the last page.
+ * `pendingApprovals` counts every pending request the viewer may decide,
+ * across all pages (the sidebar badge). */
+export type RequestListResponse = {
+  requests: RequestListItem[];
+  nextCursor: string | null;
+  pendingApprovals: number;
+};
+
 /** The cross-provider identity the providers themselves publish — an object
  * carrying at most one of linked / unlinkedReason (construction sites set
  * exactly one). Never a name match. */

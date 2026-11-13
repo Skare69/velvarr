@@ -9,6 +9,7 @@ import type {
   CatalogDetail,
   MediaReference,
   RequestListItem,
+  RequestListResponse,
   RequestRecord,
 } from "../../../../lib/contracts.ts";
 import {
@@ -16,7 +17,15 @@ import {
   UNDELIVERABLE_REASON,
 } from "../../../../lib/contracts.ts";
 import {
+  REQUEST_PAGE_MAX,
+  REQUEST_PAGE_SIZE,
+  REQUEST_SORTS,
+  REQUEST_STATUSES,
+  REQUEST_TYPES,
+} from "../../../../lib/decisions.ts";
+import {
   cancelRequest,
+  countDecidablePending,
   createRequest,
   decideRequest,
   getAccount,
@@ -24,7 +33,8 @@ import {
   acquisitionView,
   listAccounts,
   listActiveIntentKeys,
-  listRequests,
+  listRequestPage,
+  type RequestPageQuery,
 } from "../../../../server/storage.ts";
 import { AppError } from "../../../../server/http.ts";
 import { searchCatalog } from "../../../../server/providers.ts";
@@ -67,12 +77,16 @@ function autoApprove(
  * viewer can see whether the work actually went through. Staff viewers also
  * get requester names: the shape both the requests list and the discover
  * rail serve, without exposing anyone else's request history. */
-export function listRequestItems(ctx: AuthContext): RequestListItem[] {
+export function listRequestItems(
+  ctx: AuthContext,
+  query: RequestPageQuery,
+): { requests: RequestListItem[]; nextCursor: string | null } {
   const staff =
     ctx.account.role === "admin" || ctx.account.role === "moderator";
   // One map lookup per row instead of one account fetch per row.
   const accounts = staff ? new Map(listAccounts().map((a) => [a.id, a])) : null;
-  return listRequests(ctx.account).map((r) => {
+  const page = listRequestPage(ctx.account, query);
+  const requests = page.requests.map((r): RequestListItem => {
     const acc = accounts?.get(r.accountId);
     const item: RequestListItem = acc
       ? { ...r, requestedBy: acc.name, requestedById: acc.id }
@@ -84,10 +98,50 @@ export function listRequestItems(ctx: AuthContext): RequestListItem[] {
       acquisition: acquisitionView(a),
     };
   });
+  return { requests, nextCursor: page.nextCursor };
 }
 
-export async function listRequestsRoute(ctx: AuthContext): Promise<Response> {
-  return json({ requests: listRequestItems(ctx) });
+function queryChoice<T extends string>(
+  params: URLSearchParams,
+  key: string,
+  choices: readonly T[],
+  fallback: T,
+): T {
+  const raw = params.get(key);
+  if (raw === null) return fallback;
+  const choice = choices.find((c) => c === raw);
+  if (choice === undefined) {
+    throw new AppError(400, "invalid_field", `Invalid ${key}.`);
+  }
+  return choice;
+}
+
+function queryLimit(params: URLSearchParams): number {
+  const raw = params.get("limit");
+  if (raw === null) return REQUEST_PAGE_SIZE;
+  const value = Number(raw);
+  if (!/^\d+$/.test(raw) || value < 1 || value > REQUEST_PAGE_MAX) {
+    throw new AppError(400, "invalid_field", "Invalid limit.");
+  }
+  return value;
+}
+
+export async function listRequestsRoute(
+  ctx: AuthContext,
+  request: Request,
+): Promise<Response> {
+  const params = new URL(request.url).searchParams;
+  const page = listRequestItems(ctx, {
+    type: queryChoice(params, "type", REQUEST_TYPES, "all"),
+    status: queryChoice(params, "status", REQUEST_STATUSES, "all"),
+    sort: queryChoice(params, "sort", REQUEST_SORTS, "recent"),
+    cursor: params.get("cursor"),
+    limit: queryLimit(params),
+  });
+  return json({
+    ...page,
+    pendingApprovals: countDecidablePending(ctx.account),
+  } satisfies RequestListResponse);
 }
 
 export async function decideRequestRoute(
@@ -269,7 +323,7 @@ export const routes: RouteDef[] = [
     method: "GET",
     segments: ["requests"],
     auth: "session",
-    run: async (ctx) => listRequestsRoute(ctx),
+    run: async (ctx, request) => listRequestsRoute(ctx, request),
   },
   {
     method: "POST",

@@ -148,10 +148,14 @@ sequenceDiagram
   (`POST /api/requests`, `PATCH /api/requests/:id`). The POST approves
   at once when the account holds the auto-approve grant or when an admin
   requests their own title (201, `autoApproved: true`). A pending
-  request waits for the PATCH decision of an admin or moderator.
+  request waits for the PATCH decision of an admin or moderator. An
+  account can hold at most 500 pending requests (`OPEN_REQUEST_CAP`);
+  the next POST gets 429 `request_limit`. `GET /api/requests` returns
+  one keyset page (50 rows by default) with the server-side filters,
+  sort and the pending-approvals count.
 - **Store (SQLite)** — `src/server/storage.ts` (`createRequest`,
-  `decideRequest`); an active-intent unique index makes a request
-  idempotent per account and title.
+  `decideRequest`, `listRequestPage`); an active-intent unique index makes
+  a request idempotent per account and title.
 - **Acquisition worker** — `src/server/acquisition.ts`
   (`startAcquisitionLoop`); claims rows with compare-and-set tokens,
   records each attempt before the network call

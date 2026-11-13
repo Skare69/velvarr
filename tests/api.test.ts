@@ -9,6 +9,7 @@ import {
   type Server,
 } from "node:http";
 import { mkdtempSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -26,13 +27,14 @@ import {
   clearDiscoverCache,
   getDiscoverCache,
   getConfig,
+  OPEN_REQUEST_CAP,
   putDiscoverCache,
 } from "../src/server/storage.ts";
 import { resetSweepCache } from "../src/server/jellyfin.ts";
 import { resetUpdateCache } from "../src/server/update.ts";
 import { resetLoginBuckets } from "../src/server/security.ts";
 import { AppError } from "../src/server/http.ts";
-import { countPendingApprovals } from "../src/lib/approvals.ts";
+import { REQUEST_PAGE_MAX, REQUEST_PAGE_SIZE } from "../src/lib/decisions.ts";
 import type { RouteDef } from "../src/app/api/[...path]/admission.ts";
 import {
   ARTWORK_BURST,
@@ -4717,14 +4719,21 @@ test("requests: lifecycle, autoApprove, privacy, roles, origin", async () => {
   // Privacy: member2 sees only their own list entry — and no requestedBy
   // echo of their own name (requester lists never carry it).
   const m2List = await call("GET", "/api/requests", { cookie: m2 });
-  const m2Rows = (
-    (await m2List.json()) as { requests: Record<string, unknown>[] }
-  ).requests;
+  const m2Body = (await m2List.json()) as {
+    requests: Record<string, unknown>[];
+    nextCursor: string | null;
+    pendingApprovals: number;
+  };
+  const m2Rows = m2Body.requests;
   assert.deepEqual(
     m2Rows.map((r) => r.id),
     [m2RequestId],
   );
   assert.ok(m2Rows.every((r) => !("requestedBy" in r)));
+  // One page holds the whole short history, and a plain requester decides
+  // nothing, so the badge count is zero even with an own pending row.
+  assert.equal(m2Body.nextCursor, null);
+  assert.equal(m2Body.pendingApprovals, 0);
   // The owner (staff) sees all requests, with the requester's display name
   // attached to every row — including rows they did not create.
   const ownerRows = (
@@ -9045,43 +9054,336 @@ test("a user's own successful logins never lock them", async () => {
   for (let i = 0; i < 6; i++) await loginAs("nogrants");
 });
 
+type SeedRequest = {
+  accountId: string;
+  kind?: "movie" | "scene";
+  decision?: "pending" | "approved" | "declined" | "cancelled";
+  createdAt: number;
+};
+
+/** Raw request rows in ONE transaction: the paging and cap proofs need
+ * volumes and decision mixes the request API cannot file quickly. Each row
+ * gets a fresh media id, so no seed collides with an active intent. */
+function seedRequests(rows: SeedRequest[]): string[] {
+  const db = new DatabaseSync(join(apiDataDir, "velvarr.sqlite"));
+  const ids: string[] = [];
+  try {
+    const insert = db.prepare(
+      `INSERT INTO requests
+         (id, account_id, provider, kind, external_id, decision, created_at, decided_at)
+       VALUES (?, ?, 'tpdb', ?, ?, ?, ?, ?)`,
+    );
+    db.exec("BEGIN");
+    for (const row of rows) {
+      const id = randomUUID();
+      const decision = row.decision ?? "pending";
+      insert.run(
+        id,
+        row.accountId,
+        row.kind ?? "scene",
+        randomUUID(),
+        decision,
+        row.createdAt,
+        decision === "pending" ? null : row.createdAt,
+      );
+      ids.push(id);
+    }
+    db.exec("COMMIT");
+  } finally {
+    db.close();
+  }
+  return ids;
+}
+
+function dropRequests(ids: string[]): void {
+  const db = new DatabaseSync(join(apiDataDir, "velvarr.sqlite"));
+  try {
+    db.prepare(
+      "DELETE FROM requests WHERE id IN (SELECT value FROM json_each(?))",
+    ).run(JSON.stringify(ids));
+  } finally {
+    db.close();
+  }
+}
+
+type RequestPageBody = {
+  requests: {
+    id: string;
+    accountId: string;
+    media: { kind: string };
+    decision: string;
+    createdAt: number;
+  }[];
+  nextCursor: string | null;
+  pendingApprovals: number;
+};
+
+async function requestPage(
+  cookie: string,
+  query = "",
+): Promise<RequestPageBody> {
+  const res = await call("GET", `/api/requests${query}`, { cookie });
+  assert.equal(res.status, 200, await res.clone().text());
+  return (await res.json()) as RequestPageBody;
+}
+
+// Seeded rows sit in the future so they are the newest rows whatever earlier
+// tests filed; every test drops its own seed again.
+const seedBase = () => Date.now() + 1_000_000_000;
+
+test("GET /api/requests answers one page of 50 000 requests and continues by cursor", async () => {
+  await boot();
+  const admin = await loginAs("owner");
+  const base = seedBase();
+  const ids = seedRequests(
+    Array.from({ length: 50_000 }, (_, i) => ({
+      accountId: MEMBER_ID,
+      kind: i % 2 === 0 ? ("scene" as const) : ("movie" as const),
+      createdAt: base + i,
+    })),
+  );
+  try {
+    const first = await requestPage(admin);
+    assert.equal(first.requests.length, REQUEST_PAGE_SIZE);
+    assert.deepEqual(
+      first.requests.map((r) => r.id),
+      ids.slice(-REQUEST_PAGE_SIZE).reverse(),
+    );
+    assert.ok(first.nextCursor);
+    assert.ok(first.pendingApprovals >= 50_000);
+
+    const second = await requestPage(
+      admin,
+      `?cursor=${encodeURIComponent(first.nextCursor)}`,
+    );
+    assert.deepEqual(
+      second.requests.map((r) => r.id),
+      ids.slice(-2 * REQUEST_PAGE_SIZE, -REQUEST_PAGE_SIZE).reverse(),
+    );
+    const oldestFirst = first.requests.at(-1)!.createdAt;
+    assert.ok(second.requests.every((r) => r.createdAt < oldestFirst));
+    assert.ok(second.nextCursor);
+
+    // The limit parameter sizes the page, up to the maximum.
+    const three = await requestPage(admin, "?limit=3");
+    assert.deepEqual(
+      three.requests.map((r) => r.id),
+      ids.slice(-3).reverse(),
+    );
+    assert.ok(three.nextCursor);
+    const widest = await requestPage(admin, `?limit=${REQUEST_PAGE_MAX}`);
+    assert.equal(widest.requests.length, REQUEST_PAGE_MAX);
+  } finally {
+    dropRequests(ids);
+  }
+});
+
+test("GET /api/requests refuses unknown filters, sorts, limits and cursors", async () => {
+  await boot();
+  const admin = await loginAs("owner");
+  for (const query of [
+    "limit=0",
+    `limit=${REQUEST_PAGE_MAX + 1}`,
+    "limit=abc",
+    "limit=1.5",
+    "status=bogus",
+    "type=performer",
+    "sort=x",
+    "cursor=garbage",
+  ]) {
+    const res = await call("GET", `/api/requests?${query}`, { cookie: admin });
+    assert.equal(res.status, 400, query);
+    assert.equal((await errorShape(res)).code, "invalid_field", query);
+  }
+});
+
+test("GET /api/requests filters by status and type on the server", async () => {
+  await boot();
+  const admin = await loginAs("owner");
+  const requester = await loginAs("member2");
+  const base = seedBase();
+  const seed: SeedRequest[] = (
+    [
+      [MEMBER2_ID, "movie", "pending"],
+      [MEMBER2_ID, "scene", "pending"],
+      [MEMBER2_ID, "movie", "declined"],
+      [MEMBER2_ID, "scene", "approved"],
+      [MEMBER2_ID, "movie", "cancelled"],
+      [MEMBER_ID, "movie", "pending"],
+    ] as const
+  ).map(([accountId, kind, decision], i) => ({
+    accountId,
+    kind,
+    decision,
+    createdAt: base + i,
+  }));
+  const ids = seedRequests(seed);
+  // The seeded ids a filter must return, newest first.
+  const seededWhere = (keep: (row: SeedRequest) => boolean) =>
+    ids.filter((_, i) => keep(seed[i]!)).reverse();
+  const seededIn = (page: RequestPageBody) =>
+    page.requests.map((r) => r.id).filter((id) => ids.includes(id));
+  try {
+    const pending = await requestPage(admin, "?status=pending&limit=200");
+    assert.ok(pending.requests.every((r) => r.decision === "pending"));
+    assert.deepEqual(
+      seededIn(pending),
+      seededWhere((r) => r.decision === "pending"),
+    );
+
+    const movies = await requestPage(admin, "?type=movie&limit=200");
+    assert.ok(movies.requests.every((r) => r.media.kind === "movie"));
+    assert.deepEqual(
+      seededIn(movies),
+      seededWhere((r) => r.kind === "movie"),
+    );
+
+    const declinedMovies = await requestPage(
+      admin,
+      "?type=movie&status=declined&limit=200",
+    );
+    assert.ok(
+      declinedMovies.requests.every(
+        (r) => r.media.kind === "movie" && r.decision === "declined",
+      ),
+    );
+    assert.deepEqual(
+      seededIn(declinedMovies),
+      seededWhere((r) => r.kind === "movie" && r.decision === "declined"),
+    );
+
+    // A requester's filtered page stays inside their own history.
+    const ownPending = await requestPage(requester, "?status=pending");
+    assert.ok(ownPending.requests.every((r) => r.accountId === MEMBER2_ID));
+    assert.deepEqual(
+      seededIn(ownPending),
+      seededWhere(
+        (r) => r.accountId === MEMBER2_ID && r.decision === "pending",
+      ),
+    );
+  } finally {
+    dropRequests(ids);
+  }
+});
+
+test("POST /api/requests refuses a new request once the account holds the pending cap", async () => {
+  await boot();
+  const requester = await loginAs("member2");
+  const db = new DatabaseSync(join(apiDataDir, "velvarr.sqlite"));
+  const { pending } = db
+    .prepare(
+      "SELECT COUNT(*) AS pending FROM requests WHERE account_id = ? AND decision = 'pending'",
+    )
+    .get(MEMBER2_ID) as { pending: number };
+  db.close();
+  const base = seedBase();
+  // One below the cap, plus decided rows that must not count toward it.
+  const ids = seedRequests([
+    ...Array.from({ length: OPEN_REQUEST_CAP - 1 - pending }, (_, i) => ({
+      accountId: MEMBER2_ID,
+      createdAt: base + i,
+    })),
+    ...(["approved", "declined", "cancelled"] as const).map((decision, i) => ({
+      accountId: MEMBER2_ID,
+      kind: "movie" as const,
+      decision,
+      createdAt: base + OPEN_REQUEST_CAP + i,
+    })),
+  ]);
+  try {
+    // The last free slot still files.
+    const last = await call("POST", "/api/requests", {
+      cookie: requester,
+      body: { media: { provider: "tpdb", kind: "movie", id: randomUUID() } },
+    });
+    assert.equal(last.status, 201);
+    const lastBody = (await last.json()) as {
+      request: { id: string; decision: string };
+    };
+    ids.push(lastBody.request.id);
+    assert.equal(lastBody.request.decision, "pending");
+
+    const refused = await call("POST", "/api/requests", {
+      cookie: requester,
+      body: { media: { provider: "tpdb", kind: "movie", id: randomUUID() } },
+    });
+    assert.equal(refused.status, 429);
+    const error = await errorShape(refused, 429);
+    assert.equal(error.code, "request_limit");
+    assert.match(error.message, new RegExp(String(OPEN_REQUEST_CAP)));
+  } finally {
+    dropRequests(ids);
+  }
+});
+
 // The sidebar approval badge counts only work the account may really decide:
 // staff see every pending request, an autoApprove holder only its own, and a
 // plain requester never gets a number for someone else's queue.
-test("pending approval count follows the same authority as the decision gate", () => {
-  const rows = [
-    { id: "1", accountId: "owner", decision: "pending" },
-    { id: "2", accountId: "guest", decision: "pending" },
-    { id: "3", accountId: "guest", decision: "approved" },
-    { id: "4", accountId: "owner", decision: "declined" },
-  ] as unknown as Parameters<typeof countPendingApprovals>[0];
-  const account = (role: string, id: string, autoApprove = false) =>
-    ({
-      id,
-      name: id,
-      role,
+test("pendingApprovals in the request list follows the same authority as the decision gate", async () => {
+  await boot();
+  const admin = await loginAs("owner");
+  const plain = await loginAs("member2");
+  // Pin the roles this proof needs; a grant change revokes the target's
+  // sessions by design, so the shared cookies are renewed after each.
+  const moderatorGrant = await call("PATCH", `/api/admin/users/${MEMBER_ID}`, {
+    cookie: admin,
+    body: { enabled: true, role: "moderator", libraryIds: [MOVIES_LIB] },
+  });
+  assert.equal(moderatorGrant.status, 200);
+  member = await loginAs("member");
+  const autoGrant = await call("PATCH", `/api/admin/users/${NOGRANT_ID}`, {
+    cookie: admin,
+    body: {
       enabled: true,
+      role: "requester",
       libraryIds: [],
-      autoApprove,
-    }) as unknown as Parameters<typeof countPendingApprovals>[1];
+      autoApprove: true,
+    },
+  });
+  assert.equal(autoGrant.status, 200);
+  nogrants = await loginAs("nogrants");
 
-  assert.equal(countPendingApprovals(rows, account("admin", "owner")), 2);
-  assert.equal(countPendingApprovals(rows, account("moderator", "mod")), 2);
-  // A plain requester decides nothing, even their own pending row.
-  assert.equal(countPendingApprovals(rows, account("requester", "guest")), 0);
-  // The autoApprove grant reaches exactly one row: their own pending request.
-  assert.equal(
-    countPendingApprovals(rows, account("requester", "guest", true)),
-    1,
+  const counts = async () => ({
+    admin: (await requestPage(admin, "?limit=1")).pendingApprovals,
+    moderator: (await requestPage(member, "?limit=1")).pendingApprovals,
+    auto: (await requestPage(nogrants, "?limit=1")).pendingApprovals,
+    plain: (await requestPage(plain, "?limit=1")).pendingApprovals,
+  });
+  const before = await counts();
+  assert.equal(before.plain, 0);
+  const base = seedBase();
+  const ids = seedRequests(
+    (
+      [
+        [MEMBER2_ID, "pending"],
+        [MEMBER2_ID, "pending"],
+        [MEMBER2_ID, "declined"],
+        [NOGRANT_ID, "pending"],
+        [NOGRANT_ID, "approved"],
+        [NOGRANT_ID, "cancelled"],
+        [MEMBER_ID, "pending"],
+      ] as const
+    ).map(([accountId, decision], i) => ({
+      accountId,
+      decision,
+      createdAt: base + i,
+    })),
   );
-  // Nothing pending means no badge at all, never a zero.
-  assert.equal(
-    countPendingApprovals(
-      rows.filter((r) => r.decision !== "pending"),
-      account("admin", "owner"),
-    ),
-    0,
-  );
+  try {
+    // Four new pending rows, three decided ones that never count.
+    assert.deepEqual(await counts(), {
+      admin: before.admin + 4,
+      moderator: before.moderator + 4,
+      // The autoApprove grant reaches its own pending row only.
+      auto: before.auto + 1,
+      // A plain requester decides nothing, even their own pending rows.
+      plain: 0,
+    });
+  } finally {
+    dropRequests(ids);
+  }
+  // Dropping the seed takes the count back down: no stale badge.
+  assert.deepEqual(await counts(), before);
 });
 
 // The admin user table is one row per account: the stored account plus the

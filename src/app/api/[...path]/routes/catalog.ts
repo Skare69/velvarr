@@ -5,7 +5,6 @@ import {
   parseCatalogReference,
   isMediaReference,
   parseMediaReference,
-  sameMedia,
   type CatalogSearchParams,
 } from "../parse.ts";
 import type {
@@ -24,7 +23,7 @@ import {
   getContentPreferences,
   getPerformerLink,
   listFollows,
-  listRequests,
+  getActiveRequest,
   upsertCatalogRecord,
 } from "../../../../server/storage.ts";
 import {
@@ -559,19 +558,11 @@ export async function catalogDetail(
   const media: MediaReference | null = isMediaReference(reference)
     ? reference
     : null;
-  // Only the caller's own intent and the shared (user-anonymous) acquisition
-  // state; never another user's request history.
-  const mine = media
-    ? (listRequests(ctx.account).find(
-        (r) =>
-          r.accountId === ctx.account.id &&
-          sameMedia(r.media, media) &&
-          // Terminal decisions (cancelled, declined) never block a fresh
-          // request: they hide the button only if counted here. History
-          // stays on the Requests page.
-          (r.decision === "pending" || r.decision === "approved"),
-      ) ?? null)
-    : null;
+  // Only the caller's own active intent and the shared (user-anonymous)
+  // acquisition state; never another user's request history. Terminal
+  // decisions (cancelled, declined) never block a fresh request; history
+  // stays on the Requests page.
+  const mine = media ? getActiveRequest(ctx.account.id, media) : null;
   const acquisition = media ? getAcquisitionByReference(media) : null;
   // Performers take the async path: an explicit provider URL wins, then a
   // shared third-party profile link (identity URL match) can resolve the

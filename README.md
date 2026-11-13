@@ -88,7 +88,7 @@ the acquisition life cycle, each tied to its source paths.
 - **Catalogs:** movies (TPDB), scenes (TPDB and StashDB), performers, and studios, with the filters and sort orders that each provider supports.
 - **Browse:** one grid for TPDB movies and StashDB scenes, with search, tag include and exclude, studio, performer, and date filters. The URL holds every filter.
 - **Search, Studios, and Genres** across both providers. Velvarr never merges results across providers. Cross-provider identity comes only from links that the providers publish.
-- **Requests** with administrator or moderator approval, and an optional auto-approve grant for each account.
+- **Requests** with administrator or moderator approval, and an optional auto-approve grant for each account. Each account can have a maximum of 500 requests that wait for a decision.
 - **Crash-safe acquisition into Whisparr:** Velvarr records each attempt before the network call, so a restart never loses or duplicates an add.
 - **Jellyfin availability** for each user, and watch links without credentials.
 - **Performer follows** across both providers, with a Following view and a Discover rail.

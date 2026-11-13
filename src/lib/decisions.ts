@@ -1,11 +1,9 @@
-// Decision vocabulary for the requests list: the four-state lifecycle and
-// the PATCH error wording. The acquisition status cases derive from
-// lib/status's acquisitionPhase — the one precedence the cards display —
-// so a filter can never disagree with the card it mirrors. No React, no
-// component imports.
+// Decision vocabulary for the requests list: the four-state lifecycle, the
+// filter and sort vocabulary of GET /api/requests, and the PATCH error
+// wording. The server filters, sorts and pages; its acquisition status cases
+// mirror lib/status's acquisitionPhase. No React, no component imports.
 
-import type { RequestDecision, RequestListItem } from "./contracts";
-import { acquisitionPhase } from "./status.ts";
+import type { RequestDecision } from "./contracts";
 
 /** Group order for the requests list; sections render in this sequence. */
 export const GROUP_ORDER: readonly RequestDecision[] = [
@@ -57,6 +55,10 @@ export type RequestStatusFilter = (typeof REQUEST_STATUSES)[number];
 export const REQUEST_SORTS = ["recent", "modified"] as const;
 export type RequestSort = (typeof REQUEST_SORTS)[number];
 
+/** GET /api/requests page size: the default `limit` and its ceiling. */
+export const REQUEST_PAGE_SIZE = 50;
+export const REQUEST_PAGE_MAX = 200;
+
 export const REQUEST_STATUS_LABELS: Record<RequestStatusFilter, string> = {
   all: "All statuses",
   pending: "Pending",
@@ -68,53 +70,3 @@ export const REQUEST_STATUS_LABELS: Record<RequestStatusFilter, string> = {
   library: "In library",
   paused: "Paused",
 };
-
-export function filterRequestRows(
-  rows: readonly RequestListItem[],
-  type: RequestTypeFilter,
-  status: RequestStatusFilter,
-  sort: RequestSort,
-): RequestListItem[] {
-  const matching = rows.filter((r) => {
-    if (type !== "all" && r.media.kind !== type) return false;
-    switch (status) {
-      case "all":
-        return true;
-      case "pending":
-      case "approved":
-      case "declined":
-      case "cancelled":
-        return r.decision === status;
-      case "processing":
-        return (
-          r.acquisition != null &&
-          acquisitionPhase(r.acquisition) === "processing"
-        );
-      case "failed":
-        return (
-          r.acquisition != null && acquisitionPhase(r.acquisition) === "failed"
-        );
-      case "library":
-        return (
-          r.acquisition != null && acquisitionPhase(r.acquisition) === "library"
-        );
-      case "paused":
-        return (
-          r.acquisition != null && acquisitionPhase(r.acquisition) === "paused"
-        );
-    }
-  });
-  // "recent" sorts by creation; "modified" by facts that mark a real change
-  // to the request — its creation or its decision. The acquisition's
-  // updatedAt is a poll stamp: every worker pass rewrites it (claim,
-  // observation, absence, release) even when nothing changed, so counting
-  // it orders waiting rows by the recheck schedule and reshuffles on every
-  // reload. If acquisition state changes must count later, stamp real
-  // transitions in storage and expose that column instead.
-  const at = (r: RequestListItem) => Math.max(r.createdAt, r.decidedAt ?? 0);
-  return matching.toSorted(
-    sort === "recent"
-      ? (a, b) => b.createdAt - a.createdAt
-      : (a, b) => at(b) - at(a),
-  );
-}

@@ -14,9 +14,9 @@ import type {
   Account,
   Library,
   ProviderStatus,
-  RequestRecord,
+  RequestListResponse,
 } from "../lib/contracts.ts";
-import { countPendingApprovals, REQUESTS_CHANGED } from "../lib/approvals.ts";
+import { REQUESTS_CHANGED } from "../lib/approvals.ts";
 import { signOutKeepsSession } from "../lib/signout.ts";
 import {
   ApiError,
@@ -964,8 +964,9 @@ function GlobalSearchForm() {
 }
 
 /** How many requests this account may actually decide right now: staff see
- * every pending row, an autoApprove holder only their own. A failed or
- * forbidden read counts zero — a wrong number is worse than no badge.
+ * every pending row, an autoApprove holder only their own. The server counts
+ * (`pendingApprovals` on GET /api/requests), so the badge reads one row, not
+ * the whole table. A failed or forbidden read shows "?", never a zero.
  * Re-reads on navigation and whenever the Requests view has just read
  * authoritative rows, so approving a request drops the count immediately.
  * ponytail: no polling or SSE — another tab's decision lands on this one's
@@ -978,8 +979,8 @@ function usePendingApprovals(
     account.role === "admin" ||
     account.role === "moderator" ||
     account.autoApprove;
-  const { data, error, reload } = useApiGet<{ requests: RequestRecord[] }>(
-    eligible ? "/api/requests" : null,
+  const { data, error, reload } = useApiGet<RequestListResponse>(
+    eligible ? "/api/requests?limit=1" : null,
     [eligible, account, view],
   );
   // The Requests view announces fresh authoritative rows, so approving a
@@ -996,7 +997,7 @@ function usePendingApprovals(
   // decide, or a read still in flight, shows no badge at all.
   if (!eligible || (error === null && data === null)) return 0;
   return error === null && data !== null
-    ? countPendingApprovals(data.requests, account)
+    ? data.pendingApprovals
     : "unavailable";
 }
 

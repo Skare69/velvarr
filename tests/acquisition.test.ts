@@ -1059,9 +1059,13 @@ test("cancellation suppresses only undispatched work; sent and in-flight work su
   const idC = workId(MOVIE_C);
 
   // Withdraw every request; each is the last active intent for its identity.
-  for (const request of storage
-    .listRequests(owner)
-    .filter((r) => r.decision === "approved")) {
+  for (const request of storage.listRequestPage(owner, {
+    type: "all",
+    status: "approved",
+    sort: "recent",
+    cursor: null,
+    limit: 200,
+  }).requests) {
     storage.cancelRequest(owner, request.id);
   }
   assert.equal(

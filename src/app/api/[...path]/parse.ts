@@ -329,14 +329,6 @@ export function performerField(
   }
 }
 
-export function sameMedia(a: MediaReference, b: MediaReference): boolean {
-  return (
-    a.provider === b.provider &&
-    a.kind === b.kind &&
-    a.id.toLowerCase() === b.id.toLowerCase()
-  );
-}
-
 // Shared provider-independent scalar validation for catalog search. The
 // per-provider builders below explicitly reject filter combinations their
 // provider cannot express — never silently ignored downstream.

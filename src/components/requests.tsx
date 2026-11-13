@@ -19,7 +19,6 @@ import {
   imgSrc,
   ItemImage,
   messageOf,
-  useApiGet,
   useCatalogSummary,
   useParamsSetter,
   useSession,
@@ -30,18 +29,20 @@ import type {
   MediaReference,
   ProviderStatus,
   RequestListItem,
+  RequestListResponse,
   RequestRecord,
 } from "../lib/contracts";
-import { REQUESTS_CHANGED } from "../lib/approvals";
+import { canApproveRequest, REQUESTS_CHANGED } from "../lib/approvals";
 import {
   GROUP_LABEL,
   GROUP_ORDER,
   REQUEST_DECISION_ERRORS,
+  REQUEST_PAGE_MAX,
+  REQUEST_PAGE_SIZE,
   REQUEST_SORTS,
   REQUEST_STATUSES,
   REQUEST_STATUS_LABELS,
   REQUEST_TYPES,
-  filterRequestRows,
 } from "../lib/decisions";
 
 /* Facts displayed per row, kept visibly separate:
@@ -340,18 +341,45 @@ function oneOf<T extends string>(
   return allowed.find((a) => a === v) ?? dflt;
 }
 
+/** GET /api/requests with the active filters plus page params. */
+function requestsPath(filters: string, page: Record<string, string>): string {
+  const p = new URLSearchParams(filters);
+  for (const [k, v] of Object.entries(page)) p.set(k, v);
+  return `/api/requests?${p}`;
+}
+
 export function RequestsView() {
   const { account, providers } = useSession();
   const params = useSearchParams();
   const setP = useParamsSetter();
-  const { data, error, reload } = useApiGet<{ requests: Row[] }>(
-    "/api/requests",
-    [],
-  );
-  const rows = data === null ? null : data.requests;
   const type = oneOf(params.get("type"), REQUEST_TYPES, "all");
   const status = oneOf(params.get("status"), REQUEST_STATUSES, "all");
   const sort = oneOf(params.get("sort"), REQUEST_SORTS, "recent");
+  // The server filters, sorts and pages; only non-default values travel.
+  const filters = useMemo(() => {
+    const p = new URLSearchParams();
+    if (type !== "all") p.set("type", type);
+    if (status !== "all") p.set("status", status);
+    if (sort !== "recent") p.set("sort", sort);
+    return p.toString();
+  }, [type, status, sort]);
+  const [list, setList] = useState<{
+    rows: Row[];
+    nextCursor: string | null;
+  } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [more, setMore] = useState<{
+    loading: boolean;
+    error: string | null;
+  }>({ loading: false, error: null });
+  const rows = list === null ? null : list.rows;
+  // Each top read bumps the generation, so a superseded read or a Load more
+  // still in flight can never overwrite newer rows.
+  const generation = useRef(0);
+  const loaded = useRef(0);
+  useEffect(() => {
+    if (list !== null) loaded.current = list.rows.length;
+  }, [list]);
   const [busyId, setBusyId] = useState<string | null>(null);
   const busyRef = useRef(false);
   const [rowError, setRowError] = useState<{
@@ -362,11 +390,66 @@ export function RequestsView() {
 
   const isStaff = account.role === "admin" || account.role === "moderator";
 
-  // Old load dispatched this on every successful read; data identity marks
-  // each read for the pending-approvals badge consumer.
+  // A reload re-reads from the top as many rows as are loaded, so a decision
+  // or a poll keeps the rows the user paged through in place.
+  // ponytail: beyond REQUEST_PAGE_MAX loaded rows a reload trims to
+  // REQUEST_PAGE_MAX.
+  const reload = useCallback(() => {
+    const gen = ++generation.current;
+    const limit = Math.min(
+      Math.max(loaded.current, REQUEST_PAGE_SIZE),
+      REQUEST_PAGE_MAX,
+    );
+    setError(null);
+    setMore({ loading: false, error: null });
+    api<RequestListResponse>(
+      requestsPath(
+        filters,
+        limit === REQUEST_PAGE_SIZE ? {} : { limit: String(limit) },
+      ),
+    )
+      .then((d) => {
+        if (gen !== generation.current) return;
+        setList({ rows: d.requests, nextCursor: d.nextCursor });
+        // Fresh authoritative rows: the pending-approvals badge re-reads.
+        window.dispatchEvent(new Event(REQUESTS_CHANGED));
+      })
+      .catch((e: unknown) => {
+        if (gen === generation.current) setError(messageOf(e));
+      });
+  }, [filters]);
+
+  // A filter change never shows rows of the previous filter, and its first
+  // read is one page, not the previous filter's loaded count.
   useEffect(() => {
-    if (data !== null) window.dispatchEvent(new Event(REQUESTS_CHANGED));
-  }, [data]);
+    loaded.current = 0;
+    setList(null);
+    reload();
+  }, [reload]);
+
+  const nextCursor = list === null ? null : list.nextCursor;
+  const loadMore = useCallback(() => {
+    if (nextCursor === null) return;
+    const gen = generation.current;
+    setMore({ loading: true, error: null });
+    api<RequestListResponse>(requestsPath(filters, { cursor: nextCursor }))
+      .then((d) => {
+        if (gen !== generation.current) return;
+        setList((prev) => {
+          if (prev === null) return prev;
+          const seen = new Set(prev.rows.map((r) => r.id));
+          return {
+            rows: [...prev.rows, ...d.requests.filter((r) => !seen.has(r.id))],
+            nextCursor: d.nextCursor,
+          };
+        });
+        setMore({ loading: false, error: null });
+      })
+      .catch((e: unknown) => {
+        if (gen === generation.current)
+          setMore({ loading: false, error: messageOf(e) });
+      });
+  }, [filters, nextCursor]);
 
   // Poll only while something is actually moving and the tab is watching.
   const anyDownloading =
@@ -419,18 +502,13 @@ export function RequestsView() {
     [reload],
   );
 
-  const filtered = useMemo(
-    () => filterRequestRows(rows ?? [], type, status, sort),
-    [rows, type, status, sort],
-  );
-
   const groups = useMemo(
     () =>
       GROUP_ORDER.map((decision) => ({
         decision,
-        items: filtered.filter((row) => row.decision === decision),
+        items: (rows ?? []).filter((row) => row.decision === decision),
       })).filter((g) => g.items.length > 0),
-    [filtered],
+    [rows],
   );
 
   let content;
@@ -456,7 +534,7 @@ export function RequestsView() {
         </div>
       </>
     );
-  } else if (rows.length === 0) {
+  } else if (rows.length === 0 && type === "all" && status === "all") {
     content = (
       <div className="panel p-8 text-center text-sm text-muted">
         {isStaff ? (
@@ -475,7 +553,7 @@ export function RequestsView() {
         )}
       </div>
     );
-  } else if (filtered.length === 0) {
+  } else if (rows.length === 0) {
     content = (
       <div className="panel p-8 text-center text-sm text-muted">
         <p>No requests match the current filters.</p>
@@ -499,7 +577,8 @@ export function RequestsView() {
             >
               {GROUP_LABEL[g.decision]}{" "}
               <span className="text-sm font-normal text-muted">
-                ({g.items.length})
+                ({g.items.length}
+                {nextCursor !== null ? "+" : ""})
               </span>
             </h2>
             <ul className="grid gap-3">
@@ -518,9 +597,7 @@ export function RequestsView() {
                     // Staff decide anyone's pending request; the owner cancels
                     // their own pending or approved one; an owner holding the
                     // autoApprove grant may approve their own pending request.
-                    canApprove={
-                      pending && (isStaff || (mine && account.autoApprove))
-                    }
+                    canApprove={canApproveRequest(r, account)}
                     canDecline={pending && isStaff && !mine}
                     canCancel={
                       mine &&
@@ -535,6 +612,25 @@ export function RequestsView() {
             </ul>
           </section>
         ))}
+        {more.error !== null && (
+          <ErrorPanel
+            title="More requests unavailable"
+            message={more.error}
+            onRetry={loadMore}
+          />
+        )}
+        {nextCursor !== null && more.error === null && (
+          <div className="flex justify-center">
+            <button
+              type="button"
+              className="btn"
+              disabled={more.loading}
+              onClick={loadMore}
+            >
+              {more.loading ? "Loading…" : "Load more"}
+            </button>
+          </div>
+        )}
       </div>
     );
   }
