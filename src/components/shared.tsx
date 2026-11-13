@@ -8,6 +8,8 @@ import {
   useRef,
   useState,
   type DependencyList,
+  type RefObject,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import { useRouter } from "next/navigation";
 import { isDeliverableMedia } from "../lib/contracts.ts";
@@ -247,12 +249,14 @@ export function useTapReveal(): void {
     const onClick = (event: MouseEvent) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
-      const card = target.closest(".media-card");
+      // Poster cards reveal their quick overlay; credit cards on a detail
+      // page reveal their Filter button the same way.
+      const card = target.closest(".media-card, .cat-person");
       if (!card) return clear();
       // A card with nothing to reveal (performer, follow) opens on one tap.
       if (
         card.classList.contains(REVEALED) ||
-        !card.querySelector(".media-quick-overlay")
+        !card.querySelector(".media-quick-overlay, .cat-person-filter")
       )
         return;
       // Swallow only this first tap: the card stays un-opened and shows what
@@ -281,11 +285,54 @@ export const PREFERENCES_CHANGED = "velvarr:preferences-changed";
  * dispatchers. */
 export const OPEN_PREFERENCES = "velvarr:open-preferences";
 
+/** The items a grid shows while more pages exist: whole rows only, so a
+ * column change (sidebar collapse, resize) never leaves a ragged last row
+ * and never refetches. The held-back items show once the next page lands;
+ * the last page shows everything. At least one row always shows. */
+export function wholeRows<T>(items: T[], cols: number, hasMore: boolean): T[] {
+  if (!hasMore || cols <= 0 || items.length <= cols) return items;
+  return items.slice(0, Math.floor(items.length / cols) * cols);
+}
+
+/** Column count of an auto-fill grid, read from the rendered CSS tracks of
+ * the element the returned ref is attached to (an invisible zero-height
+ * probe with the grid's class), kept current by a ResizeObserver. 0 until
+ * measured. Callers size pages in whole rows from it. */
+export function useGridColumns(): [RefObject<HTMLDivElement | null>, number] {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [cols, setCols] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const tracks = getComputedStyle(el)
+        .gridTemplateColumns.split(" ")
+        .filter(Boolean).length;
+      if (tracks > 0) setCols(tracks);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, cols];
+}
+
+/** Scroll position just before the latest pushed navigation, so a surface
+ * that restores on Back (the catalog detail) can save where the user was
+ * even though the push already scrolled to the top. */
+let pushedFromY = 0;
+export function scrollYBeforeLastPush(): number {
+  return pushedFromY;
+}
+
 /** URL is the source of truth. The default replaces the entry so internal
  * corrections (perPage normalization, legacy normalization) do not fill the
  * history stack; user-initiated changes — surface navigation and every
  * browse filter commit — opt into `push` so browser Back walks back through
- * them instead of skipping filter states. */
+ * them instead of skipping filter states. A push is a new page or a new
+ * result set, so it starts at the top (opening a performer, a +Filter
+ * jump, a filter change); a replace keeps the scroll. */
 export function useParamsSetter() {
   const router = useRouter();
   return useCallback(
@@ -300,8 +347,11 @@ export function useParamsSetter() {
       }
       const qs = next.toString();
       const href = qs ? `?${qs}` : window.location.pathname;
-      if (options?.push) router.push(href, { scroll: false });
-      else router.replace(href, { scroll: false });
+      if (options?.push) {
+        pushedFromY = window.scrollY;
+        router.push(href, { scroll: false });
+        window.scrollTo({ top: 0 });
+      } else router.replace(href, { scroll: false });
     },
     [router],
   );
@@ -592,6 +642,18 @@ const ICON_PATHS = {
   pause: "M9 5v14M15 5v14",
   reorder:
     "M4 6h9M4 12h9M4 18h9M17.5 20V4m0 0-3.5 3.5M17.5 4 21 7.5M17.5 20l-3.5-3.5M17.5 20 21 16.5",
+  edit: "M12 20h9 M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5Z",
+  refresh: "M21 12a9 9 0 1 1-2.6-6.4 M21 3v6h-6",
+  trash: "M3 6h18 M8 6V4h8v2 M19 6l-1 14H6L5 6 M10 11v6 M14 11v6",
+  undo: "M9 14 4 9l5-5 M4 9h11a5 5 0 0 1 0 10h-3",
+  minus: "M5 12h14",
+  // Gender marks: Venus, Mars, and the transgender symbol (both arrows and
+  // the cross on one ring).
+  "gender-female": "M17 9a5 5 0 1 1-10 0a5 5 0 1 1 10 0 M12 14v7 M9 18h6",
+  "gender-male":
+    "M15 14a5 5 0 1 1-10 0a5 5 0 1 1 10 0 M13.5 10.5 19 5 M14 5h5v5",
+  "gender-trans":
+    "M16 12a4 4 0 1 1-8 0a4 4 0 1 1 8 0 M14.8 9.2 19 5 M15.5 5H19v3.5 M12 16v6 M9.5 19.5h5",
 } as const;
 
 export function Icon({
@@ -775,6 +837,61 @@ export function imgSrc(url: string | undefined): string | undefined {
     : `/api/catalog/image?url=${encodeURIComponent(url)}`;
 }
 
+/**
+ * A cropped artwork frame that opens the whole, uncropped image in a native
+ * modal <dialog> (Esc, the close button, or a click outside the image close
+ * it). The image proxy serves the provider's original bytes, so the
+ * lightbox shows full resolution. Without an image the frame stays a plain
+ * placeholder: nothing to enlarge. `frameClass` sizes and shapes the frame;
+ * `imgClass` crops the image inside it.
+ */
+export function EnlargeableImage({
+  name,
+  imageUrl,
+  frameClass,
+  imgClass,
+}: {
+  name: string;
+  imageUrl?: string;
+  frameClass: string;
+  imgClass: string;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const src = imgSrc(imageUrl);
+  const img = <ItemImage name={name} src={src} className={imgClass} />;
+  if (!src) return <div className={frameClass}>{img}</div>;
+  return (
+    <>
+      <button
+        type="button"
+        className={`${frameClass} enlarge-open`}
+        aria-label={`Enlarge image of ${name}`}
+        onClick={() => ref.current?.showModal()}
+      >
+        {img}
+      </button>
+      <dialog
+        ref={ref}
+        className="lightbox"
+        aria-label={`Image of ${name}`}
+        onClick={(e) => {
+          if (e.target === e.currentTarget) ref.current?.close();
+        }}
+      >
+        <img src={src} alt={name} />
+        <button
+          type="button"
+          className="btn lightbox-close"
+          aria-label="Close"
+          onClick={() => ref.current?.close()}
+        >
+          <Icon name="close" />
+        </button>
+      </dialog>
+    </>
+  );
+}
+
 export function duration(seconds: number | undefined): string | null {
   if (!seconds || seconds <= 0) return null;
   const h = Math.floor(seconds / 3600);
@@ -816,7 +933,7 @@ export function detailParams(r: CatalogReference): {
 /** Link target for the same contract, for anchors rather than param patches.
  * Built through URLSearchParams so an absent view (studio refs) stays absent
  * instead of rendering the string "undefined" into the href. */
-export function detailHref(media: MediaReference): string {
+export function detailHref(media: CatalogReference): string {
   const p = detailParams(media);
   const qs = new URLSearchParams(
     Object.entries(p).filter(([, v]) => v !== undefined) as [string, string][],
@@ -990,9 +1107,15 @@ function RequestableCard({
               : requested
                 ? availability?.outcome === "awaiting_scan"
                   ? "Awaiting scan"
-                  : status.myRequest?.decision === "approved"
-                    ? "Approved"
-                    : "Requested"
+                  : // A declined or cancelled request must not still say
+                    // "Requested"; cancelled is not a decline either.
+                    status.myRequest?.decision === "cancelled"
+                    ? "Cancelled"
+                    : statusKind === "declined"
+                      ? "Declined"
+                      : statusKind === "approved"
+                        ? "Approved"
+                        : "Requested"
                 : "Request";
   const note = !deliverable
     ? "Browse only — Whisparr cannot acquire TPDB scenes."
@@ -1012,14 +1135,14 @@ function RequestableCard({
         if (!status && !error && e.pointerType !== "touch") void check();
       }}
     >
-      <button
-        type="button"
+      <a
+        href={detailHref(media)}
         className="media-open"
         aria-label={`View details for ${item.title}`}
         onFocus={() => {
           if (!status && !error) void check();
         }}
-        onClick={() => onOpen(media)}
+        onClick={spaClick(() => onOpen(media))}
       >
         <div className="media-art aspect-[2/3]">
           <ItemImage
@@ -1049,7 +1172,7 @@ function RequestableCard({
           </div>
           {performers && <div className="media-subtitle">{performers}</div>}
         </div>
-      </button>
+      </a>
       <div className="media-quick-overlay">
         <div className="media-quick-summary" aria-hidden="true">
           {item.releaseDate && <span>{item.releaseDate.slice(0, 4)}</span>}
@@ -1147,28 +1270,46 @@ export function PerformerCard({
   onOpen: (r: CatalogReference) => void;
 }) {
   return (
-    <button
-      type="button"
+    <a
+      href={detailHref(item.reference)}
       className="media-card performer-card"
-      onClick={() => onOpen(item.reference)}
+      title={item.title}
+      onClick={spaClick(() => onOpen(item.reference))}
     >
-      <div className="media-art aspect-square">
+      {/* The detail page's cast tile, everywhere: a 2:3 photo with the name
+          inside at the top on a scrim — no type chip, no extra reveal; the
+          whole tile is the link to her page. */}
+      <div className="media-art aspect-[2/3]">
         <ItemImage
           name={item.title}
           src={imgSrc(item.imageUrl)}
           className="h-full w-full object-cover"
         />
-        <span className="media-badge">Performer</span>
-        <span className="media-reveal">
-          Explore filmography <Icon name="arrow-right" />
+        <span className="media-name-overlay">
+          <span>{item.title}</span>
+          {item.aliases[0] && <small>Also known as {item.aliases[0]}</small>}
         </span>
       </div>
-      <div className="media-meta">
-        <div className="media-title">{item.title}</div>
-        {item.aliases[0] && (
-          <div className="media-subtitle">Also known as {item.aliases[0]}</div>
-        )}
-      </div>
-    </button>
+    </a>
   );
+}
+
+/** Real link, in-app click: a plain primary click runs `go` (client-side
+ * navigation, exactly as before); middle, modified (Ctrl/Cmd/Shift/Alt) and
+ * already-prevented clicks keep the browser's own new-tab behavior through
+ * the element's href. */
+export function spaClick(go: () => void) {
+  return (e: ReactMouseEvent<HTMLElement>) => {
+    if (
+      e.defaultPrevented ||
+      e.button !== 0 ||
+      e.metaKey ||
+      e.ctrlKey ||
+      e.shiftKey ||
+      e.altKey
+    )
+      return;
+    e.preventDefault();
+    go();
+  };
 }

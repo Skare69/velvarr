@@ -42,6 +42,11 @@
   color-scheme: dark;
   --sidebar-width: 232px;
   --topbar-height: 76px;
+  /* Motion tokens (rule 16): every transition and animation uses these
+   * tiers; no literal durations or one-off easings elsewhere. */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 160ms;
+  --dur-base: 220ms;
 }
 html {
   scroll-padding-top: calc(var(--topbar-height) + 20px);
@@ -83,10 +88,10 @@ a,
 input,
 select {
   transition:
-    background-color 160ms,
-    border-color 160ms,
-    color 160ms,
-    box-shadow 160ms;
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
 }
 button:disabled {
   cursor: not-allowed;
@@ -201,8 +206,24 @@ summary:focus-visible,
 .input::placeholder {
   color: color-mix(in oklab, var(--color-muted) 78%, var(--color-panel));
 }
+/* Inputs show focus once: the edge itself turns accent and thickens to 2px
+   (inset ring, no layout shift). The global offset outline would draw a
+   second ring around the same field, so inputs drop it. Accent on the panel
+   tone is 5:1, above the 3:1 a focus indicator needs. */
 .input:focus {
   border-color: var(--color-accent);
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+.input:focus-visible {
+  outline: none;
+}
+/* Rule 35: the failed field itself carries the state, not colour alone —
+ * the message under it names the problem. */
+.input[aria-invalid="true"] {
+  border-color: var(--color-danger);
+}
+.input[aria-invalid="true"]:focus {
+  box-shadow: inset 0 0 0 1px var(--color-danger);
 }
 .check {
   width: 1rem;
@@ -216,6 +237,53 @@ summary:focus-visible,
   font-size: 0.8rem;
   font-weight: 600;
   color: var(--color-muted);
+}
+/* Segmented exclusive choice (shared contract): a role="group" of buttons
+ * with aria-pressed. Equal segments: an inline grid of 1fr columns sizes
+ * every segment to the widest label; a too-narrow strip scrolls and labels
+ * never cut. Selected = accent; disabled = .btn's look; focus-visible comes
+ * from the global button rule, transitions too. */
+.segmented {
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 4px;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.segmented button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 38px;
+  padding: 0.5rem 0.95rem;
+  border-radius: 7px;
+  border: 1px solid var(--color-edge);
+  background: var(--color-raised);
+  color: var(--color-ink);
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.segmented button:not([aria-pressed="true"]):hover:not(:disabled) {
+  background: color-mix(in oklab, var(--color-raised) 82%, var(--color-ink));
+  border-color: color-mix(in oklab, var(--color-edge) 72%, var(--color-ink));
+}
+.segmented button[aria-pressed="true"] {
+  background: var(--color-accent-soft);
+  border-color: color-mix(
+    in oklab,
+    var(--color-accent) 45%,
+    var(--color-panel)
+  );
+  color: var(--color-accent-text);
+}
+.segmented button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .panel {
   background: var(--color-panel);
@@ -323,7 +391,7 @@ body:has(.auth-page) {
   border-radius: 9px;
   background-color: var(--color-raised);
   /* Sweep shimmer: the paint is twice the element and slides across it
-   * (one 1.2 s linear loop). The global prefers-reduced-motion clamp
+   * (one 2 s linear loop). The global prefers-reduced-motion clamp
    * stops the slide. */
   background-image: linear-gradient(
     100deg,
@@ -332,7 +400,13 @@ body:has(.auth-page) {
     transparent 70%
   );
   background-size: 200% 100%;
-  animation: skel-sweep 1.2s linear infinite;
+  /* Sweep shimmer (one 2 s linear loop — a sweep must stay linear; slow
+   * enough to read as calm waiting, not urgency) plus
+   * the rule-14 reveal: invisible for the first second, then a fade, so a
+   * fast load never flashes a skeleton. */
+  animation:
+    skel-sweep 2s linear infinite,
+    delayed-fade var(--dur-base) var(--ease-out) 1s both;
 }
 @keyframes skel-sweep {
   from {
@@ -341,6 +415,17 @@ body:has(.auth-page) {
   to {
     background-position: -200% 0;
   }
+}
+/* Rule 14 for non-.skel placeholders ("Loading…", plain skeleton blocks):
+ * same 1 s hold, same fade. The reduced-motion clamp keeps the hold; the
+ * reveal still ends visible. */
+@keyframes delayed-fade {
+  from {
+    opacity: 0;
+  }
+}
+.delayed-reveal {
+  animation: delayed-fade var(--dur-base) var(--ease-out) 1s both;
 }
 
 .app-shell {
@@ -364,12 +449,18 @@ body:has(.auth-page) {
   inset: 0 auto 0 0;
   z-index: 40;
   width: var(--sidebar-width);
-  padding: 26px 16px 20px;
+  /* 18.5px top = (topbar 76px - brand 39px) / 2: the logo shares the
+     search field's centre line (rule 48), and the top inset matches the
+     16px side inset. */
+  padding: 18.5px 16px 20px;
   display: flex;
   flex-direction: column;
   background: var(--color-panel);
   border-right: 1px solid
     color-mix(in oklab, var(--color-edge) 55%, var(--color-panel));
+  /* Empty sidebar space toggles collapse on click, so it shows the click
+     cursor; links and buttons inside keep their own. */
+  cursor: pointer;
 }
 .brand {
   display: inline-flex;
@@ -452,10 +543,63 @@ body:has(.auth-page) {
 }
 .sidebar-footer {
   margin-top: auto;
-  padding: 28px 12px 0;
+  padding-top: 28px;
+  display: grid;
+  gap: 14px;
 }
 .sidebar-footer .credit {
   justify-content: center;
+  padding-inline: 12px;
+}
+/* The Collapse row reads like a quiet last menu item, not a destination. */
+.sidebar-toggle {
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+/* Collapsed (desktop only, the mobile shell has no sidebar): icons only,
+   each label kept for assistive tech and as the item's tooltip; the brand
+   keeps its mark; the credit shows only the version, still linked. The
+   switch is instant on purpose: animating the width resizes every
+   auto-fill grid frame by frame, so tiles stretch and then snap when a
+   column is added. */
+.app-shell.is-collapsed {
+  --sidebar-width: 76px;
+}
+.is-collapsed .app-sidebar {
+  padding-inline: 12px;
+}
+.is-collapsed .app-sidebar .brand {
+  justify-content: center;
+}
+.is-collapsed .app-sidebar .nav-label,
+.is-collapsed .app-sidebar .brand-name,
+.is-collapsed .app-sidebar .credit-name,
+.is-collapsed .app-sidebar .credit .chip {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.is-collapsed .app-sidebar .nav-btn {
+  position: relative;
+  justify-content: center;
+  padding-inline: 0;
+}
+.is-collapsed .app-sidebar .nav-badge {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+}
+.is-collapsed .app-sidebar .nav-section {
+  margin-inline: 4px;
+}
+.is-collapsed .app-sidebar .credit {
+  padding-inline: 0;
 }
 .app-topbar {
   position: fixed;
@@ -480,7 +624,7 @@ body:has(.auth-page) {
   min-width: 0;
   gap: 12px;
   border: 1px solid var(--color-edge);
-  border-radius: 24px;
+  border-radius: 7px;
   padding: 0 7px 0 17px;
   height: 44px;
   background: color-mix(in oklab, var(--color-panel) 75%, var(--color-canvas));
@@ -639,12 +783,12 @@ body:has(.auth-page) {
   max-height: 85dvh;
   overflow-y: auto;
   border: 0;
-  border-radius: 16px 16px 0 0;
+  border-radius: 10px 10px 0 0;
   background: var(--color-panel);
   color: var(--color-ink);
 }
 .mobile-navigation[open] {
-  animation: sheet-rise 200ms ease-out;
+  animation: sheet-rise var(--dur-base) var(--ease-out);
 }
 @keyframes sheet-rise {
   from {
@@ -674,7 +818,7 @@ body:has(.auth-page) {
   max-height: 85dvh;
   overflow-y: auto;
   border: 1px solid var(--color-edge);
-  border-radius: 16px;
+  border-radius: 10px;
   background: var(--color-panel);
   color: var(--color-ink);
 }
@@ -716,7 +860,7 @@ body:has(.auth-page) {
   color: var(--color-ink);
   text-align: left;
   border-radius: 10px;
-  transition: transform 180ms ease;
+  transition: transform var(--dur-base) var(--ease-out);
 }
 /* Seerr-style: the whole card grows slightly on hover — the zoom plus a
    pop-out shadow is the affordance on every surface (rails, browse grids).
@@ -735,7 +879,7 @@ body:has(.auth-page) {
   box-shadow: 0 0 0 1px rgb(255 255 255 / 0.07);
 }
 .media-art img {
-  transition: transform 220ms;
+  transition: transform var(--dur-base) var(--ease-out);
 }
 .media-card:hover .media-art,
 .media-card:focus-within .media-art {
@@ -764,22 +908,6 @@ body:has(.auth-page) {
   font-size: 0.75rem;
   margin-top: 3px;
 }
-.media-badge {
-  position: absolute;
-  top: 9px;
-  left: 9px;
-  border-radius: 4px;
-  padding: 2px 7px;
-  background: color-mix(in srgb, var(--color-canvas) 86%, transparent);
-  color: var(--color-ink);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1.5;
-  letter-spacing: 0.25px;
-  text-transform: uppercase;
-  border: 1px solid
-    color-mix(in srgb, var(--color-accent-text) 30%, transparent);
-}
 .media-runtime {
   position: absolute;
   bottom: 9px;
@@ -788,6 +916,34 @@ body:has(.auth-page) {
   border-radius: 4px;
   background: color-mix(in srgb, var(--color-canvas) 88%, transparent);
   font-size: 11px;
+}
+/* Performer tiles carry their name inside the art, on the poster overlay's
+   scrim flipped to the top — the same treatment as the detail page's cast
+   tiles (.cat-person-name). One line each; the tile's title has it whole. */
+.media-name-overlay {
+  position: absolute;
+  inset: 0 0 auto;
+  display: grid;
+  gap: 2px;
+  padding: 0.5rem 0.5rem 1.75rem;
+  background: linear-gradient(
+    color-mix(in srgb, var(--color-canvas) 93%, transparent),
+    transparent
+  );
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--color-ink);
+  text-align: center;
+}
+.media-name-overlay > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.media-name-overlay small {
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--color-muted);
 }
 .media-reveal {
   position: absolute;
@@ -802,7 +958,7 @@ body:has(.auth-page) {
     color-mix(in srgb, var(--color-canvas) 93%, transparent)
   );
   opacity: 0;
-  transition: opacity 160ms;
+  transition: opacity var(--dur-fast) var(--ease-out);
   font-size: 12px;
   font-weight: 600;
 }
@@ -913,11 +1069,94 @@ body:has(.auth-page) {
 .media-request-card {
   position: relative;
 }
+
+/* A hero's facts panel (performer and title detail): tone distance and a
+   1px edge over the backdrop scrim, never a shadow; one fact per row,
+   label muted on the left, value on the right. */
+.hero-facts {
+  padding: 16px;
+  border: 1px solid var(--color-edge);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-canvas) 55%, transparent);
+}
+.hero-facts dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.375rem 1rem;
+  margin: 0;
+  font-size: 0.875rem;
+}
+.hero-facts dt {
+  color: var(--color-muted);
+}
+.hero-facts dd {
+  margin: 0;
+  min-width: 0;
+}
+/* A fact that is also a jump (the year browse): an underlined link, since
+   colour alone does not mark one. */
+.hero-facts-link {
+  color: var(--color-accent-text);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}
+
+/* Artwork lightbox (EnlargeableImage in shared.tsx: performer photo, title
+   poster): the whole image, never cropped or upscaled, on the dialog scrim.
+   The trigger marks itself with a zoom cursor and, on hover or keyboard
+   focus, the accent ring at the house 4px offset. */
+.enlarge-open {
+  cursor: zoom-in;
+  outline: 2px solid transparent;
+  outline-offset: 4px;
+  transition: outline-color var(--dur-fast) var(--ease-out);
+}
+.enlarge-open:hover {
+  outline-color: var(--color-accent);
+}
+/* Tailwind's preflight zeroes every margin, which pins a modal dialog to the
+   top-left; inset 0 + auto margins restore the native centering on both
+   axes. */
+.lightbox {
+  inset: 0;
+  margin: auto;
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: visible;
+}
+.lightbox::backdrop {
+  background: color-mix(in srgb, var(--color-canvas) 88%, transparent);
+}
+.lightbox img {
+  display: block;
+  max-width: calc(100vw - 4rem);
+  max-height: calc(100dvh - 4rem);
+  border-radius: 10px;
+  border: 1px solid var(--color-edge);
+}
+.lightbox-close {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  width: 44px;
+  padding: 0;
+}
+/* Cards are real links (middle-click opens a new tab); they render like
+   the buttons they replaced. */
 .media-open {
   display: block;
   width: 100%;
   text-align: inherit;
   border-radius: inherit;
+}
+.media-open,
+a.media-card {
+  color: inherit;
+  text-decoration: none;
 }
 .media-quick-overlay {
   position: absolute;
@@ -936,7 +1175,7 @@ body:has(.auth-page) {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transition: opacity 160ms ease-in-out;
+  transition: opacity var(--dur-fast) var(--ease-out);
 }
 /* The overlay covers the whole card, so it must never eat the click that
  * opens the detail page: it stays pointer-transparent and only its own
@@ -1019,6 +1258,7 @@ body:has(.auth-page) {
   margin-bottom: 26px;
 }
 .settings-tabs button {
+  flex: 1 1 0;
   padding: 13px 18px;
   color: var(--color-muted);
   border-bottom: 2px solid transparent;
@@ -1044,16 +1284,21 @@ body:has(.auth-page) {
   font-size: 0.875rem;
   margin-top: 4px;
 }
-.settings-connection-status {
-  border-top: 1px solid var(--color-edge);
-  border-bottom: 1px solid var(--color-edge);
-  margin-top: 18px;
-  padding: 16px 0;
+/* Rule 13: an inline link still gets a 24px target (44px on touch). */
+.settings-key-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  color: var(--color-accent-text);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
 }
-/* Stacked provider cards share one divider instead of two. */
-.settings-connection-status + .settings-connection-status {
-  border-top: 0;
-  margin-top: 0;
+@media (pointer: coarse) {
+  .settings-key-link {
+    min-height: 44px;
+  }
 }
 .settings-connection-save {
   display: grid;
@@ -1074,25 +1319,6 @@ body:has(.auth-page) {
 .judgment-check[data-state="failed"] {
   color: var(--color-danger);
 }
-.settings-connection-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-.settings-connection-actions p {
-  flex: 1 1 260px;
-}
-.settings-connection-actions button {
-  flex-shrink: 0;
-}
-@media (max-width: 600px) {
-  .settings-connection-actions button {
-    width: 100%;
-  }
-}
-
 .settings-service-summary {
   display: flex;
   align-items: center;
@@ -1111,6 +1337,22 @@ body:has(.auth-page) {
   flex-wrap: wrap;
   gap: 10px;
 }
+/* A service title with its connection status right beside it. */
+.settings-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+.settings-title-row > .settings-service-status {
+  margin-top: 0;
+}
+/* Save and Cancel while editing: right-aligned under the fields, no hairline
+   (the editor's own top rule already separates it). */
+.settings-card-actions {
+  justify-content: flex-end;
+  margin-top: 16px;
+}
 .settings-service-status {
   margin-top: 18px;
   font-size: 0.875rem;
@@ -1125,6 +1367,17 @@ body:has(.auth-page) {
   margin-top: 16px;
   padding-top: 16px;
   border-top: 1px solid var(--color-edge);
+}
+/* Card action icons sit at the label's cap height; the icon side gets less
+   padding so icon plus label read as centered. */
+.settings-card-actions .btn .icon,
+.settings-destructive-row .btn .icon {
+  width: 1rem;
+  height: 1rem;
+}
+.settings-card-actions .btn:has(> .icon:first-child),
+.settings-destructive-row .btn:has(> .icon:first-child) {
+  padding-left: 0.75rem;
 }
 .connection-state {
   display: inline-flex;
@@ -1309,7 +1562,10 @@ body:has(.auth-page) {
     border-top: 1px solid var(--color-edge);
     background: color-mix(in oklab, var(--color-panel) 97%, transparent);
   }
+  /* Rule 31: equal columns; each link/button fills its whole cell, so the
+   * hit area is the cell, not just the icon. */
   .mobile-bottom-nav > * {
+    flex: 1 1 0;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -1387,7 +1643,8 @@ body:has(.auth-page) {
     margin: 12px 0 16px;
   }
   /* Wrapping put the active tab on its own row and split the underline;
-   * scroll the strip instead. */
+   * scroll the strip instead. min-width: max-content + nowrap keep every
+   * label whole. */
   .settings-tabs {
     flex-wrap: nowrap;
     overflow-x: auto;
@@ -1395,6 +1652,8 @@ body:has(.auth-page) {
   }
   .settings-tabs button {
     flex: none;
+    min-width: max-content;
+    white-space: nowrap;
     padding: 12px 14px;
   }
   .auth-card {
@@ -1428,5 +1687,10 @@ body:has(.auth-page) {
   .global-search .icon-button {
     width: 44px;
     height: 44px;
+  }
+  /* .segmented button wins the specificity tie over the bare `button`
+   * floor above, so it restates the 44px floor itself. */
+  .segmented button {
+    min-height: 44px;
   }
 }

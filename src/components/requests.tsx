@@ -1,7 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useSearchParams } from "next/navigation";
+import Link from "next/link";
 import {
   ApiError,
   api,
@@ -123,6 +131,8 @@ function RequestCard({
   rowError: { id: string; message: string } | null;
 }) {
   const summary = useCatalogSummary(r.media, providers);
+  const cancelRef = useRef<HTMLDialogElement>(null);
+  const cancelTitleId = useId();
   const acquisition = r.acquisition ?? null;
   const phase = acquisition ? acquisitionPhase(acquisition) : null;
   // Imported work reads "In library", not "Approved": the cancel button
@@ -131,7 +141,12 @@ function RequestCard({
   const statusChip =
     phase === "library"
       ? { label: "In library", state: "available" }
-      : { label: GROUP_LABEL[r.decision], state: r.decision };
+      : {
+          label: GROUP_LABEL[r.decision],
+          // status.ts's ladder reads a pending decision as "requested", so
+          // the chip takes the requested tone — never the accent.
+          state: r.decision === "pending" ? "requested" : r.decision,
+        };
   let pill: { label: string; tone: string } | null = null;
   if (acquisition) {
     if (phase === "paused") pill = { label: "Paused", tone: "paused" };
@@ -149,6 +164,10 @@ function RequestCard({
     .filter(Boolean)
     .join(" · ");
   const art = summary ? imgSrc(summary.imageUrl) : undefined;
+  // The confirm dialog names the request; with no resolved summary the
+  // provider reference stands in — never a guessed title.
+  const requestTitle =
+    summary?.title ?? `${r.media.provider} · ${r.media.kind} · ${r.media.id}`;
   return (
     <li className="panel request-card">
       {/* The only art the providers give us is the portrait poster, so the
@@ -235,7 +254,7 @@ function RequestCard({
         {canApprove && (
           <button
             type="button"
-            className="btn btn-accent"
+            className="btn"
             disabled={busy}
             onClick={() => onDecide(r, "approved")}
           >
@@ -253,14 +272,51 @@ function RequestCard({
           </button>
         )}
         {canCancel && (
-          <button
-            type="button"
-            className="btn"
-            disabled={busy}
-            onClick={() => onDecide(r, "cancelled")}
-          >
-            Cancel request
-          </button>
+          <>
+            <button
+              type="button"
+              className="btn btn-danger"
+              disabled={busy}
+              onClick={() => cancelRef.current?.showModal()}
+            >
+              Cancel request
+            </button>
+            <dialog
+              ref={cancelRef}
+              className="bulk-dialog"
+              aria-labelledby={cancelTitleId}
+            >
+              <div className="p-5">
+                <h3 id={cancelTitleId} className="font-semibold">
+                  Cancel “{requestTitle}”?
+                </h3>
+                <p className="mt-2 text-sm text-muted">
+                  Cancelling removes only this request&rsquo;s intent — never
+                  shared media. You can request the title again.
+                </p>
+                <div className="mt-4 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => cancelRef.current?.close()}
+                  >
+                    Keep request
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-danger"
+                    disabled={busy}
+                    onClick={() => {
+                      cancelRef.current?.close();
+                      onDecide(r, "cancelled");
+                    }}
+                  >
+                    Cancel request
+                  </button>
+                </div>
+              </div>
+            </dialog>
+          </>
         )}
       </div>
       {rowError !== null && rowError.id === r.id && (
@@ -403,9 +459,20 @@ export function RequestsView() {
   } else if (rows.length === 0) {
     content = (
       <div className="panel p-8 text-center text-sm text-muted">
-        {isStaff
-          ? "No one has requested anything yet."
-          : "You have not requested anything yet. Find something in the catalog and request it."}
+        {isStaff ? (
+          <>
+            No one has requested anything yet.{" "}
+            <Link
+              href="/?view=titles"
+              prefetch={false}
+              className="text-accent underline"
+            >
+              Browse titles
+            </Link>
+          </>
+        ) : (
+          "You have not requested anything yet. Find something in the catalog and request it."
+        )}
       </div>
     );
   } else if (filtered.length === 0) {
@@ -509,21 +576,36 @@ export function RequestsView() {
 
       <div className="mb-6 flex flex-wrap items-end gap-3">
         <div>
-          <label className="label" htmlFor="req-type">
+          <span className="label" id="req-type-label">
             Type
-          </label>
-          <select
-            id="req-type"
-            className="input"
-            value={type}
-            onChange={(e) =>
-              setP({ type: e.target.value === "all" ? null : e.target.value })
-            }
+          </span>
+          <div
+            role="group"
+            aria-labelledby="req-type-label"
+            className="segmented"
           >
-            <option value="all">All</option>
-            <option value="movie">Movies</option>
-            <option value="scene">Scenes</option>
-          </select>
+            <button
+              type="button"
+              aria-pressed={type === "all"}
+              onClick={() => setP({ type: null })}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              aria-pressed={type === "movie"}
+              onClick={() => setP({ type: "movie" })}
+            >
+              Movies
+            </button>
+            <button
+              type="button"
+              aria-pressed={type === "scene"}
+              onClick={() => setP({ type: "scene" })}
+            >
+              Scenes
+            </button>
+          </div>
         </div>
         <div>
           <label className="label" htmlFor="req-status">
@@ -547,22 +629,29 @@ export function RequestsView() {
           </select>
         </div>
         <div>
-          <label className="label" htmlFor="req-sort">
+          <span className="label" id="req-sort-label">
             Sort
-          </label>
-          <select
-            id="req-sort"
-            className="input"
-            value={sort}
-            onChange={(e) =>
-              setP({
-                sort: e.target.value === "recent" ? null : e.target.value,
-              })
-            }
+          </span>
+          <div
+            role="group"
+            aria-labelledby="req-sort-label"
+            className="segmented"
           >
-            <option value="recent">Most recent</option>
-            <option value="modified">Last modified</option>
-          </select>
+            <button
+              type="button"
+              aria-pressed={sort === "recent"}
+              onClick={() => setP({ sort: null })}
+            >
+              Most recent
+            </button>
+            <button
+              type="button"
+              aria-pressed={sort === "modified"}
+              onClick={() => setP({ sort: "modified" })}
+            >
+              Last modified
+            </button>
+          </div>
         </div>
       </div>
 

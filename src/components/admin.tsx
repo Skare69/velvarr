@@ -74,7 +74,9 @@ export function AdminView() {
             Manage library access, requests, and account permissions.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        {/* Rule 32: on coarse pointers the primary action drops below the
+         * heading and spans the content width. */}
+        <div className="flex items-center gap-2 pointer-coarse:w-full pointer-coarse:flex-col pointer-coarse:items-stretch">
           <button
             type="button"
             className="btn"
@@ -138,12 +140,12 @@ export function AdminView() {
                   <div className="user-name-cell">
                     <UserAvatar account={a} />
                     <span className="font-medium">{a.name}</span>
-                    {a.isOwner && (
-                      <span className="chip chip-accent">Owner</span>
-                    )}
+                    {a.isOwner && <span className="chip">Owner</span>}
                   </div>
                 </td>
-                <td>{a.requestCount}</td>
+                <td className="tabular-nums">
+                  {new Intl.NumberFormat().format(a.requestCount)}
+                </td>
                 <td>
                   {a.isOwner
                     ? "Owner"
@@ -151,9 +153,8 @@ export function AdminView() {
                 </td>
                 <td>{JOINED_FMT.format(a.joinedAt)}</td>
                 <td>
-                  <span
-                    className={`chip ${a.enabled || a.isOwner ? "chip-accent" : ""}`}
-                  >
+                  {/* Rule 4: status is not an action, so it stays neutral. */}
+                  <span className="chip">
                     {a.enabled || a.isOwner ? "Active" : "Disabled"}
                   </span>
                 </td>
@@ -290,20 +291,34 @@ function AccountDialog({
         </h3>
 
         <div>
-          <label className="label" htmlFor={`role-${initial.id}`}>
+          {/* Rule 39: three exclusive options show at once as a segmented
+           * control, not a dropdown. */}
+          <span className="label" id={`role-${initial.id}-label`}>
             Role
-          </label>
-          <select
-            id={`role-${initial.id}`}
-            className="input"
-            value={owner ? initial.role : role}
-            disabled={owner || pending}
-            onChange={(e) => setRole(e.target.value as Role)}
+          </span>
+          <div
+            role="group"
+            aria-labelledby={`role-${initial.id}-label`}
+            className="segmented"
           >
-            <option value="requester">Requester</option>
-            <option value="moderator">Moderator</option>
-            <option value="admin">Admin</option>
-          </select>
+            {(
+              [
+                ["requester", "Requester"],
+                ["moderator", "Moderator"],
+                ["admin", "Admin"],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={(owner ? initial.role : role) === value}
+                disabled={owner || pending}
+                onClick={() => setRole(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
 
         <div>

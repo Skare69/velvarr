@@ -212,7 +212,11 @@ export function PreferencesView() {
         />
         {orderList}
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          <button type="submit" className="btn" disabled={!dirty || saving}>
+          <button
+            type="submit"
+            className="btn btn-accent prefs-save"
+            disabled={!dirty || saving}
+          >
             {saving ? "Saving…" : "Save preferences"}
           </button>
           <button
@@ -284,7 +288,8 @@ export function PreferencesView() {
   // section headings, the controls.
   return (
     <div>
-      {form ?? <p className="cat-note">Loading preferences…</p>}
+      {/* Rule 14: the placeholder waits one second before it shows. */}
+      {form ?? <p className="cat-note delayed-reveal">Loading preferences…</p>}
       {saved.error !== null && saved.data !== null && (
         <ErrorPanel
           title="Could not refresh preferences"

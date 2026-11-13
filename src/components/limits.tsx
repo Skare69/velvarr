@@ -4,16 +4,19 @@
  * unproven rather than omitted. No data fetching — pure static content.
  */
 
+// Rule 45: grouped digits — TPDB's fake total cap renders locale-formatted.
+const CAPPED_TOTAL = new Intl.NumberFormat(undefined).format(10000);
+
 export function LimitsPanel() {
   return (
     <div className="panel p-5">
       <h3 className="font-semibold">Known limits</h3>
-      <p className="mt-1 text-sm text-muted">
+      <p className="mt-1 max-w-[75ch] text-sm text-muted">
         Each item below was measured against the live providers during
         development. When a result looks odd, the reason is usually one of these
         — not a bug and not an outage.
       </p>
-      <ul className="mt-3 space-y-3 text-sm text-muted">
+      <ul className="mt-3 max-w-[75ch] space-y-3 text-sm text-muted">
         <li>
           <strong className="font-medium text-ink">
             Movies exist only in TPDB.
@@ -35,9 +38,9 @@ export function LimitsPanel() {
             Some result counts are absent on purpose.
           </strong>{" "}
           TPDB's unfiltered and title-only-filtered listings report a fake total
-          capped at <code className="chip">10000</code>, so a count is shown
-          only when it is genuinely real. Narrowed (filtered) queries do return
-          real counts.
+          capped at <code className="chip">{CAPPED_TOTAL}</code>, so a count is
+          shown only when it is genuinely real. Narrowed (filtered) queries do
+          return real counts.
         </li>
         <li>
           <strong className="font-medium text-ink">
@@ -92,14 +95,14 @@ export function LimitsPanel() {
         </li>
       </ul>
       <h4 className="mt-5 text-sm font-semibold">Provider usage terms</h4>
-      <p className="mt-1 text-sm text-muted">
+      <p className="mt-1 max-w-[75ch] text-sm text-muted">
         Neither provider publishes usage terms covering third-party apps,
         artwork re-serving, caching or rate limits. This is an open question for
         the operator, not an approval: running Velvarr against these providers
         is not cleared by either provider in writing.
       </p>
       <h4 className="mt-5 text-sm font-semibold">Caching</h4>
-      <p className="mt-1 text-sm text-muted">
+      <p className="mt-1 max-w-[75ch] text-sm text-muted">
         Velvarr caches, in three scopes. Provider metadata is held in server
         memory for 10 minutes (capped at 500 entries, oldest evicted); when the
         upstream is unavailable or times out, the last good copy is served
@@ -142,7 +145,7 @@ export function ReleaseStatusPanel() {
   return (
     <div className="panel p-5">
       <h3 className="font-semibold">Release status</h3>
-      <p className="mt-1 text-sm text-muted">
+      <p className="mt-1 max-w-[75ch] text-sm text-muted">
         What this build has actually proven, and what it has not. Nothing here
         is a promise.
       </p>
@@ -153,7 +156,7 @@ export function ReleaseStatusPanel() {
               <span className="font-medium">{r.area}</span>
               <span className="chip">{r.state}</span>
             </dt>
-            <dd className="mt-1 text-muted">{r.detail}</dd>
+            <dd className="mt-1 max-w-[75ch] text-muted">{r.detail}</dd>
           </div>
         ))}
       </dl>

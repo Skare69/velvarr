@@ -322,17 +322,33 @@ function SetupWizard({ onDone }: { onDone: () => void }) {
   const [whisparrApiKey, setWhisparrApiKey] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<
+    Partial<Record<keyof typeof f, string>>
+  >({});
 
   const bind = (k: keyof typeof f) => (e: ChangeEvent<HTMLInputElement>) =>
     setF((cur) => ({ ...cur, [k]: e.target.value }));
+  // Rule 35: a flagged field rechecks when the user leaves it, so a filled
+  // field drops its error without waiting for the next submit.
+  const recheck = (k: keyof typeof f) => () => {
+    if (f[k].trim())
+      setFieldErrors((cur) => {
+        const next = { ...cur };
+        delete next[k];
+        return next;
+      });
+  };
 
   const inspect = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
-    if (Object.values(f).some((v) => !v.trim())) {
-      setError("All fields are required.");
-      return;
-    }
+    // Rule 35: a missing field flags that field, at that field — the
+    // form-level alert stays for server and network failures only.
+    const errs: Partial<Record<keyof typeof f, string>> = {};
+    for (const key of Object.keys(f) as (keyof typeof f)[])
+      if (!f[key].trim()) errs[key] = "This field is required.";
+    setFieldErrors(errs);
+    if (Object.keys(errs).length > 0) return;
     setPending(true);
     try {
       const r = await api<{
@@ -408,9 +424,19 @@ function SetupWizard({ onDone }: { onDone: () => void }) {
                 type="password"
                 className="input"
                 autoComplete="off"
+                aria-invalid={fieldErrors.setupSecret ? true : undefined}
+                aria-describedby={
+                  fieldErrors.setupSecret ? "su-secret-error" : undefined
+                }
                 value={f.setupSecret}
                 onChange={bind("setupSecret")}
+                onBlur={recheck("setupSecret")}
               />
+              {fieldErrors.setupSecret && (
+                <p id="su-secret-error" className="mt-1 text-xs text-danger">
+                  {fieldErrors.setupSecret}
+                </p>
+              )}
               <p className="mt-1 text-xs text-muted">
                 The VELVARR_SETUP_SECRET value from your compose/.env file.
                 Whoever knows it can claim ownership of this fresh instance.
@@ -422,14 +448,24 @@ function SetupWizard({ onDone }: { onDone: () => void }) {
               </label>
               <input
                 id="su-url"
-                type="text"
+                type="url"
                 className="input"
                 placeholder="http://jellyfin:8096"
-                autoComplete="off"
+                autoComplete="url"
                 maxLength={300}
+                aria-invalid={fieldErrors.jellyfinUrl ? true : undefined}
+                aria-describedby={
+                  fieldErrors.jellyfinUrl ? "su-url-error" : undefined
+                }
                 value={f.jellyfinUrl}
                 onChange={bind("jellyfinUrl")}
+                onBlur={recheck("jellyfinUrl")}
               />
+              {fieldErrors.jellyfinUrl && (
+                <p id="su-url-error" className="mt-1 text-xs text-danger">
+                  {fieldErrors.jellyfinUrl}
+                </p>
+              )}
               <p className="mt-1 text-xs text-muted">
                 How Velvarr reaches Jellyfin — must resolve from inside the
                 Velvarr container (http://jellyfin:8096 only works on a shared
@@ -442,14 +478,26 @@ function SetupWizard({ onDone }: { onDone: () => void }) {
               </label>
               <input
                 id="su-ext"
-                type="text"
+                type="url"
                 className="input"
                 placeholder="https://jellyfin.example.com"
-                autoComplete="off"
+                autoComplete="url"
                 maxLength={300}
+                aria-invalid={
+                  fieldErrors.jellyfinExternalUrl ? true : undefined
+                }
+                aria-describedby={
+                  fieldErrors.jellyfinExternalUrl ? "su-ext-error" : undefined
+                }
                 value={f.jellyfinExternalUrl}
                 onChange={bind("jellyfinExternalUrl")}
+                onBlur={recheck("jellyfinExternalUrl")}
               />
+              {fieldErrors.jellyfinExternalUrl && (
+                <p id="su-ext-error" className="mt-1 text-xs text-danger">
+                  {fieldErrors.jellyfinExternalUrl}
+                </p>
+              )}
               <p className="mt-1 text-xs text-muted">
                 The Jellyfin web address users open in a browser. Used to build
                 playback links.
@@ -464,9 +512,19 @@ function SetupWizard({ onDone }: { onDone: () => void }) {
                 type="password"
                 className="input"
                 autoComplete="off"
+                aria-invalid={fieldErrors.jellyfinApiKey ? true : undefined}
+                aria-describedby={
+                  fieldErrors.jellyfinApiKey ? "su-key-error" : undefined
+                }
                 value={f.jellyfinApiKey}
                 onChange={bind("jellyfinApiKey")}
+                onBlur={recheck("jellyfinApiKey")}
               />
+              {fieldErrors.jellyfinApiKey && (
+                <p id="su-key-error" className="mt-1 text-xs text-danger">
+                  {fieldErrors.jellyfinApiKey}
+                </p>
+              )}
               <p className="mt-1 text-xs text-muted">
                 Administrator key from Jellyfin Dashboard → API Keys. Used for
                 read-only server status; user actions always run under the
@@ -482,9 +540,19 @@ function SetupWizard({ onDone }: { onDone: () => void }) {
                 type="text"
                 className="input"
                 autoComplete="username"
+                aria-invalid={fieldErrors.username ? true : undefined}
+                aria-describedby={
+                  fieldErrors.username ? "su-user-error" : undefined
+                }
                 value={f.username}
                 onChange={bind("username")}
+                onBlur={recheck("username")}
               />
+              {fieldErrors.username && (
+                <p id="su-user-error" className="mt-1 text-xs text-danger">
+                  {fieldErrors.username}
+                </p>
+              )}
               <p className="mt-1 text-xs text-muted">
                 The Jellyfin account that becomes Velvarr's permanent owner.
               </p>
@@ -498,9 +566,19 @@ function SetupWizard({ onDone }: { onDone: () => void }) {
                 type="password"
                 className="input"
                 autoComplete="current-password"
+                aria-invalid={fieldErrors.password ? true : undefined}
+                aria-describedby={
+                  fieldErrors.password ? "su-pass-error" : undefined
+                }
                 value={f.password}
                 onChange={bind("password")}
+                onBlur={recheck("password")}
               />
+              {fieldErrors.password && (
+                <p id="su-pass-error" className="mt-1 text-xs text-danger">
+                  {fieldErrors.password}
+                </p>
+              )}
               <p className="mt-1 text-xs text-muted">
                 That account's Jellyfin password. Velvarr verifies it once
                 against Jellyfin and never stores it — every login happens
@@ -583,10 +661,10 @@ function SetupWizard({ onDone }: { onDone: () => void }) {
                   </label>
                   <input
                     id="su-whisparr-url"
-                    type="text"
+                    type="url"
                     className="input"
                     placeholder="http://whisparr:6969"
-                    autoComplete="off"
+                    autoComplete="url"
                     maxLength={300}
                     value={whisparrUrl}
                     onChange={(e) => setWhisparrUrl(e.target.value)}
@@ -643,14 +721,21 @@ function LoginView({ onSignedIn }: { onSignedIn: () => void }) {
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<{
+    username?: string;
+    password?: string;
+  }>({});
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
-    if (!username.trim() || !password) {
-      setError("Enter your username and password.");
-      return;
-    }
+    // Rule 35: each missing field flags itself at the field; the form-level
+    // alert stays for server and network failures only.
+    const errs: { username?: string; password?: string } = {};
+    if (!username.trim()) errs.username = "Enter your username.";
+    if (!password) errs.password = "Enter your password.";
+    setFieldErrors(errs);
+    if (errs.username || errs.password) return;
     setPending(true);
     try {
       await api<{ account: Account }>("/api/login", {
@@ -698,9 +783,23 @@ function LoginView({ onSignedIn }: { onSignedIn: () => void }) {
               type="text"
               className="input"
               autoComplete="username"
+              aria-invalid={fieldErrors.username ? true : undefined}
+              aria-describedby={
+                fieldErrors.username ? "li-user-error" : undefined
+              }
               value={username}
               onChange={(e) => setUsername(e.target.value)}
+              onBlur={() => {
+                // Rule 35: a filled field drops its error when left.
+                if (username.trim())
+                  setFieldErrors((c) => ({ ...c, username: undefined }));
+              }}
             />
+            {fieldErrors.username && (
+              <p id="li-user-error" className="mt-1 text-xs text-danger">
+                {fieldErrors.username}
+              </p>
+            )}
           </div>
           <div>
             <label className="label" htmlFor="li-pass">
@@ -711,9 +810,22 @@ function LoginView({ onSignedIn }: { onSignedIn: () => void }) {
               type="password"
               className="input"
               autoComplete="current-password"
+              aria-invalid={fieldErrors.password ? true : undefined}
+              aria-describedby={
+                fieldErrors.password ? "li-pass-error" : undefined
+              }
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              onBlur={() => {
+                if (password)
+                  setFieldErrors((c) => ({ ...c, password: undefined }));
+              }}
             />
+            {fieldErrors.password && (
+              <p id="li-pass-error" className="mt-1 text-xs text-danger">
+                {fieldErrors.password}
+              </p>
+            )}
           </div>
           <button
             type="submit"
@@ -730,6 +842,9 @@ function LoginView({ onSignedIn }: { onSignedIn: () => void }) {
 }
 
 /* ---------- Shell ---------- */
+
+/** localStorage key of the desktop sidebar's collapsed state. */
+const SIDEBAR_KEY = "velvarr:sidebar-collapsed";
 
 const VIEWS = [
   "discover",
@@ -855,7 +970,10 @@ function GlobalSearchForm() {
  * authoritative rows, so approving a request drops the count immediately.
  * ponytail: no polling or SSE — another tab's decision lands on this one's
  * next navigation; add a live channel only if operators need cross-tab counts. */
-function usePendingApprovals(account: Account, view: View): number {
+function usePendingApprovals(
+  account: Account,
+  view: View,
+): number | "unavailable" {
   const eligible =
     account.role === "admin" ||
     account.role === "moderator" ||
@@ -865,16 +983,21 @@ function usePendingApprovals(account: Account, view: View): number {
     [eligible, account, view],
   );
   // The Requests view announces fresh authoritative rows, so approving a
-  // request drops the count immediately. A failed read counts zero — a
-  // wrong number is worse than no badge.
+  // request drops the count immediately. A failed read never reads as zero
+  // — that would look like "nothing to approve"; the badge shows "?" and
+  // names the count unavailable (§5: a failing source degrades with a
+  // named error).
   useEffect(() => {
     if (!eligible) return;
     window.addEventListener(REQUESTS_CHANGED, reload);
     return () => window.removeEventListener(REQUESTS_CHANGED, reload);
   }, [eligible, reload]);
+  // "?" only for an eligible read that failed: an account that cannot
+  // decide, or a read still in flight, shows no badge at all.
+  if (!eligible || (error === null && data === null)) return 0;
   return error === null && data !== null
     ? countPendingApprovals(data.requests, account)
-    : 0;
+    : "unavailable";
 }
 
 function Shell() {
@@ -903,6 +1026,17 @@ function Shell() {
   const isAdmin = session.account.role === "admin";
   const navigation = useRef<HTMLDialogElement>(null);
   const accountMenu = useRef<HTMLDetailsElement>(null);
+  // Desktop sidebar collapse, remembered on this device. Read after mount:
+  // the server render has no localStorage, so the first paint is expanded.
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    setCollapsed(localStorage.getItem(SIDEBAR_KEY) === "1");
+  }, []);
+  const toggleSidebar = useCallback(() => {
+    const next = !collapsed;
+    localStorage.setItem(SIDEBAR_KEY, next ? "1" : "0");
+    setCollapsed(next);
+  }, [collapsed]);
   // The menu's Preferences button hides with the menu before showModal, so
   // that path restores focus by hand. Browse's openers are live when they
   // open, but a save remounts them (the reload clears acc, and "N hidden"
@@ -987,6 +1121,7 @@ function Shell() {
         href={item.id === "discover" ? "/" : `/?view=${item.id}`}
         className="nav-btn"
         aria-current={view === item.id ? "page" : undefined}
+        title={collapsed ? item.label : undefined}
         onClick={(event) => {
           if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)
             return;
@@ -995,15 +1130,20 @@ function Shell() {
         }}
       >
         <Icon name={item.icon} />
-        {item.label}
-        {item.id === "requests" && pendingApprovals > 0 && (
-          <span
-            className="nav-badge"
-            aria-label={`${pendingApprovals} request${pendingApprovals === 1 ? "" : "s"} awaiting approval`}
-          >
-            {pendingApprovals}
-          </span>
-        )}
+        <span className="nav-label">{item.label}</span>
+        {item.id === "requests" &&
+          (pendingApprovals === "unavailable" || pendingApprovals > 0) && (
+            <span
+              className="nav-badge"
+              aria-label={
+                pendingApprovals === "unavailable"
+                  ? "Approval count unavailable"
+                  : `${pendingApprovals} request${pendingApprovals === 1 ? "" : "s"} awaiting approval`
+              }
+            >
+              {pendingApprovals === "unavailable" ? "?" : pendingApprovals}
+            </span>
+          )}
       </a>
     </div>
   ));
@@ -1021,21 +1161,39 @@ function Shell() {
       <span className="brand-mark">
         <img src="/velvarr-logo.png" alt="" />
       </span>
-      Velvarr
+      <span className="brand-name">Velvarr</span>
     </a>
   );
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${collapsed ? " is-collapsed" : ""}`}>
       <a className="skip-link" href="#main-content">
         Skip to content
       </a>
-      <aside className="app-sidebar">
+      {/* A click on empty sidebar space toggles it too, a mouse shortcut;
+          the Collapse button is the keyboard and screen-reader control. */}
+      <aside
+        className="app-sidebar"
+        onClick={(event) => {
+          if (!(event.target as Element).closest("a, button")) toggleSidebar();
+        }}
+      >
         {brand}
         <nav className="app-nav" aria-label="Main">
           {navLinks}
         </nav>
         <div className="sidebar-footer">
+          <button
+            type="button"
+            className="nav-btn sidebar-toggle"
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? "Expand sidebar" : undefined}
+            onClick={toggleSidebar}
+          >
+            <Icon name={collapsed ? "chevron-right" : "chevron-left"} />
+            <span className="nav-label">Collapse</span>
+          </button>
           <Credit />
         </div>
       </aside>
