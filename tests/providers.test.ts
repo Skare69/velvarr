@@ -34,6 +34,7 @@ import {
   rememberCounterpart,
   COUNTERPART_MEMO_MAX,
   counterpartMemoSizeForTest,
+  metaCacheStateForTest,
   rejectedKeyClearAllowed,
   resolveSort,
   requestJson,
@@ -897,6 +898,41 @@ test("requestJson caches metadata reads and serves stale on upstream failure", a
       cacheTtlMs: 60_000,
     });
     assert.equal(count("/graphql"), 3);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("metadata cache holds at most its byte budget of payloads and evicts the oldest first", async () => {
+  // Each payload sits just under http.ts's 2 MiB JSON limit; 500 of them
+  // fit the entry cap, so only a byte budget keeps the total bounded.
+  const pad = "x".repeat(1_900_000);
+  const fixture = await startFixture((req, res) => {
+    sendJson(res, 200, { path: req.url, pad });
+  });
+  const TOKEN = "m".repeat(32);
+  const read = (n: number) =>
+    requestJson<{ path: string }>(fixture.origin, `/big/${n}`, TOKEN, {
+      service: "tpdb",
+      cacheTtlMs: 60_000,
+    });
+  const upstream = (n: number) =>
+    fixture.log.filter((r) => r.url === `/big/${n}`).length;
+  try {
+    const reads = 60;
+    for (let n = 0; n < reads; n++) await read(n);
+    const state = metaCacheStateForTest();
+    assert.ok(
+      state.bytes <= state.budget,
+      `${state.bytes} cached bytes exceed the ${state.budget} budget`,
+    );
+    assert.ok(state.entries < reads, "the budget must evict, not the cap");
+    // The newest read stays cached; the oldest was evicted and refetches.
+    await read(reads - 1);
+    assert.equal(upstream(reads - 1), 1);
+    await read(0);
+    assert.equal(upstream(0), 2);
+    assert.ok(metaCacheStateForTest().bytes <= state.budget);
   } finally {
     await fixture.close();
   }

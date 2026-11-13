@@ -103,11 +103,15 @@ import { getConfig } from "./storage.ts";
 // Metadata-provider cache: TPDB/StashDB reads only. Short-TTL freshness with
 // stale-on-error fallback, so an upstream blip serves the last good payload
 // instead of erroring a whole shelf. In-memory only, resets on restart.
-// ponytail: one global TTL and a FIFO cap; per-endpoint tuning or durability
-// only if real evidence demands it.
+// Bounded by an entry count and a byte budget (FIFO eviction): one payload
+// may reach http.ts's 2 MiB JSON limit, so 500 entries alone allowed ~1 GiB.
+// ponytail: one global TTL and FIFO eviction; per-endpoint tuning, LRU or
+// durability only if real evidence demands it.
 const META_CACHE_TTL_MS = 10 * 60_000;
 const META_CACHE_MAX = 500;
+const META_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 const metaCache = new Map<string, { at: number; bytes: Uint8Array }>();
+let metaCacheBytes = 0;
 // Identical reads already in flight share one upstream request: a card's
 // detail and availability lanes ask for the same record at the same moment.
 const metaInFlight = new Map<string, Promise<Uint8Array>>();
@@ -132,6 +136,7 @@ const artworkInFlight = new Map<
  * between phases so cached reads never mask a scripted outage. */
 export function resetMetaCache(): void {
   metaCache.clear();
+  metaCacheBytes = 0;
   metaInFlight.clear();
   artworkCache.clear();
   artworkCacheBytes = 0;
@@ -180,12 +185,35 @@ function isCacheable(service: Service, method: string, body: unknown): boolean {
 }
 
 function cachePut(key: string, bytes: Uint8Array): void {
-  if (metaCache.size >= META_CACHE_MAX) {
-    const oldest = metaCache.keys().next().value;
-    if (oldest !== undefined) metaCache.delete(oldest);
+  const previous = metaCache.get(key);
+  if (previous) {
+    metaCacheBytes -= previous.bytes.length;
+    metaCache.delete(key);
   }
-  metaCache.delete(key);
   metaCache.set(key, { at: Date.now(), bytes });
+  metaCacheBytes += bytes.length;
+  // The new entry sits last in insertion order, so it is never the victim.
+  while (
+    (metaCache.size > META_CACHE_MAX ||
+      metaCacheBytes > META_CACHE_MAX_BYTES) &&
+    metaCache.size > 1
+  ) {
+    const oldest = metaCache.keys().next().value!;
+    metaCacheBytes -= metaCache.get(oldest)!.bytes.length;
+    metaCache.delete(oldest);
+  }
+}
+
+/** Test seam: the real held payload bytes (summed from the entries, not the
+ * running counter) against the budget. */
+export function metaCacheStateForTest(): {
+  entries: number;
+  bytes: number;
+  budget: number;
+} {
+  let bytes = 0;
+  for (const entry of metaCache.values()) bytes += entry.bytes.length;
+  return { entries: metaCache.size, bytes, budget: META_CACHE_MAX_BYTES };
 }
 
 // A credential save/clear must take effect without a restart: the 10-minute
