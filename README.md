@@ -125,6 +125,8 @@ Put the variables in `.env.local`.
 
 Unless `VELVARR_ORIGIN` is `https:`, the cookie is `Secure` only when the proxy sends `X-Forwarded-Proto: https` or the request URL is https. On each change request, a supplied `Sec-Fetch-Site` header must say `same-origin`, and a request that sends a body or a `Content-Type` header must send `application/json`.
 
+When `VELVARR_ORIGIN` is not set and a change request has no `Sec-Fetch-Site` header, a supplied `Origin` header must name the host that receives the request (`Host` or `X-Forwarded-Host`). Browsers on plain-HTTP LAN addresses send no `Sec-Fetch-Site` header. This rule stops other apps on the same host from changing data, for example to sign you out. If a plain-HTTP proxy changes the `Host` header and changes fail with `origin_mismatch`, set `VELVARR_ORIGIN`.
+
 Each failed sign-in writes one log line: `[auth] failed sign-in attempt: account="<name>" ip="<address>"`. The log never contains the password. The address is the first `X-Forwarded-For` entry, or `unknown`. A client can set this header. Trust the address only when your proxy replaces the header.
 
 ## Phone access

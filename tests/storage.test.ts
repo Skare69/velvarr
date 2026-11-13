@@ -727,24 +727,47 @@ test("session cookie flags follow request transport and clear correctly", () => 
   assert.ok(clear.includes("Max-Age=0") && clear.includes("Secure"));
 });
 
-test("origin pin is optional: unset VELVARR_ORIGIN skips origin enforcement", () => {
+test("origin pin is optional: unset VELVARR_ORIGIN skips the configured pin", () => {
   // content-type is pinned because guardMutation now also refuses non-JSON
   // bodies on mutations (the form-CSRF gate); this test is about the pin.
-  const req = new Request("http://192.168.1.50:5577/api/login", {
-    method: "POST",
-    headers: {
-      origin: "http://other-host:5577",
-      "content-type": "application/json",
-    },
-    body: "{}",
-  });
+  const req = (headers: Record<string, string>) =>
+    new Request("http://192.168.1.50:5577/api/login", {
+      method: "POST",
+      headers: {
+        origin: "http://other-host:5577",
+        "content-type": "application/json",
+        ...headers,
+      },
+      body: "{}",
+    });
   const previous = process.env.VELVARR_ORIGIN;
   delete process.env.VELVARR_ORIGIN;
   try {
-    assert.doesNotThrow(() => security.guardMutation(req));
+    // Fetch metadata vouches for the origin, so a proxy that rewrites Host
+    // still works unpinned.
+    assert.doesNotThrow(() =>
+      security.guardMutation(req({ "sec-fetch-site": "same-origin" })),
+    );
+    // Without fetch metadata (plain-HTTP LAN), the Origin must name the
+    // request host. This pin moved: it used to pass unpinned, which let a
+    // sibling port's bodyless POST through (logout CSRF).
+    assert.throws(
+      () => security.guardMutation(req({})),
+      (e: { code: string }) => e.code === "origin_mismatch",
+    );
+    assert.doesNotThrow(() =>
+      security.guardMutation(req({ host: "other-host:5577" })),
+    );
+    assert.doesNotThrow(() =>
+      security.guardMutation(req({ "x-forwarded-host": "other-host:5577" })),
+    );
+    assert.throws(
+      () => security.guardMutation(req({ origin: "null" })),
+      (e: { code: string }) => e.code === "origin_mismatch",
+    );
     process.env.VELVARR_ORIGIN = "http://127.0.0.1:5577";
     assert.throws(
-      () => security.guardMutation(req),
+      () => security.guardMutation(req({ "sec-fetch-site": "same-origin" })),
       (e: { code: string }) => e.code === "origin_mismatch",
     );
   } finally {

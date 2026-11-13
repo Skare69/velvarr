@@ -8854,6 +8854,18 @@ test("same-site and form mutations are refused even with VELVARR_ORIGIN unset", 
     assert.equal(formBody.error.code, "bad_content_type");
     assert.equal(form.headers.get("set-cookie"), null);
 
+    // Plain-HTTP LAN browsers send no fetch metadata, and a sibling port's
+    // bodyless no-cors POST has no content type either: only its Origin
+    // tells it apart, so a foreign Origin cannot sign the owner out.
+    const logout = await call("POST", "/api/logout", {
+      origin: "http://192.168.50.246:8096",
+      cookie: owner,
+    });
+    assert.equal(logout.status, 403);
+    assert.equal((await errorShape(logout)).code, "origin_mismatch");
+    assert.equal(logout.headers.get("set-cookie"), null);
+
+    // count() runs with the owner cookie: the session survived.
     assert.equal(await count(), before);
 
     // The app's own unpinned requests pass the same gates.
@@ -8863,7 +8875,17 @@ test("same-site and form mutations are refused even with VELVARR_ORIGIN unset", 
       body: { username: "owner", password: "pass-owner" },
     });
     assert.equal(own.status, 200);
-    assert.match(cookieOf(own), /^velvarr_session=/);
+    const ownCookie = cookieOf(own);
+    assert.match(ownCookie, /^velvarr_session=/);
+
+    // The app's own bodyless POST without fetch metadata names the request
+    // host in its Origin and still signs out.
+    const ownLogout = await call("POST", "/api/logout", {
+      origin: ORIGIN,
+      cookie: ownCookie,
+    });
+    assert.equal(ownLogout.status, 200);
+    assert.match(ownLogout.headers.get("set-cookie") ?? "", /Max-Age=0/);
   } finally {
     process.env.VELVARR_ORIGIN = ORIGIN;
   }

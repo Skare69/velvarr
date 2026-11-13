@@ -101,6 +101,36 @@ function enforceOriginConfig(): URL {
   return url;
 }
 
+// Unpinned fallback when fetch metadata is absent. Browsers send
+// Sec-Fetch-Site only to trustworthy (https or loopback) URLs, so on a
+// plain-HTTP LAN origin a sibling port's bodyless no-cors POST arrives with
+// the SameSite=Strict cookie, no content type and only its own Origin.
+// A present Origin must therefore name the host the request was sent to.
+// A no-cors request cannot set Host or X-Forwarded-Host. Clients that send
+// no Origin (curl, scripts) are not browsers and carry no ambient cookie.
+function requireSameHostOrigin(request: Request): void {
+  const header = request.headers.get("origin");
+  if (header === null) return;
+  let got: string;
+  try {
+    got = new URL(header).host;
+  } catch {
+    throw new AppError(403, "origin_mismatch", "origin not allowed");
+  }
+  const hosts = [
+    request.headers.get("host"),
+    request.headers.get("x-forwarded-host")?.split(",")[0],
+    new URL(request.url).host,
+  ];
+  if (!hosts.some((host) => host?.trim().toLowerCase() === got)) {
+    throw new AppError(
+      403,
+      "origin_mismatch",
+      `origin not allowed: set VELVARR_ORIGIN to the address you browse (got ${got})`,
+    );
+  }
+}
+
 export function guardMutation(request: Request): void {
   // These two gates run even when VELVARR_ORIGIN is unset: SameSite=Strict
   // keeps the session cookie off cross-SITE requests, but a homelab's apps
@@ -108,10 +138,11 @@ export function guardMutation(request: Request): void {
   // with the victim's cookies and no CORS preflight. The browser's
   // Sec-Fetch-Site is the reliable same-origin signal; HTML forms cannot
   // send application/json, so any other content type on a mutation is a
-  // form post whatever the browser's age. Header-absent passes only for
-  // bodyless mutations (the app's own DELETEs): a wire-framed body without
-  // a JSON content type — form posts and typeless Blob bodies alike — is
-  // refused here.
+  // form post whatever the browser's age. A missing content type passes only
+  // for bodyless mutations (the app's own DELETEs): a wire-framed body
+  // without a JSON content type — form posts and typeless Blob bodies alike —
+  // is refused here. Bodyless POSTs without fetch metadata meet the
+  // unpinned Origin check (requireSameHostOrigin) below.
   const site = request.headers.get("sec-fetch-site");
   if (site && site.trim().toLowerCase() !== "same-origin") {
     throw new AppError(
@@ -135,7 +166,10 @@ export function guardMutation(request: Request): void {
       "mutations must be posted as application/json",
     );
   }
-  if (!originEnforced()) return;
+  if (!originEnforced()) {
+    if (!site) requireSameHostOrigin(request);
+    return;
+  }
   const configured = enforceOriginConfig();
   const header = request.headers.get("origin");
   if (!header) {
