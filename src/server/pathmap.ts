@@ -56,3 +56,47 @@ export function mappedPrefix(
   }
   return { comps: pathComps, fold: looksWindows(whisparrPath) };
 }
+
+/** Paths indexed by their case-folded components, so one lookup per prefix
+ * of a queried path replaces a samePathPrefix pass over every entry. */
+export type PrefixIndex<T> = Map<
+  string,
+  { exact: string; fold: boolean; seq: number; value: T }[]
+>;
+
+export function buildPrefixIndex<T>(
+  entries: { comps: string[]; fold: boolean; value: T }[],
+): PrefixIndex<T> {
+  const index: PrefixIndex<T> = new Map();
+  entries.forEach(({ comps, fold, value }, seq) => {
+    // Components never hold a separator, so "/"-joined keys are unambiguous.
+    const key = comps.map((c) => c.toLowerCase()).join("/");
+    const bucket = index.get(key) ?? [];
+    bucket.push({ exact: comps.join("/"), fold, seq, value });
+    index.set(key, bucket);
+  });
+  return index;
+}
+
+/** The values whose components are a prefix of any of `paths` under
+ * samePathPrefix (folding when the entry or the path is Windows-style),
+ * each once, in entry order. */
+export function prefixMatches<T>(index: PrefixIndex<T>, paths: string[]): T[] {
+  const hits = new Map<number, T>();
+  for (const path of paths) {
+    const comps = pathComponents(path);
+    const lower = comps.map((c) => c.toLowerCase());
+    const fold = looksWindows(path);
+    for (let length = 0; length <= comps.length; length += 1) {
+      const bucket = index.get(lower.slice(0, length).join("/"));
+      if (bucket === undefined) continue;
+      const exact = comps.slice(0, length).join("/");
+      for (const entry of bucket) {
+        if (fold || entry.fold || entry.exact === exact) {
+          hits.set(entry.seq, entry.value);
+        }
+      }
+    }
+  }
+  return [...hits].sort(([a], [b]) => a - b).map(([, value]) => value);
+}

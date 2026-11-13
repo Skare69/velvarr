@@ -7,10 +7,10 @@
 
 import { AppError, requestJson } from "./http.ts";
 import {
-  looksWindows,
+  buildPrefixIndex,
   mappedPrefix,
-  pathComponents,
-  samePathPrefix,
+  prefixMatches,
+  type PrefixIndex,
 } from "./pathmap.ts";
 import { isDeliverableMedia, UNDELIVERABLE_REASON } from "../lib/contracts.ts";
 import type {
@@ -298,35 +298,56 @@ function asMovieResources(dto: unknown): MovieResourceDto[] {
   return [];
 }
 
+type PathIndex = PrefixIndex<{ key: string; reference: MediaReference }>;
+
+// One path index per cached movie list (and its mappings), so each page of
+// list enrichment costs lookups only, never a pass over the whole list.
+const pathIndexes = new WeakMap<
+  MovieResourceDto[],
+  { mappings: string; index: PathIndex }
+>();
+
+function pathIndexFor(
+  dtos: MovieResourceDto[],
+  whisparr: NonNullable<IntegrationConfig["whisparr"]>,
+): PathIndex {
+  const mappings = JSON.stringify(whisparr.pathMappings ?? []);
+  const hit = pathIndexes.get(dtos);
+  if (hit?.mappings === mappings) return hit.index;
+  const entries = dtos.flatMap((dto) => {
+    const routed = identityOf(dto);
+    const path = asString(dto.path)?.trim() ?? "";
+    if (routed === null || path === "") return [];
+    const provider = routed.itemType === "movie" ? "tpdb" : "stashdb";
+    return [
+      {
+        ...mappedPrefix(path, whisparr.pathMappings),
+        value: {
+          key: `${provider}:${routed.itemType}:${routed.identity.toLowerCase()}`,
+          reference: {
+            provider,
+            kind: routed.itemType,
+            id: routed.identity,
+          } satisfies MediaReference,
+        },
+      },
+    ];
+  });
+  const index = buildPrefixIndex(entries);
+  pathIndexes.set(dtos, { mappings, index });
+  return index;
+}
+
 /** Path-correspondence matches for one Jellyfin item across the already
  *  fetched Whisparr resources: zero matches → [], one → [that reference],
  *  several distinct → all of them (the caller decides ambiguity policy). */
 function matchesByPaths(
-  dtos: MovieResourceDto[],
-  whisparr: NonNullable<IntegrationConfig["whisparr"]>,
+  index: PathIndex,
   jellyfinPaths: string[],
 ): MediaReference[] {
   const distinct = new Map<string, MediaReference>();
-  for (const dto of dtos) {
-    const routed = identityOf(dto);
-    const path = asString(dto.path)?.trim() ?? "";
-    if (routed === null || path === "") continue;
-    const mapped = mappedPrefix(path, whisparr.pathMappings);
-    const matches = jellyfinPaths.some((jp) =>
-      samePathPrefix(
-        mapped.comps,
-        pathComponents(jp),
-        mapped.fold || looksWindows(jp),
-      ),
-    );
-    if (!matches) continue;
-    const provider = routed.itemType === "movie" ? "tpdb" : "stashdb";
-    const key = `${provider}:${routed.itemType}:${routed.identity.toLowerCase()}`;
-    distinct.set(key, {
-      provider,
-      kind: routed.itemType,
-      id: routed.identity,
-    });
+  for (const { key, reference } of prefixMatches(index, jellyfinPaths)) {
+    distinct.set(key, reference);
   }
   return [...distinct.values()];
 }
@@ -348,7 +369,7 @@ export async function findWhisparrItemByPath(
   // share one /api/v3/movie fetch per window, so a detail page may show
   // Whisparr data up to 30 s old.
   const dtos = await cachedMovieList(whisparr);
-  const matches = matchesByPaths(dtos, whisparr, jellyfinPaths);
+  const matches = matchesByPaths(pathIndexFor(dtos, whisparr), jellyfinPaths);
   if (matches.length > 1) {
     throw new AppError(
       409,
@@ -425,7 +446,7 @@ function cachedMovieList(
   }
   const at = Date.now();
   // Cache only the fields path correspondence reads (identityOf and
-  // matchesByPaths: itemType, path, foreignId, tmdbId, tpdbId, stashId) —
+  // pathIndexFor: itemType, path, foreignId, tmdbId, tpdbId, stashId) —
   // not artwork or other bulky metadata.
   const dtos = requestJson<unknown>(
     whisparr.url,
@@ -497,10 +518,10 @@ export async function resolveIdentitiesByPath(
   if (!whisparr?.url || !whisparr.apiKey) return new Map();
   const usable = entries.filter((e) => e.paths.length > 0);
   if (usable.length === 0) return new Map();
-  const dtos = await cachedMovieList(whisparr);
+  const index = pathIndexFor(await cachedMovieList(whisparr), whisparr);
   const resolved = new Map<string, MediaReference>();
   for (const entry of usable) {
-    const matches = matchesByPaths(dtos, whisparr, entry.paths);
+    const matches = matchesByPaths(index, entry.paths);
     if (matches.length === 1) resolved.set(entry.id, matches[0]!);
   }
   return resolved;

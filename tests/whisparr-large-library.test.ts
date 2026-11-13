@@ -140,3 +140,73 @@ test("changing credentials cannot reuse another key's cached collection", async 
     },
   );
 });
+
+// Counts mappedPrefix calls: it walks the configured mappings once per
+// Whisparr path it maps, so the count is the number of paths mapped.
+class CountedMappings extends Array<{
+  whisparrPrefix: string;
+  jellyfinPrefix: string;
+}> {
+  walks = 0;
+  override [Symbol.iterator]() {
+    this.walks += 1;
+    return super[Symbol.iterator]();
+  }
+}
+
+test("a 50-entry page against a 50 000-title list maps each title once per cached list", async () => {
+  const titles = 50_000;
+  const rows = Array.from({ length: titles }, (_, index) => ({
+    itemType: "movie",
+    tpdbId: identity(index + 1),
+    path: `/whisparr/movies/feature-${index + 1}`,
+  }));
+  const page = Array.from({ length: 50 }, (_, index) => {
+    const n = index * 997 + 1;
+    return {
+      id: `item-${n}`,
+      paths: [`/library/movies/feature-${n}/movie.mkv`],
+    };
+  });
+  await withFixture(
+    (_req, res) => sendJson(res, 200, rows),
+    async (fx) => {
+      const mappings = new CountedMappings();
+      mappings.push({
+        whisparrPrefix: "/whisparr/movies",
+        jellyfinPrefix: "/library/movies",
+      });
+      const base = whisparrConfig(fx.origin);
+      const config = {
+        ...base,
+        whisparr: { ...base.whisparr!, pathMappings: mappings },
+      };
+      // A detail lookup fetches the list and builds the path index.
+      assert.equal(
+        await findWhisparrItemByPath(config, ["/elsewhere/movie.mkv"]),
+        null,
+      );
+      assert.equal(mappings.walks, titles);
+
+      for (let round = 0; round < 2; round += 1) {
+        const started = performance.now();
+        const resolved = await resolveIdentitiesByPath(config, page);
+        const elapsed = performance.now() - started;
+        assert.equal(resolved.size, page.length);
+        for (const entry of page) {
+          const n = Number(entry.id.slice("item-".length));
+          assert.deepEqual(resolved.get(entry.id), {
+            provider: "tpdb",
+            kind: "movie",
+            id: identity(n),
+          });
+        }
+        // Pages reuse the index: no title is mapped again, and a page
+        // costs lookups only, never a pass over the whole list.
+        assert.equal(mappings.walks, titles);
+        assert.ok(elapsed < 1000, `page took ${elapsed.toFixed(0)} ms`);
+      }
+      assert.equal(fx.log.length, 1);
+    },
+  );
+});
