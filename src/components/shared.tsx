@@ -109,11 +109,21 @@ export function notifyAuthChanged(): void {
   authChannel?.postMessage(0);
 }
 
+// A tab restored from the back/forward cache ran no code while it was frozen,
+// so it may have missed a broadcast: Chrome evicts a cached page on a channel
+// message, but other engines may not, and a session can also end without any
+// broadcast (expiry, another browser). Treat every restore as a change.
 export function onAuthChanged(fn: () => void): () => void {
-  if (!authChannel) return () => {};
   const onMessage = () => fn();
-  authChannel.addEventListener("message", onMessage);
-  return () => authChannel.removeEventListener("message", onMessage);
+  const onPageShow = (e: PageTransitionEvent) => {
+    if (e.persisted) fn();
+  };
+  authChannel?.addEventListener("message", onMessage);
+  window.addEventListener("pageshow", onPageShow);
+  return () => {
+    authChannel?.removeEventListener("message", onMessage);
+    window.removeEventListener("pageshow", onPageShow);
+  };
 }
 
 /** One GET of server state, backed by a per-tab cache shared across mounts
