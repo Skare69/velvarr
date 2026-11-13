@@ -3303,6 +3303,139 @@ test("a filmography free-text include keeps the hard ceiling error", async () =>
   );
 });
 
+// The deepest scannable page: a stream buffers at most MAX_SCAN_PAGES (40)
+// pages of at most 2 × perPage rows, so with perPage 1 one live stream can
+// fill pages up to 80 and two can fill pages up to 160. Past that, a scan
+// could only walk every stream to the ceiling (reparsing cached pages on
+// every request) and still end rowless: the page is refused before any read.
+const TAG_DEEP = { id: 16, uuid: uuid(106), name: "Deep Hidden" };
+
+function deepQuery(type: BrowseQuery["type"], page: number): BrowseQuery {
+  return {
+    type,
+    include: [],
+    exclude: [],
+    studioMode: "exact",
+    page,
+    perPage: 1,
+  };
+}
+
+test("a browse page past the deepest scannable page is refused before any upstream read", async () => {
+  let moviesCalled = 0;
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [TAG_DEEP],
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(1), "Always hidden", "2024-01-01", [TAG_DEEP])],
+          next: "x",
+          total: 10000,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: () => {
+        moviesCalled += 1;
+      },
+    }),
+    async () => {
+      const hidden = [{ name: TAG_DEEP.name, tpdb: TAG_DEEP.uuid }];
+      await assert.rejects(
+        browseTitles(deepQuery("movie", 81), hidden),
+        appError(422, "page_too_deep"),
+      );
+      assert.equal(moviesCalled, 0);
+      // The last page a scan could still fill keeps scanning to the ceiling.
+      await assert.rejects(
+        browseTitles(deepQuery("movie", 80), hidden),
+        appError(422, "query_too_broad"),
+      );
+      assert.equal(moviesCalled, 40);
+    },
+  );
+});
+
+test("the scannable depth counts every live stream of a mixed browse", async () => {
+  let moviesCalled = 0;
+  let scenesCalled = 0;
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [TAG_DEEP],
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(1), "Always hidden", "2024-01-01", [TAG_DEEP])],
+          next: "x",
+          total: 10000,
+        },
+      ],
+      scenes: {
+        count: 10000,
+        rows: [stashRow(uuid(2), "A scene", "2024-01-01")],
+      },
+      onMovieRequest: () => {
+        moviesCalled += 1;
+      },
+      onScenesRequest: () => {
+        scenesCalled += 1;
+      },
+    }),
+    async () => {
+      const hidden = [{ name: TAG_DEEP.name, tpdb: TAG_DEEP.uuid }];
+      await assert.rejects(
+        browseTitles(deepQuery("all", 161), hidden),
+        appError(422, "page_too_deep"),
+      );
+      assert.deepEqual([moviesCalled, scenesCalled], [0, 0]);
+      // Page 81 is past one stream's depth but within two: it still scans.
+      await assert.rejects(
+        browseTitles(deepQuery("all", 81), hidden),
+        appError(422, "query_too_broad"),
+      );
+      assert.equal(moviesCalled, 40);
+    },
+  );
+});
+
+test("a hidden-filtered catalog search past the deepest scannable page is refused before any upstream read", async () => {
+  let scenesCalled = 0;
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [],
+      scenes: {
+        count: 10000,
+        rows: [
+          stashRow(uuid(3), "Always hidden", "2024-01-01", [
+            { id: TAG_DEEP.uuid, name: TAG_DEEP.name },
+          ]),
+        ],
+      },
+      onScenesRequest: () => {
+        scenesCalled += 1;
+      },
+    }),
+    async () => {
+      const hidden = [{ name: TAG_DEEP.name, stashdb: TAG_DEEP.uuid }];
+      await assert.rejects(
+        searchVisibleCatalog(
+          { provider: "stashdb", kind: "scene", page: 81, perPage: 1 },
+          hidden,
+        ),
+        appError(422, "page_too_deep"),
+      );
+      assert.equal(scenesCalled, 0);
+      await assert.rejects(
+        searchVisibleCatalog(
+          { provider: "stashdb", kind: "scene", page: 80, perPage: 1 },
+          hidden,
+        ),
+        appError(422, "query_too_broad"),
+      );
+      assert.equal(scenesCalled, 40);
+    },
+  );
+});
+
 test("an anchored tag beside a matchless free-text term answers provably empty", async () => {
   const TAG_ANCHOR = { id: 15, uuid: uuid(105), name: "Anchor Tag" };
   let moviesCalled = 0;

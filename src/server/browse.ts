@@ -18,12 +18,16 @@
 // local re-check degrades to a named partial page instead
 // (Stream.softCeiling). A second: a side whose free-text expansion is
 // provably empty (complete freshness-bounded listing, no match, no
-// uuid-less rows) answers exact zero before any scan. Raise
-// MAX_SCAN_PAGES only when real browsing measurably needs it.
+// uuid-less rows) answers exact zero before any scan. A third: a page past
+// the deepest page the ceiling can fill is refused before any read
+// (refuseUnscannablePage). Raise MAX_SCAN_PAGES only when real browsing
+// measurably needs it.
 
 // Stryker disable all — the mutation window re-opens below the parse/adapters
 // block and covers the pure merge/plan logic only (mergeStreams, nativeQuery,
 // planBrowseSides); parse helpers and fetch adapters stay out of scope.
+
+import { setImmediate as nextMacrotask } from "node:timers/promises";
 
 import { isHiddenTitle, tagMatches } from "./catalog-visibility.ts";
 
@@ -31,6 +35,7 @@ import { AppError, sourceError } from "./http.ts";
 import { suggestTags, tagSuggestionsAllowed } from "./judgment.ts";
 import {
   listCatalogTags,
+  MAX_ROWS_PER_PAGE_FACTOR,
   searchCatalog,
   searchCatalogTags,
   tagCounterpart,
@@ -544,6 +549,10 @@ class Stream {
       return;
     }
     this.page += 1;
+    // A cached page resolves as a microtask chain, so a deep scan over
+    // cached pages would hold the event loop for the whole walk: yield one
+    // macrotask per page so other members' requests interleave.
+    await nextMacrotask();
     try {
       const result = await searchCatalog({
         ...this.base,
@@ -605,6 +614,27 @@ function unresolvedStream(provider: CatalogProvider, err: unknown): Stream {
 }
 
 // Stryker restore all
+/** Refuses, before any upstream read, a page no bounded scan can fill:
+ * each live stream buffers at most MAX_SCAN_PAGES pages of at most
+ * MAX_ROWS_PER_PAGE_FACTOR × perPage rows, so a start at or past their sum
+ * would only rescan every stream to the ceiling (cached pages reparsed on
+ * every request) and still end without a row. No live stream: nothing will
+ * be read, so the caller's own outcome (the all-failed 502) stands. */
+function refuseUnscannablePage(
+  start: number,
+  perPage: number,
+  liveStreams: number,
+): void {
+  const deepest = liveStreams * MAX_SCAN_PAGES * MAX_ROWS_PER_PAGE_FACTOR;
+  if (liveStreams > 0 && start >= deepest * perPage) {
+    throw new AppError(
+      422,
+      "page_too_deep",
+      `This page lies past the deepest page browse can scan for this query (page ${deepest}).`,
+    );
+  }
+}
+
 /** Consumes the ordered (or, with no shared order, stable-concatenated)
  * prefix of the given streams and slices out one visible page. */
 async function mergeStreams(
@@ -615,6 +645,7 @@ async function mergeStreams(
   start: number,
   count: number,
 ): Promise<BrowsePage> {
+  refuseUnscannablePage(start, count, streams.filter((s) => s.live).length);
   const items: CatalogDetail[] = [];
   let index = 0;
   while (items.length < count) {
@@ -1206,6 +1237,7 @@ export async function searchVisibleCatalog(
     true, // hidden filtering is always local
   );
   const start = (requestedPage - 1) * perPage;
+  refuseUnscannablePage(start, perPage, 1);
   // `live` (not `open`): a stream holding buffered rows but no continuation
   // must end the fill, otherwise this spins on a no-op fetch.
   while (stream.buffer.length < start + perPage && stream.live) {

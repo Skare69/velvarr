@@ -1124,6 +1124,11 @@ async function tpdbTagFilters(
   );
 }
 
+/** A list page keeps at most this many rows per requested perPage, so a
+ * provider that ignores per_page cannot balloon one page. Browse derives
+ * the deepest page its bounded scan can fill from this cap. */
+export const MAX_ROWS_PER_PAGE_FACTOR = 2;
+
 function parseTpdbPage(
   kind: "movie" | "scene" | "performer" | "studio",
   body: TpdbListBody,
@@ -1140,7 +1145,7 @@ function parseTpdbPage(
   }
   const items = dedupeBy(
     body.data
-      .slice(0, perPage * 2)
+      .slice(0, perPage * MAX_ROWS_PER_PAGE_FACTOR)
       .map(map)
       .filter((d): d is CatalogDetail => d !== undefined),
     (d) => `${d.reference.kind}:${d.reference.id}`,
@@ -1566,7 +1571,7 @@ export async function searchCatalog(
   }
   const items = dedupeBy(
     res.scenes
-      .slice(0, perPage * 2)
+      .slice(0, perPage * MAX_ROWS_PER_PAGE_FACTOR)
       .map((row) => stashSceneDetail(row, recordTagPair))
       .filter((d): d is CatalogDetail => d !== undefined),
     (d) => d.reference.id,
