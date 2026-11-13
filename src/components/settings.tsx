@@ -1695,7 +1695,10 @@ function ProviderCredentialCard({
 
   // A stored credential the provider just rejected deletes itself at once —
   // no dialog, the provider proved the key wrong. An environment source never
-  // enters here. The clear is guarded: it echoes the check's keyFingerprint
+  // enters here, and neither does a rejection without a keyFingerprint: that
+  // probe hit the environment fallback, so there is no stored key to delete
+  // and the auto-clear never falls back to the unconditional clear. The
+  // clear is guarded: it echoes the check's keyFingerprint
   // in `<field>Expect`, and the server refuses (409) when the stored key
   // changed under the failed probe, so a key another tab saved meanwhile
   // survives. One attempt per check result: every result is decided exactly
@@ -1711,9 +1714,16 @@ function ProviderCredentialCard({
     if (!config) return;
     handledCheck.current = check;
     if (clearing.current) return;
-    if (!shouldAutoClearOnReject({ check, source: config.source })) return;
     const fingerprint =
       check.configured && !check.verified ? check.keyFingerprint : undefined;
+    // The fingerprint guards the delete: without one the probe probed the
+    // environment fallback, not a stored key this check can vouch for, so
+    // the auto-clear never falls back to the unconditional clear.
+    if (
+      !shouldAutoClearOnReject({ check, source: config.source }) ||
+      fingerprint === undefined
+    )
+      return;
     clearing.current = true;
     void (async () => {
       try {
@@ -1731,11 +1741,10 @@ function ProviderCredentialCard({
             label +
             ".",
           performSave: (value) =>
-            onSave(
-              fingerprint === undefined
-                ? { [field]: value }
-                : { [field]: value, [`${field}Expect`]: fingerprint },
-            ).then(() => undefined),
+            onSave({
+              [field]: value,
+              [`${field}Expect`]: fingerprint,
+            }).then(() => undefined),
           dispatch,
           failureOf,
         });

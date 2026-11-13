@@ -390,11 +390,18 @@ test("a configured editor marks its key optional; a fresh one does not", () => {
 });
 
 test("only a rejected stored credential auto-clears", () => {
-  const rejected = (code: string): ProviderCheck => ({
+  // The auto-clear deletes only a key the check fingerprinted (VELV-130
+  // send-back): a rejected check without a keyFingerprint probed the
+  // environment fallback — often under a stale config that still says
+  // "stored" — and an automatic delete never falls back to the
+  // unconditional manual clear. The server's compare-and-set refuses any
+  // guarded clear whose fingerprint no longer matches.
+  const rejected = (code: string, keyFingerprint?: string): ProviderCheck => ({
     provider: "tpdb",
     configured: true,
     verified: false,
     error: { code, message: "x" },
+    ...(keyFingerprint !== undefined ? { keyFingerprint } : {}),
   });
   const verified: ProviderCheck = {
     provider: "tpdb",
@@ -402,18 +409,29 @@ test("only a rejected stored credential auto-clears", () => {
     verified: true,
     account: "someone",
   };
-  // The trigger: the provider proved the stored key wrong.
+  const fingerprint = "3f9a".repeat(8);
+  // The trigger: the provider proved a stored key wrong, and the check
+  // vouches for exactly that key.
+  assert.equal(
+    shouldAutoClearOnReject({
+      check: rejected("upstream_auth", fingerprint),
+      source: "stored",
+    }),
+    true,
+  );
+  // A rejection without a fingerprint probed the environment fallback:
+  // there is no stored key this check can vouch for, so never arm.
   assert.equal(
     shouldAutoClearOnReject({
       check: rejected("upstream_auth"),
       source: "stored",
     }),
-    true,
+    false,
   );
   // An environment key cannot be deleted.
   assert.equal(
     shouldAutoClearOnReject({
-      check: rejected("upstream_auth"),
+      check: rejected("upstream_auth", fingerprint),
       source: "environment",
     }),
     false,
@@ -421,7 +439,7 @@ test("only a rejected stored credential auto-clears", () => {
   // A config row still loading cannot decide either.
   assert.equal(
     shouldAutoClearOnReject({
-      check: rejected("upstream_auth"),
+      check: rejected("upstream_auth", fingerprint),
       source: undefined,
     }),
     false,
@@ -429,7 +447,7 @@ test("only a rejected stored credential auto-clears", () => {
   // Nothing but upstream_auth proves the key wrong.
   assert.equal(
     shouldAutoClearOnReject({
-      check: rejected("upstream_timeout"),
+      check: rejected("upstream_timeout", fingerprint),
       source: "stored",
     }),
     false,

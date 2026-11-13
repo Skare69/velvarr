@@ -207,10 +207,15 @@ export function checkConnectionAction(input: {
 
 /** The one rejected check that deletes the stored credential on its own:
  * the provider answered "unauthorized", so the stored key is proven wrong
- * and keeping it only fails every later call. Nothing else may clear:
- * an environment key cannot be deleted, and any other error code
- * (timeout, unavailable, forbidden, not_found, bad_response) says nothing
- * about the key. */
+ * and keeping it only fails every later call. The check must also carry a
+ * keyFingerprint: without one the probe probed the environment fallback,
+ * not a stored key this check can vouch for — and an automatic delete
+ * never falls back to the unconditional manual clear (VELV-130
+ * send-back). The server's compare-and-set still refuses any guarded
+ * clear whose fingerprint no longer matches. Nothing else may clear: an
+ * environment key cannot be deleted, and any other error code (timeout,
+ * unavailable, forbidden, not_found, bad_response) says nothing about the
+ * key. */
 export function shouldAutoClearOnReject(input: {
   check: ProviderCheck;
   source: "stored" | "environment" | undefined;
@@ -219,7 +224,8 @@ export function shouldAutoClearOnReject(input: {
     input.source === "stored" &&
     input.check.configured &&
     !input.check.verified &&
-    input.check.error.code === "upstream_auth"
+    input.check.error.code === "upstream_auth" &&
+    input.check.keyFingerprint !== undefined
   );
 }
 
