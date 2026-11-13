@@ -46,6 +46,7 @@ import {
   canClearCredential,
   connectionState,
   createProviderSettingsQueue,
+  settingsSectionForHash,
 } from "../lib/provider-settings.ts";
 import {
   applyCredentialSave,
@@ -112,8 +113,38 @@ interface IntegrationsInfo {
 export function SettingsView() {
   const [forbidden, setForbidden] = useState(false);
   const [section, setSection] = useState("connections");
-  // Stable identity: IntegrationsForm's load useCallback depends on this, so a
-  // fresh arrow on every render would refetch and wipe unsaved draft edits.
+  // A settings deep link names its card, not its tab: Discover's key links
+  // target provider headings that live on the metadata tab, whose cards
+  // mount only after their config load. The tab flips after mount because
+  // SSR renders no hash, and the reveal loop waits for the anchor to exist.
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (hash === "") return;
+    setSection(settingsSectionForHash(hash));
+    let timer: number | undefined;
+    let tries = 0;
+    let pins = -1;
+    const reveal = () => {
+      const target = document.getElementById(hash.slice(1));
+      if (target) {
+        target.scrollIntoView({ block: "start" });
+        if (pins < 0) {
+          target.focus();
+          pins = 0;
+          // The cards above the target keep growing as their connection
+          // probes return, so the scroll re-pins for a settle window (~2s)
+          // instead of racing that layout. Focus moves exactly once.
+        } else if (++pins >= 40) return;
+      } else if (++tries >= 200) {
+        return; // ~10s ceiling: the anchor may never mount.
+      }
+      timer = window.setTimeout(reveal, 50);
+    };
+    timer = window.setTimeout(reveal, 50);
+    return () => clearTimeout(timer);
+  }, []);
+  // Stable identity: IntegrationsForm's load useCallback depends on this, so
+  // a fresh arrow on every render would refetch and wipe unsaved draft edits.
   const forbid = useCallback(() => setForbidden(true), []);
   if (forbidden) return <ForbiddenPanel />;
 
@@ -1699,7 +1730,11 @@ function ProviderCredentialCard({
         <div className="settings-service-heading">
           {/* The status sits right beside the title it describes. */}
           <div className="settings-title-row">
-            <h2 id={"provider-heading-" + id}>{name}</h2>
+            {/* tabIndex=-1: the deep-link reveal focuses this heading, which
+                keeps the announcement with the target instead of page top. */}
+            <h2 id={"provider-heading-" + id} tabIndex={-1}>
+              {name}
+            </h2>
             <div className="settings-service-status" aria-live="polite">
               <ConnectionState state={connectionStateLabel} />
               {/* A stored key is the default; only the environment source

@@ -11,6 +11,7 @@ import {
   canClearCredential,
   connectionState,
   credentialSaveDecision,
+  settingsSectionForHash,
 } from "../src/lib/provider-settings.ts";
 
 const verified: ProviderCheck = {
@@ -239,4 +240,17 @@ test("a failed provider probe cannot block later saves or checks", async () => {
     await run(async () => "checked after save"),
     "checked after save",
   );
+});
+
+test("provider deep links name the metadata tab; every other hash keeps Connections", () => {
+  // Discover's key links target exactly these two headings.
+  assert.equal(settingsSectionForHash("#provider-heading-tpdb"), "metadata");
+  assert.equal(settingsSectionForHash("#provider-heading-stashdb"), "metadata");
+  // The Jellyfin heading lives on the default tab, as does no hash at all.
+  assert.equal(
+    settingsSectionForHash("#jellyfin-settings-title"),
+    "connections",
+  );
+  assert.equal(settingsSectionForHash(""), "connections");
+  assert.equal(settingsSectionForHash("#somewhere-else"), "connections");
 });

@@ -41,6 +41,16 @@ export function connectionState(input: {
   return check.verified ? "connected" : "failed";
 }
 
+/** Which Settings tab a deep link's hash targets. Discover's key links point
+ * at provider card headings (`provider-heading-tpdb` /
+ * `provider-heading-stashdb`), which live on the metadata tab; any other hash
+ * (the Jellyfin heading, or none) stays on the default Connections tab. */
+export function settingsSectionForHash(
+  hash: string,
+): "connections" | "metadata" {
+  return hash.startsWith("#provider-heading-") ? "metadata" : "connections";
+}
+
 export const CREDENTIAL_SAVED_NOTICE = "Credential saved.";
 export const CREDENTIAL_CLEARED_NOTICE =
   "Stored credential cleared. Environment settings apply.";
