@@ -187,8 +187,9 @@ export interface JellyfinStatus {
   version?: string;
 }
 
-/** Admin connectivity probe for the SAVED configuration: one authenticated
- * GET /System/Info with the stored API key. Unconfigured is returned, never
+/** Admin connectivity probe: one authenticated GET /System/Info with the
+ * config's API key — the saved configuration, or a draft once
+ * checkJellyfinDraft has accepted it. Unconfigured is returned, never
  * faked; unreachable servers and rejected keys reject so the card can say
  * "unavailable" instead of pretending. */
 export async function getJellyfinStatus(

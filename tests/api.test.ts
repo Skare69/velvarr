@@ -3223,6 +3223,31 @@ test("jellyfin and whisparr tests: draft URLs and keys, saved fallback, upstream
   assert.equal(jfWrongBody.error?.code, "upstream_auth");
   assert.equal((await call("GET", "/api/me", { cookie: admin })).status, 200);
 
+  // The draft test validates server identity exactly like the save path:
+  // a reachable server that answers with a different id is server_mismatch
+  // status data, never a green "Connection works".
+  const savedServerId = fx.serverId;
+  fx.serverId = "d".repeat(32);
+  try {
+    const jfForeign = await call("POST", "/api/admin/jellyfin/test", {
+      cookie: admin,
+      body: { url: jellyfinUrl },
+    });
+    assert.equal(jfForeign.status, 200);
+    const jfForeignBody = (await jfForeign.json()) as {
+      configured: boolean;
+      error?: { code: string; message: string };
+    };
+    assert.equal(jfForeignBody.configured, true);
+    assert.equal(jfForeignBody.error?.code, "server_mismatch");
+    assert.equal(
+      jfForeignBody.error?.message,
+      "Jellyfin server identity cannot change, only its address.",
+    );
+  } finally {
+    fx.serverId = savedServerId;
+  }
+
   // Whisparr: store a connection so a blank key has a saved secret to find,
   // then restore the absent state this suite runs with. The full-save shape
   // needs the Jellyfin fields on every non-provider PATCH.

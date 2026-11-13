@@ -285,6 +285,24 @@ function savedKeyForUrl(input: {
   );
 }
 
+/** The upstream half of a Jellyfin connection change, shared by the save path
+ * and the draft test: the endpoint must answer for the stored server identity
+ * (public /System/Info/Public, no key needed) and the key must enumerate
+ * users like the administrator key. */
+async function checkJellyfinDraft(
+  draft: IntegrationConfig["jellyfin"],
+): Promise<void> {
+  const server = await getServer(draft.url);
+  if (server.id !== draft.serverId) {
+    throw new AppError(
+      400,
+      "server_mismatch",
+      "Jellyfin server identity cannot change, only its address.",
+    );
+  }
+  await listUsers({ jellyfin: draft });
+}
+
 /** Jellyfin connection patch: address and key may change, server identity
  * may not. Authorization for this change is the admin session itself:
  * requireAdmin re-validates the caller upstream on every request (identity,
@@ -307,14 +325,6 @@ async function nextJellyfin(
         "jellyfinApiKey is required when jellyfinUrl moves to a different origin.",
     },
   });
-  const server = await getServer(url);
-  if (server.id !== current.serverId) {
-    throw new AppError(
-      400,
-      "server_mismatch",
-      "Jellyfin server identity cannot change, only its address.",
-    );
-  }
   const jellyfin = {
     url,
     externalUrl,
@@ -322,8 +332,7 @@ async function nextJellyfin(
     serverId: current.serverId,
     libraryIds: current.libraryIds,
   };
-  // Prove the prospective key still enumerates users as the administrator key.
-  await listUsers({ jellyfin });
+  await checkJellyfinDraft(jellyfin);
   return jellyfin;
 }
 
@@ -561,9 +570,10 @@ export async function adminProviderCheck(
 
 /** --- draft connection tests (POST .../test) ---
  * Validated exactly like the save path — including the origin rule on the
- * stored key — and persisted nowhere: nothing reaches storage, so the
- * rejected-key auto-delete can never run on a test result. A blank secret
- * field means "use the saved secret" within the saved URL's origin.
+ * stored key and, for Jellyfin, checkJellyfinDraft's server-identity and
+ * user-enumeration checks — and persisted nowhere: nothing reaches storage,
+ * so the rejected-key auto-delete can never run on a test result. A blank
+ * secret field means "use the saved secret" within the saved URL's origin.
  * Upstream failures come back inside a 200 status (never a 401, which would
  * sign the admin out). */
 
@@ -618,10 +628,14 @@ export async function adminJellyfinTest(
         : "",
     apiKey,
   };
+  // The save path's upstream checks run first: the draft must reach the
+  // stored server identity, and its key must enumerate users. A refusal is
+  // status data inside the 200, like any upstream rejection.
   return json(
-    await upstreamAsStatus(() =>
-      getJellyfinStatus({ ...ctx.config, jellyfin }),
-    ),
+    await upstreamAsStatus(async () => {
+      await checkJellyfinDraft(jellyfin);
+      return getJellyfinStatus({ ...ctx.config, jellyfin });
+    }),
   );
 }
 
