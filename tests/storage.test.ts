@@ -4043,6 +4043,16 @@ test("getActiveRequest finds only the account's own pending or approved request"
   );
 });
 
+test("getActiveRequest matches an id in any letter case, like the catalog lookup it replaced", () => {
+  const { owner } = pagingSetup();
+  // The bulk route stores the provider's id unchanged; the catalog detail
+  // looks it up lowercased.
+  const upper = { ...MOVIE, id: MOVIE.id.toUpperCase() };
+  const stored = storage.createRequest(owner.id, upper);
+  assert.equal(storage.getActiveRequest(owner.id, MOVIE)?.id, stored.id);
+  assert.equal(storage.getActiveRequest(owner.id, upper)?.id, stored.id);
+});
+
 test("createRequest refuses a request past OPEN_REQUEST_CAP pending rows; decided rows and other accounts do not count", () => {
   const { owner, other } = pagingSetup();
   const cap = storage.OPEN_REQUEST_CAP;

@@ -608,8 +608,10 @@ function S(): Statements {
         "SELECT * FROM requests ORDER BY created_at DESC, id DESC",
       ),
       requestPages: new Map(),
+      // Ids compare case-insensitively, as the catalog lookup always did: the
+      // bulk route stores provider ids unchanged, and some are uppercase.
       getActiveRequest: d.prepare(
-        "SELECT * FROM requests WHERE account_id = ? AND provider = ? AND kind = ? AND external_id = ? AND decision IN ('pending', 'approved')",
+        "SELECT * FROM requests WHERE account_id = ? AND provider = ? AND kind = ? AND external_id = ? COLLATE NOCASE AND decision IN ('pending', 'approved') ORDER BY created_at DESC, id DESC LIMIT 1",
       ),
       listActiveIntents: d.prepare(
         "SELECT provider, kind, external_id FROM requests WHERE account_id = ? AND decision IN ('pending', 'approved')",
