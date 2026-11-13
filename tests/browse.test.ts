@@ -41,9 +41,10 @@ import {
   searchBrowseTags,
   searchVisibleCatalog,
 } from "../src/server/browse.ts";
-import { isHiddenTitle } from "../src/server/catalog-visibility.ts";
+import { hiddenTitleMatcher } from "../src/server/catalog-visibility.ts";
 import type { BrowsePage, BrowseQuery } from "../src/server/browse.ts";
 import type {
+  CatalogDetail,
   CatalogProvider,
   CatalogTagSelection,
 } from "../src/lib/contracts.ts";
@@ -3969,9 +3970,11 @@ test("searchBrowseTags with no matches and no key returns an honest empty list",
   );
 });
 
-// --- isHiddenTitle: family rule (whole-word sequence), never raw substring ---
+// --- hiddenTitleMatcher: family rule (whole-word sequence), never raw substring ---
 
-test("isHiddenTitle matches UUID, whole label, or word family; never raw substring or blank labels", () => {
+test("hiddenTitleMatcher matches UUID, whole label, or word family; never raw substring or blank labels", () => {
+  const isHiddenTitle = (d: CatalogDetail, tags: CatalogTagSelection[]) =>
+    hiddenTitleMatcher(tags)(d);
   const detail = (tags: { id: string; name: string }[]) =>
     ({
       reference: { provider: "stashdb", kind: "scene", id: uuid(9) },
@@ -3981,7 +3984,7 @@ test("isHiddenTitle matches UUID, whole label, or word family; never raw substri
       related: [],
       links: [],
       aliases: [],
-    }) as Parameters<typeof isHiddenTitle>[0];
+    }) as CatalogDetail;
   const hidden: CatalogTagSelection[] = [
     { name: "Rough", stashdb: uuid(8) },
     { name: "audlt-typo", stashdb: uuid(9) },

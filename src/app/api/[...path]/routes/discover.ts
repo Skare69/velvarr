@@ -39,7 +39,7 @@ import {
   parseBrowseQuery,
   type BrowsePage,
 } from "../../../../server/browse.ts";
-import { isHiddenTitle } from "../../../../server/catalog-visibility.ts";
+import { hiddenTitleMatcher } from "../../../../server/catalog-visibility.ts";
 
 // One named entry per provider, first group wins: the partial-failure wire
 // shape browse pages and followedShelf already speak, and the UI keys error
@@ -157,12 +157,11 @@ export async function followedShelf(
   ]);
   const errors: SourceError[] = [];
   const merged: CatalogDetail[] = [];
+  const hidden = hiddenTitleMatcher(hiddenTags);
   sides.forEach((side, i) => {
     const provider = i === 0 ? ("tpdb" as const) : ("stashdb" as const);
     if (side.status === "fulfilled") {
-      merged.push(
-        ...side.value.items.filter((item) => !isHiddenTitle(item, hiddenTags)),
-      );
+      merged.push(...side.value.items.filter((item) => !hidden(item)));
       // A partial side keeps its survivors and still names the provider.
       if (side.value.failure !== undefined) {
         errors.push(sourceError(provider, side.value.failure));

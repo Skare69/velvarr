@@ -29,7 +29,11 @@
 
 import { setImmediate as nextMacrotask } from "node:timers/promises";
 
-import { isHiddenTitle, tagMatches } from "./catalog-visibility.ts";
+import {
+  FoldedTags,
+  hiddenTitleMatcher,
+  tagMatcher,
+} from "./catalog-visibility.ts";
 
 import { AppError, sourceError } from "./http.ts";
 import { suggestTags, tagSuggestionsAllowed } from "./judgment.ts";
@@ -292,18 +296,18 @@ function visiblePredicate(
   year: number | undefined,
 ): (d: CatalogDetail) => boolean {
   // Exclusions win over includes: a hidden or excluded match blocks the item
-  // regardless of any include criterion.
+  // regardless of any include criterion. Selections fold once here, per
+  // request; each item's tags fold once inside FoldedTags.
+  const blocked = [...hiddenTags, ...exclude].map((sel) =>
+    tagMatcher(sel, "family"),
+  );
+  const required = include.map((sel) =>
+    tagMatcher(sel, isFreeTextSelection(sel) ? "substring" : "exact"),
+  );
   return (d) => {
-    if (hiddenTags.some((sel) => tagMatches(d, sel, "family"))) return false;
-    if (exclude.some((sel) => tagMatches(d, sel, "family"))) return false;
-    if (
-      include.length > 0 &&
-      !include.every((sel) =>
-        tagMatches(d, sel, isFreeTextSelection(sel) ? "substring" : "exact"),
-      )
-    ) {
-      return false;
-    }
+    const tags = new FoldedTags(d);
+    if (blocked.some((matches) => matches(tags))) return false;
+    if (!required.every((matches) => matches(tags))) return false;
     if (year !== undefined && d.releaseDate?.slice(0, 4) !== String(year)) {
       return false;
     }
@@ -1230,9 +1234,10 @@ export async function searchVisibleCatalog(
   }
   const requestedPage = query.page ?? 1;
   const perPage = query.perPage ?? 24;
+  const hidden = hiddenTitleMatcher(hiddenTags);
   const stream = new Stream(
     { ...query, page: 1, perPage } as CatalogSearchQuery,
-    (d) => !isHiddenTitle(d, hiddenTags),
+    (d) => !hidden(d),
     perPage,
     true, // hidden filtering is always local
   );

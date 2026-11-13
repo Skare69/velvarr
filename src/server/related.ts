@@ -18,7 +18,7 @@ import {
   rankRelatedTitles,
   type RankableTitle,
 } from "./judgment.ts";
-import { isHiddenTitle } from "./catalog-visibility.ts";
+import { hiddenTitleMatcher } from "./catalog-visibility.ts";
 import { type SourceError } from "../lib/contracts.ts";
 import { AppError, sourceError } from "./http.ts";
 import {
@@ -200,13 +200,14 @@ export async function relatedTitles(
   // and its entries only enter here through the same tag searches.
   const seen = new Set([refKey(reference)]);
   const visible: CatalogDetail[] = [];
+  const hidden = hiddenTitleMatcher(hiddenTags);
   for (const page of settled) {
     if (page.error !== undefined) errors.push(page.error);
     for (const detail of page.items) {
       const key = refKey(detail.reference);
       if (seen.has(key)) continue;
       seen.add(key);
-      if (isHiddenTitle(detail, hiddenTags)) continue;
+      if (hidden(detail)) continue;
       visible.push(detail);
     }
   }
@@ -335,8 +336,9 @@ export async function relatedPerformers(
   // detail read only if a real provider case shows up.
   const selfKey = refKey(reference);
   const counts = new Map<string, { credit: CatalogCredit; count: number }>();
+  const hidden = hiddenTitleMatcher(hiddenTags);
   for (const row of page.items) {
-    if (isHiddenTitle(row, hiddenTags)) continue;
+    if (hidden(row)) continue;
     for (const credit of row.credits) {
       const key = refKey(credit.reference);
       if (key === selfKey) continue;
@@ -436,6 +438,7 @@ export async function performerTags(
   const counts = new Map<string, { name: string; count: number; id: string }>();
   let scanned = 0;
   let capped = false;
+  const hidden = hiddenTitleMatcher(hiddenTags);
   const finish = (errors: SourceError[]): PerformerTags => ({
     tags: [...counts.values()]
       .sort((a, b) =>
@@ -456,7 +459,7 @@ export async function performerTags(
       return finish([sourceError(reference.provider, err)]);
     }
     for (const row of rows.items) {
-      if (isHiddenTitle(row, hiddenTags)) continue;
+      if (hidden(row)) continue;
       scanned += 1;
       for (const tag of row.tags) {
         const key = normalizeFacetName(tag.name);
