@@ -14,17 +14,20 @@ let failUntil = 0;
 let inflight: Promise<UpdateInfo | null> | null = null;
 
 /** `retry-after` (delta-seconds or HTTP-date) and `x-ratelimit-reset` (epoch
- * seconds) on a 403/429, as milliseconds from now; 0 when absent, unparsable
- * or already past. Clamped to FRESH_MS so a bogus or hostile header cannot
+ * seconds) on a 403/429, as milliseconds from now; 0 when absent or already
+ * past. Only a header that parses to a finite millisecond count is used —
+ * a NaN hint would poison the Math below and switch the backoff off — and
+ * the result is clamped to FRESH_MS so a bogus or hostile header cannot
  * keep the check silent longer than a success cache would. */
 function backoffHint(res: Response, now: number): number {
   let hint = 0;
   const retryAfter = res.headers.get("retry-after");
   if (retryAfter) {
     const seconds = Number(retryAfter);
-    hint = Number.isFinite(seconds)
+    const parsedMs = Number.isFinite(seconds)
       ? seconds * 1000
       : Date.parse(retryAfter) - now;
+    if (Number.isFinite(parsedMs)) hint = parsedMs;
   }
   const resetEpochS = Number(res.headers.get("x-ratelimit-reset"));
   if (Number.isFinite(resetEpochS) && resetEpochS > 0)

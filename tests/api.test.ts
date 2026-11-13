@@ -1736,6 +1736,82 @@ test("update chip: a 403/429 retry-after or x-ratelimit-reset extends the failur
   }
 });
 
+test("update chip: a malformed retry-after falls back to the default backoff", async () => {
+  const realFetch = globalThis.fetch;
+  const realNow = Date.now;
+  // Divisible by 1000, so the epoch-second math stays exact.
+  let now = 1_700_000_000_000;
+  let calls = 0;
+  let stub: () => Response = () => Response.json({});
+  try {
+    Date.now = () => now;
+    globalThis.fetch = (async () => {
+      calls++;
+      return stub();
+    }) as typeof fetch;
+    // A retry-after that is neither delta-seconds nor an HTTP date must be
+    // ignored, not poisoned into a NaN window: NaN propagates through the
+    // clamps and makes failUntil NaN, which is never in the future — the
+    // backoff would switch off during the outage. The default 60 s window
+    // has to hold instead.
+    stub = () =>
+      new Response("rate limited", {
+        status: 403,
+        headers: { "retry-after": "garbage" },
+      });
+    resetUpdateCache();
+    const degraded = await call("GET", "/api/update");
+    assert.deepEqual(await degraded.json(), { update: null });
+    assert.equal(calls, 1);
+    now += 30 * 1000;
+    const held = await call("GET", "/api/update");
+    assert.deepEqual(await held.json(), { update: null });
+    assert.equal(calls, 1);
+    now += 31 * 1000;
+    stub = () =>
+      Response.json({
+        tag_name: "v9.9.9",
+        html_url: "https://github.com/Skare69/velvarr/releases/tag/v9.9.9",
+      });
+    const recovered = await call("GET", "/api/update");
+    assert.deepEqual(await recovered.json(), {
+      update: {
+        version: "9.9.9",
+        url: "https://github.com/Skare69/velvarr/releases/tag/v9.9.9",
+      },
+    });
+    assert.equal(calls, 2);
+
+    // The same malformed header must not cancel a valid x-ratelimit-reset
+    // on the same reply (Math.max(NaN, reset) would): the reset window
+    // holds past the default 60 s and expires on time.
+    resetUpdateCache();
+    stub = () =>
+      new Response("rate limited", {
+        status: 403,
+        headers: {
+          "retry-after": "garbage",
+          "x-ratelimit-reset": String(Math.floor((now + 90 * 1000) / 1000)),
+        },
+      });
+    const limited = await call("GET", "/api/update");
+    assert.deepEqual(await limited.json(), { update: null });
+    assert.equal(calls, 3);
+    now += 61 * 1000;
+    const stillHeld = await call("GET", "/api/update");
+    assert.deepEqual(await stillHeld.json(), { update: null });
+    assert.equal(calls, 3);
+    now += 30 * 1000;
+    const expired = await call("GET", "/api/update");
+    assert.deepEqual(await expired.json(), { update: null });
+    assert.equal(calls, 4);
+  } finally {
+    Date.now = realNow;
+    globalThis.fetch = realFetch;
+    resetUpdateCache();
+  }
+});
+
 test("update chip: a failed check serves the last successful answer, the retry surfaces a multi-version gap", async () => {
   const realFetch = globalThis.fetch;
   const realNow = Date.now;
