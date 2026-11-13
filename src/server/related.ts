@@ -52,6 +52,10 @@ export type RelatedTitles = {
 const SEED_TAGS = 8;
 const CANDIDATE_PAGE = 24;
 const RELATED_LIMIT = 12;
+// Co-appearances come from her already-fetched filmography (no extra
+// provider calls), so the cap is only a display bound: enough for two
+// full desktop rows of performer tiles; the client trims to whole rows.
+const RELATED_PERFORMER_LIMIT = 24;
 
 /** Provider+kind+id identity key. Callers (route, provider mapping) disagree
  * on UUID case; lowercasing makes dedupe and self-exclusion case-proof. */
@@ -354,7 +358,7 @@ export async function relatedPerformers(
       const kb = refKey(b.credit.reference);
       return ka < kb ? -1 : ka > kb ? 1 : 0;
     })
-    .slice(0, RELATED_LIMIT)
+    .slice(0, RELATED_PERFORMER_LIMIT)
     .map(({ credit }) => ({
       reference: credit.reference,
       title: credit.name,

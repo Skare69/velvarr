@@ -1824,11 +1824,25 @@ export function listFollows(accountId: string): PerformerFollow[] {
     S().listPerformerFollows.all(accountId) as PerformerFollowRow[]
   ).map(rowToPerformerFollow);
   const key = (r: CatalogReference) => `${r.provider}:${r.id}`;
+  const byRef = new Map(follows.map((f) => [key(f.reference), f]));
   const counterparts = new Set<string>();
   for (const f of follows) if (f.linked) counterparts.add(key(f.linked));
-  return follows.filter(
-    (f) => f.linked !== null || !counterparts.has(key(f.reference)),
-  );
+  return follows
+    .filter((f) => f.linked !== null || !counterparts.has(key(f.reference)))
+    .map((f) => {
+      // A linked pair is one person with one photo: the TPDB row's, the
+      // same side the performer page's merged hero shows first, whichever
+      // side was followed.
+      const tpdb =
+        f.reference.provider === "tpdb"
+          ? f
+          : f.linked
+            ? byRef.get(key(f.linked))
+            : undefined;
+      return tpdb?.imageUrl && tpdb !== f
+        ? { ...f, imageUrl: tpdb.imageUrl }
+        : f;
+    });
 }
 
 /** Seerr-style shared upstream cache for provider-derived discover shelves

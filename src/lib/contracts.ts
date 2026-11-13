@@ -210,6 +210,19 @@ export type CatalogPerson = {
    * `birthDateAccuracy` names the parts the provider vouches for. */
   birthDate?: string;
   birthDateAccuracy?: "day" | "month" | "year";
+  /** Same shape and accuracy rule as the birth date; absent while alive or
+   * unknown — never inferred. */
+  deathDate?: string;
+  deathDateAccuracy?: "day" | "month" | "year";
+  /** TPDB: free text as published ("Columbus, OH, USA"). */
+  birthplace?: string;
+  /** TPDB: as published ("American"). */
+  nationality?: string;
+  /** TPDB: kilograms, parsed from "72kg"; any other unit is dropped. */
+  weightKg?: number;
+  /** TPDB: the measurements string as published ("34D-24-36"), shown only
+   * when the structured stash-box triple is absent. */
+  measurementsText?: string;
   country?: string;
   ethnicity?: string;
   eyeColor?: string;

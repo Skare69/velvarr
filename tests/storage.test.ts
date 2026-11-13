@@ -2991,6 +2991,28 @@ test("a linked pair is one entry in the list, both rows for the shelves, and one
   assert.deepEqual(storage.listFollows(grant.account.id), []);
 });
 
+test("a linked pair's tile shows the TPDB photo whichever side was followed", () => {
+  freshDir();
+  const grant = storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  // She was followed from StashDB; the counterpart row is TPDB's.
+  const followed = storage.followPerformer(
+    grant.account.id,
+    FOLLOW_STASH_A,
+    "Fixture Performer",
+    "https://stashdb.example/cosplay.jpg",
+    FOLLOW_TPDB_A,
+  );
+  storage.followPerformer(
+    grant.account.id,
+    FOLLOW_TPDB_A,
+    "Fixture Performer",
+    "https://tpdb.example/portrait.jpg",
+  );
+  const [tile] = storage.listFollows(grant.account.id);
+  assert.deepEqual(tile?.reference, followed.reference);
+  assert.equal(tile?.imageUrl, "https://tpdb.example/portrait.jpg");
+});
+
 // --- content preferences (personal hidden tags) ---
 
 const TAG_TPDB = "c3d4e5f6-a7b8-4c9d-8e1f-3a4b5c6d7e01";

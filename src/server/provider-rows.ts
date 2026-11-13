@@ -357,6 +357,7 @@ export function tpdbPerformerDetail(row: unknown): CatalogDetail | undefined {
     .filter((a): a is string => a !== undefined)
     .slice(0, MAX.aliases);
   const bio = cleanString(r.bio, MAX.description);
+  const person = tpdbPerformerPerson(extras);
   return {
     reference: { provider: "tpdb", kind: "performer", id },
     title: name,
@@ -367,7 +368,66 @@ export function tpdbPerformerDetail(row: unknown): CatalogDetail | undefined {
     related: [],
     links,
     aliases,
+    ...(person !== undefined ? { person } : {}),
   };
+}
+
+/** "72kg" → 72; "180cm" → 180. Only the named unit is accepted, so a value
+ * in another unit is dropped instead of misread. */
+function unitInt(
+  v: unknown,
+  unit: "kg" | "cm",
+  min: number,
+  max: number,
+): number | undefined {
+  if (typeof v !== "string") return undefined;
+  const m = new RegExp(`^(\\d+(?:\\.\\d+)?)\\s*${unit}$`, "i").exec(v.trim());
+  if (!m) return undefined;
+  const n = Math.round(Number(m[1]));
+  return n >= min && n <= max ? n : undefined;
+}
+
+/** Biography facts from a TPDB performer's `extras`, only fields present
+ * and parseable. Left out on purpose: astrology (derived from the birthday),
+ * `fake_boobs: false` (TPDB also sends it for men and unknowns, so it does
+ * not mean "natural"), `same_sex_only` (a filmography flag, not a fact about
+ * the person), and waist/hips (published without a unit). */
+export function tpdbPerformerPerson(
+  extras: Record<string, unknown>,
+): CatalogPerson | undefined {
+  const birth = partialDate(extras.birthday);
+  const death = partialDate(extras.deathday);
+  const mods = (v: unknown) => {
+    const s = cleanString(v, 200);
+    return s === undefined ? undefined : [s];
+  };
+  const person: CatalogPerson = {
+    gender: cleanString(extras.gender, 40),
+    ...(birth !== undefined
+      ? { birthDate: birth.date, birthDateAccuracy: birth.accuracy }
+      : {}),
+    ...(death !== undefined
+      ? { deathDate: death.date, deathDateAccuracy: death.accuracy }
+      : {}),
+    birthplace: cleanString(extras.birthplace, 120),
+    nationality: cleanString(extras.nationality, 80),
+    ethnicity: cleanString(extras.ethnicity, 60),
+    eyeColor: cleanString(extras.eye_colour, 40),
+    hairColor: cleanString(extras.hair_colour, 40),
+    heightCm: unitInt(extras.height, "cm", 50, 280),
+    weightKg: unitInt(extras.weight, "kg", 25, 300),
+    cupSize: cleanString(extras.cupsize, 10),
+    measurementsText: cleanString(extras.measurements, 40),
+    ...(extras.fake_boobs === true ? { breastType: "Fake" } : {}),
+    careerStartYear: cleanYear(extras.career_start_year),
+    careerEndYear: cleanYear(extras.career_end_year),
+    tattoos: mods(extras.tattoos),
+    piercings: mods(extras.piercings),
+  };
+  const entries = Object.entries(person).filter(([, v]) => v !== undefined);
+  return entries.length > 0
+    ? (Object.fromEntries(entries) as CatalogPerson)
+    : undefined;
 }
 
 /** TPDB site (studio) rows: {uuid, id (numeric), name, url, description?,
@@ -557,10 +617,14 @@ function stashPerformerPerson(
   r: Record<string, unknown>,
 ): CatalogPerson | undefined {
   const birth = stashFuzzyDate(r.birthdate);
+  const death = partialDate(r.death_date);
   const person: CatalogPerson = {
     gender: stashEnumLabel(r.gender),
     ...(birth !== undefined
       ? { birthDate: birth.date, birthDateAccuracy: birth.accuracy }
+      : {}),
+    ...(death !== undefined
+      ? { deathDate: death.date, deathDateAccuracy: death.accuracy }
       : {}),
     country: cleanString(r.country, 80),
     ethnicity: stashEnumLabel(r.ethnicity),
@@ -592,6 +656,27 @@ function stashEnumLabel(v: unknown): string | undefined {
   if (typeof v !== "string" || v === "NA") return undefined;
   const s = v.toLowerCase().replaceAll("_", " ");
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** A date string as stash-box's `death_date` and TPDB's `birthday` /
+ * `deathday` publish it: "YYYY", "YYYY-MM" or "YYYY-MM-DD". The parts that
+ * are present set the accuracy; missing parts are padded to 01 only so the
+ * value stays an ISO date, and the accuracy keeps the pad from ever being
+ * shown as fact. Anything else is dropped. */
+export function partialDate(
+  v: unknown,
+): { date: string; accuracy: "day" | "month" | "year" } | undefined {
+  if (typeof v !== "string") return undefined;
+  const s = v.trim();
+  const m = /^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/.exec(s);
+  if (!m) return undefined;
+  const date = `${m[1]}-${m[2] ?? "01"}-${m[3] ?? "01"}`;
+  if (!isIsoDate(date)) return undefined;
+  return {
+    date,
+    accuracy:
+      m[3] !== undefined ? "day" : m[2] !== undefined ? "month" : "year",
+  };
 }
 
 /** stash-box FuzzyDate: accuracy names the parts the provider vouches for

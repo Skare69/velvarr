@@ -1,23 +1,32 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import {
   ApiError,
   api,
+  EnlargeableImage,
   ErrorPanel,
   GridSkeleton,
   detailParams,
   Icon,
   imgSrc,
-  intOr,
   ItemImage,
   messageOf,
   MovieCard,
   PerformerCard,
   providerLabel,
   SceneCard,
+  spaClick,
   useApiGet,
+  useGridColumns,
+  wholeRows,
   useParamsSetter,
   useSession,
 } from "./shared";
@@ -36,10 +45,18 @@ import {
   performerTagJump,
 } from "../lib/contracts";
 import { useBrowseTo } from "./catalog";
+import { browseFilterHref, type BrowseFilter } from "../lib/browse-url";
+import { NotConfiguredLine, RailSkeleton } from "./discover";
 import { seedName } from "../lib/names";
-import { formatCareerRange } from "../lib/person";
+import { ageOn, formatCareerRange } from "../lib/person";
+import { linkLabel } from "../lib/links";
+import { mergePerformerDetails } from "../lib/performer-merge";
+
 import { REQUESTS_CHANGED } from "../lib/approvals";
 import "./views.css";
+
+// Displayed totals: locale digit grouping, one format on every count.
+const NUM_FMT = new Intl.NumberFormat();
 
 /* ---------- Local shapes ---------- */
 
@@ -91,32 +108,6 @@ function usePerformerDetail(
   };
 }
 
-function usePerformerListing(
-  provider: CatalogProvider,
-  kind: "movie" | "scene",
-  performerId: string,
-  page: number,
-  perPage: number,
-  reload: number,
-): { data: SearchPage | null; error: string | null; loading: boolean } {
-  const qs = new URLSearchParams({
-    provider,
-    kind,
-    performer: performerId,
-    page: String(page),
-    perPage: String(perPage),
-  });
-  // An outage is an error with retry, never an empty page.
-  return useApiGet<SearchPage>(`/api/catalog/search?${qs.toString()}`, [
-    provider,
-    kind,
-    performerId,
-    page,
-    perPage,
-    reload,
-  ]);
-}
-
 /* ---------- Cards: the established treatments ---------- */
 
 /* ---------- Panels, skeleton, paging ---------- */
@@ -139,70 +130,13 @@ function HeaderSkeleton() {
   );
 }
 
-function Paging({
-  page,
-  hasMore,
-  total,
-  totalCountKnown,
-  perPage,
-  onPage,
-}: {
-  page: number;
-  hasMore: boolean;
-  total?: number;
-  totalCountKnown: boolean;
-  perPage: number;
-  onPage: (p: number) => void;
-}) {
-  const go = (p: number) => {
-    onPage(p);
-    window.scrollTo({ top: 0 });
-  };
-  // Same denominator rule as the catalog Paging: only an attested total
-  // becomes "Page x of y"; a capped/unknown total never fakes one.
-  const pages =
-    totalCountKnown && total != null
-      ? Math.max(1, Math.ceil(total / perPage))
-      : null;
-  return (
-    <div className="mt-6 flex items-center justify-between gap-3">
-      <div className="text-sm text-muted">
-        {/* A capped total is never rendered as a catalog size. */}
-        {totalCountKnown && total != null ? `${total} results · ` : ""}Page{" "}
-        {page}
-        {pages !== null ? ` of ${pages}` : ""}
-      </div>
-      {/* Same chevron treatment as the overview rails: icon-only arrows with
-          honest disabled edges; the page contract (moviePage/scenePage keys,
-          Previous/Next semantics) is unchanged. */}
-      <div className="flex gap-2">
-        <button
-          type="button"
-          className="btn"
-          aria-label="Previous page"
-          disabled={page <= 1}
-          onClick={() => go(page - 1)}
-        >
-          <Icon name="chevron-left" />
-        </button>
-        <button
-          type="button"
-          className="btn"
-          aria-label="Next page"
-          disabled={!hasMore}
-          onClick={() => go(page + 1)}
-        >
-          <Icon name="chevron-right" />
-        </button>
-      </div>
-    </div>
-  );
-}
+/* ---------- One listing: one kind from the provider that has it ---------- */
 
-/* ---------- One paged listing: one kind from the provider that has it ---------- */
-
-/** Each kind pages independently, so paging her movies never resets her
- * scenes; both keys live in the URL, so a reload or Back restores both. */
+/** One kind from one provider, appended a page at a time. A page is always
+ * whole grid rows (nine columns load 27, never 24 with three holes), and
+ * "Show more" appends the next page in place. Not infinite scroll: the
+ * scenes listing sits below the movies, and an endless movie grid would
+ * make it unreachable. */
 function Listing({
   provider,
   kind,
@@ -212,40 +146,102 @@ function Listing({
   provider: CatalogProvider;
   kind: "movie" | "scene";
   performerId: string;
-  performerName: string;
+  /** Undefined until her detail lands: the listing loads in parallel. */
+  performerName?: string;
 }) {
-  const params = useSearchParams();
   const setP = useParamsSetter();
-  const pageParam = kind === "movie" ? "moviePage" : "scenePage";
-  const page = Math.max(1, intOr(params.get(pageParam), 1));
-  const perPage = Math.min(100, Math.max(1, intOr(params.get("perPage"), 24)));
-  const [reload, setReload] = useState(0);
-  const { data, error, loading } = usePerformerListing(
-    provider,
-    kind,
-    performerId,
-    page,
-    perPage,
-    reload,
+  const [probeRef, cols] = useGridColumns();
+  // The page size is set once from the first column count: a later change
+  // (sidebar collapse, resize) must not refetch and blank the grid; the
+  // display trims to whole rows instead.
+  const [perPage, setPerPage] = useState(0);
+  useEffect(() => {
+    if (perPage === 0 && cols > 0)
+      setPerPage(Math.min(100, cols * Math.ceil(24 / cols)));
+  }, [cols, perPage]);
+  const [acc, setAcc] = useState<SearchPage | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const seqRef = useRef(0);
+  const load = useCallback(
+    async (page: number) => {
+      const seq = ++seqRef.current;
+      if (page === 1) setAcc(null);
+      setLoading(true);
+      setError(null);
+      const qs = new URLSearchParams({
+        provider,
+        kind,
+        performer: performerId,
+        page: String(page),
+        perPage: String(perPage),
+      });
+      try {
+        const next = await api<SearchPage>(`/api/catalog/search?${qs}`);
+        if (seqRef.current !== seq) return;
+        setAcc((prev) => {
+          if (page === 1 || prev === null) return next;
+          const seen = new Set(prev.items.map((it) => it.reference.id));
+          const items = [
+            ...prev.items,
+            ...next.items.filter((it) => !seen.has(it.reference.id)),
+          ];
+          // A page that adds nothing cannot progress: stop offering more.
+          const hasMore =
+            items.length > prev.items.length ? next.hasMore : false;
+          return { ...next, items, hasMore };
+        });
+      } catch (e) {
+        // An outage is an error with retry, never an empty page.
+        if (seqRef.current === seq) setError(messageOf(e));
+      } finally {
+        if (seqRef.current === seq) setLoading(false);
+      }
+    },
+    [provider, kind, performerId, perPage],
   );
+  // A new performer restarts at page 1.
+  useEffect(() => {
+    if (perPage > 0) void load(1);
+  }, [load, perPage]);
   // Same as the performer page: a detail is another surface, so it pushes.
   const open = useCallback(
     (r: CatalogReference) => setP(openParams(r), { push: true }),
     [setP],
   );
-  const onPage = useCallback(
-    (p: number) => setP({ [pageParam]: p > 1 ? String(p) : null }),
-    [setP, pageParam],
-  );
-  const retry = useCallback(() => setReload((n) => n + 1), []);
   const kindLabel = kind === "movie" ? "movies" : "scenes";
+  const total =
+    acc?.totalCountKnown && acc.total != null ? acc.total : undefined;
+  const shown = acc ? wholeRows(acc.items, cols, acc.hasMore) : [];
   return (
     <div>
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <h3 className="font-semibold">
-          {performerName}&rsquo;s {kindLabel}
-        </h3>
-        {data && data.items.length > 0 && (
+      {/* Invisible zero-height probe: its auto-fill tracks are the real
+          grid's, so the first page is sized in whole rows. */}
+      <div
+        ref={probeRef}
+        className="poster-grid"
+        aria-hidden="true"
+        style={{ height: 0, overflow: "hidden", visibility: "hidden" }}
+      />
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h3 className="discovery-shelf-title">
+            {performerName
+              ? `${performerName}’s ${kindLabel}`
+              : kindLabel === "movies"
+                ? "Movies"
+                : "Scenes"}
+          </h3>
+          {acc && acc.items.length > 0 && (
+            <span className="text-sm text-muted">
+              {/* Only an attested total is a count; a capped one never is. */}
+              {total !== undefined
+                ? `Showing ${NUM_FMT.format(shown.length)} of ${NUM_FMT.format(total)}`
+                : `Showing ${NUM_FMT.format(shown.length)}`}
+            </span>
+          )}
+        </div>
+        {acc && acc.items.length > 0 && performerName && (
           <BulkRequest
             key={performerId}
             provider={provider}
@@ -255,26 +251,26 @@ function Listing({
           />
         )}
       </div>
-      {error ? (
+      {error && acc === null ? (
         <ErrorPanel
           title={`${providerLabel(provider)} unavailable`}
           message={error}
-          onRetry={retry}
+          onRetry={() => void load(1)}
         />
-      ) : loading || !data ? (
+      ) : acc === null ? (
         <GridSkeleton
           aspect="aspect-[2/3]"
           cols="poster-grid"
-          count={kind === "movie" ? 10 : 6}
+          count={perPage || 12}
         />
-      ) : data.items.length === 0 ? (
+      ) : acc.items.length === 0 ? (
         <div className="panel p-8 text-center text-sm text-muted">
           {providerLabel(provider)} returned no {kindLabel} for {performerName}.
         </div>
       ) : (
         <>
           <div className="poster-grid">
-            {data.items.map((it) =>
+            {shown.map((it) =>
               kind === "movie" ? (
                 <MovieCard key={it.reference.id} item={it} onOpen={open} />
               ) : (
@@ -282,14 +278,38 @@ function Listing({
               ),
             )}
           </div>
-          <Paging
-            page={page}
-            hasMore={data.hasMore}
-            total={data.total}
-            totalCountKnown={data.totalCountKnown}
-            perPage={perPage}
-            onPage={onPage}
-          />
+          {error ? (
+            <div className="mt-6 flex items-center justify-center gap-3 text-sm text-muted">
+              <span role="alert">
+                Couldn&rsquo;t load more {kindLabel}: {error}
+              </span>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => void load(acc.page + 1)}
+              >
+                Retry
+              </button>
+            </div>
+          ) : (
+            acc.hasMore && (
+              <div className="mt-6 flex justify-center">
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={loading}
+                  aria-busy={loading || undefined}
+                  onClick={() => void load(acc.page + 1)}
+                >
+                  {loading
+                    ? "Loading…"
+                    : total !== undefined
+                      ? `Show more ${kindLabel} (${NUM_FMT.format(total - shown.length)} left)`
+                      : `Show more ${kindLabel}`}
+                </button>
+              </div>
+            )
+          )}
         </>
       )}
     </div>
@@ -368,17 +388,23 @@ function BulkRequest({
   const titleId = useId();
 
   return (
-    <div className="mb-4 min-w-0 text-right">
+    <div className="min-w-0 text-right">
+      {/* Speaks the request language of every other Request button: the
+          accent fill and the plus mark. It is the one decision of its
+          listing (each listing heads its own section), and it still asks
+          first in the dialog below. */}
       <button
         type="button"
         className="btn btn-accent"
         disabled={busy}
+        aria-busy={busy || undefined}
         onClick={() => {
           setError(null);
           confirmRef.current?.showModal();
         }}
       >
-        Request every {noun}
+        <Icon name="plus" />
+        {busy ? "Requesting…" : `Request every ${noun}`}
       </button>
       {counts.length > 0 && (
         <p className="mt-2 text-sm" role="status">
@@ -531,10 +557,10 @@ function FollowStar({
         }
         aria-label={
           status === "following"
-            ? `Unfollow ${name}`
+            ? `Following ${name} — unfollow`
             : status === "notFollowing"
               ? `Follow ${name}`
-              : `Check whether you follow ${name}`
+              : `Follow status unavailable — check whether you follow ${name}`
         }
         disabled={busy}
         onClick={() => void (status === "unknown" ? check() : toggle())}
@@ -672,8 +698,9 @@ function MergeControl({
             ) : null
           ) : candidates.length === 0 ? (
             <p className="mt-2 text-sm text-muted">
-              No standalone {providerLabel(other)} entry to merge. Follow her on{" "}
-              {providerLabel(other)} first, then merge the two entries here.
+              No standalone {providerLabel(other)} entry to merge. Follow this
+              performer on {providerLabel(other)} first, then merge the two
+              entries here.
             </p>
           ) : (
             <ul className="mt-2 space-y-2">
@@ -720,77 +747,121 @@ function MergeControl({
 
 /* ---------- Often appears with ---------- */
 
+type RelatedPayload = {
+  items: CatalogDetail[];
+  errors: { provider: CatalogProvider; code: string; message: string }[];
+};
+
+function relatedPath(r: { provider: CatalogProvider; id: string } | undefined) {
+  return r
+    ? `/api/catalog/${r.provider}/performer/${encodeURIComponent(r.id)}/related`
+    : null;
+}
+
 /** Co-appearance on published credits — the providers' own filmographies are
  * the only evidence, so the heading says "often appears with", never
- * "similar". The fetch runs after the page renders, so it never delays the
- * follow button or the listings above. Empty evidence renders nothing at
- * all — no similarity is ever invented. */
+ * "similar". Both linked sides are read in parallel and one is shown:
+ * StashDB first (scene credits are the richer evidence), TPDB when StashDB
+ * failed or found nobody. Never a mix: the same co-star on both providers
+ * has two ids, and pairing them by name is not allowed, so a mix would
+ * show people twice. A side that failed while the other answered is named
+ * above the grid. Empty evidence renders nothing at all. */
 function RelatedPerformers({
-  provider,
-  id,
+  sides,
+  linkPending,
   onOpen,
 }: {
-  provider: CatalogProvider;
-  id: string;
+  sides: { provider: CatalogProvider; id: string }[];
+  /** The detail that names the linked side is still loading: wait, so the
+   * grid never shows one side and then swaps to the other. */
+  linkPending: boolean;
   onOpen: (r: CatalogReference) => void;
 }) {
   const [reload, setReload] = useState(0);
-  const { data, error, loading } = useApiGet<{
-    items: CatalogDetail[];
-    errors: { provider: CatalogProvider; code: string; message: string }[];
-  }>(`/api/catalog/${provider}/performer/${encodeURIComponent(id)}/related`, [
-    provider,
-    id,
+  // Up to two full rows: whole rows once a row is filled, so the grid
+  // never ends on a half row; fewer than one row shows them all.
+  const [probeRef, cols] = useGridColumns();
+  const ordered = [...sides].sort((a, b) =>
+    a.provider === "stashdb" ? -1 : b.provider === "stashdb" ? 1 : 0,
+  );
+  const first = useApiGet<RelatedPayload>(relatedPath(ordered[0]), [
+    ordered[0]?.provider,
+    ordered[0]?.id,
     reload,
   ]);
-  // Empty items with empty errors is "no co-appearance evidence": the whole
-  // section, heading included, disappears rather than claiming a similarity.
-  if (error === null && !loading && data !== null) {
-    if (data.errors.length === 0 && data.items.length === 0) return null;
-  }
+  const second = useApiGet<RelatedPayload>(relatedPath(ordered[1]), [
+    ordered[1]?.provider,
+    ordered[1]?.id,
+    reload,
+  ]);
+  const reads = [first, second].slice(0, ordered.length);
+  const failure = (r: (typeof reads)[number], i: number) =>
+    r.error !== null
+      ? `${providerLabel(ordered[i]!.provider)}: ${r.error}`
+      : r.data && r.data.errors.length > 0
+        ? r.data.errors
+            .map((e) => `${providerLabel(e.provider)}: ${e.message}`)
+            .join(" · ")
+        : null;
+  const loading =
+    linkPending || reads.some((r) => r.loading && r.data === null);
+  const winner = reads.findIndex(
+    (r, i) => failure(r, i) === null && (r.data?.items.length ?? 0) > 0,
+  );
+  const failures = reads
+    .map((r, i) => failure(r, i))
+    .filter((f): f is string => f !== null);
+  const items = winner >= 0 ? reads[winner]!.data!.items : [];
+  // No evidence and nothing failed: the whole section, heading included,
+  // disappears rather than claiming a similarity.
+  if (!loading && items.length === 0 && failures.length === 0) return null;
+  const shown =
+    cols > 0 && items.length >= cols
+      ? items.slice(0, Math.min(2, Math.floor(items.length / cols)) * cols)
+      : items;
+  const retry = (
+    <button
+      type="button"
+      className="btn"
+      onClick={() => setReload((n) => n + 1)}
+    >
+      Retry
+    </button>
+  );
   return (
     <div>
-      <h3 className="font-semibold">Often appears with</h3>
-      {error !== null ? (
-        <p className="mt-2 text-sm text-muted" role="alert">
-          Co-appearance lookup failed: {error}{" "}
-          <button
-            type="button"
-            className="btn"
-            onClick={() => setReload((n) => n + 1)}
-          >
-            Retry
-          </button>
-        </p>
-      ) : loading ? (
-        <p className="mt-2 text-sm text-muted" aria-live="polite">
-          Looking up shared credits…
-        </p>
-      ) : data === null ? null : data.errors.length > 0 ? (
-        <p className="mt-2 text-sm text-muted" role="alert">
-          {data.errors
-            .map((e) => `${providerLabel(e.provider)}: ${e.message}`)
-            .join(" · ")}{" "}
-          <button
-            type="button"
-            className="btn"
-            onClick={() => setReload((n) => n + 1)}
-          >
-            Retry
-          </button>
-        </p>
-      ) : data.items.length === 0 ? null : (
-        // Empty items with empty errors is "no co-appearance evidence" —
-        // the section disappears entirely rather than claiming a similarity.
-        <div className="poster-grid mt-3">
-          {data.items.map((it) => (
-            <PerformerCard
-              key={`${it.reference.provider}:${it.reference.id}`}
-              item={it}
-              onOpen={onOpen}
-            />
-          ))}
-        </div>
+      <div
+        ref={probeRef}
+        className="poster-grid"
+        aria-hidden="true"
+        style={{ height: 0, overflow: "hidden", visibility: "hidden" }}
+      />
+      <h3 className="discovery-shelf-title">Often appears with</h3>
+      {loading ? (
+        <RailSkeleton count={6} />
+      ) : (
+        <>
+          {failures.length > 0 && (
+            <p className="mt-2 text-sm text-muted" role="alert">
+              {failures.join(" · ")}
+              {winner >= 0
+                ? ` Showing ${providerLabel(ordered[winner]!.provider)} co-appearances. `
+                : " "}
+              {retry}
+            </p>
+          )}
+          {shown.length > 0 && (
+            <div className="poster-grid mt-3">
+              {shown.map((it) => (
+                <PerformerCard
+                  key={`${it.reference.provider}:${it.reference.id}`}
+                  item={it}
+                  onOpen={onOpen}
+                />
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -805,7 +876,10 @@ type TagCounts = {
   errors: { provider: CatalogProvider; code: string; message: string }[];
 };
 
-const TAGS_SHOWN = 50;
+const TAGS_SHOWN = 30;
+
+/** Varied chip widths (rem) so the loading row reads as tags, not a bar. */
+const TAG_SKELETON_WIDTHS = [5.5, 4, 7, 4.5, 6, 3.5, 8, 5, 4, 6.5, 5, 7.5];
 
 /** Tag counts from one provider side of her filmography, fetched after the
  * page renders so it never delays the follow button or the listings. Each
@@ -814,14 +888,42 @@ const TAGS_SHOWN = 50;
 function TagsOverview({
   reference,
   linked,
+  linkPending,
   name,
 }: {
   reference: CatalogReference;
   linked?: CatalogReference;
-  name: string;
+  /** The detail (which names the linked side) is still loading: her own
+   * counts already fetch, but the merged overview waits for the link so it
+   * never renders one side and then re-renders as both. */
+  linkPending: boolean;
+  /** Undefined until her detail lands. */
+  name?: string;
 }) {
   const [reload, setReload] = useState(0);
   const retry = useCallback(() => setReload((n) => n + 1), []);
+  const [order, setOrder] = useState<"count" | "name">("count");
+  // How many CSS columns the tag list gets at its current width, read from
+  // its own column width and gap, so the cut can fill each one.
+  const [colsEl, setColsEl] = useState<HTMLDivElement | null>(null);
+  const [tagCols, setTagCols] = useState(0);
+  useEffect(() => {
+    if (!colsEl || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const s = getComputedStyle(colsEl);
+      const w = parseFloat(s.columnWidth);
+      const gap = parseFloat(s.columnGap) || 0;
+      if (w > 0)
+        setTagCols(
+          Math.max(1, Math.floor((colsEl.clientWidth + gap) / (w + gap))),
+        );
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(colsEl);
+    return () => ro.disconnect();
+  }, [colsEl]);
+  const [showAll, setShowAll] = useState(false);
   // A clicked chip opens unified browse: this performer + that tag.
   const browseTo = useBrowseTo();
   const pathOf = (r: CatalogReference) =>
@@ -837,7 +939,24 @@ function TagsOverview({
     linked?.id,
     reload,
   ]);
-  if (own.loading || (linkedPath !== null && other.loading)) return null;
+  // Loading keeps the section shell with chip-shaped skeletons in the
+  // final chip row's geometry, so the listings below never jump when the
+  // tags land.
+  if (linkPending || own.loading || (linkedPath !== null && other.loading))
+    return (
+      <section aria-label="Tags overview" aria-busy="true">
+        <h3 className="discovery-shelf-title">Tags</h3>
+        <div className="tag-chips mt-2" aria-hidden="true">
+          {TAG_SKELETON_WIDTHS.map((w, i) => (
+            <span
+              key={i}
+              className="skel h-[27px]"
+              style={{ width: `${w}rem` }}
+            />
+          ))}
+        </div>
+      </section>
+    );
   // Each side is single-provider, so its rows' native ids become that
   // side's selection ids; the merge then keeps both for labels on both.
   const sides: { provider: CatalogProvider; counts: TagCounts }[] = [];
@@ -868,7 +987,6 @@ function TagsOverview({
     });
   }
   const errors = [...sides.flatMap((s) => s.counts.errors), ...fetchFailures];
-  // Alphabetical display order; the wire stays count-desc, this is view-side.
   const merged = mergeTagCounts(
     sides.map((s) =>
       s.counts.tags.map((t) => ({
@@ -877,7 +995,7 @@ function TagsOverview({
         ...(s.provider === "tpdb" ? { tpdb: t.id } : { stashdb: t.id }),
       })),
     ),
-  ).sort((a, b) => a.name.localeCompare(b.name));
+  );
   if (merged.length === 0) {
     // No tags counted and nothing failed: no listed titles carry tags, so
     // the section disappears rather than claiming an overview.
@@ -894,70 +1012,125 @@ function TagsOverview({
       </p>
     );
   }
-  const shown = merged.slice(0, TAGS_SHOWN);
+  // "Most frequent" shows her top tags and folds the rest behind Show all.
+  // A–Z is a lookup, so it lists every tag alphabetically: a cut there
+  // would show only the "A" tags or a sorted top 30, neither of which
+  // answers "does she have tag X".
+  const byCount = merged.sort(
+    (a, b) => b.count - a.count || a.name.localeCompare(b.name),
+  );
+  // The cut fills every column: CSS columns balance 30 tags over 7 columns
+  // as 5 per column and leave the 7th empty, so the count rounds up to
+  // whole rows of the columns that actually fit.
+  const cut =
+    tagCols > 0 ? tagCols * Math.ceil(TAGS_SHOWN / tagCols) : TAGS_SHOWN;
+  const shown =
+    order === "name"
+      ? [...byCount].sort((a, b) => a.name.localeCompare(b.name))
+      : showAll
+        ? byCount
+        : byCount.slice(0, cut);
   const scanned = sides.reduce((n, s) => n + s.counts.scanned, 0);
   const capped = sides.some((s) => s.counts.capped);
   return (
     <section aria-label="Tags overview">
-      <h3 className="font-semibold">Tags</h3>
-      <div className="mt-2 flex flex-wrap gap-2">
-        {shown.map((t) =>
-          isBrowseableTagSelection(t) ? (
-            <button
-              key={t.name}
-              type="button"
-              className="chip"
-              onClick={() => {
-                // A union jump rides both of her ids and lands on browse All
-                // (her TPDB movies plus her StashDB scenes). The page
-                // performer's name is seeded so the chip labels her by name;
-                // the linked side stays id-labeled — no known name, never
-                // faked.
-                seedName(
-                  {
-                    provider: reference.provider,
-                    kind: "performer",
-                    id: reference.id,
-                  },
-                  name,
-                );
-                const jump = performerTagJump(reference, linked, t);
-                browseTo({
-                  param: jump.param,
-                  provider: jump.provider,
-                  id: jump.id ?? reference.id,
-                  ...(jump.counterpart !== undefined
-                    ? { counterpart: jump.counterpart }
-                    : {}),
-                  tag: t,
-                });
-              }}
-            >
-              {t.name}
-              <span className="ml-1.5 text-muted">{t.count}</span>
-            </button>
-          ) : (
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        {/* Title and coverage on the left, like the listings' "Page x of
+            y"; the order choice on the right. */}
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h3 className="discovery-shelf-title">Tags</h3>
+          <span className="text-sm text-muted">
+            Counted across {NUM_FMT.format(scanned)} listed titles
+            {capped ? " (the first pages each provider returns)" : ""}
+          </span>
+        </div>
+        <div role="group" aria-label="Tag order" className="segmented">
+          <button
+            type="button"
+            aria-pressed={order === "count"}
+            onClick={() => setOrder("count")}
+          >
+            Most frequent
+          </button>
+          <button
+            type="button"
+            aria-pressed={order === "name"}
+            onClick={() => setOrder("name")}
+          >
+            A–Z
+          </button>
+        </div>
+      </div>
+      {/* Columns: a frequency list reads down, names left and counts in a
+          right-aligned column, instead of a ragged run-on cloud. */}
+      <div ref={setColsEl} className="tag-columns mt-3">
+        {shown.map((t) => {
+          const count = (
+            <span className="filter-chip-count">
+              {new Intl.NumberFormat().format(t.count)}
+            </span>
+          );
+          if (!isBrowseableTagSelection(t))
             // TPDB sometimes emits numeric-string tag ids the filter layer
             // rejects with 400 — those stay plain text, as in catalog-detail.
-            <span key={t.name} className="chip">
-              {t.name}
-              <span className="ml-1.5 text-muted">{t.count}</span>
-            </span>
-          ),
-        )}
+            return (
+              <span key={t.name} className="filter-chip" title={t.name}>
+                <span className="min-w-0 truncate">{t.name}</span>
+                {count}
+              </span>
+            );
+          // A union jump rides both of her ids and lands on browse All (her
+          // TPDB movies plus her StashDB scenes).
+          const jump = performerTagJump(reference, linked, t);
+          const filter: BrowseFilter = {
+            param: jump.param,
+            provider: jump.provider,
+            id: jump.id ?? reference.id,
+            ...(jump.counterpart !== undefined
+              ? { counterpart: jump.counterpart }
+              : {}),
+            tag: t,
+          };
+          return (
+            <a
+              title={t.name}
+              key={t.name}
+              className="filter-chip"
+              href={browseFilterHref(filter)}
+              onClick={spaClick(() => {
+                // The page performer's name is seeded so the chip labels her
+                // by name; the linked side stays id-labeled — no known name,
+                // never faked.
+                if (name)
+                  seedName(
+                    {
+                      provider: reference.provider,
+                      kind: "performer",
+                      id: reference.id,
+                    },
+                    name,
+                  );
+                browseTo(filter);
+              })}
+            >
+              <span className="min-w-0 truncate">{t.name}</span>
+              {count}
+            </a>
+          );
+        })}
       </div>
-      {merged.length > shown.length && (
-        <p className="mt-2 text-xs text-muted">
-          +{merged.length - shown.length} more
-        </p>
+      {order === "count" && merged.length > cut && (
+        <button
+          type="button"
+          className="cat-inline-link mt-3 text-sm"
+          aria-expanded={showAll}
+          onClick={() => setShowAll((v) => !v)}
+        >
+          {showAll
+            ? `Show the ${cut} most frequent`
+            : `Show all ${new Intl.NumberFormat().format(merged.length)} tags`}
+        </button>
       )}
-      <p className="mt-2 text-xs text-muted">
-        Counted across {scanned} of her listed titles
-        {capped
-          ? " — the first pages each provider returns, not her whole filmography"
-          : ""}
-        .
-      </p>
       {errors.length > 0 && (
         <p className="mt-2 text-xs text-muted" role="alert">
           Partial:{" "}
@@ -1010,7 +1183,26 @@ function measurementsOf(p: CatalogPerson) {
       ? `${p.bandSize}${p.cupSize ?? ""}-${p.waistIn}-${p.hipIn}`
       : undefined;
   if (triple !== undefined) return triple;
+  // TPDB's free-text measurements, as published, when no triple exists.
+  if (p.measurementsText !== undefined) return p.measurementsText;
   return p.cupSize !== undefined ? `${p.cupSize} cup` : undefined;
+}
+
+/** "3 May 2020, aged 40": the age only when the death date is day-exact
+ * and the birth date settles it. */
+function diedText(p: CatalogPerson): string | undefined {
+  if (p.deathDate === undefined) return undefined;
+  const date = formatBirthDate(p.deathDate, p.deathDateAccuracy);
+  const [y, m, d] = p.deathDate.split("-").map(Number);
+  const age =
+    p.birthDate !== undefined &&
+    (p.deathDateAccuracy ?? "day") === "day" &&
+    y &&
+    m &&
+    d
+      ? ageOn(p.birthDate, p.birthDateAccuracy, new Date(y, m - 1, d))
+      : undefined;
+  return age !== undefined ? `${date}, aged ${age}` : date;
 }
 
 /** Rows only for facts the response contained — an unknown fact is never
@@ -1024,14 +1216,33 @@ function PerformerBio({ person }: { person: CatalogPerson }) {
           ? formatBirthDate(person.birthDate, person.birthDateAccuracy)
           : undefined,
       ],
+      // A death date replaces "Age": the age at death, when both dates are
+      // exact enough, rides the Died row instead.
+      [
+        "Age",
+        person.birthDate !== undefined && person.deathDate === undefined
+          ? ageOn(
+              person.birthDate,
+              person.birthDateAccuracy,
+              new Date(),
+            )?.toString()
+          : undefined,
+      ],
+      ["Died", diedText(person)],
+      ["Birthplace", person.birthplace],
       ["Gender", person.gender],
       ["Country", person.country],
+      ["Nationality", person.nationality],
       ["Ethnicity", person.ethnicity],
       ["Eye color", person.eyeColor],
       ["Hair color", person.hairColor],
       [
         "Height",
         person.heightCm !== undefined ? `${person.heightCm} cm` : undefined,
+      ],
+      [
+        "Weight",
+        person.weightKg !== undefined ? `${person.weightKg} kg` : undefined,
       ],
       ["Measurements", measurementsOf(person)],
       ["Breasts", person.breastType],
@@ -1045,17 +1256,87 @@ function PerformerBio({ person }: { person: CatalogPerson }) {
   ).filter((row): row is [string, string] => row[1] !== undefined);
   if (rows.length === 0) return null;
   return (
-    <div className="mt-4">
-      <div className="label">Details</div>
-      <div className="mt-2 grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
+    // The hero's third column (under the identity below lg): a quiet panel
+    // over the backdrop, one fact per row, label left and value right.
+    <section
+      aria-label="Details"
+      className="hero-facts sm:col-start-2 lg:col-start-3"
+    >
+      {/* No visible heading: the label/value rows explain themselves; the
+          section's aria-label still names it for assistive tech. */}
+      <dl>
         {rows.map(([k, v]) => (
-          <div key={k} className="flex gap-3">
-            <span className="w-24 shrink-0 text-muted">{k}</span>
-            <span className="min-w-0">{v}</span>
-          </div>
+          <Fragment key={k}>
+            <dt>{k}</dt>
+            <dd>{v}</dd>
+          </Fragment>
         ))}
-      </div>
+      </dl>
+    </section>
+  );
+}
+
+/** The provider's bio, clamped to two lines so a long one never stretches
+ * the hero; "Read more" appears only when the text really overflows, and
+ * the full text stays in the DOM for search and assistive tech. */
+function ClampedBio({ text }: { text: string }) {
+  const ref = useRef<HTMLParagraphElement>(null);
+  const [open, setOpen] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      if (!open) setOverflows(el.scrollHeight > el.clientHeight + 1);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [open, text]);
+  return (
+    <div className="mt-3 max-w-prose">
+      <p
+        ref={ref}
+        className={`text-sm leading-relaxed text-muted${open ? "" : " line-clamp-2"}`}
+      >
+        {text}
+      </p>
+      {(overflows || open) && (
+        <button
+          type="button"
+          className="cat-inline-link mt-1 text-sm"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        >
+          {open ? "Show less" : "Read more"}
+        </button>
+      )}
     </div>
+  );
+}
+
+/** A gender glyph beside the name, from the provider's own gender value.
+ * Only values a standard symbol names exactly get one; any other value
+ * (intersex, non-binary) stays text in the facts panel, never a guessed
+ * symbol. The glyph is named for assistive tech and as a tooltip. */
+function GenderMark({ gender }: { gender?: string }) {
+  const g = gender?.toLowerCase();
+  const icon =
+    g === "female"
+      ? "gender-female"
+      : g === "male"
+        ? "gender-male"
+        : // stash-box says "Transgender female"; TPDB spellings vary
+          // ("Trans Female"), so any trans-prefixed value gets the mark.
+          g?.startsWith("trans")
+          ? "gender-trans"
+          : null;
+  if (!icon || !gender) return null;
+  return (
+    <span className="gender-mark" role="img" aria-label={gender} title={gender}>
+      <Icon name={icon} />
+    </span>
   );
 }
 
@@ -1115,16 +1396,40 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
     [setP],
   );
 
-  const d = payload?.detail;
+  // She is one person: when the providers link her two records, the hero
+  // reads both, merged in a fixed order (TPDB first, like the listings), so
+  // the page is the same whichever side was opened. The other side only
+  // fills gaps; a failed fetch of it degrades to the opened record and says
+  // so in the provenance line.
+  const otherRef = linked?.kind === "performer" ? linked : undefined;
+  const other = usePerformerDetail(
+    otherRef?.provider ?? reference.provider,
+    otherRef?.id ?? reference.id,
+    otherRef !== undefined &&
+      providers?.[otherRef.provider] !== "not_configured",
+    reload,
+  );
+  const otherDetail = otherRef ? other.payload?.detail : undefined;
+  const otherFailed = otherRef !== undefined && other.err !== null;
+  const d =
+    payload?.detail && otherDetail
+      ? reference.provider === "tpdb"
+        ? mergePerformerDetails(payload.detail, otherDetail)
+        : mergePerformerDetails(otherDetail, payload.detail)
+      : payload?.detail;
+  const otherLoading = otherRef !== undefined && other.loading;
   const sourceUrl =
     d?.sourceUrl && !d.links.some((l) => l.url === d.sourceUrl)
       ? d.sourceUrl
       : undefined;
 
   // The performer page is entered with a pushed history entry, so Back returns
-  // to the results that led here. Shown only when there is somewhere to go
-  // back to, so a deep link never offers a control that leaves the app.
-  const canGoBack = typeof window !== "undefined" && window.history.length > 1;
+  // to the results that led here. Shown only when this document was opened
+  // from a Velvarr URL — a deep link never offers a control that leaves the
+  // app, and history.length alone cannot tell those apart.
+  const canGoBack =
+    typeof window !== "undefined" &&
+    document.referrer.startsWith(window.location.origin);
 
   return (
     <section aria-label="Performer">
@@ -1138,16 +1443,11 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
         </button>
       )}
       {notConfigured || err?.code === "provider_not_configured" ? (
-        <div className="panel p-6" role="note">
-          <h3 className="font-semibold">
-            {providerLabel(reference.provider)} is not configured
-          </h3>
-          <p className="mt-2 text-sm text-muted">
-            No API key is present for {providerLabel(reference.provider)}, so
-            this performer&rsquo;s page cannot be loaded. Ask an administrator
-            to add a key in Settings. This is different from a temporary outage
-            — an outage would show a retry.
-          </p>
+        <div className="panel p-4" role="note">
+          <NotConfiguredLine
+            source={reference.provider}
+            consequence="this performer’s page cannot be loaded"
+          />
         </div>
       ) : err?.status === 404 ? (
         <div className="panel p-6" role="note">
@@ -1163,106 +1463,134 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
           message={err.message}
           onRetry={() => setReload((n) => n + 1)}
         />
-      ) : loading || !d ? (
-        <HeaderSkeleton />
       ) : (
         <>
-          <div className="performer-hero">
-            {d.imageUrl && (
-              <ItemImage
-                name=""
-                src={imgSrc(d.imageUrl)}
-                className="performer-backdrop"
-              />
-            )}
-            <div className="performer-scrim" aria-hidden="true" />
-            <div className="relative flex flex-col gap-5 p-5 sm:flex-row sm:p-6">
-              <div className="relative aspect-[2/3] w-40 shrink-0 self-center overflow-hidden rounded-lg border border-edge bg-raised sm:self-start sm:w-48">
+          {loading || otherLoading || !d ? (
+            <HeaderSkeleton />
+          ) : (
+            <div className="performer-hero">
+              {d.imageUrl && (
                 <ItemImage
-                  name={d.title}
+                  name=""
                   src={imgSrc(d.imageUrl)}
-                  className="absolute inset-0 h-full w-full object-cover"
+                  className="performer-backdrop"
                 />
-              </div>
-              <div className="min-w-0 flex-1">
-                <h2 className="page-title">{d.title}</h2>
-                <div className="mt-2 flex flex-wrap gap-1">
-                  {/* Which sources this page is reading, now that it reads
-                      both sides when the providers link them. */}
-                  <span className="chip">performer</span>
-                  {sides.map((s) => (
-                    <span key={s.provider} className="chip">
-                      {providerLabel(s.provider)}
-                    </span>
-                  ))}
-                </div>
-                <div className="mt-3">
-                  <FollowStar
-                    key={`${reference.provider}:${reference.id}:${reload}`}
-                    provider={reference.provider}
-                    id={reference.id}
-                    name={d.title}
-                    imageUrl={d.imageUrl ?? null}
-                  />
-                  {merged === `${reference.provider}:${reference.id}` && (
-                    <p className="mt-2 text-sm text-ok" role="status">
-                      Followed and merged with{" "}
-                      {providerLabel(
-                        reference.provider === "tpdb" ? "stashdb" : "tpdb",
-                      )}
-                      .
+              )}
+              <div className="performer-scrim" aria-hidden="true" />
+              {/* Three columns: photo, identity (name, sources, follow, links),
+                and the facts in their own panel on the right, so the hero's
+                right half carries content. Below lg the facts drop under the
+                identity; below sm everything stacks. */}
+              <div className="relative grid items-start gap-5 p-5 sm:grid-cols-[12rem_minmax(0,1fr)] sm:gap-6 sm:p-6 lg:grid-cols-[12rem_minmax(0,1fr)_19rem]">
+                <EnlargeableImage
+                  name={d.title}
+                  imageUrl={d.imageUrl}
+                  frameClass="relative block aspect-[2/3] w-40 shrink-0 self-center justify-self-center overflow-hidden rounded-lg border border-edge bg-raised p-0 sm:w-48 sm:self-start"
+                  imgClass="absolute inset-0 h-full w-full object-cover"
+                />
+                <div className="min-w-0">
+                  <h2 className="page-title performer-title">
+                    {d.title}
+                    <GenderMark gender={d.person?.gender} />
+                  </h2>
+                  {/* Which sources this page reads, as provenance text, not
+                    chips: nothing here is clickable, so nothing should look
+                    like a control. With both sides linked, it says so. */}
+                  <p className="mt-1 text-sm text-muted">
+                    {sides.length > 1
+                      ? `${sides.map((s) => providerLabel(s.provider)).join(" and ")}, linked by the providers${
+                          otherFailed && otherRef
+                            ? ` (${providerLabel(otherRef.provider)} details could not be loaded)`
+                            : ""
+                        }`
+                      : `From ${providerLabel(reference.provider)}`}
+                    {otherFailed && (
+                      <>
+                        {" "}
+                        <button
+                          type="button"
+                          className="cat-inline-link"
+                          onClick={() => setReload((n) => n + 1)}
+                        >
+                          Retry
+                        </button>
+                      </>
+                    )}
+                  </p>
+                  <div className="mt-3">
+                    <FollowStar
+                      key={`${reference.provider}:${reference.id}:${reload}`}
+                      provider={reference.provider}
+                      id={reference.id}
+                      name={d.title}
+                      imageUrl={d.imageUrl ?? null}
+                    />
+                    {merged === `${reference.provider}:${reference.id}` && (
+                      <p className="mt-2 text-sm text-ok" role="status">
+                        Followed and merged with{" "}
+                        {providerLabel(
+                          reference.provider === "tpdb" ? "stashdb" : "tpdb",
+                        )}
+                        .
+                      </p>
+                    )}
+                  </div>
+                  {d.aliases.length > 0 && (
+                    <p className="mt-2 text-sm text-muted">
+                      Also known as {d.aliases.join(", ")}
                     </p>
                   )}
-                </div>
-                {d.aliases.length > 0 && (
-                  <p className="mt-2 text-xs text-muted">
-                    Also known as: {d.aliases.join(", ")}
-                  </p>
-                )}
-                {d.description && (
-                  <p className="mt-3 max-w-prose text-sm leading-relaxed text-muted">
-                    {d.description}
-                  </p>
-                )}
-                {d.person && <PerformerBio person={d.person} />}
+                  {d.description && <ClampedBio text={d.description} />}
 
-                {(d.links.length > 0 || sourceUrl) && (
-                  <div className="mt-4">
-                    <div className="label">Links</div>
-                    <div className="mt-1 flex flex-wrap gap-2">
-                      {d.links.map((l, i) => (
-                        <a
-                          key={i}
-                          className="chip"
-                          href={l.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          {l.label ?? providerLabel(reference.provider)}
-                        </a>
-                      ))}
-                      {sourceUrl && (
-                        <a
-                          className="chip"
-                          href={sourceUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          Source · {providerLabel(reference.provider)}
-                        </a>
-                      )}
+                  {(d.links.length > 0 || sourceUrl) && (
+                    <div className="mt-4">
+                      <div className="label">Links</div>
+                      <div className="tag-chips mt-1">
+                        {d.links.map((l, i) => (
+                          <a
+                            key={i}
+                            className="filter-chip"
+                            href={l.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            {linkLabel(
+                              l,
+                              d.links,
+                              providerLabel(reference.provider),
+                            )}
+                          </a>
+                        ))}
+                        {sourceUrl && (
+                          <a
+                            className="filter-chip"
+                            href={sourceUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            Source · {providerLabel(reference.provider)}
+                          </a>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
+                {d.person && <PerformerBio person={d.person} />}
               </div>
             </div>
-          </div>
+          )}
 
-          <div className="mt-8 space-y-8">
+          {/* Sections read like Discover's shelves: the shelf title size and
+              the shelf rhythm (2.25rem) between them. They mount with the
+              hero, not after it: her own listing, tags and co-appearances
+              load in parallel with the detail; only the linked side waits
+              for the link the detail reports. */}
+          <div className="mt-9 space-y-9">
             <TagsOverview
               reference={reference}
               linked={linked}
-              name={d.title}
+              linkPending={payload === null}
+              name={d?.title}
             />
             {sides.map((s) => (
               <Listing
@@ -1270,10 +1598,12 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
                 provider={s.provider}
                 kind={s.provider === "tpdb" ? "movie" : "scene"}
                 performerId={s.id}
-                performerName={d.title}
+                performerName={d?.title}
               />
             ))}
-            {missing &&
+            {payload &&
+              d &&
+              missing &&
               (linkFailure ? (
                 <div className="space-y-4">
                   <ErrorPanel
@@ -1314,8 +1644,8 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
                 </div>
               ))}
             <RelatedPerformers
-              provider={reference.provider}
-              id={reference.id}
+              sides={sides}
+              linkPending={payload === null}
               onOpen={open}
             />
           </div>

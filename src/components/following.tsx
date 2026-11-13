@@ -10,11 +10,13 @@ import type { CatalogReference, PerformerFollow } from "../lib/contracts.ts";
 import {
   api,
   ApiError,
+  detailHref,
   ErrorPanel,
   Icon,
   ItemImage,
   imgSrc,
   messageOf,
+  spaClick,
   useParamsSetter,
 } from "./shared.tsx";
 import { PerformerView } from "./performer.tsx";
@@ -123,12 +125,12 @@ export function FollowingView() {
         />
       ) : follows === null ? (
         <div
-          className="performer-grid"
+          className="poster-grid"
           aria-label="Loading follows"
           aria-busy="true"
         >
           {Array.from({ length: 8 }, (_, i) => (
-            <div key={i} className="skel aspect-square" />
+            <div key={i} className="skel aspect-[2/3]" />
           ))}
         </div>
       ) : follows.length === 0 ? (
@@ -137,28 +139,31 @@ export function FollowingView() {
           the star on their page — and they will appear here.
         </div>
       ) : (
-        <div className="performer-grid">
+        // The same tile as every other performer (PerformerCard): 2:3 art,
+        // the name inside on the top scrim, a real link. Only the unfollow
+        // star is added, pinned top-right beside the name.
+        <div className="poster-grid">
           {follows.map((f) => (
-            <div key={f.id} className="media-card performer-card follow-card">
-              <button
-                type="button"
-                className="follow-open"
-                onClick={() => open(f.reference)}
+            <div key={f.id} className="follow-card">
+              <a
+                href={detailHref(f.reference)}
+                className="media-card performer-card"
+                title={f.name}
+                onClick={spaClick(() => open(f.reference))}
               >
-                <div className="media-art aspect-square">
+                <div className="media-art aspect-[2/3]">
                   <ItemImage
                     name={f.name}
                     src={imgSrc(f.imageUrl ?? undefined)}
-                    className="absolute inset-0 h-full w-full object-cover"
+                    className="h-full w-full object-cover"
                   />
+                  {/* No provider chip: a follow covers both metadata
+                      sources, so naming one would be a half-truth. */}
+                  <span className="media-name-overlay">
+                    <span>{f.name}</span>
+                  </span>
                 </div>
-                {/* No provider chip: a follow covers both metadata sources,
-                    so naming one here would be a half-truth. The performer's
-                    own page still says which source it is reading. */}
-                <div className="media-meta">
-                  <div className="media-title">{f.name}</div>
-                </div>
-              </button>
+              </a>
               <button
                 type="button"
                 className="follow-star"

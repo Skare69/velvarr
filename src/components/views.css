@@ -28,7 +28,7 @@
   position: relative;
   overflow: hidden;
   border: 1px solid var(--color-edge);
-  border-radius: 14px;
+  border-radius: 10px;
   background: var(--color-panel);
 }
 
@@ -44,6 +44,21 @@
   filter: blur(46px) saturate(1.15);
   opacity: 0.5;
 }
+/* The gender glyph rides the name's line in the muted tone: a fact, not an
+   action, so never the accent. Sized to the title's cap height. */
+.performer-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+}
+.gender-mark {
+  display: inline-flex;
+  color: var(--color-muted);
+}
+.gender-mark .icon {
+  width: 0.8em;
+  height: 0.8em;
+}
 
 .performer-scrim {
   position: absolute;
@@ -54,24 +69,19 @@
     color-mix(in srgb, var(--color-panel) 92%, transparent) 82%
   );
 }
-
-/* State badges are solid pills — the same shape as the media kind badge,
-   white uppercase text, background color by state; data-state is the single
-   source of the variant so markup stays one class + one attribute. */
+/* State badges are solid chips — the 5px chip radius from DESIGN, white
+   uppercase text, background color by state; data-state is the single source
+   of the variant so markup stays one class + one attribute. */
 .state-badge {
   display: inline-block;
   padding: 0.16rem 0.6rem;
   border: none;
-  border-radius: 999px;
+  border-radius: 5px;
   font-size: 0.6875rem;
   font-weight: 700;
   letter-spacing: 0.03em;
   text-transform: uppercase;
   color: #fff;
-}
-
-.state-badge[data-state="pending"] {
-  background: color-mix(in oklab, var(--color-accent) 72%, var(--color-canvas));
 }
 
 .state-badge[data-state="approved"] {
@@ -109,36 +119,30 @@
 
 /* ---------- Following ---------- */
 
-/* Same card anatomy as the catalog grids, but the card holds a second
-   control (unfollow), so the card is a div wrapping two buttons instead of
-   one big button. */
+/* The performer tile from every other grid, plus a second control
+   (unfollow), so a div wraps the tile's link and the star button: a button
+   never nests inside a link. */
 .follow-card {
   position: relative;
 }
-
-.follow-open {
-  display: block;
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
+/* The star stays above the tile while the tile zooms on hover. */
+.follow-card .follow-star {
+  z-index: 2;
 }
 
-/* Filled star pinned over the portrait; the accent says "following". */
+/* Filled star pinned at the photo's foot, where tiles keep their action
+   (a poster's Request, a cast tile's Filter), so the name at the top keeps
+   the full width; the accent says "following". */
 .follow-star {
   position: absolute;
-  top: 0.5rem;
+  bottom: 0.5rem;
   right: 0.5rem;
   display: grid;
   place-items: center;
   width: 2rem;
   height: 2rem;
   border: 1px solid var(--color-edge);
-  border-radius: 999px;
+  border-radius: 8px;
   background: color-mix(in srgb, var(--color-panel) 88%, transparent);
   color: var(--color-accent);
   cursor: pointer;
@@ -151,6 +155,20 @@
 .follow-star:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* Coarse pointers get real touch targets: every request-card action spans
+   the card, and the pinned follow star reaches the 44px minimum. */
+@media (pointer: coarse) {
+  .request-card-actions > .btn,
+  .prefs-save {
+    width: 100%;
+  }
+
+  .follow-star {
+    width: 44px;
+    height: 44px;
+  }
 }
 
 /* ---------- Follow toggle (performer page) ---------- */
