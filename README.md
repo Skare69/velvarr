@@ -34,6 +34,7 @@ Docker is the recommended way to run Velvarr. It uses [`compose.yaml`](compose.y
 ```sh
 mkdir velvarr && cd velvarr
 curl -fsSLO https://raw.githubusercontent.com/Skare69/velvarr/main/compose.yaml
+touch .env.local && chmod 600 .env.local   # owner-only: the file holds the database key
 printf 'VELVARR_SECRET_KEY=%s\nVELVARR_SETUP_SECRET=%s\n' \
   "$(openssl rand -hex 32)" "$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')" > .env.local
 docker compose up -d
