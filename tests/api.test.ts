@@ -1566,7 +1566,7 @@ test("update chip: VELVARR_UPDATE_CHECK=0 opts out with no github call", async (
   }
 });
 
-test("update chip: cache windows — one hour after success, ten minutes after failure", async () => {
+test("update chip: cache windows — one hour after success, a failure never caches", async () => {
   const realFetch = globalThis.fetch;
   const realNow = Date.now;
   let now = 1_700_000_000_000;
@@ -1575,9 +1575,10 @@ test("update chip: cache windows — one hour after success, ten minutes after f
   let seenAccept = "";
   let stub: () => Response = () => Response.json({});
   try {
-    // README promises github is asked "at most once an hour — ten minutes
-    // after a failure". The windows are hardcoded here, not imported, so
-    // swapping FRESH_MS/FAILED_MS in src/server/update.ts fails this test.
+    // README promises github is asked "at most once an hour after a
+    // success"; a failed check is never cached. The window is hardcoded
+    // here, not imported, so swapping FRESH_MS in src/server/update.ts
+    // fails this test.
     Date.now = () => now;
     globalThis.fetch = (async (
       input: RequestInfo | URL,
@@ -1618,29 +1619,62 @@ test("update chip: cache windows — one hour after success, ten minutes after f
     await call("GET", "/api/update");
     assert.equal(calls, 2);
 
-    // A failed check retries after ten minutes: 1 ms inside the window stays
-    // cached (one github blip must not hide a release for an hour, nor cost
-    // a call per hit), exactly 10 min later it retries — and a tag older
-    // than the current build correctly reports no update.
+    // A failed check is never cached (VELV-125): the very next call asks
+    // github again, so an outage cannot serve a stale no-update answer
+    // across page loads and launches — and a tag older than the current
+    // build correctly reports no update.
     stub = () => new Response("rate limited", { status: 403 });
     resetUpdateCache();
     const degraded = await call("GET", "/api/update");
     assert.deepEqual(await degraded.json(), { update: null });
     assert.equal(calls, 3);
-    now += 10 * 60 * 1000 - 1;
     await call("GET", "/api/update");
-    assert.equal(calls, 3);
-    now += 1;
+    assert.equal(calls, 4);
     stub = () =>
       Response.json({
         tag_name: "v0.0.1",
         html_url: "https://github.com/Skare69/velvarr/releases/tag/v0.0.1",
       });
-    const recovered = await call("GET", "/api/update");
-    assert.deepEqual(await recovered.json(), { update: null });
-    assert.equal(calls, 4);
+    const older = await call("GET", "/api/update");
+    assert.deepEqual(await older.json(), { update: null });
+    assert.equal(calls, 5);
   } finally {
     Date.now = realNow;
+    globalThis.fetch = realFetch;
+    resetUpdateCache();
+  }
+});
+
+test("update chip: a failed check is not cached — the retry surfaces a multi-version gap", async () => {
+  const realFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () =>
+      new Response("rate limited", { status: 403 })) as typeof fetch;
+    resetUpdateCache();
+    const degraded = await call("GET", "/api/update");
+    assert.deepEqual(await degraded.json(), { update: null });
+
+    // The failure must not arm a no-update window (VELV-125: a cached
+    // failure kept the chip hidden while github kept failing). The next
+    // call asks github again, and a release several versions ahead of this
+    // build surfaces at once.
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return Response.json({
+        tag_name: "v9.9.9",
+        html_url: "https://github.com/Skare69/velvarr/releases/tag/v9.9.9",
+      });
+    }) as typeof fetch;
+    const recovered = await call("GET", "/api/update");
+    assert.deepEqual(await recovered.json(), {
+      update: {
+        version: "9.9.9",
+        url: "https://github.com/Skare69/velvarr/releases/tag/v9.9.9",
+      },
+    });
+    assert.equal(calls, 1);
+  } finally {
     globalThis.fetch = realFetch;
     resetUpdateCache();
   }

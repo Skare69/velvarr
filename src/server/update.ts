@@ -7,23 +7,24 @@ const { version } = packageJson;
 const RELEASES_URL =
   "https://api.github.com/repos/Skare69/velvarr/releases/latest";
 const FRESH_MS = 60 * 60 * 1000;
-const FAILED_MS = 10 * 60 * 1000;
 
-let cache: { at: number; ok: boolean; update: UpdateInfo | null } | null = null;
+let cache: { at: number; update: UpdateInfo | null } | null = null;
 let inflight: Promise<UpdateInfo | null> | null = null;
 
 /** The newest published GitHub release when it is newer than this build,
  * null when current, unreachable or shaped wrong — one wire shape for both
  * "up to date" and "cannot tell", because the chip renders absence the same
- * honest way. A successful check is trusted for an hour, a failed one
- * retries after ten minutes, and parallel callers share the in-flight check
+ * honest way. A successful check is trusted for an hour; a failed one is
+ * never cached, so the very next call — the next page load or the next
+ * launch — retries instead of serving a stale no-update answer (VELV-125:
+ * a cached failure kept the chip hidden across launches while github kept
+ * failing). Parallel callers share the in-flight check
  * instead of each starting their own github call. VELVARR_UPDATE_CHECK=0
  * skips the call entirely — no request leaves the server, and the chip
  * renders nothing. */
 export async function availableUpdate(): Promise<UpdateInfo | null> {
   if (process.env.VELVARR_UPDATE_CHECK === "0") return null;
-  if (cache && Date.now() - cache.at < (cache.ok ? FRESH_MS : FAILED_MS))
-    return cache.update;
+  if (cache && Date.now() - cache.at < FRESH_MS) return cache.update;
   // The route needs no auth, so a burst on a cold or expired cache must
   // fan out to one fetch — same shape as the client's updatePromise ??=.
   inflight ??= checkRelease().finally(() => {
@@ -53,15 +54,17 @@ async function checkRelease(): Promise<UpdateInfo | null> {
     const latest = body.tag_name.replace(/^v/, "");
     cache = {
       at: Date.now(),
-      ok: true,
       update: isNewerVersion(latest, version)
         ? { version: latest, url: body.html_url }
         : null,
     };
+    return cache.update;
   } catch {
-    cache = { at: Date.now(), ok: false, update: null };
+    // Never cached: a failed check must not arm a no-update window. The
+    // next call retries; the shared in-flight promise still collapses a
+    // concurrent burst into one github fetch.
+    return null;
   }
-  return cache.update;
 }
 
 /** Test seam: drop the module cache so a stubbed fetch is actually hit. */
