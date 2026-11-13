@@ -11,6 +11,7 @@ import type {
   IntegrationConfig,
   Library,
   ProviderStatus,
+  SessionGrant,
 } from "../../../../lib/contracts.ts";
 import {
   bootstrap,
@@ -26,7 +27,9 @@ import {
 } from "../../../../server/storage.ts";
 import {
   assertLoginAllowed,
+  deviceCookie,
   recordLoginFailure,
+  readKnownDevice,
   reserveLoginAttempt,
   readSessionToken,
   sessionCookie,
@@ -93,15 +96,18 @@ function clientIp(request: Request): string {
 // authenticate an admitted Velvarr account pass admitted=true so a
 // rotating-name sprayer filling the global bucket cannot lock the
 // household out; setup paths keep the cap fully (no accounts exist before
-// initialization).
+// initialization). A request with a valid known-device cookie for the name
+// passes `device`, so its attempts use that device's bucket, not the
+// name's shared one.
 async function guardedAuthentication<T>(
   name: string,
   attempt: () => Promise<T>,
   admitted = false,
   ip = "unknown",
+  device: string | null = null,
 ): Promise<T> {
-  assertLoginAllowed(name, admitted);
-  const refund = reserveLoginAttempt(name, admitted);
+  assertLoginAllowed(name, admitted, device);
+  const refund = reserveLoginAttempt(name, admitted, device);
   try {
     const result = await attempt();
     refund();
@@ -116,6 +122,18 @@ async function guardedAuthentication<T>(
     } else refund();
     throw e;
   }
+}
+
+// A completed sign-in answers with the session cookie and a fresh
+// known-device cookie for the name, so this browser keeps its own limiter
+// bucket for the next 30 days.
+function signedIn(request: Request, grant: SessionGrant, name: string) {
+  const secure = isSecureRequest(request);
+  const response = json({ account: grant.account }, 200, {
+    "set-cookie": sessionCookie(grant, secure),
+  });
+  response.headers.append("set-cookie", deviceCookie(name, secure));
+  return response;
 }
 
 // The setup secret is the only credential on a not-yet-bootstrapped
@@ -253,9 +271,7 @@ export async function setupCommit(request: Request): Promise<Response> {
     ...(whisparr ? { whisparr } : {}),
   };
   const grant = bootstrap(config, selection.user, selection.token);
-  return json({ account: grant.account }, 200, {
-    "set-cookie": sessionCookie(grant, isSecureRequest(request)),
-  });
+  return signedIn(request, grant, fields.username);
 }
 
 // --- auth routes ---
@@ -272,6 +288,7 @@ export async function login(request: Request): Promise<Response> {
     () => authenticate(config.jellyfin.url, username, password),
     hasAccountNamed(username),
     clientIp(request),
+    readKnownDevice(request, username),
   );
   const account = getAccount(user.id);
   if (!account)
@@ -296,9 +313,7 @@ export async function login(request: Request): Promise<Response> {
   if (typeof user.name === "string" && user.name !== account.name)
     refreshAccountName(account.id, user.name);
   const grant = createSession(account.id, token);
-  return json({ account: grant.account }, 200, {
-    "set-cookie": sessionCookie(grant, isSecureRequest(request)),
-  });
+  return signedIn(request, grant, username);
 }
 
 export async function logout(request: Request): Promise<Response> {

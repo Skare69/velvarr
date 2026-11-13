@@ -10789,34 +10789,115 @@ test("concurrent wrong-password logins for one name: at most ACCOUNT_LIMIT reach
   }
 });
 
-test(
-  "wrong passwords from one client do not block a correct sign-in from another",
-  {
-    // VELV-137 validated: the account bucket is keyed by the name alone, so
-    // client B's correct password gets 429. The fix design waits on a human
-    // decision (auth hard stop); drop this todo when the fix lands.
-    todo: "VELV-137: correct sign-in from client B gets 429 today",
-  },
-  async () => {
+// VELV-137: the account bucket is keyed by the name, so anonymous wrong
+// passwords used to block every correct sign-in for it (observed: 429).
+// A device that signed in before carries a known-device cookie and pays
+// its own bucket instead.
+async function deviceCookieFor(name: string): Promise<string> {
+  const res = await call("POST", "/api/login", {
+    body: { username: name, password: `pass-${name}` },
+  });
+  assert.equal(res.status, 200);
+  const device = res.headers
+    .getSetCookie()
+    .find((c) => c.startsWith("velvarr_device="));
+  assert.ok(device, "a correct sign-in sets the known-device cookie");
+  assert.match(device, /; Path=\/api\/login; HttpOnly; SameSite=Strict;/);
+  return device.split(";")[0]!;
+}
+
+async function lockName(name: string): Promise<void> {
+  for (let i = 0; i < 5; i++) {
+    const guess = await call("POST", "/api/login", {
+      headers: { "x-forwarded-for": "203.0.113.66" },
+      body: { username: name, password: `wrong-${i}` },
+    });
+    assert.equal(guess.status, 502);
+  }
+}
+
+test("wrong passwords from one client do not block a known device's correct sign-in", async () => {
+  resetLoginBuckets();
+  try {
+    const device = await deviceCookieFor("owner");
+    await lockName("owner");
+    // A new device still shares the locked name bucket.
+    const fresh = await call("POST", "/api/login", {
+      headers: { "x-forwarded-for": "198.51.100.20" },
+      body: { username: "owner", password: "pass-owner" },
+    });
+    await errorShape(fresh, 429);
+    const known = await call("POST", "/api/login", {
+      cookie: device,
+      headers: { "x-forwarded-for": "198.51.100.20" },
+      body: { username: "owner", password: "pass-owner" },
+    });
+    assert.equal(known.status, 200);
+    // The cookie is bound to its name and to its signature.
+    await lockName("member");
+    const otherName = await call("POST", "/api/login", {
+      cookie: device,
+      body: { username: "member", password: "pass-member" },
+    });
+    await errorShape(otherName, 429);
+    const tampered = await call("POST", "/api/login", {
+      cookie: `${device.slice(0, -2)}${device.endsWith("AA") ? "BB" : "AA"}`,
+      body: { username: "owner", password: "pass-owner" },
+    });
+    await errorShape(tampered, 429);
+  } finally {
     resetLoginBuckets();
-    try {
-      for (let i = 0; i < 5; i++) {
-        const guess = await call("POST", "/api/login", {
-          headers: { "x-forwarded-for": "203.0.113.66" },
-          body: { username: "owner", password: `wrong-${i}` },
-        });
-        assert.equal(guess.status, 502);
-      }
-      const correct = await call("POST", "/api/login", {
-        headers: { "x-forwarded-for": "198.51.100.20" },
+  }
+});
+
+test("a known device's own wrong passwords stay capped per window", async () => {
+  resetLoginBuckets();
+  try {
+    const device = await deviceCookieFor("owner");
+    for (let i = 0; i < 5; i++) {
+      const guess = await call("POST", "/api/login", {
+        cookie: device,
+        body: { username: "owner", password: `wrong-${i}` },
+      });
+      assert.equal(guess.status, 502);
+    }
+    const sixth = await call("POST", "/api/login", {
+      cookie: device,
+      body: { username: "owner", password: "pass-owner" },
+    });
+    await errorShape(sixth, 429);
+    // Its guesses did not touch the shared name bucket.
+    const fresh = await call("POST", "/api/login", {
+      body: { username: "owner", password: "pass-owner" },
+    });
+    assert.equal(fresh.status, 200);
+  } finally {
+    resetLoginBuckets();
+  }
+});
+
+test("the known-device cookie stops counting after 30 days", async () => {
+  resetLoginBuckets();
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    const device = await deviceCookieFor("owner");
+    const login = () =>
+      call("POST", "/api/login", {
+        cookie: device,
         body: { username: "owner", password: "pass-owner" },
       });
-      assert.equal(correct.status, 200);
-    } finally {
-      resetLoginBuckets();
-    }
-  },
-);
+    now += 30 * 24 * 60 * 60_000 - 60_000;
+    await lockName("owner");
+    assert.equal((await login()).status, 200);
+    now += 120_000;
+    await errorShape(await login(), 429);
+  } finally {
+    Date.now = realNow;
+    resetLoginBuckets();
+  }
+});
 
 test("failed sign-in attempts leave an audit line with the reported client ip", async () => {
   // Seerr-parity detection: every credential rejection logs the attempted

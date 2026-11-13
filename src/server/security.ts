@@ -1,10 +1,19 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from "node:crypto";
 import type { SessionGrant } from "../lib/contracts.ts";
 import { AppError, isLoopbackHost, isPrivateHost } from "./http.ts";
+import { loadKey } from "./storage.ts";
 
 const COOKIE_NAME = "velvarr_session";
+const DEVICE_COOKIE = "velvarr_device";
+const DEVICE_TTL_MS = 30 * 24 * 60 * 60_000;
 
-// Login attempt limiter: one process-global bucket plus one per account name,
+// Login attempt limiter: one process-global bucket, one per account name and
+// one per known device (attemptKey),
 // fixed five-minute windows. ponytail: in-memory only, resets on restart —
 // durable counters only if abuse survives process restarts.
 const WINDOW_MS = 5 * 60_000;
@@ -228,7 +237,11 @@ export function verifySetupSecret(value: unknown): void {
 // account: admitted names skip it (their brute force is bounded by the
 // per-account bucket), so a rotating-name sprayer can fill the global
 // bucket without locking the household out of sign-in.
-export function assertLoginAllowed(name: string, admitted = false): void {
+export function assertLoginAllowed(
+  name: string,
+  admitted = false,
+  device: string | null = null,
+): void {
   const now = Date.now();
   const global = buckets.get("global");
   if (
@@ -243,7 +256,7 @@ export function assertLoginAllowed(name: string, admitted = false): void {
       "too many attempts; try again later",
     );
   }
-  const account = buckets.get(`account:${name.trim().toLowerCase()}`);
+  const account = buckets.get(attemptKey(name, device));
   if (
     account &&
     now - account.windowStart < WINDOW_MS &&
@@ -255,6 +268,14 @@ export function assertLoginAllowed(name: string, admitted = false): void {
       "too many attempts; try again later",
     );
   }
+}
+
+// A known device (readKnownDevice) pays its own bucket instead of the
+// name's shared one: anonymous failures fill the shared bucket and lock
+// only devices that never signed in as that name, while a known device's
+// own guesses stay bounded at ACCOUNT_LIMIT per window.
+function attemptKey(name: string, device: string | null): string {
+  return device ? `device:${device}` : `account:${name.trim().toLowerCase()}`;
 }
 
 // Test hook: the buckets are module-global, so a test that drives any cap
@@ -286,11 +307,12 @@ export function loginBucketCount(): number {
 export function reserveLoginAttempt(
   name: string,
   admitted = false,
+  device: string | null = null,
 ): () => void {
   const now = Date.now();
   const globalCharged = !admitted;
   if (globalCharged) consumeBucket("global", GLOBAL_LIMIT, now);
-  const key = `account:${name.trim().toLowerCase()}`;
+  const key = attemptKey(name, device);
   consumeBucket(key, ACCOUNT_LIMIT, now);
   // ponytail: a refund landing after a window rollover frees one slot in
   // each fresh window (global and account); only non-guess outcomes refund,
@@ -324,14 +346,56 @@ export function sessionCookie(grant?: SessionGrant, secure?: boolean): string {
   return `${COOKIE_NAME}=${grant.token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${suffix}`;
 }
 
-// Cookie parsing sits beside cookie writing so COOKIE_NAME stays the single
-// owner of the literal.
+// Known-device cookie (OWASP "device cookies"): a correct sign-in marks the
+// browser as a known device for that name, so its later attempts skip the
+// name's shared bucket (attemptKey). The value is nonce.expiresAt.hmac; the
+// HMAC binds the lower-cased name under a subkey of VELVARR_SECRET_KEY, so
+// the cookie names no account and a forged, expired or other-name cookie
+// counts as no cookie. Path=/api/login: no other route ever receives it.
+// Logout keeps it: device trust outlives the session by design.
+function deviceSignature(name: string, nonce: string, expiresAt: number) {
+  const subkey = createHmac("sha256", loadKey())
+    .update("velvarr-device-cookie-v1")
+    .digest();
+  return createHmac("sha256", subkey)
+    .update(`${name.trim().toLowerCase()}\0${nonce}\0${expiresAt}`)
+    .digest();
+}
+
+export function deviceCookie(name: string, secure: boolean): string {
+  const nonce = randomBytes(16).toString("base64url");
+  const expiresAt = Date.now() + DEVICE_TTL_MS;
+  const sig = deviceSignature(name, nonce, expiresAt).toString("base64url");
+  return `${DEVICE_COOKIE}=${nonce}.${expiresAt}.${sig}; Path=/api/login; HttpOnly; SameSite=Strict; Max-Age=${DEVICE_TTL_MS / 1000}${secure ? "; Secure" : ""}`;
+}
+
+// The device nonce when the request carries a valid, unexpired device
+// cookie for this name; null otherwise.
+export function readKnownDevice(request: Request, name: string): string | null {
+  const [nonce, rawExpiry, sig, extra] =
+    readCookie(request, DEVICE_COOKIE)?.split(".") ?? [];
+  if (!nonce || !rawExpiry || !sig || extra !== undefined) return null;
+  const expiresAt = Number(rawExpiry);
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) return null;
+  const expected = deviceSignature(name, nonce, expiresAt);
+  const given = Buffer.from(sig, "base64url");
+  return given.length === expected.length && timingSafeEqual(given, expected)
+    ? nonce
+    : null;
+}
+
+// Cookie parsing sits beside cookie writing so the cookie names stay single
+// owners of their literals.
 export function readSessionToken(request: Request): string | null {
+  return readCookie(request, COOKIE_NAME);
+}
+
+function readCookie(request: Request, name: string): string | null {
   const header = request.headers.get("cookie");
   if (!header) return null;
   for (const part of header.split(";")) {
     const eq = part.indexOf("=");
-    if (eq > 0 && part.slice(0, eq).trim() === COOKIE_NAME) {
+    if (eq > 0 && part.slice(0, eq).trim() === name) {
       return part.slice(eq + 1).trim() || null;
     }
   }

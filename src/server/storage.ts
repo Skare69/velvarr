@@ -826,7 +826,7 @@ function inTransaction<T>(d: DatabaseSync, fn: () => T): T {
   }
 }
 
-function loadKey(): Buffer {
+export function loadKey(): Buffer {
   const raw = process.env.VELVARR_SECRET_KEY;
   if (!raw || !/^[0-9a-fA-F]{64}$/.test(raw)) {
     throw new AppError(

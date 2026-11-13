@@ -129,6 +129,8 @@ When `VELVARR_ORIGIN` is not set and a change request has no `Sec-Fetch-Site` he
 
 Each failed sign-in writes one log line: `[auth] failed sign-in attempt: account="<name>" ip="<address>"`. The log never contains the password. The address is the first `X-Forwarded-For` entry, or `unknown`. A client can set this header. Trust the address only when your proxy replaces the header.
 
+After 5 wrong passwords for one name in 5 minutes, Velvarr refuses new sign-ins for that name until the 5 minutes end. A browser that signed in correctly before has a known-device cookie (`velvarr_device`, valid for 30 days, sent only to `/api/login`). That browser has its own limit of 5 wrong passwords, so wrong passwords from other clients do not block it. Open sessions continue to work.
+
 ## Phone access
 
 Velvarr is an installable app, but the install prompt needs HTTPS. [Tailscale](https://tailscale.com) gives you HTTPS with little work:
