@@ -1982,6 +1982,55 @@ test("setup secret guesses are bounded per source", async () => {
   }
 });
 
+test("rotating X-Forwarded-For values cannot escape the global setup-secret cap", async () => {
+  // The per-source key is the first X-Forwarded-For entry, which the client
+  // controls (Next fills the header from the socket only when it is absent,
+  // and appending proxies keep the client's value first). A fresh value per
+  // guess dodges the per-source bucket, so the spray cap shared with
+  // sign-in (GLOBAL_LIMIT, 300 per five-minute window) is what bounds an
+  // unauthenticated guesser before the first admin exists.
+  resetLoginBuckets();
+  const wrong = {
+    ...inspectBody(),
+    setupSecret: "wrong-secret-wrong-secret-wrong-secret!",
+  };
+  const source = (n: number) => ({
+    "x-forwarded-for": `198.51.${Math.floor(n / 256)}.${n % 256}`,
+  });
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    for (let guess = 0; guess < 300; guess += 1) {
+      await errorShape(
+        await call("POST", "/api/setup/inspect", {
+          headers: source(guess),
+          body: { ...wrong },
+        }),
+        403,
+      );
+    }
+    const inspect = await errorShape(
+      await call("POST", "/api/setup/inspect", {
+        headers: source(300),
+        body: { ...wrong },
+      }),
+      429,
+    );
+    assert.equal(inspect.code, "too_many_attempts");
+    const commit = await errorShape(
+      await call("POST", "/api/setup", {
+        headers: source(301),
+        body: { ...wrong, libraryIds: [MOVIES_LIB] },
+      }),
+      429,
+    );
+    assert.equal(commit.code, "too_many_attempts");
+  } finally {
+    console.warn = originalWarn;
+    resetLoginBuckets();
+  }
+});
+
 test("a correct setup secret works after the limiter window rolls over", async () => {
   resetLoginBuckets();
   const realNow = Date.now;
