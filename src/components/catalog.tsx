@@ -10,7 +10,7 @@ import {
 } from "react";
 import { useSearchParams } from "next/navigation";
 import "./catalog.css";
-import { TagPicker } from "./tag-picker.tsx";
+import { isFreeText, TagPicker } from "./tag-picker.tsx";
 import {
   api,
   detailParams,
@@ -26,6 +26,8 @@ import {
   providerLabel,
   SceneCard,
   useApiGet,
+  useGridColumns,
+  wholeRows,
   useParamsSetter,
   useSession,
 } from "./shared";
@@ -43,6 +45,9 @@ import { filterName, seedPerformerPick } from "../lib/names";
 // Detail views (payload types, DetailSections, RelatedTitles,
 // CatalogDetailView) live in catalog-detail.tsx; the browse view hosts the
 // detail overlay and reads its target from the URL.
+// The missing-key line is the discover surface's shared component (same
+// wording everywhere: a missing credential, never an outage).
+import { NotConfiguredLine } from "./discover";
 import { CatalogDetailView, detailTarget } from "./catalog-detail.tsx";
 // Endless scroll appends pages through this dedupe-append (lib stays
 // React-free so node --test can exercise it directly).
@@ -52,12 +57,14 @@ import { mergePageItems } from "../lib/browse-items.ts";
 // derives from the shared SORT_CAPABILITIES table (lib/sorts.ts), the same
 // table the server's acceptance comes from.
 import {
+  browseFilterPatch,
   clearBrowseKeys,
   countActiveFilters,
   performerStashdbPatch,
   performerTpdbPatch,
   starredPatch,
   typePatch,
+  type BrowseFilter,
 } from "../lib/browse-url";
 // Sort capability is shared with the server: the options offered per tab,
 // the labels and the direction rule all derive from src/lib/sorts.ts — one
@@ -152,7 +159,7 @@ function FilterDrawer({
           className="btn btn-accent"
           onClick={() => ref.current?.close()}
         >
-          Done
+          Close filters
         </button>
       </div>
     </dialog>
@@ -205,6 +212,59 @@ function SortSelect({
 }) {
   const sorts = browseSortsFor(type);
   if (sorts.length === 0) return null;
+  // Rule 39: up to five exclusive orders read at once as segments (equal
+  // width, .segmented); a longer list keeps the select with its visible
+  // label. Same values and URL keys either way.
+  if (sorts.length + 1 <= 5) {
+    return (
+      <div>
+        <span className="label" id={`${id}-label`}>
+          Sort
+        </span>
+        <div className="flex gap-2">
+          <div
+            role="group"
+            aria-labelledby={`${id}-label`}
+            className="segmented"
+          >
+            <button
+              type="button"
+              aria-pressed={sort === ""}
+              disabled={disabled}
+              onClick={() => onSort("")}
+            >
+              Provider default
+            </button>
+            {sorts.map((s) => (
+              <button
+                key={s}
+                type="button"
+                aria-pressed={sort === s}
+                disabled={disabled}
+                onClick={() => onSort(s)}
+              >
+                {SORT_LABELS[s]}
+              </button>
+            ))}
+          </div>
+          {sort !== "" && browseSortIsDirectional(type, sort as SortKey) && (
+            <button
+              type="button"
+              className="btn shrink-0"
+              aria-label={
+                direction === "asc" ? "Sort ascending" : "Sort descending"
+              }
+              title={direction === "asc" ? "Sort ascending" : "Sort descending"}
+              disabled={disabled}
+              onClick={() => onDirection(direction === "asc" ? "desc" : "asc")}
+            >
+              <Icon name={direction === "asc" ? "sort-asc" : "sort-desc"} />
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
   return (
     <div>
       <label className="label" htmlFor={id}>
@@ -295,19 +355,22 @@ function SearchBox({
       <label className="label" htmlFor={id}>
         {label}
       </label>
-      <input
-        id={id}
-        type="search"
-        className="input"
-        maxLength={200}
-        placeholder={placeholder}
-        value={input}
-        disabled={disabled}
-        onChange={(e) => setInput(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") commit(input);
-        }}
-      />
+      <div className="input-lead">
+        <Icon name="search" />
+        <input
+          id={id}
+          type="search"
+          className="input"
+          maxLength={200}
+          placeholder={placeholder}
+          value={input}
+          disabled={disabled}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit(input);
+          }}
+        />
+      </div>
     </div>
   );
 }
@@ -363,24 +426,42 @@ function YearBox({
 }
 
 function FilterChip({
+  text,
   label,
   onRemove,
   icon,
+  note,
 }: {
+  /** The value shown; the group around the chip names its kind. */
+  text: string;
+  /** The full filter for assistive tech ("Tags: anal (must have)"). */
   label: string;
   onRemove: () => void;
-  /** Leading glyph for filters that are a mode, not a value. */
-  icon?: "star";
+  /** star = a mode, not a value; plus/minus = must have / must not have,
+   * the same marks the drawer uses. */
+  icon?: "star" | "plus" | "minus";
+  /** Muted prefix that qualifies the value ("Free text:"), as in the drawer. */
+  note?: string;
 }) {
   return (
     <button
       type="button"
-      className="chip"
+      className={`filter-chip${icon === "minus" ? " is-exclude" : icon === "plus" ? " is-include" : ""}`}
       onClick={onRemove}
       aria-label={`Remove filter: ${label}`}
     >
-      {icon && <Icon name={icon} filled />}
-      {label} <span aria-hidden="true">×</span>
+      {icon && (
+        <Icon
+          name={icon}
+          filled={icon === "star"}
+          className="filter-chip-mark"
+        />
+      )}
+      {note && <span className="text-muted">{note}</span>}
+      {text}
+      <span className="filter-chip-x" aria-hidden="true">
+        <Icon name="close" />
+      </span>
     </button>
   );
 }
@@ -424,10 +505,12 @@ function DateCutoff({
   });
   return (
     <div>
-      <label className="label" htmlFor={`${id}-date`}>
+      <label className="label" htmlFor={`${id}-date`} id={`${id}-date-label`}>
         Release date
       </label>
-      <div className="flex gap-2">
+      {/* Stacked: five comparison segments do not fit beside a date input
+          in the narrow drawer; the strip scrolls when it must. */}
+      <div className="grid gap-2">
         <input
           id={`${id}-date`}
           type="date"
@@ -438,23 +521,28 @@ function DateCutoff({
             onCommit(e.target.value || null, e.target.value ? op : null)
           }
         />
-        <select
-          id={`${id}-op`}
-          className="input"
-          aria-label="Release date comparison"
-          value={op}
-          disabled={disabled}
-          onChange={(e) => {
-            setOp(e.target.value);
-            if (date) onCommit(date, e.target.value);
-          }}
+        {/* Five exclusive comparisons: segments, not a dropdown (rule 39),
+            wrapped in rows. The row's visible label names the group. */}
+        <div
+          role="group"
+          aria-labelledby={`${id}-date-label`}
+          className="segmented segmented-wrap"
         >
           {DATE_OPS.map((o) => (
-            <option key={o.v} value={o.v}>
+            <button
+              key={o.v}
+              type="button"
+              aria-pressed={op === o.v}
+              disabled={disabled}
+              onClick={() => {
+                setOp(o.v);
+                if (date) onCommit(date, o.v);
+              }}
+            >
               {o.label}
-            </option>
+            </button>
           ))}
-        </select>
+        </div>
       </div>
     </div>
   );
@@ -555,38 +643,49 @@ function PerformerPicker({
   const { items, errors, skipped, loading } = usePerformerOptions(term);
   return (
     <div>
-      <div className="cat-picker-head">
-        <label className="label" htmlFor={id}>
-          Performer
-        </label>
-        {/* Starred is a mode of this one filter: the server refuses a
-            starred filter beside a picked performer, so the star toggle and
-            the search are two states of one criterion. The accent idiom is
-            the performer page's follow star. */}
+      <label className="label" htmlFor={id}>
+        Performer
+      </label>
+      <div className="input-lead">
+        <Icon name="performer" />
+        <input
+          id={id}
+          type="search"
+          className="input"
+          maxLength={200}
+          placeholder="Search performers…"
+          value={term}
+          onChange={(e) => setTerm(e.target.value)}
+        />
+      </div>
+      {/* Starred is a mode of this one filter: the server refuses a starred
+          filter beside a picked performer, so "any" and "starred" are two
+          states of one criterion, shown as one choice under the field. */}
+      <div
+        role="group"
+        aria-label="Which performers"
+        className="segmented cat-starred"
+      >
         <button
           type="button"
-          className={`btn filter-star follow-toggle${starred ? " is-following" : ""}`}
+          aria-pressed={!starred}
+          onClick={() => starred && onStarred(false)}
+        >
+          Any performer
+        </button>
+        <button
+          type="button"
           aria-pressed={starred}
-          aria-label="My starred performers"
-          onClick={() => onStarred(!starred)}
+          onClick={() => !starred && onStarred(true)}
         >
           <Icon name="star" filled={starred} />
-          Starred
+          Starred only
         </button>
       </div>
-      <input
-        id={id}
-        type="search"
-        className="input"
-        maxLength={200}
-        placeholder="Search performers…"
-        value={term}
-        onChange={(e) => setTerm(e.target.value)}
-      />
       <p className="cat-note">
         {starred
-          ? "Scenes featuring any performer you follow. Picking a specific performer replaces this filter; performers known only to TPDB cannot match."
-          : "One field, both sources: a TPDB performer opens their whole filmography (movies) and replaces the other filters until removed; a StashDB performer filters scenes. StashDB caps results at about ten rows."}
+          ? "Scenes featuring any performer you follow. Picking a performer replaces this; performers known only to TPDB cannot match."
+          : "A TPDB performer opens their movies and replaces the other filters until removed; a StashDB performer filters scenes (StashDB caps results at about ten rows)."}
       </p>
       {loading ? (
         <p className="cat-note" aria-live="polite">
@@ -640,15 +739,11 @@ function PerformerPicker({
 
 function NotConfigured({ provider }: { provider: CatalogProvider }) {
   return (
-    <div className="panel p-6" role="note">
-      <h3 className="font-semibold">
-        {providerLabel(provider)} is not configured
-      </h3>
-      <p className="mt-2 text-sm text-muted">
-        No API key is present for {providerLabel(provider)}, so there is nothing
-        to search. Ask an administrator to add a key in Settings. This is
-        different from a temporary outage — an outage would show a retry.
-      </p>
+    <div className="panel p-4" role="note">
+      <NotConfiguredLine
+        source={provider}
+        consequence="there is nothing to search"
+      />
     </div>
   );
 }
@@ -749,28 +844,6 @@ function browsePath(f: {
   return `/api/browse?${qs.toString()}`;
 }
 
-/** A provider-legal filter entry point handed from a detail page into the
- * unified browse constraints. `param` is a canonical /api/browse key;
- * `id` is the provider-native id, or the YYYY string for `year`; `tag`
- * rides for `include` and as a co-filter on the performer params;
- * `studioMode` only for StashDB studios; `counterpart` only with the
- * performer params — her id on the other provider, so browse runs both
- * sides at once. */
-export type BrowseFilter = {
-  param:
-    | "studioTpdb"
-    | "studioStashdb"
-    | "performerTpdb"
-    | "performerStashdb"
-    | "year"
-    | "include";
-  provider: CatalogProvider;
-  id: string;
-  tag?: CatalogTagSelection;
-  studioMode?: "withChildren";
-  counterpart?: { param: "performerTpdb" | "performerStashdb"; id: string };
-};
-
 // Detail filter entry points create canonical unified browse constraints:
 // the jump always lands on the titles view (any view may host an entry
 // point), type and the one constraint follow the filter's provider (year is
@@ -780,54 +853,10 @@ export type BrowseFilter = {
 export function useBrowseTo(): (filter: BrowseFilter) => void {
   const setP = useParamsSetter();
   return useCallback(
-    (filter: BrowseFilter) => {
-      const patch: Record<string, string | null> = {
-        // Any view may host an entry point (performer pages live on the
-        // following view), so the jump always lands on the titles view and
-        // drops that view's own keys (provider, per-view paging).
-        ...clearBrowseKeys(),
-        view: "titles",
-        // The old facet label never rides a fresh browse; the jump names no
-        // facet of its own (chips carry the labels).
-        name: null,
-        type:
-          filter.param === "year" || filter.provider === "tpdb"
-            ? "movie"
-            : "scene",
-        provider: null,
-        moviePage: null,
-        scenePage: null,
-        kind: null,
-        id: null,
-      };
-      // Only the selection fields ride the URL; count-style extras a caller
-      // carries on its tag objects never leak into the wire.
-      const cleanTag = ({ name, tpdb, stashdb }: CatalogTagSelection) => ({
-        name,
-        ...(tpdb !== undefined ? { tpdb } : {}),
-        ...(stashdb !== undefined ? { stashdb } : {}),
-      });
-      if (filter.param === "include" && filter.tag !== undefined) {
-        patch.include = JSON.stringify([cleanTag(filter.tag)]);
-      } else {
-        patch[filter.param] = filter.id;
-        // A union jump rides both of her ids; no single type can run both
-        // providers, so it lands on browse All.
-        if (filter.counterpart !== undefined) {
-          patch[filter.counterpart.param] = filter.counterpart.id;
-          patch.type = null;
-        }
-        if (filter.studioMode) patch.studioMode = filter.studioMode;
-        if (filter.tag !== undefined) {
-          patch.include = JSON.stringify([cleanTag(filter.tag)]);
-        }
-      }
-      setP(patch, { push: true });
-    },
+    (filter: BrowseFilter) => setP(browseFilterPatch(filter), { push: true }),
     [setP],
   );
 }
-
 /* ---------- Unified titles view ---------- */
 
 const TYPE_LABELS = { all: "All", movie: "Movies", scene: "Scenes" } as const;
@@ -890,31 +919,20 @@ export function TitlesView() {
   const [error, setError] = useState<string | null>(null);
   const seqRef = useRef(0);
 
-  /* Grid columns come from the rendered CSS tracks, so a fetched page is
-   * always whole rows: nine columns means 27 items, not 24. The probe is
-   * always mounted, so the tracks are known before the first fetch — the
-   * page is sized right the first time, not corrected afterwards. */
-  const gridRef = useRef<HTMLDivElement | null>(null);
-  const [cols, setCols] = useState(0);
-  useEffect(() => {
-    const el = gridRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const measure = () => {
-      const tracks = getComputedStyle(el)
-        .gridTemplateColumns.split(" ")
-        .filter(Boolean).length;
-      if (tracks > 0) setCols(tracks);
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+  /* Grid columns come from the rendered CSS tracks, so the page size is
+   * whole rows: nine columns means 27 items, not 24. The probe is always
+   * mounted, so the tracks are known before the first fetch. The size is
+   * set once per view: a later column change (sidebar collapse, a window
+   * resize) must not refetch from page 1 — that blanked the grid and lost
+   * the scroll. The display trims to whole rows instead (below). */
+  const [gridRef, cols] = useGridColumns();
   const rounded = cols > 0 ? Math.min(100, cols * Math.ceil(24 / cols)) : 0;
+  const sizedRef = useRef(false);
   useEffect(() => {
-    if (rounded > 0 && rounded !== perPage) {
+    if (sizedRef.current || rounded === 0) return;
+    sizedRef.current = true;
+    if (rounded !== perPage) {
       setPerPage(rounded);
-      // A page sized for other tracks is not comparable: reset it.
       setP({ perPage: String(rounded) });
     }
   }, [rounded, perPage, setP]);
@@ -1228,116 +1246,102 @@ export function TitlesView() {
   const target = detailTarget(params);
   const retry = () => setReload((n) => n + 1);
 
-  const chips: ReactNode[] = [];
-  if (q) {
-    chips.push(
-      <FilterChip key="q" label={`“${q}”`} onRemove={() => onQ("")} />,
-    );
-  }
-  if (year) {
-    chips.push(
+  // Active filters, grouped by kind: each group shows its name once, and
+  // every chip inside is one remove button whose label names the full filter.
+  const chipGroups: Record<string, ReactNode[]> = {};
+  const chip = (
+    group: string,
+    key: string,
+    text: string,
+    onRemove: () => void,
+    icon?: "star" | "plus" | "minus",
+    note?: string,
+  ) => {
+    (chipGroups[group] ??= []).push(
       <FilterChip
-        key="year"
-        label={`Year ${year}`}
-        onRemove={() => onYear("")}
+        key={key}
+        text={text}
+        note={note}
+        label={`${group}: ${note ? `${note} ` : ""}${text}${icon === "plus" ? " (must have)" : icon === "minus" ? " (must not have)" : ""}`}
+        icon={icon}
+        onRemove={onRemove}
       />,
     );
-  }
-  if (date) {
-    chips.push(
-      <FilterChip
-        key="date"
-        label={`Released ${dateOpLabel(dateOperation)} ${date}`}
-        onRemove={() => onDate(null, null)}
-      />,
+  };
+  if (q) chip("Title", "q", `“${q}”`, () => onQ(""));
+  if (year) chip("Release", "year", `Year ${year}`, () => onYear(""));
+  if (date)
+    chip("Release", "date", `${dateOpLabel(dateOperation)} ${date}`, () =>
+      onDate(null, null),
     );
-  }
-  if (performerTpdb) {
-    chips.push(
-      <FilterChip
-        key="performerTpdb"
-        label={`Performer: ${filterName("tpdb", "performer", performerTpdb)} (TPDB)`}
-        // Chip removal only drops the constraint — unlike picking a
-        // performer, which starts the filmography browse and clears the rest.
-        onRemove={() => setP({ performerTpdb: null }, { push: true })}
-      />,
+  // Chip removal only drops the constraint — unlike picking a performer,
+  // which starts the filmography browse and clears the rest.
+  if (performerTpdb)
+    chip(
+      "Performer",
+      "performerTpdb",
+      `${filterName("tpdb", "performer", performerTpdb)} (TPDB)`,
+      () => setP({ performerTpdb: null }, { push: true }),
     );
-  }
-  if (performerStashdb) {
-    chips.push(
-      <FilterChip
-        key="performerStashdb"
-        label={`Performer: ${filterName("stashdb", "performer", performerStashdb)} (StashDB)`}
-        onRemove={() => setP({ performerStashdb: null }, { push: true })}
-      />,
+  if (performerStashdb)
+    chip(
+      "Performer",
+      "performerStashdb",
+      `${filterName("stashdb", "performer", performerStashdb)} (StashDB)`,
+      () => setP({ performerStashdb: null }, { push: true }),
     );
-  }
-  if (performerStarred) {
-    chips.push(
-      <FilterChip
-        key="performerStarred"
-        icon="star"
-        label="Performer: starred"
-        onRemove={() => setP({ performerStarred: null }, { push: true })}
-      />,
+  if (performerStarred)
+    chip(
+      "Performer",
+      "performerStarred",
+      "Starred",
+      () => setP({ performerStarred: null }, { push: true }),
+      "star",
     );
-  }
-  if (studioTpdb) {
-    chips.push(
-      <FilterChip
-        key="studioTpdb"
-        label={`Studio: ${filterName("tpdb", "studio", studioTpdb)} (TPDB)`}
-        onRemove={() => onStudioTpdb(null)}
-      />,
+  if (studioTpdb)
+    chip(
+      "Studio",
+      "studioTpdb",
+      `${filterName("tpdb", "studio", studioTpdb)} (TPDB)`,
+      () => onStudioTpdb(null),
     );
-  }
-  if (studioStashdb) {
-    chips.push(
-      <FilterChip
-        key="studioStashdb"
-        label={`Studio: ${filterName("stashdb", "studio", studioStashdb)} (StashDB)`}
-        onRemove={() => onStudioStashdb(null)}
-      />,
+  if (studioStashdb)
+    chip(
+      "Studio",
+      "studioStashdb",
+      `${filterName("stashdb", "studio", studioStashdb)} (StashDB)`,
+      () => onStudioStashdb(null),
     );
-  }
-  if (studioMode === "withChildren") {
-    chips.push(
-      <FilterChip
-        key="studioMode"
-        label="Scope: include child studios"
-        onRemove={() => onStudioMode("")}
-      />,
+  if (studioMode === "withChildren")
+    chip("Studio", "studioMode", "with child studios", () => onStudioMode(""));
+  include.forEach((tag, i) =>
+    chip(
+      "Tags",
+      `include:${tag.name}:${tag.tpdb ?? ""}:${tag.stashdb ?? ""}:${i}`,
+      tag.name,
+      () => onInclude(include.filter((t) => t !== tag)),
+      "plus",
+      isFreeText(tag) ? "Free text:" : undefined,
+    ),
+  );
+  exclude.forEach((tag, i) =>
+    chip(
+      "Tags",
+      `exclude:${tag.name}:${tag.tpdb ?? ""}:${tag.stashdb ?? ""}:${i}`,
+      tag.name,
+      () => onExclude(exclude.filter((t) => t !== tag)),
+      "minus",
+      isFreeText(tag) ? "Free text:" : undefined,
+    ),
+  );
+  if (sort)
+    chip(
+      "Sort",
+      "sort",
+      `${SORT_LABELS[sort as SortKey]}${direction ? ` (${direction})` : ""}`,
+      () => setP({ sort: null, direction: null }, { push: true }),
     );
-  }
-  include.forEach((tag, i) => {
-    chips.push(
-      <FilterChip
-        key={`include:${tag.name}:${tag.tpdb ?? ""}:${tag.stashdb ?? ""}:${i}`}
-        label={`Tag: ${tag.name} (include)`}
-        onRemove={() => onInclude(include.filter((t) => t !== tag))}
-      />,
-    );
-  });
-  exclude.forEach((tag, i) => {
-    chips.push(
-      <FilterChip
-        key={`exclude:${tag.name}:${tag.tpdb ?? ""}:${tag.stashdb ?? ""}:${i}`}
-        label={`Tag: ${tag.name} (exclude)`}
-        onRemove={() => onExclude(exclude.filter((t) => t !== tag))}
-      />,
-    );
-  });
-  if (sort) {
-    chips.push(
-      <FilterChip
-        key="sort"
-        label={`Sort: ${SORT_LABELS[sort as SortKey]}${
-          direction ? ` (${direction})` : ""
-        }`}
-        onRemove={() => setP({ sort: null, direction: null }, { push: true })}
-      />,
-    );
-  }
+  const chipGroupNames = Object.keys(chipGroups);
 
   return (
     <section aria-label="Titles">
@@ -1375,18 +1379,27 @@ export function TitlesView() {
                 <Icon name="tag" /> {hiddenCount} hidden
               </button>
             )}
-            <div role="group" aria-label="Title type" className="flex gap-2">
-              {(["all", "movie", "scene"] as const).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  className={`btn ${type === t ? "btn-accent" : ""}`}
-                  aria-pressed={type === t}
-                  onClick={() => onType(t)}
-                >
-                  {TYPE_LABELS[t]}
-                </button>
-              ))}
+            {/* Rule 39: three exclusive types read at once as segments. */}
+            <div>
+              <span className="label" id="titles-type-label">
+                Type
+              </span>
+              <div
+                role="group"
+                aria-labelledby="titles-type-label"
+                className="segmented"
+              >
+                {(["all", "movie", "scene"] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    aria-pressed={type === t}
+                    onClick={() => onType(t)}
+                  >
+                    {TYPE_LABELS[t]}
+                  </button>
+                ))}
+              </div>
             </div>
             {/* TPDB filmography refuses search and order only where the
                 TPDB side runs; the Scenes tab runs her StashDB side. */}
@@ -1406,10 +1419,32 @@ export function TitlesView() {
           </div>
         </div>
 
-        {chips.length > 0 && (
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted">Filters:</span>
-            {chips}
+        {chipGroupNames.length > 0 && (
+          <div
+            className="filter-chips"
+            aria-label="Active filters"
+            role="group"
+          >
+            {chipGroupNames.map((group) => (
+              <span
+                key={group}
+                className="filter-group"
+                role="group"
+                aria-label={group}
+              >
+                <span className="filter-group-name" aria-hidden="true">
+                  {group}
+                </span>
+                {chipGroups[group]}
+              </span>
+            ))}
+            <button
+              type="button"
+              className="cat-inline-link"
+              onClick={clearFilters}
+            >
+              Clear all
+            </button>
           </div>
         )}
 
@@ -1462,8 +1497,21 @@ export function TitlesView() {
                 )
               ) : (
                 <>
+                  {/* The count leads the results, so the size of the answer
+                      is known before scrolling. Shown only when the service
+                      attests a real total and no source error stands: a
+                      capped total has no honest number, and a standing
+                      error may hide rows the exact number would deny. */}
+                  {acc.errors.length === 0 &&
+                    acc.totalCountKnown &&
+                    acc.total != null && (
+                      <p className="mb-3 text-sm text-muted" role="status">
+                        {new Intl.NumberFormat().format(acc.total)}{" "}
+                        {acc.total === 1 ? "title" : "titles"}
+                      </p>
+                    )}
                   <div className={POSTER_GRID}>
-                    {acc.items.map((it) =>
+                    {wholeRows(acc.items, cols, acc.hasMore).map((it) =>
                       it.reference.kind === "scene" ? (
                         <SceneCard
                           key={`${it.reference.provider}:${it.reference.id}`}
@@ -1499,20 +1547,6 @@ export function TitlesView() {
                       </button>
                     </div>
                   )}
-                  {!loading &&
-                    error === null &&
-                    !acc.hasMore &&
-                    acc.errors.length === 0 &&
-                    acc.totalCountKnown &&
-                    acc.total != null && (
-                      // Count only when the service attests a real total and
-                      // no source error stands: a capped total ends the
-                      // scroll without a denominator, and a standing error
-                      // may hide rows the exact number would deny.
-                      <p className="mt-6 text-center text-sm text-muted">
-                        {acc.total} titles
-                      </p>
-                    )}
                   <div ref={sentinelRef} aria-hidden="true" />
                 </>
               )}
@@ -1529,91 +1563,128 @@ export function TitlesView() {
         count={filterCount}
         onClear={clearFilters}
       >
-        <SearchBox
-          id="titles-q"
-          label="Title search"
-          value={q}
-          onCommit={onQ}
-          disabled={performerTpdb !== "" && type !== "scene"}
-        />
-        <TagPicker
-          id="titles-include"
-          label="Include tags"
-          selected={include}
-          onChange={onInclude}
-          allowFreeText
-          description="Titles must carry every selected tag (AND): a provider tag matches exactly, and a typed term keeps titles carrying any tag whose name contains it (case and separators ignored), unless it exactly names a tag both providers publish, which then matches exactly on both."
-        />
-        <TagPicker
-          id="titles-exclude"
-          label="Exclude tags"
-          selected={exclude}
-          onChange={onExclude}
-          allowFreeText
-          description="Titles carrying any of these tags are left out — exclusions win over includes, and a tag also covers the ones that contain it as a word (Anal drops Anal Creampie, never Analingus)."
-        />
-        <PerformerPicker
-          id="titles-performer"
-          starred={performerStarred}
-          onStarred={onStarred}
-          onPick={(side, performerId) =>
-            side === "tpdb"
-              ? onPerformerTpdb(performerId)
-              : onPerformerStashdb(performerId)
-          }
-        />
-        <YearBox
-          id="titles-year"
-          value={year}
-          onCommit={onYear}
-          disabled={performerTpdb !== "" && type !== "scene"}
-        />
-        <DateCutoff
-          id="titles-date"
-          date={date}
-          operation={dateOperation}
-          disabled={performerTpdb !== "" && type !== "scene"}
-          onCommit={onDate}
-        />
-        {/* Year and date apply to both sides: TPDB natively, StashDB with
+        <div
+          className="cat-group"
+          role="group"
+          aria-labelledby="titles-g-search"
+        >
+          <h3 className="cat-group-title" id="titles-g-search">
+            Search
+          </h3>
+          <SearchBox
+            id="titles-q"
+            label="Title"
+            value={q}
+            onCommit={onQ}
+            disabled={performerTpdb !== "" && type !== "scene"}
+          />
+          <PerformerPicker
+            id="titles-performer"
+            starred={performerStarred}
+            onStarred={onStarred}
+            onPick={(side, performerId) =>
+              side === "tpdb"
+                ? onPerformerTpdb(performerId)
+                : onPerformerStashdb(performerId)
+            }
+          />
+          {studioStashdb !== "" && (
+            <div>
+              <span className="label" id="titles-studio-scope-label">
+                Studio scope
+              </span>
+              <div
+                role="group"
+                aria-labelledby="titles-studio-scope-label"
+                className="segmented"
+              >
+                <button
+                  type="button"
+                  aria-pressed={(studioMode || "exact") === "exact"}
+                  onClick={() => onStudioMode("exact")}
+                >
+                  Exact studio only
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={(studioMode || "exact") === "withChildren"}
+                  onClick={() => onStudioMode("withChildren")}
+                >
+                  Include child studios
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="cat-group" role="group" aria-labelledby="titles-g-tags">
+          <h3 className="cat-group-title" id="titles-g-tags">
+            Tags
+          </h3>
+          <TagPicker
+            id="titles-include"
+            label="Must have"
+            tone="include"
+            selected={include}
+            onChange={onInclude}
+            allowFreeText
+            description="Titles need every tag here."
+          />
+          <TagPicker
+            id="titles-exclude"
+            label="Must not have"
+            tone="exclude"
+            selected={exclude}
+            onChange={onExclude}
+            allowFreeText
+            description="Any tag here removes a title. Exclusions win."
+            help="Must have: a provider tag matches exactly, and a typed term keeps titles carrying any tag whose name contains it (case and separators ignored), unless it exactly names a tag both providers publish, which then matches exactly on both. Must not have: a tag also covers the ones that contain it as a word (Anal drops Anal Creampie, never Analingus)."
+          />
+          <p className="cat-note">
+            {hiddenCount > 0
+              ? `${hiddenCount} personal hidden tag${hiddenCount === 1 ? "" : "s"} appl${hiddenCount === 1 ? "ies" : "y"} on every browse — `
+              : "Personal hidden tags apply on every browse — "}
+            <button
+              type="button"
+              className="cat-inline-link"
+              data-prefs-opener="drawer-note"
+              onClick={() => window.dispatchEvent(new Event(OPEN_PREFERENCES))}
+            >
+              manage them in Preferences
+            </button>
+            . Clear filters never removes them.
+          </p>
+        </div>
+        <div
+          className="cat-group"
+          role="group"
+          aria-labelledby="titles-g-release"
+        >
+          <h3 className="cat-group-title" id="titles-g-release">
+            Release
+          </h3>
+          <YearBox
+            id="titles-year"
+            value={year}
+            onCommit={onYear}
+            disabled={performerTpdb !== "" && type !== "scene"}
+          />
+          <DateCutoff
+            id="titles-date"
+            date={date}
+            operation={dateOperation}
+            disabled={performerTpdb !== "" && type !== "scene"}
+            onCommit={onDate}
+          />
+          {/* Year and date apply to both sides: TPDB natively, StashDB with
             the year checked locally, so scene totals are approximate. The
             note says exactly that — never silently ignored. */}
-        {(year !== "" || date !== "") && (
-          <p className="cat-note">
-            Year and release date apply to TPDB movies and StashDB scenes; the
-            year is checked locally for scenes, so totals are approximate.
-          </p>
-        )}
-        {studioStashdb !== "" && (
-          <div>
-            <label className="label" htmlFor="titles-studio-scope">
-              Studio scope
-            </label>
-            <select
-              id="titles-studio-scope"
-              className="input"
-              value={studioMode || "exact"}
-              onChange={(e) => onStudioMode(e.target.value)}
-            >
-              <option value="exact">Exact studio only</option>
-              <option value="withChildren">Include child studios</option>
-            </select>
-          </div>
-        )}
-        <p className="cat-note">
-          {hiddenCount > 0
-            ? `${hiddenCount} personal hidden tag${hiddenCount === 1 ? "" : "s"} appl${hiddenCount === 1 ? "ies" : "y"} on every browse — `
-            : "Personal hidden tags apply on every browse — "}
-          <button
-            type="button"
-            className="btn"
-            data-prefs-opener="drawer-note"
-            onClick={() => window.dispatchEvent(new Event(OPEN_PREFERENCES))}
-          >
-            manage them in Preferences
-          </button>
-          . Clear filters never removes them.
-        </p>
+          {(year !== "" || date !== "") && (
+            <p className="cat-note">
+              Year and release date apply to TPDB movies and StashDB scenes; the
+              year is checked locally for scenes, so totals are approximate.
+            </p>
+          )}
+        </div>
       </FilterDrawer>
     </section>
   );

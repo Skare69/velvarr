@@ -6,8 +6,11 @@ import "./catalog.css";
 import {
   api,
   ApiError,
+  detailHref,
   detailParams,
+  scrollYBeforeLastPush,
   duration,
+  EnlargeableImage,
   ErrorPanel,
   FileFacts,
   Icon,
@@ -17,6 +20,7 @@ import {
   MovieCard,
   providerLabel,
   SceneCard,
+  spaClick,
   useApiGet,
   useParamsSetter,
 } from "./shared";
@@ -38,9 +42,9 @@ import { REQUESTS_CHANGED } from "../lib/approvals";
 // Detail-seeded names: studio/tag chips label the ids the URL carries —
 // details are where names are known.
 import { seedDetail } from "../lib/names";
-// Type-only on purpose: the erased type crosses, the runtime graph stays
-// one-way (catalog.tsx renders catalog-detail.tsx, never the reverse).
-import type { BrowseFilter } from "./catalog.tsx";
+// Pure URL policy from lib: the runtime graph stays one-way (catalog.tsx
+// renders catalog-detail.tsx, never the reverse).
+import { browseFilterHref, type BrowseFilter } from "../lib/browse-url";
 
 export type DetailTarget = {
   provider: CatalogProvider;
@@ -72,8 +76,11 @@ function browseKeyOf(params: URLSearchParams): string {
  * filter changes never write it, so they never cause a scroll jump. */
 const scrollPositions = new Map<string, number>();
 
+/** Saves where the page was before the navigation that opened the detail:
+ * a pushed navigation has already scrolled to the top by then. */
 function saveScroll(key: string) {
-  if (window.scrollY > 0) scrollPositions.set(key, window.scrollY);
+  const y = scrollYBeforeLastPush();
+  if (y > 0) scrollPositions.set(key, y);
 }
 
 function restoreScroll(key: string) {
@@ -152,8 +159,9 @@ const DECISION_TEXT: Record<RequestDecision, string> = {
   cancelled: "Request cancelled",
 };
 
-/** Availability of the media target; null while loading or on error — a
- * failed check renders nothing, no claim either way. No request for
+/** Availability of the media target; `availability` is null while loading
+ * or on error — a failed check renders nothing, no claim either way.
+ * `checking` is true only while the answer is in flight. No request for
  * performer/studio targets. */
 function useAvailability(
   target: {
@@ -161,25 +169,28 @@ function useAvailability(
     kind: MediaKind;
     id: string;
   } | null,
-): PlaybackAccess | null {
-  const { data } = useApiGet<PlaybackAccess>(
+): { availability: PlaybackAccess | null; checking: boolean } {
+  const { data, loading } = useApiGet<PlaybackAccess>(
     target
       ? `/api/availability/${target.provider}/${target.kind}/${encodeURIComponent(target.id)}`
       : null,
     [target?.provider, target?.kind, target?.id],
   );
-  return data;
+  return { availability: data, checking: loading };
 }
 
 function MediaActions({
   target,
   mine,
   availability,
+  checking,
   onRefetch,
 }: {
   target: { provider: CatalogProvider; kind: MediaKind; id: string };
   mine: CatalogDetailResponse["myRequest"];
   availability: PlaybackAccess | null;
+  /** Availability is still loading: the action is unknown until it lands. */
+  checking: boolean;
   onRefetch: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -227,11 +238,20 @@ function MediaActions({
   // Already playable: the Play button is the only honest action left — a
   // second request would file intent for something the library already has.
   const available = availability?.outcome === "available";
+  // Until availability answers, Request and Play are both possible; a
+  // button-shaped skeleton holds the place instead of a guess.
+  if (checking && !requested) {
+    return (
+      <div className="skel h-[38px] w-44" role="status" aria-busy="true">
+        <span className="sr-only">Checking availability…</span>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col gap-2">
       {available ? null : requested ? (
         <div className="flex flex-wrap items-center gap-2">
-          <span className="chip chip-accent">
+          <span className="chip state-badge" data-state={requested.decision}>
             {DECISION_TEXT[requested.decision]}
           </span>
           {autoApproved && <span className="chip">Auto-approved</span>}
@@ -248,6 +268,7 @@ function MediaActions({
             disabled={busy}
             onClick={() => void request()}
           >
+            <Icon name="plus" />
             {busy ? "Requesting…" : "Request this title"}
           </button>
           {error && (
@@ -296,12 +317,19 @@ function DetailBody({
     d.studio?.reference && d.studio.reference.kind === "studio"
       ? d.studio.reference
       : null;
+  const studioFilter: BrowseFilter | null = studioRef
+    ? {
+        param: studioRef.provider === "tpdb" ? "studioTpdb" : "studioStashdb",
+        provider: studioRef.provider,
+        id: studioRef.id,
+      }
+    : null;
   // Availability is a media-target concept: no fetch for performer/studio.
   const mediaTarget =
     mediaKind !== null
       ? { provider: target.provider, kind: mediaKind, id: target.id }
       : null;
-  const availability = useAvailability(mediaTarget);
+  const { availability, checking } = useAvailability(mediaTarget);
   // The year jump is offered for TPDB movies only; other targets keep
   // their date as plain text. (Browse itself filters StashDB scenes by
   // year locally and by date natively.)
@@ -320,44 +348,13 @@ function DetailBody({
       >
         <div className="cat-hero-scrim" aria-hidden="true" />
         <div className="cat-hero-inner">
-          <div className={posterClass}>
-            <ItemImage
-              name={d.title}
-              src={imgSrc(d.imageUrl)}
-              className="cat-poster-img"
-            />
-          </div>
+          <EnlargeableImage
+            name={d.title}
+            imageUrl={d.imageUrl}
+            frameClass={`${posterClass} block p-0`}
+            imgClass="cat-poster-img"
+          />
           <div className="cat-hero-copy">
-            <div className="cat-hero-meta">
-              <span className="chip">
-                {providerLabel(target.provider)} · {target.kind}
-              </span>
-              {/* The year chip jumps to a year-filtered browse for TPDB
-                  movies only; a scene's date stays plain text. */}
-              {d.releaseDate &&
-                (releaseYear ? (
-                  <button
-                    type="button"
-                    className="chip"
-                    title={`Show TPDB movies from ${releaseYear}`}
-                    onClick={() =>
-                      onBrowse({
-                        param: "year",
-                        provider: target.provider,
-                        id: releaseYear,
-                      })
-                    }
-                  >
-                    {d.releaseDate}
-                  </button>
-                ) : (
-                  <span className="chip">{d.releaseDate}</span>
-                ))}
-              {/* Duration stays plain text: no provider offers a duration filter. */}
-              {duration(d.durationSeconds) && (
-                <span className="chip">{duration(d.durationSeconds)}</span>
-              )}
-            </div>
             {availability?.outcome === "available" && (
               <span className="cat-badge cat-badge-available">Available</span>
             )}
@@ -377,29 +374,20 @@ function DetailBody({
             </h1>
             {d.studio && (
               <p className="cat-hero-sub">
-                {studioRef ? (
+                {studioFilter ? (
                   <>
                     {/* The hero name lands on the studio's titles — a studio
                         has no detail body worth a page; the aside chip does
                         the same thing lower down. */}
-                    <button
-                      type="button"
+                    <a
                       className="cat-hero-studio"
                       title={`Browse titles from ${d.studio?.name}`}
                       aria-label={`Browse titles from ${d.studio?.name}`}
-                      onClick={() =>
-                        onBrowse({
-                          param:
-                            studioRef.provider === "tpdb"
-                              ? "studioTpdb"
-                              : "studioStashdb",
-                          provider: studioRef.provider,
-                          id: studioRef.id,
-                        })
-                      }
+                      href={browseFilterHref(studioFilter)}
+                      onClick={spaClick(() => onBrowse(studioFilter))}
                     >
                       {d.studio?.name}
-                    </button>
+                    </a>
                   </>
                 ) : (
                   d.studio.name
@@ -416,21 +404,68 @@ function DetailBody({
                 )}
               </div>
             )}
+            {mediaKind && (
+              <div className="cat-hero-actions">
+                <MediaActions
+                  target={{
+                    provider: target.provider,
+                    kind: mediaKind,
+                    id: target.id,
+                  }}
+                  mine={payload.myRequest}
+                  availability={availability}
+                  checking={checking}
+                  onRefetch={onRefetch}
+                />
+              </div>
+            )}
           </div>
-          {mediaKind && (
-            <div className="cat-hero-actions">
-              <MediaActions
-                target={{
-                  provider: target.provider,
-                  kind: mediaKind,
-                  id: target.id,
-                }}
-                mine={payload.myRequest}
-                availability={availability}
-                onRefetch={onRefetch}
-              />
-            </div>
-          )}
+          {/* The performer hero's facts panel: label left, value right, in
+              the hero's third column (under the copy below lg). Only the
+              release date is a control: the year jump for TPDB movies. */}
+          <section aria-label="Details" className="hero-facts">
+            <dl>
+              <dt>Source</dt>
+              <dd>
+                {providerLabel(target.provider)} {target.kind}
+              </dd>
+              {d.releaseDate && (
+                <>
+                  <dt>Released</dt>
+                  <dd>
+                    {releaseYear ? (
+                      <a
+                        className="hero-facts-link"
+                        title={`Show TPDB movies from ${releaseYear}`}
+                        href={browseFilterHref({
+                          param: "year",
+                          provider: target.provider,
+                          id: releaseYear,
+                        })}
+                        onClick={spaClick(() =>
+                          onBrowse({
+                            param: "year",
+                            provider: target.provider,
+                            id: releaseYear,
+                          }),
+                        )}
+                      >
+                        {d.releaseDate}
+                      </a>
+                    ) : (
+                      d.releaseDate
+                    )}
+                  </dd>
+                </>
+              )}
+              {duration(d.durationSeconds) && (
+                <>
+                  <dt>Duration</dt>
+                  <dd>{duration(d.durationSeconds)}</dd>
+                </>
+              )}
+            </dl>
+          </section>
         </div>
       </header>
 
@@ -470,6 +505,23 @@ export function DetailSections({
     d.studio?.reference && d.studio.reference.kind === "studio"
       ? d.studio.reference
       : null;
+  const studioFilter: BrowseFilter | null = studioRef
+    ? {
+        param: studioRef.provider === "tpdb" ? "studioTpdb" : "studioStashdb",
+        provider: studioRef.provider,
+        id: studioRef.id,
+      }
+    : null;
+  // A tag chip's browse: an include constraint on this detail's provider.
+  const tagFilter = (t: { id: string; name: string }): BrowseFilter => ({
+    param: "include",
+    provider: target.provider,
+    id: t.id,
+    tag:
+      target.provider === "tpdb"
+        ? { name: t.name, tpdb: t.id }
+        : { name: t.name, stashdb: t.id },
+  });
   // Tag chips become include constraints on media details — the unified
   // browse takes provider-scoped tags on every kind. Performer and studio
   // details keep their tags as plain text rather than dead controls.
@@ -512,7 +564,7 @@ export function DetailSections({
             >
               <h2 className="cat-section-title">Overview</h2>
               {d.description && (
-                <p className="mt-2 text-sm leading-relaxed text-muted">
+                <p className="cat-overview mt-2 text-sm leading-relaxed text-muted">
                   {d.description}
                 </p>
               )}
@@ -527,7 +579,7 @@ export function DetailSections({
           {d.tags.length > 0 && (
             <section className="cat-section" aria-label="Tags">
               <h2 className="cat-section-title">Tags</h2>
-              <div className="mt-2 flex flex-wrap gap-1">
+              <div className="tag-chips mt-2">
                 {[...d.tags]
                   .sort((a, b) => a.name.localeCompare(b.name))
                   // Display cap only; the detail carries up to 500 tags so
@@ -537,26 +589,17 @@ export function DetailSections({
                     // TPDB sometimes emits numeric-string tag ids that the
                     // filter layer rejects with 400 — those stay plain text.
                     tagBrowse && UUID_RE.test(t.id) ? (
-                      <button
+                      <a
                         key={t.id}
-                        type="button"
-                        className="chip"
-                        onClick={() =>
-                          onBrowse({
-                            param: "include",
-                            provider: target.provider,
-                            id: t.id,
-                            tag:
-                              target.provider === "tpdb"
-                                ? { name: t.name, tpdb: t.id }
-                                : { name: t.name, stashdb: t.id },
-                          })
-                        }
+                        className="filter-chip"
+                        title={`Browse titles tagged ${t.name}`}
+                        href={browseFilterHref(tagFilter(t))}
+                        onClick={spaClick(() => onBrowse(tagFilter(t)))}
                       >
                         {t.name}
-                      </button>
+                      </a>
                     ) : (
-                      <span key={t.id} className="chip">
+                      <span key={t.id} className="filter-chip">
                         {t.name}
                       </span>
                     ),
@@ -568,7 +611,8 @@ export function DetailSections({
           {d.credits.length > 0 && (
             <section className="cat-section cat-cast" aria-label="Performers">
               <h2 className="cat-section-title">Cast</h2>
-              <div className="cat-people mt-2">
+              {/* The poster grid's columns, so cast tiles match title tiles. */}
+              <div className="performer-grid mt-2">
                 {d.credits.map((c) => {
                   // Same binary provider split useBrowseTo applies to the
                   // browse type: TPDB credits filter movies, StashDB scenes.
@@ -582,10 +626,11 @@ export function DetailSections({
                   const key = `${c.reference.provider}:${c.reference.id}`;
                   return (
                     <div key={key} className="cat-person">
-                      <button
-                        type="button"
+                      <a
+                        href={detailHref(c.reference)}
                         className="cat-person-main"
-                        onClick={() => onNavigate(c.reference)}
+                        title={c.name}
+                        onClick={spaClick(() => onNavigate(c.reference))}
                       >
                         <ItemImage
                           name={c.name}
@@ -593,7 +638,7 @@ export function DetailSections({
                           className="cat-person-img"
                         />
                         <span className="cat-person-name">{c.name}</span>
-                      </button>
+                      </a>
                       <button
                         type="button"
                         className="btn btn-accent cat-person-filter"
@@ -650,44 +695,36 @@ export function DetailSections({
         </div>
 
         <aside>
-          {studioRef && (
+          {studioFilter && (
             <section className="cat-section" aria-label="Studio">
               <h2 className="cat-section-title">Studio</h2>
-              <button
-                type="button"
-                className="chip mt-2"
+              <a
+                className="filter-chip mt-2"
                 title={`Filter ${
-                  studioRef.provider === "tpdb" ? "movies" : "scenes"
+                  studioFilter.provider === "tpdb" ? "movies" : "scenes"
                 } by this studio`}
                 aria-label={`Filter ${
-                  studioRef.provider === "tpdb" ? "movies" : "scenes"
+                  studioFilter.provider === "tpdb" ? "movies" : "scenes"
                 } by ${d.studio?.name}`}
-                onClick={() =>
-                  onBrowse({
-                    param:
-                      studioRef.provider === "tpdb"
-                        ? "studioTpdb"
-                        : "studioStashdb",
-                    provider: studioRef.provider,
-                    id: studioRef.id,
-                  })
-                }
+                href={browseFilterHref(studioFilter)}
+                onClick={spaClick(() => onBrowse(studioFilter))}
               >
                 {d.studio?.name}
-              </button>
+              </a>
             </section>
           )}
 
           <section className="cat-section" aria-label="Cross-provider link">
             <h2 className="cat-section-title">Cross-provider link</h2>
             {linked ? (
-              <button
-                type="button"
-                className="chip chip-accent mt-2"
-                onClick={() => onNavigate(linked)}
+              <a
+                className="filter-chip mt-2"
+                href={detailHref(linked)}
+                onClick={spaClick(() => onNavigate(linked))}
               >
                 Open the linked {providerLabel(linked.provider)} record
-              </button>
+                <Icon name="arrow-right" className="filter-chip-mark" />
+              </a>
             ) : linkFailure ? (
               <ErrorPanel
                 title="Cross-provider lookup failed"
@@ -706,11 +743,11 @@ export function DetailSections({
           {(d.links.length > 0 || showSourceUrl) && (
             <section className="cat-section" aria-label="Links">
               <h2 className="cat-section-title">Links</h2>
-              <div className="mt-2 flex flex-wrap gap-2">
+              <div className="tag-chips mt-2">
                 {d.links.map((l, i) => (
                   <a
                     key={i}
-                    className="chip"
+                    className="filter-chip"
                     href={l.url}
                     target="_blank"
                     rel="noopener noreferrer"
@@ -720,7 +757,7 @@ export function DetailSections({
                 ))}
                 {showSourceUrl && (
                   <a
-                    className="chip"
+                    className="filter-chip"
                     href={showSourceUrl}
                     target="_blank"
                     rel="noopener noreferrer"
@@ -739,16 +776,16 @@ export function DetailSections({
                   ? "Scenes in this movie (as supplied by the provider)"
                   : "Related"}
               </h2>
-              <div className="mt-2 flex flex-wrap gap-2">
+              <div className="tag-chips mt-2">
                 {d.related.map((r, i) => (
-                  <button
+                  <a
                     key={`${r.provider}:${r.kind}:${r.id}:${i}`}
-                    type="button"
-                    className="chip"
-                    onClick={() => onNavigate(r)}
+                    className="filter-chip"
+                    href={detailHref(r)}
+                    onClick={spaClick(() => onNavigate(r))}
                   >
                     {providerLabel(r.provider)} · {r.kind} · {r.id.slice(0, 8)}…
-                  </button>
+                  </a>
                 ))}
               </div>
             </section>
@@ -818,9 +855,13 @@ export function RelatedTitles({
           </button>
         </p>
       ) : loading ? (
-        <p className="cat-note" aria-live="polite">
-          Loading similar titles…
-        </p>
+        // Same geometry as the result grid, so the section does not jump.
+        <div className="poster-grid mt-3" role="status" aria-busy="true">
+          <span className="sr-only">Loading similar titles…</span>
+          {Array.from({ length: 6 }, (_, i) => (
+            <div key={i} className="skel aspect-[2/3] w-full" />
+          ))}
+        </div>
       ) : data === null ? null : data.errors.length > 0 ? (
         <p className="cat-note" role="alert">
           {data.errors

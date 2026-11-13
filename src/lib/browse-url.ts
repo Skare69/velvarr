@@ -13,6 +13,7 @@ import {
   browseSortsFor,
   type SortKey,
 } from "./sorts.ts";
+import type { CatalogProvider, CatalogTagSelection } from "./contracts.ts";
 
 export type BrowseType = "all" | "movie" | "scene";
 
@@ -198,4 +199,80 @@ export function countActiveFilters(
     else if (v) n += 1;
   }
   return n;
+}
+/** A provider-legal filter entry point handed from a detail page into the
+ * unified browse constraints. `param` is a canonical /api/browse key;
+ * `id` is the provider-native id, or the YYYY string for `year`; `tag`
+ * rides for `include` and as a co-filter on the performer params;
+ * `studioMode` only for StashDB studios; `counterpart` only with the
+ * performer params — her id on the other provider, so browse runs both
+ * sides at once. */
+export type BrowseFilter = {
+  param:
+    | "studioTpdb"
+    | "studioStashdb"
+    | "performerTpdb"
+    | "performerStashdb"
+    | "year"
+    | "include";
+  provider: CatalogProvider;
+  id: string;
+  tag?: CatalogTagSelection;
+  studioMode?: "withChildren";
+  counterpart?: { param: "performerTpdb" | "performerStashdb"; id: string };
+};
+
+/** The URL a detail entry point lands on, as a real href: the patch's set
+ * keys only (a fresh browse carries nothing else), so middle-click opens
+ * the same browse in a new tab that a plain click opens in place. */
+export function browseFilterHref(filter: BrowseFilter): string {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(browseFilterPatch(filter)))
+    if (v) qs.set(k, v);
+  return `/?${qs}`;
+}
+
+export function browseFilterPatch(
+  filter: BrowseFilter,
+): Record<string, string | null> {
+  const patch: Record<string, string | null> = {
+    // Any view may host an entry point (performer pages live on the
+    // following view), so the jump always lands on the titles view and
+    // drops that view's own keys (provider, per-view paging).
+    ...clearBrowseKeys(),
+    view: "titles",
+    // The old facet label never rides a fresh browse; the jump names no
+    // facet of its own (chips carry the labels).
+    name: null,
+    type:
+      filter.param === "year" || filter.provider === "tpdb" ? "movie" : "scene",
+    provider: null,
+    moviePage: null,
+    scenePage: null,
+    kind: null,
+    id: null,
+  };
+  // Only the selection fields ride the URL; count-style extras a caller
+  // carries on its tag objects never leak into the wire.
+  const cleanTag = ({ name, tpdb, stashdb }: CatalogTagSelection) => ({
+    name,
+    ...(tpdb !== undefined ? { tpdb } : {}),
+    ...(stashdb !== undefined ? { stashdb } : {}),
+  });
+  if (filter.param === "include" && filter.tag !== undefined) {
+    patch.include = JSON.stringify([cleanTag(filter.tag)]);
+  } else {
+    patch[filter.param] = filter.id;
+    // A union jump rides both of her ids; no single type can run both
+    // providers, so it lands on browse All.
+    if (filter.counterpart !== undefined) {
+      patch[filter.counterpart.param] = filter.counterpart.id;
+      patch.type = null;
+    }
+    if (filter.studioMode) patch.studioMode = filter.studioMode;
+    if (filter.tag !== undefined) {
+      patch.include = JSON.stringify([cleanTag(filter.tag)]);
+    }
+  }
+  return patch;
 }

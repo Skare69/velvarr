@@ -16,11 +16,16 @@ import {
   MovieCard,
   PerformerCard,
   SceneCard,
+  spaClick,
   providerLabel,
   useApiGet,
   useParamsSetter,
 } from "./shared.tsx";
+import { NotConfiguredLine } from "./discover.tsx";
 import "./views.css";
+
+// Displayed totals: locale digit grouping, one format on every count.
+const NUM_FMT = new Intl.NumberFormat();
 
 /* ---------- API shape (GET /api/search) ---------- */
 
@@ -53,8 +58,8 @@ const KIND_LABEL: Record<CatalogKind, string> = {
 // with an unknown total shows no number: a capped length is not a count.
 function countLabel(cat: SearchCategory): string | null {
   if (cat.error) return null;
-  if (cat.totalCountKnown) return String(cat.total ?? cat.items.length);
-  if (cat.hasMore) return `${cat.items.length}+`;
+  if (cat.totalCountKnown) return NUM_FMT.format(cat.total ?? cat.items.length);
+  if (cat.hasMore) return `${NUM_FMT.format(cat.items.length)}+`;
   return null;
 }
 
@@ -69,10 +74,12 @@ function StudioCard({
   onOpen: (r: CatalogReference) => void;
 }) {
   return (
-    <button
-      type="button"
-      className="card p-3 text-left"
-      onClick={() => onOpen(item.reference)}
+    // A studio result lands on browse filtered by that studio, as search's
+    // own open() does; the href is that same URL for a new tab.
+    <a
+      href={`/?view=titles&${item.reference.provider === "stashdb" ? "studioStashdb" : "studioTpdb"}=${encodeURIComponent(item.reference.id)}`}
+      className="card block p-3 text-left text-inherit no-underline"
+      onClick={spaClick(() => onOpen(item.reference))}
     >
       <div className="truncate text-sm font-medium">{item.title}</div>
       {item.description && (
@@ -80,7 +87,7 @@ function StudioCard({
           {item.description}
         </div>
       )}
-    </button>
+    </a>
   );
 }
 
@@ -122,12 +129,10 @@ function CategorySection({
           cat.error.code === "provider_not_configured" ? (
             // A missing key is a missing key: no retry, never an outage.
             <div className="panel p-4" role="note">
-              <div className="font-medium">{label} is not configured</div>
-              <p className="mt-1 text-sm text-muted">
-                No API key is present for {providerLabel(cat.provider)}, so this
-                section has nothing to search. That is a missing key, not an
-                outage; add it under Settings.
-              </p>
+              <NotConfiguredLine
+                source={cat.provider}
+                consequence="this section has nothing to search"
+              />
             </div>
           ) : (
             <ErrorPanel

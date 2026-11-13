@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
+import Link from "next/link";
 import type {
   CatalogDetailResponse,
   Library,
@@ -177,9 +178,20 @@ export function LibraryView() {
           </div>
         ) : items.length === 0 ? (
           <div className="panel p-8 text-center text-sm text-muted">
-            {search || libraryId
-              ? "No items match your search or filter."
-              : "This library has no items yet."}
+            {search || libraryId ? (
+              "No items match your search or filter."
+            ) : (
+              <>
+                This library has no items yet.{" "}
+                <Link
+                  href="/?view=titles"
+                  prefetch={false}
+                  className="text-accent-text underline"
+                >
+                  Browse titles
+                </Link>
+              </>
+            )}
           </div>
         ) : (
           <>

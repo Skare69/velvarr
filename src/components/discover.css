@@ -444,6 +444,45 @@
   margin-top: 0.25rem;
 }
 
+/* Not-configured shelf: one line that names the gap and links its fix. */
+.discovery-setup-line {
+  max-width: 75ch;
+}
+.discovery-setup-line .chip {
+  margin-right: 0.5rem;
+  vertical-align: 0.1em;
+}
+.discovery-setup-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--color-accent-text);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}
+
+/* Per-source notes above a filled rail: slim, with room before the rail.
+   Each note is one line of inline flow — chip, server message, then the
+   action right after it (rule 26/48: no space-between split). */
+.discovery-source-notes {
+  padding: 0.625rem 1rem;
+  margin-bottom: 0.875rem;
+}
+.discovery-source-notes > * + * {
+  margin-top: 0.375rem;
+}
+.discovery-source-note .chip {
+  margin-right: 0.375rem;
+}
+.discovery-source-note .btn {
+  margin-left: 0.25rem;
+}
+.discovery-source-note .discovery-setup-link {
+  white-space: nowrap;
+}
+
 /* ---------- See More tile ---------- */
 
 /* Default size matches the portrait poster rails (catalog + library). Rails

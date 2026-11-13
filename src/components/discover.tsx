@@ -23,6 +23,7 @@ import type {
   RequestListItem,
   Shelf,
   ShelfMorePreview,
+  SourceError,
 } from "../lib/contracts";
 import {
   CardStatusBadge,
@@ -43,6 +44,8 @@ import {
   useParamsSetter,
   useCatalogSummary,
   useSession,
+  detailHref,
+  spaClick,
 } from "./shared";
 
 interface DiscoverPage {
@@ -72,6 +75,113 @@ function browseHref(shelf: Pick<Shelf, "browse">): string {
 }
 
 const NOT_CONFIGURED_CODES = ["provider_not_configured", "not_configured"];
+
+/** Where each source is fixed in Settings; Velvarr itself has no card. */
+function settingsAnchor(
+  source: "tpdb" | "stashdb" | "jellyfin" | "velvarr",
+): string | null {
+  if (source === "tpdb" || source === "stashdb")
+    return `provider-heading-${source}`;
+  return source === "jellyfin" ? "jellyfin-settings-title" : null;
+}
+
+/** A missing key is stated as a missing key and links its fix — never an
+ * outage, never an empty catalog, never a retry that cannot help.
+ * `consequence` states what the missing key costs on this surface. */
+export function NotConfiguredLine({
+  source,
+  consequence,
+}: {
+  source: "tpdb" | "stashdb" | "jellyfin" | "velvarr";
+  consequence: string;
+}) {
+  const isAdmin = useSession().account.role === "admin";
+  return (
+    <p className="discovery-setup-line text-sm text-muted">
+      <span className="chip">Not configured</span>
+      {source === "tpdb" || source === "stashdb"
+        ? `${sourceLabel(source)} has no API key on this server`
+        : `${sourceLabel(source)} is not connected on this server`}
+      , so {consequence}: a missing{" "}
+      {source === "tpdb" || source === "stashdb" ? "credential" : "setting"},
+      not an outage.{" "}
+      {isAdmin && settingsAnchor(source) ? (
+        <Link
+          className="discovery-setup-link"
+          href={`/?view=settings#${settingsAnchor(source)}`}
+          prefetch={false}
+        >
+          {source === "tpdb" || source === "stashdb"
+            ? "Add the key in Settings"
+            : "Connect it in Settings"}
+          <Icon name="arrow-right" />
+        </Link>
+      ) : isAdmin ? (
+        "Configure it in Settings."
+      ) : (
+        "Ask an administrator to set it up in Settings."
+      )}
+    </p>
+  );
+}
+
+/** Per-source failures under a filled surface; partial success never reads
+ * as complete. The chip names the state and the server's message names the
+ * provider — one layout per row, the action inline after the message. A
+ * proven rejection is fixed by a new key; anything else may pass, so it
+ * gets a retry when the caller can reload. */
+function SourceErrorNotes({
+  errors,
+  onRetry,
+}: {
+  errors: SourceError[];
+  onRetry?: () => void;
+}) {
+  const isAdmin = useSession().account.role === "admin";
+  return (
+    <div
+      className="panel discovery-source-notes text-sm text-muted"
+      role="note"
+    >
+      {errors.map((e) =>
+        NOT_CONFIGURED_CODES.includes(e.code) ? (
+          <NotConfiguredLine
+            key={e.provider}
+            source={e.provider}
+            consequence="its results are missing here"
+          />
+        ) : (
+          <p key={e.provider} className="discovery-source-note">
+            <span className="chip">
+              {e.code === "upstream_auth" ? "Key rejected" : "Unavailable"}
+            </span>
+            {e.message}{" "}
+            {e.code === "upstream_auth" ? (
+              isAdmin ? (
+                <Link
+                  className="discovery-setup-link"
+                  href={`/?view=settings#provider-heading-${e.provider}`}
+                  prefetch={false}
+                >
+                  Replace the key in Settings
+                  <Icon name="arrow-right" />
+                </Link>
+              ) : (
+                "Ask an administrator to replace the key."
+              )
+            ) : (
+              onRetry && (
+                <button type="button" className="btn" onClick={onRetry}>
+                  Retry
+                </button>
+              )
+            )}
+          </p>
+        ),
+      )}
+    </div>
+  );
+}
 
 /* ---------- Skeletons: same geometry as the final rail ---------- */
 
@@ -341,10 +451,10 @@ function RequestTile({
 
   return (
     <div className="discovery-tile discovery-request">
-      <button
-        type="button"
+      <a
+        href={detailHref(item.media)}
         className="discovery-request-card media-card"
-        onClick={() => onOpen(item.media)}
+        onClick={spaClick(() => onOpen(item.media))}
         aria-label={`${art?.title ?? item.media.id} — ${label}; open catalog details`}
       >
         {art?.imageUrl !== undefined && (
@@ -379,7 +489,7 @@ function RequestTile({
           src={art ? imgSrc(art.imageUrl) : undefined}
           className="discovery-request-poster"
         />
-      </button>
+      </a>
     </div>
   );
 }
@@ -399,12 +509,12 @@ function LibraryTile({ item }: { item: LibraryItem }) {
   return (
     <div className="discovery-tile discovery-tile-poster">
       <div className="discovery-art-card media-card">
-        <button
-          type="button"
+        <a
+          href={`/?view=library&item=${encodeURIComponent(item.id)}`}
           className="media-open"
-          onClick={() =>
-            setP({ view: "library", item: item.id }, { push: true })
-          }
+          onClick={spaClick(() =>
+            setP({ view: "library", item: item.id }, { push: true }),
+          )}
           aria-label={`Open ${item.name}`}
         >
           <div className="discovery-art">
@@ -412,7 +522,7 @@ function LibraryTile({ item }: { item: LibraryItem }) {
             <CardTypeBadge kind={item.kind} />
             <CardStatusBadge status="available" title={item.name} />
           </div>
-        </button>
+        </a>
         <div className="media-quick-overlay">
           <div className="media-quick-summary" aria-hidden="true">
             {item.year && <span>{item.year}</span>}
@@ -517,16 +627,12 @@ function ShelfSection({
       // Retrying the page: keep the shelf slot reserved with its skeleton.
       body = <RailSkeleton count={6} />;
     } else if (NOT_CONFIGURED_CODES.includes(shelf.error.code)) {
-      // A missing key is stated as a missing key — never an outage, never
-      // an empty catalog, never with a retry that cannot help.
       body = (
         <div className="discovery-shelf-body panel p-4">
-          <span className="chip chip-accent">Not configured</span>
-          <p className="mt-2 text-sm text-muted">
-            {sourceLabel(shelf.source)} has no API key on this server, so this
-            shelf cannot be filled. Add the key under Settings — that is a
-            missing credential, not an outage.
-          </p>
+          <NotConfiguredLine
+            source={shelf.source}
+            consequence="this shelf cannot be filled"
+          />
         </div>
       );
     } else {
@@ -594,19 +700,8 @@ function ShelfSection({
         browse={shelf.browse}
         nav={hasRail ? rail.nav : undefined}
       />
-      {/* A source that failed while its sibling filled the rail still gets
-          named — partial success never reads as complete. */}
       {!shelf.error && (shelf.errors?.length ?? 0) > 0 && (
-        <div className="panel p-4 text-sm text-muted" role="note">
-          {shelf.errors!.map((e) => (
-            <p key={e.provider}>
-              <span className="chip chip-accent">
-                {sourceLabel(e.provider)}
-              </span>{" "}
-              {e.message}
-            </p>
-          ))}
-        </div>
+        <SourceErrorNotes errors={shelf.errors!} onRetry={onRetry} />
       )}
       {body}
     </section>
@@ -764,19 +859,21 @@ export function FacetsView() {
         </div>
       </header>
       {data.errors.length > 0 && (
-        <div className="panel p-4 text-sm text-muted" role="note">
-          {data.errors.map((e) => (
-            <p key={e.provider}>
-              <span className="chip chip-accent">
-                {sourceLabel(e.provider)}
-              </span>{" "}
-              {e.message}
-            </p>
-          ))}
-        </div>
+        <SourceErrorNotes errors={data.errors} onRetry={reload} />
       )}
       {data.tiles.length === 0 ? (
-        <p className="cat-note">Nothing to list yet.</p>
+        // Rule 27: an empty directory explains its real limit (providers
+        // list only what a search returns) and offers the next step.
+        <p className="cat-note">
+          Nothing to list yet — the providers returned no {kind}.{" "}
+          <Link
+            href="/?view=titles"
+            prefetch={false}
+            className="discovery-setup-link"
+          >
+            Browse titles to search instead
+          </Link>
+        </p>
       ) : (
         <div className="discovery-facet-grid">
           {data.tiles.map((item) => (

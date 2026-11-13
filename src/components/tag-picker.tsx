@@ -23,7 +23,7 @@ import {
   type CatalogTagSelection,
 } from "../lib/contracts.ts";
 import { initTagWait, reduceTagWait } from "../lib/tag-wait.ts";
-import { useApiGet } from "./shared.tsx";
+import { Icon, useApiGet } from "./shared.tsx";
 import "./catalog.css";
 
 /** The server caps one tag list at 25 — stop offering rather than let the
@@ -49,7 +49,7 @@ function realTag(t: CatalogTagSelection): boolean {
 
 /** The typed term itself: a selection with no provider id, workable only
  * where matching runs locally. */
-function isFreeText(t: CatalogTagSelection): boolean {
+export function isFreeText(t: CatalogTagSelection): boolean {
   return t.tpdb === undefined && t.stashdb === undefined;
 }
 
@@ -69,6 +69,8 @@ export function TagPicker({
   description,
   disabled,
   allowFreeText = false,
+  tone,
+  help,
 }: {
   id: string;
   label: string;
@@ -87,6 +89,11 @@ export function TagPicker({
    * providers publish, committing it selects that tag instead.
    */
   allowFreeText?: boolean;
+  /** Include and exclude pickers must not look alike: the chip carries a
+   * "+" or "−" mark and an edge style, never color alone. */
+  tone?: "include" | "exclude";
+  /** Long matching rules, folded behind "How matching works". */
+  help?: string;
 }) {
   const [term, setTerm] = useState("");
   const [open, setOpen] = useState(false);
@@ -111,7 +118,7 @@ export function TagPicker({
   const capped = selected.length >= TAG_CAP;
   // useApiGet owns the stale-response guard: only the latest query's
   // response is ever applied.
-  const { data, error, loading } = useApiGet<BrowseTagsResponse>(
+  const { data, error, loading, reload } = useApiGet<BrowseTagsResponse>(
     disabled || capped || committed === null
       ? null
       : `/api/browse/tags?q=${encodeURIComponent(committed)}`,
@@ -256,34 +263,45 @@ export function TagPicker({
           {description}
         </p>
       )}
-      <input
-        ref={inputRef}
-        id={id}
-        type="search"
-        className="input"
-        role="combobox"
-        aria-describedby={description === undefined ? undefined : `${id}-hint`}
-        aria-expanded={showList}
-        aria-controls={showList ? `${id}-listbox` : undefined}
-        aria-activedescendant={showList ? `${id}-opt-${activeIdx}` : undefined}
-        aria-autocomplete="list"
-        maxLength={200}
-        placeholder="Search tags…"
-        disabled={disabled || capped}
-        value={term}
-        onChange={(e) => {
-          setTerm(e.target.value);
-          // A stored pointer describes the previous term's list; typing
-          // always falls back to the default row.
-          setActive(0);
-          setOpen(true);
-        }}
-        onFocus={() => {
-          if (choices.length > 0) setOpen(true);
-        }}
-        onBlur={() => setOpen(false)}
-        onKeyDown={onKeyDown}
-      />
+      <div className="input-lead">
+        <Icon
+          name={
+            tone === "exclude" ? "minus" : tone === "include" ? "plus" : "tag"
+          }
+        />
+        <input
+          ref={inputRef}
+          id={id}
+          type="search"
+          className="input"
+          role="combobox"
+          aria-describedby={
+            description === undefined ? undefined : `${id}-hint`
+          }
+          aria-expanded={showList}
+          aria-controls={showList ? `${id}-listbox` : undefined}
+          aria-activedescendant={
+            showList ? `${id}-opt-${activeIdx}` : undefined
+          }
+          aria-autocomplete="list"
+          maxLength={200}
+          placeholder="Search tags…"
+          disabled={disabled || capped}
+          value={term}
+          onChange={(e) => {
+            setTerm(e.target.value);
+            // A stored pointer describes the previous term's list; typing
+            // always falls back to the default row.
+            setActive(0);
+            setOpen(true);
+          }}
+          onFocus={() => {
+            if (choices.length > 0) setOpen(true);
+          }}
+          onBlur={() => setOpen(false)}
+          onKeyDown={onKeyDown}
+        />
+      </div>
       {capped ? (
         <p className="cat-note">
           Tag limit reached ({TAG_CAP}) — remove one before adding another.
@@ -296,7 +314,10 @@ export function TagPicker({
           {loading && <p className="cat-note">Searching tags…</p>}
           {error !== null && (
             <p className="cat-note" role="alert">
-              Tag search failed: {error}
+              Tag search failed: {error}{" "}
+              <button type="button" className="btn" onClick={reload}>
+                Retry search
+              </button>
             </p>
           )}
           {sourceErrors.length > 0 && (
@@ -372,23 +393,46 @@ export function TagPicker({
         >
           {selected.map((tag, i) => (
             <li key={normalizeFacetName(tag.name)}>
+              {/* Same chip as the active-filter row above Browse results,
+                  so a tag looks the same in the drawer and on the page. */}
               <button
                 type="button"
-                className="chip"
+                className={`filter-chip${
+                  tone === "include"
+                    ? " is-include"
+                    : tone === "exclude"
+                      ? " is-exclude"
+                      : ""
+                }`}
                 disabled={disabled}
                 onClick={() => onChange(selected.filter((_, j) => j !== i))}
                 aria-label={`Remove ${
                   isFreeText(tag) ? "free-text tag" : "tag"
                 }: ${tag.name}`}
               >
+                {tone && (
+                  <Icon
+                    name={tone === "include" ? "plus" : "minus"}
+                    className="filter-chip-mark"
+                  />
+                )}
                 {isFreeText(tag) && (
                   <span className="text-muted">Free text:</span>
                 )}
-                {tag.name} <span aria-hidden="true">×</span>
+                {tag.name}
+                <span className="filter-chip-x" aria-hidden="true">
+                  <Icon name="close" />
+                </span>
               </button>
             </li>
           ))}
         </ul>
+      )}
+      {help !== undefined && (
+        <details className="cat-help">
+          <summary>How matching works</summary>
+          <p>{help}</p>
+        </details>
       )}
     </div>
   );
