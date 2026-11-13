@@ -46,6 +46,7 @@ import {
   resetSessionCache,
 } from "../src/app/api/[...path]/admission.ts";
 import { routes as catalogRoutes } from "../src/app/api/[...path]/routes/catalog.ts";
+import { BULK_SCAN_PAGES } from "../src/app/api/[...path]/routes/requests.ts";
 import { routeTable } from "../src/app/api/[...path]/registry.ts";
 import { allowArtworkFixture } from "./fixture.ts";
 import fc from "fast-check";
@@ -146,9 +147,7 @@ const TPDB_MOVIE10 = "2a2b3c4d-0000-0000-0000-000000000017";
 // would collide with the bulk's new pending intent and show up in the
 // owner's request list.
 const TPDB_MOVIE5 = "2a2b3c4d-0000-0000-0000-000000000005";
-// The bulk cap test's own movie: a filmography page that never runs dry
-// (see the TPDB_PERFORMER3 branch) files this id over and over, so it must
-// not collide with any other test's intents.
+// The followed-shelf tests' movie: TPDB_PERFORMER3's only filmography row.
 const TPDB_MOVIE6 = "2a2b3c4d-0000-0000-0000-000000000006";
 // The admin user-row test's own movies: never filed elsewhere, so the
 // owner's request count moves 0 -> 2 with no duplicate-intent collisions.
@@ -207,6 +206,20 @@ const TPDB_MOVIE_FAMILY_EXACT = "2a2b3c4d-0000-0000-0000-000000000010";
 const TPDB_MOVIE_FAMILY_CHILD = "2a2b3c4d-0000-0000-0000-000000000011";
 const TPDB_MOVIE_FAMILY_WIDE = "2a2b3c4d-0000-0000-0000-000000000012";
 const TPDB_PERFORMER_FAMILY = "2a2b3c4d-0000-0000-0000-000000000013";
+// The bulk scan ceiling's own filmographies: all keep a provider `next`
+// link alive forever. UNREADABLE serves only rows the mapper drops; SPARSE
+// serves one readable row (TPDB_MOVIE_SPARSE) among unreadable ones per page;
+// FULL serves the same 24 readable titles (fresh ids, filed by no other
+// test) on every page.
+const TPDB_PERFORMER_UNREADABLE = "2a2b3c4d-0000-0000-0000-000000000019";
+const TPDB_PERFORMER_SPARSE = "2a2b3c4d-0000-0000-0000-00000000001a";
+const TPDB_MOVIE_SPARSE = "2a2b3c4d-0000-0000-0000-00000000001b";
+const TPDB_PERFORMER_FULL = "2a2b3c4d-0000-0000-0000-00000000001c";
+const TPDB_FULL_PAGE_MOVIES = Array.from(
+  { length: 24 },
+  (_, i) =>
+    `2a2b3c4d-0000-0000-0000-0000000006${i.toString(16).padStart(2, "0")}`,
+);
 // StashDB serves images from stashdb.org/images/<uuid>; a provider-hosted
 // URL so the artwork gate accepts it end to end.
 const STASH_IMAGE =
@@ -624,6 +637,8 @@ const tpdbFx = {
   fail: 0,
   failPaths: [] as string[],
   calls: 0,
+  /** Filmography page reads per path, for the bulk scan ceiling tests. */
+  pageReads: new Map<string, number>(),
   imageAuth: "unset",
   lastQuery: "",
 };
@@ -884,15 +899,45 @@ async function tpdbHandler(
       meta: { total: 1 },
       links: {},
     });
-  // TPDB_PERFORMER3's movie filmography keeps a provider `next` link alive,
-  // so a bulk pass reaches the hard cap. (TPDB_PERFORMER's movie route stops
-  // after one page, which is what the single-page bulk test asserts.)
+  // TPDB_PERFORMER3's movie filmography keeps a provider `next` link alive.
+  // (TPDB_PERFORMER's movie route stops after one page, which is what the
+  // single-page bulk test asserts.)
   if (p === `/performers/${TPDB_PERFORMER3}/movies`)
     return json(res, 200, {
       data: [tpdbMovieRow(TPDB_MOVIE6)],
       meta: { total: 1 },
       links: { next: "https://fixture.test/next" },
     });
+  // The bulk cap test's filmography: full pages of the same 24 readable
+  // titles and a `next` link that never ends, so the pass fills the
+  // 100-title cap inside the page ceiling.
+  if (p === `/performers/${TPDB_PERFORMER_FULL}/movies`) {
+    tpdbFx.pageReads.set(p, (tpdbFx.pageReads.get(p) ?? 0) + 1);
+    return json(res, 200, {
+      data: TPDB_FULL_PAGE_MOVIES.map(tpdbMovieRow),
+      meta: { total: 10000 },
+      links: { next: "https://fixture.test/next" },
+    });
+  }
+  if (
+    p === `/performers/${TPDB_PERFORMER_UNREADABLE}/movies` ||
+    p === `/performers/${TPDB_PERFORMER_SPARSE}/movies`
+  ) {
+    tpdbFx.pageReads.set(p, (tpdbFx.pageReads.get(p) ?? 0) + 1);
+    // A non-uuid id fails the mapper: a raw row, never a mapped survivor.
+    const unreadable = Array.from({ length: 23 }, (_, i) => ({
+      ...tpdbMovieRow(TPDB_MOVIE_SPARSE),
+      id: `not-a-uuid-${i}`,
+    }));
+    return json(res, 200, {
+      data:
+        p === `/performers/${TPDB_PERFORMER_SPARSE}/movies`
+          ? [tpdbMovieRow(TPDB_MOVIE_SPARSE), ...unreadable]
+          : unreadable,
+      meta: { total: 10000 },
+      links: { next: "https://fixture.test/next" },
+    });
+  }
   // Family-proof filmography: every row this performer could return is one
   // of the three family rows, so hide/exclude/include behavior is fully
   // observable on a single page.
@@ -6408,6 +6453,7 @@ interface BulkCounters {
   failed: { id: string; code: string }[];
   scanned: number;
   capped: boolean;
+  error?: { code: string; message: string };
 }
 
 test("follows need a session, an accepted origin, and a performer reference", async () => {
@@ -7593,9 +7639,11 @@ test("bulk requests file one pending intent per provider item with honest counte
 
 test("bulk requests stop at the cap, report it, and re-run without duplicating", async () => {
   const body = {
-    performer: { provider: "tpdb", kind: "performer", id: TPDB_PERFORMER3 },
+    performer: { provider: "tpdb", kind: "performer", id: TPDB_PERFORMER_FULL },
     kind: "movie",
   } as const;
+  const path = `/performers/${TPDB_PERFORMER_FULL}/movies`;
+  const fullPage = new Set(TPDB_FULL_PAGE_MOVIES);
   const pendingTitles = async (): Promise<number> => {
     const listed = await call("GET", "/api/requests", { cookie: owner });
     const listedBody = (await listed.json()) as {
@@ -7608,25 +7656,31 @@ test("bulk requests stop at the cap, report it, and re-run without duplicating",
       (r) =>
         r.media.provider === "tpdb" &&
         r.media.kind === "movie" &&
-        r.media.id === TPDB_MOVIE6 &&
+        fullPage.has(r.media.id) &&
         r.decision === "pending",
     ).length;
   };
 
+  // Moved pin: this fixture used to serve one row per page, so the cap took
+  // 100 page reads; the page ceiling (BULK_SCAN_PAGES) now ends such a walk
+  // early. Full 24-row pages are what a real filmography returns.
+  tpdbFx.pageReads.delete(path);
   const first = await call("POST", "/api/requests/bulk", {
     cookie: member,
     body,
   });
   assert.equal(first.status, 200);
   const firstCounters = (await first.json()) as BulkCounters;
-  // The fixture's filmography chain never runs dry, so the pass reaches the
-  // hard cap: 100 titles scanned, one distinct row filed, repeats skipped.
+  // The filmography never runs dry, so the pass reaches the hard cap on its
+  // fifth page (4 × 24 < 100 ≤ 5 × 24): 24 distinct titles filed, the
+  // repeats of later pages skipped, and no early-stop error.
+  assert.equal(tpdbFx.pageReads.get(path), 5);
   assert.equal(firstCounters.capped, true);
-  assert.equal(firstCounters.scanned, 100);
-  assert.equal(firstCounters.requested, 1);
-  assert.equal(firstCounters.skipped, 99);
+  assert.equal(firstCounters.error, undefined);
+  assert.equal(firstCounters.requested, 24);
+  assert.equal(firstCounters.skipped, 76);
   assert.deepEqual(firstCounters.failed, []);
-  assert.equal(await pendingTitles(), 1);
+  assert.equal(await pendingTitles(), 24);
 
   const second = await call("POST", "/api/requests/bulk", {
     cookie: member,
@@ -7638,7 +7692,69 @@ test("bulk requests stop at the cap, report it, and re-run without duplicating",
   assert.equal(secondCounters.requested, 0);
   assert.equal(secondCounters.skipped, 100);
   assert.deepEqual(secondCounters.failed, []);
-  assert.equal(await pendingTitles(), 1);
+  assert.equal(await pendingTitles(), 24);
+});
+
+test("a bulk scan over endless sparse pages stops at the page ceiling with a named error", async () => {
+  const path = `/performers/${TPDB_PERFORMER_SPARSE}/movies`;
+  tpdbFx.pageReads.delete(path);
+  const res = await call("POST", "/api/requests/bulk", {
+    cookie: member,
+    body: {
+      performer: {
+        provider: "tpdb",
+        kind: "performer",
+        id: TPDB_PERFORMER_SPARSE,
+      },
+      kind: "movie",
+    },
+  });
+  assert.equal(res.status, 200);
+  const counters = (await res.json()) as BulkCounters;
+  // One readable row per page never fills the cap, and the provider's next
+  // link never ends: the walk stops at the ceiling, not at the listing end.
+  assert.equal(tpdbFx.pageReads.get(path), BULK_SCAN_PAGES);
+  assert.equal(counters.scanned, BULK_SCAN_PAGES);
+  // The titles it did read are still filed (one distinct row, repeats
+  // skipped), and the response says the pass is incomplete and why.
+  assert.equal(counters.requested, 1);
+  assert.equal(counters.skipped, BULK_SCAN_PAGES - 1);
+  assert.equal(counters.capped, true);
+  assert.equal(counters.error?.code, "scan_ceiling");
+  assert.match(counters.error?.message ?? "", /page scan limit/);
+});
+
+test("a bulk scan stops at a provider page with no readable titles", async () => {
+  const path = `/performers/${TPDB_PERFORMER_UNREADABLE}/movies`;
+  tpdbFx.pageReads.delete(path);
+  const res = await call("POST", "/api/requests/bulk", {
+    cookie: member,
+    body: {
+      performer: {
+        provider: "tpdb",
+        kind: "performer",
+        id: TPDB_PERFORMER_UNREADABLE,
+      },
+      kind: "movie",
+    },
+  });
+  assert.equal(res.status, 200);
+  const counters = (await res.json()) as BulkCounters;
+  // Endless unreadable pages: one read, never a walk of the whole listing.
+  assert.equal(tpdbFx.pageReads.get(path), 1);
+  assert.deepEqual(counters, {
+    requested: 0,
+    skipped: 0,
+    autoApproved: 0,
+    failed: [],
+    scanned: 0,
+    capped: true,
+    error: {
+      code: "unreadable_page",
+      message:
+        "Stopped at provider page 1: it held no readable titles, so later titles were not requested.",
+    },
+  });
 });
 
 test("the autoApprove grant approves bulk requests and attaches the shared acquisition like the single path", async () => {

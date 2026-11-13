@@ -327,6 +327,8 @@ type BulkResponse = {
   failed?: { id: string; code: string }[];
   scanned?: number;
   capped?: boolean;
+  /** A pass that ended early, before the cap and with provider pages left. */
+  error?: { code: string; message: string };
 };
 
 function BulkRequest({
@@ -409,9 +411,16 @@ function BulkRequest({
       {counts.length > 0 && (
         <p className="mt-2 text-sm" role="status">
           {counts.join(" · ")}
-          {result?.capped
-            ? " — more titles remain; press again to continue where this stopped."
-            : "."}
+          {result?.error
+            ? "."
+            : result?.capped
+              ? " — more titles remain; press again to continue where this stopped."
+              : "."}
+        </p>
+      )}
+      {result?.error && (
+        <p className="bulk-error mt-2 text-sm" role="alert">
+          {result.error.message}
         </p>
       )}
       {error && (

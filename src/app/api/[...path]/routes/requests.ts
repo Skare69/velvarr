@@ -103,6 +103,16 @@ export const BULK_REQUEST_CAP = 100;
 // A provider page, not the cap: TPDB rejects (oversized response) a
 // filmography page of 100 rows. 24 is what the browse surfaces request.
 export const BULK_SCAN_PAGE = 24;
+// ponytail: a fixed read budget per pass. Five fully readable pages fill the
+// cap; ten (240 rows) leave headroom for rows the mapper drops. Raw provider
+// continuation alone never ends a listing of unreadable rows (TPDB lists up
+// to 10000), so a pass that has not filled the cap stops here, named.
+export const BULK_SCAN_PAGES = 10;
+
+type BulkScanStop = {
+  code: "scan_ceiling" | "unreadable_page";
+  message: string;
+};
 
 export async function bulkRequestRoute(
   request: Request,
@@ -129,7 +139,8 @@ export async function bulkRequestRoute(
   const items: CatalogDetail[] = [];
   let capped = false;
   let scanned = 0;
-  for (let page = 1; items.length < BULK_REQUEST_CAP; page += 1) {
+  let stopped: BulkScanStop | undefined;
+  for (let page = 1; ; page += 1) {
     // TPDB's performer filter is paging-only: no other filter may travel
     // with it. StashDB composes freely but has no movie entity.
     //
@@ -161,6 +172,23 @@ export async function bulkRequestRoute(
       break;
     }
     if (!result.hasMore) break;
+    // Continuation is left but the pass ends here: more titles may remain,
+    // and the named stop says why the walk ended short of the cap.
+    if (result.items.length === 0) {
+      stopped = {
+        code: "unreadable_page",
+        message: `Stopped at provider page ${page}: it held no readable titles, so later titles were not requested.`,
+      };
+    } else if (page >= BULK_SCAN_PAGES) {
+      stopped = {
+        code: "scan_ceiling",
+        message: `Stopped at the ${BULK_SCAN_PAGES}-page scan limit before the listing ended, so later titles were not requested.`,
+      };
+    }
+    if (stopped !== undefined) {
+      capped = true;
+      break;
+    }
   }
   if (items.length > BULK_REQUEST_CAP) items.length = BULK_REQUEST_CAP;
   let requested = 0;
@@ -191,7 +219,15 @@ export async function bulkRequestRoute(
       }
     }
   }
-  return json({ requested, skipped, autoApproved, failed, scanned, capped });
+  return json({
+    requested,
+    skipped,
+    autoApproved,
+    failed,
+    scanned,
+    capped,
+    ...(stopped !== undefined ? { error: stopped } : {}),
+  });
 }
 
 import type { RouteDef } from "../admission.ts";
