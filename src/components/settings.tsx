@@ -217,6 +217,19 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
   // the saved status chip and never persist anything.
   const [jellyfinTest, setJellyfinTest] = useState<DraftTest>(noDraftTest);
   const [whisparrTest, setWhisparrTest] = useState<DraftTest>(noDraftTest);
+  // Each check's response carries the generation it was started in. Every
+  // change that invalidates the verdict (a field edit, Cancel, Save) starts a
+  // new generation, so a late or out-of-order response is dropped instead of
+  // repainting a verdict for values nobody sees anymore.
+  const testSeqRef = useRef({ jellyfin: 0, whisparr: 0 });
+  const invalidateJellyfinTest = () => {
+    testSeqRef.current.jellyfin++;
+    setJellyfinTest(noDraftTest);
+  };
+  const invalidateWhisparrTest = () => {
+    testSeqRef.current.whisparr++;
+    setWhisparrTest(noDraftTest);
+  };
   // Rule 35: each field's validation error shows at that field. The save-row
   // ErrorPanel stays for server errors only.
   const [fieldErrors, setFieldErrors] = useState<
@@ -288,13 +301,13 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
     !!fieldErrors.root;
   const cancelJellyfin = () => {
     if (info) applyJellyfin(info);
-    setJellyfinTest(noDraftTest);
+    invalidateJellyfinTest();
     setFieldErrors(({ jellyfinUrl: _u, externalUrl: _e, ...rest }) => rest);
     setEditing((s) => ({ ...s, jellyfin: false }));
   };
   const cancelWhisparr = () => {
     if (info) applyWhisparr(info);
-    setWhisparrTest(noDraftTest);
+    invalidateWhisparrTest();
     setFieldErrors(
       ({ whisparrUrl: _u, profile: _p, root: _r, ...rest }) => rest,
     );
@@ -309,6 +322,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
   // included by omission (a blank key field means "use the saved one").
   // Nothing is stored: the saved configuration only changes on Save.
   async function testJellyfin() {
+    const seq = ++testSeqRef.current.jellyfin;
     setJellyfinTest({ ...noDraftTest, checking: true });
     try {
       const status = await api<JellyfinStatus>("/api/admin/jellyfin/test", {
@@ -319,6 +333,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
           ...(jellyfinApiKey ? { apiKey: jellyfinApiKey } : {}),
         }),
       });
+      if (testSeqRef.current.jellyfin !== seq) return;
       setJellyfinTest({
         checking: false,
         ok: status.configured
@@ -336,10 +351,12 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
         onForbidden();
         return;
       }
+      if (testSeqRef.current.jellyfin !== seq) return;
       setJellyfinTest({ ...noDraftTest, error: messageOf(err) });
     }
   }
   async function testWhisparr() {
+    const seq = ++testSeqRef.current.whisparr;
     setWhisparrTest({ ...noDraftTest, checking: true });
     try {
       const status = await api<WhisparrStatus>("/api/admin/whisparr/test", {
@@ -349,6 +366,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
           ...(whisparrApiKey ? { apiKey: whisparrApiKey } : {}),
         }),
       });
+      if (testSeqRef.current.whisparr !== seq) return;
       setWhisparrTest({
         checking: false,
         ok: status.configured
@@ -365,6 +383,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
         onForbidden();
         return;
       }
+      if (testSeqRef.current.whisparr !== seq) return;
       setWhisparrTest({ ...noDraftTest, error: messageOf(err) });
     }
   }
@@ -514,8 +533,8 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
       });
       setJellyfinApiKey("");
       setWhisparrApiKey("");
-      setJellyfinTest(noDraftTest);
-      setWhisparrTest(noDraftTest);
+      invalidateJellyfinTest();
+      invalidateWhisparrTest();
       setSaved("Integrations updated.");
       setEditing({ jellyfin: false, whisparr: false });
       load();
@@ -601,7 +620,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                       disabled={fieldsDisabled}
                       onChange={(e) => {
                         setJellyfinUrl(e.target.value);
-                        setJellyfinTest(noDraftTest);
+                        invalidateJellyfinTest();
                       }}
                       aria-invalid={fieldErrors.jellyfinUrl ? true : undefined}
                       aria-describedby={
@@ -631,7 +650,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                       disabled={fieldsDisabled}
                       onChange={(e) => {
                         setExternalUrl(e.target.value);
-                        setJellyfinTest(noDraftTest);
+                        invalidateJellyfinTest();
                       }}
                       aria-invalid={fieldErrors.externalUrl ? true : undefined}
                       aria-describedby={
@@ -665,7 +684,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                       disabled={fieldsDisabled}
                       onChange={(e) => {
                         setJellyfinApiKey(e.target.value);
-                        setJellyfinTest(noDraftTest);
+                        invalidateJellyfinTest();
                       }}
                     />
                   </div>
@@ -742,7 +761,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                       disabled={fieldsDisabled}
                       onChange={(e) => {
                         setWhisparrUrl(e.target.value);
-                        setWhisparrTest(noDraftTest);
+                        invalidateWhisparrTest();
                       }}
                       aria-invalid={fieldErrors.whisparrUrl ? true : undefined}
                       aria-describedby={
@@ -776,7 +795,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                       disabled={fieldsDisabled}
                       onChange={(e) => {
                         setWhisparrApiKey(e.target.value);
-                        setWhisparrTest(noDraftTest);
+                        invalidateWhisparrTest();
                       }}
                     />
                   </div>
