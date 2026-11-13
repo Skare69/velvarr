@@ -7823,6 +7823,72 @@ test("the autoApprove grant approves bulk requests and attaches the shared acqui
   assert.notEqual(singleAcquisition.id, bulkAcquisition.id);
 });
 
+// Admission snapshots the account before the body is read. A grant revoked
+// during that read must not auto-approve, also for a moderator, whose role
+// alone still permits decideRequest.
+test("a grant revoked while the request body is read leaves the new request pending", async () => {
+  const media = {
+    provider: "tpdb",
+    kind: "movie",
+    id: "2a2b3c4d-0000-0000-0000-0000000000a7",
+  } as const;
+  const setNogrants = async (role: string, autoApprove: boolean) => {
+    const res = await call("PATCH", `/api/admin/users/${NOGRANT_ID}`, {
+      cookie: owner,
+      body: { enabled: true, role, libraryIds: [], autoApprove },
+    });
+    assert.equal(res.status, 200);
+  };
+  await setNogrants("moderator", true);
+  const moderator = await loginAs("nogrants");
+  let revoked = false;
+  // highWaterMark 0: pull runs only when the route reads the body, which is
+  // after admission has loaded the session's account.
+  const body = new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        await setNogrants("moderator", false);
+        revoked = true;
+        controller.enqueue(new TextEncoder().encode(JSON.stringify({ media })));
+        controller.close();
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const res = await api.POST(
+    new Request(`${ORIGIN}/api/requests`, {
+      method: "POST",
+      headers: {
+        origin: ORIGIN,
+        cookie: moderator,
+        "content-type": "application/json",
+      },
+      body,
+      duplex: "half",
+    } as RequestInit),
+    { params: Promise.resolve({ path: ["requests"] }) },
+  );
+  assert.ok(revoked, "the grant was revoked during the body read");
+  assert.equal(res.status, 201);
+  const created = (await res.json()) as {
+    request: { id: string; decision: string };
+    autoApproved?: boolean;
+  };
+  assert.equal(created.request.decision, "pending");
+  assert.equal(created.autoApproved, undefined);
+  assert.equal(getAcquisitionByReference(media), null);
+
+  // Restore the grant state later tests share, then withdraw the intent so
+  // no pending row leaks into other tests' request lists.
+  await setNogrants("requester", true);
+  nogrants = await loginAs("nogrants");
+  const cancel = await call("PATCH", `/api/requests/${created.request.id}`, {
+    cookie: nogrants,
+    body: { decision: "cancelled" },
+  });
+  assert.equal(cancel.status, 200);
+});
+
 test("discover appends ONE followed rail across providers and isolates a provider outage", async () => {
   await boot();
   const member2 = await loginAs("member2");

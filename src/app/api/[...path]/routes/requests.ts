@@ -6,7 +6,6 @@ import {
 } from "../parse.ts";
 import { type AuthContext, json } from "../admission.ts";
 import type {
-  Account,
   CatalogDetail,
   MediaReference,
   RequestListItem,
@@ -20,6 +19,7 @@ import {
   cancelRequest,
   createRequest,
   decideRequest,
+  getAccount,
   getAcquisitionByReference,
   acquisitionView,
   listAccounts,
@@ -40,27 +40,26 @@ export async function createRequestRoute(
 ): Promise<Response> {
   const media = mediaFromBody(await readJson(request));
   const record = createRequest(ctx.account.id, media);
-  const approved = autoApprove(ctx.account, record);
+  const approved = autoApprove(ctx.account.id, record);
   if (approved) {
     return json({ request: approved, autoApproved: true }, 201);
   }
   return json({ request: record }, 201);
 }
 
-/** decideRequest re-reads the actor, so a grant or admin role revoked while
- * this request was in flight refuses the approval. The request was already
- * created: it stays pending for a moderator instead of failing the call. */
+/** The session snapshot can predate a revoked grant or role: the body read
+ * and a bulk scan's provider pages both await before this runs. So the gate
+ * reads the stored account, with no await before decideRequest, which checks
+ * it again in its transaction. A revoked grant leaves the new request pending
+ * for a moderator, also for a moderator whose role alone could approve. */
 function autoApprove(
-  account: Account,
+  accountId: string,
   record: RequestRecord,
 ): RequestRecord | null {
-  if (!account.autoApprove && account.role !== "admin") return null;
-  try {
-    return decideRequest(account, record.id, "approved");
-  } catch (err) {
-    if (err instanceof AppError && err.code === "forbidden") return null;
-    throw err;
-  }
+  const current = getAccount(accountId);
+  if (!current?.enabled) return null;
+  if (!current.autoApprove && current.role !== "admin") return null;
+  return decideRequest(current, record.id, "approved");
 }
 
 /** Approved rows carry the SHARED acquisition state for their identity, so a
@@ -218,7 +217,7 @@ export async function bulkRequestRoute(
     try {
       const record = createRequest(ctx.account.id, media);
       requested += 1;
-      if (autoApprove(ctx.account, record)) autoApproved += 1;
+      if (autoApprove(ctx.account.id, record)) autoApproved += 1;
     } catch (err) {
       if (err instanceof AppError && err.code === "request_exists") {
         skipped += 1;
