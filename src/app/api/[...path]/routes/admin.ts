@@ -482,6 +482,25 @@ export async function adminUpdateIntegrations(
     saveConfig(patched);
     return json(integrationsShape(patched));
   }
+  // Whisparr-only saves never touch Jellyfin either: the Whisparr card sends
+  // just its fields, and re-validating the Jellyfin connection would make
+  // Whisparr uneditable whenever Jellyfin is briefly down. A Jellyfin-only
+  // body needs no branch: nextWhisparr preserves a Whisparr the body omits.
+  if (
+    bodyKeys.length > 0 &&
+    bodyKeys.every((k) =>
+      ["whisparrUrl", "whisparrApiKey", "delivery", "pathMappings"].includes(k),
+    )
+  ) {
+    const whisparr = nextWhisparr(ctx.config.whisparr, body);
+    const patched: IntegrationConfig = {
+      jellyfin: ctx.config.jellyfin,
+      ...(whisparr ? { whisparr } : {}),
+      ...(ctx.config.providers ? { providers: ctx.config.providers } : {}),
+    };
+    saveConfig(patched);
+    return json(integrationsShape(patched));
+  }
   const jellyfin = await nextJellyfin(ctx.config.jellyfin, body);
   const whisparr = nextWhisparr(ctx.config.whisparr, body);
   const providers = nextProviderCredentials(ctx.config.providers, body);

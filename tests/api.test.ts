@@ -2527,6 +2527,99 @@ test("library detail: catalog enrichment via whisparr path mappings", async (t) 
   }
 });
 
+test("per-card integrations saves: a Whisparr-only patch never touches Jellyfin", async () => {
+  // The module `owner` session comes from the setup test; standalone runs
+  // need it in the pattern (… --test-name-pattern "setup inspect|per-card").
+  // boot() is not used here: it arms provider env vars, and the provider
+  // tests below assert the environment fallback stays unset until they run.
+  // The previous test's cleanup removed Whisparr; re-establish it the way
+  // the combined form did before per-card saves existed.
+  const combined = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: {
+      jellyfinUrl,
+      jellyfinExternalUrl: jellyfinUrl,
+      whisparrUrl,
+      whisparrApiKey: whisparrKey,
+    },
+  });
+  assert.equal(combined.status, 200);
+
+  // The Whisparr card's Save sends only Whisparr fields. The stored Jellyfin
+  // connection must survive untouched and no Jellyfin upstream call may run,
+  // so the save still works while Jellyfin is briefly down.
+  fx.journal.length = 0;
+  fx.journalOn = true;
+  let whisparrOnly: Response;
+  try {
+    whisparrOnly = await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: {
+        whisparrUrl,
+        whisparrApiKey: whisparrKey,
+        delivery: {
+          enabled: true,
+          rootFolderPath: "/data/whisparr",
+          qualityProfileId: 1,
+          searchOnAdd: true,
+        },
+        pathMappings: [
+          { whisparrPrefix: "/data/whisparr", jellyfinPrefix: "/media" },
+        ],
+      },
+    });
+  } finally {
+    fx.journalOn = false;
+  }
+  assert.equal(whisparrOnly.status, 200);
+  const shape = (await whisparrOnly.json()) as {
+    jellyfin: { url: string };
+    whisparr: { url: string } | null;
+  };
+  assert.equal(shape.jellyfin.url, jellyfinUrl);
+  assert.equal(shape.whisparr?.url, whisparrUrl);
+  const jellyfinReads = fx.journal.filter(
+    (r) => r.path === "/Users" || r.path.startsWith("/System/Info"),
+  );
+  assert.deepEqual(jellyfinReads, []);
+
+  // Blank-URL removal is a Whisparr-only save too: Jellyfin stays configured.
+  const removal = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: { whisparrUrl: "" },
+  });
+  assert.equal(removal.status, 200);
+  const removedShape = (await removal.json()) as {
+    jellyfin: { url: string };
+    whisparr: { url: string } | null;
+  };
+  assert.equal(removedShape.jellyfin.url, jellyfinUrl);
+  assert.equal(removedShape.whisparr, null);
+
+  // The Jellyfin card's Save sends no Whisparr fields either, and the stored
+  // Whisparr connection survives the Jellyfin save.
+  const reAdd = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: { whisparrUrl, whisparrApiKey: whisparrKey },
+  });
+  assert.equal(reAdd.status, 200);
+  const jellyfinOnly = await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: { jellyfinUrl, jellyfinExternalUrl: jellyfinUrl },
+  });
+  assert.equal(jellyfinOnly.status, 200);
+  const jellyfinShape = (await jellyfinOnly.json()) as {
+    whisparr: { url: string } | null;
+  };
+  assert.equal(jellyfinShape.whisparr?.url, whisparrUrl);
+
+  // Leave Whisparr removed: later tests re-establish it themselves.
+  await call("PATCH", "/api/admin/integrations", {
+    cookie: owner,
+    body: { jellyfinUrl, jellyfinExternalUrl: jellyfinUrl, whisparrUrl: "" },
+  });
+});
+
 test("outages are errors, never empty successes; transient failures keep sessions", async () => {
   fx.fail.views = 2; // one failure per call: both owner and member must see the outage
   const libsFail = await call("GET", "/api/libraries", { cookie: owner });

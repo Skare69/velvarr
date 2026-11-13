@@ -242,8 +242,8 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
   >({});
   const [saved, setSaved] = useState<string | null>(null);
   // Each connection card shows its fields only while editing, like the
-  // provider cards. Save submits the whole form; unchanged fields resave as
-  // loaded.
+  // provider cards. A card's Save submits only that card's form; unchanged
+  // fields resave as loaded.
   const [editing, setEditing] = useState({ jellyfin: false, whisparr: false });
   const jellyfinFocus = useEditorFocusReturn(editing.jellyfin);
   const whisparrFocus = useEditorFocusReturn(editing.whisparr);
@@ -265,27 +265,33 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
     setMappings(d.whisparr?.pathMappings ?? []);
   };
 
-  const load = useCallback(() => {
-    setLoading(true);
-    setLoadError(null);
-    api<IntegrationsInfo>("/api/admin/integrations")
-      .then((d) => {
-        setInfo(d);
-        applyJellyfin(d);
-        applyWhisparr(d);
-      })
-      .catch((e) => {
-        if (e instanceof ApiError && e.status === 403) onForbidden();
-        else setLoadError(messageOf(e));
-      })
-      .finally(() => setLoading(false));
-    // Read-only status supplies the real root folders / quality profiles; when
-    // it is unavailable the form falls back to manual entry below.
-    api<WhisparrStatus>("/api/admin/whisparr")
-      .then(setWhisparrStatus)
-      .catch(() => setWhisparrStatus(null));
-    // apply* only call stable state setters, so they need no dependency.
-  }, [onForbidden]);
+  // `applyDrafts` names the editors whose drafts the reload resets, defaulting
+  // to both (mount, retry). A per-card save names only the other editor, so
+  // its open draft survives the reload.
+  const load = useCallback(
+    (applyDrafts?: { jellyfin?: boolean; whisparr?: boolean }) => {
+      setLoading(true);
+      setLoadError(null);
+      api<IntegrationsInfo>("/api/admin/integrations")
+        .then((d) => {
+          setInfo(d);
+          if (applyDrafts?.jellyfin ?? true) applyJellyfin(d);
+          if (applyDrafts?.whisparr ?? true) applyWhisparr(d);
+        })
+        .catch((e) => {
+          if (e instanceof ApiError && e.status === 403) onForbidden();
+          else setLoadError(messageOf(e));
+        })
+        .finally(() => setLoading(false));
+      // Read-only status supplies the real root folders / quality profiles; when
+      // it is unavailable the form falls back to manual entry below.
+      api<WhisparrStatus>("/api/admin/whisparr")
+        .then(setWhisparrStatus)
+        .catch(() => setWhisparrStatus(null));
+      // apply* only call stable state setters, so they need no dependency.
+    },
+    [onForbidden],
+  );
 
   useEffect(load, [load]);
 
@@ -460,16 +466,54 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
       (m.whisparrPrefix.trim() === "") !== (m.jellyfinPrefix.trim() === ""),
   );
 
-  const save = async (e: FormEvent) => {
+  // Each Save submits only its own card: one editor's draft never rides along
+  // with the other card's save, and the server preserves whatever the body
+  // omits (routes/admin.ts scoped branches).
+  const saveJellyfin = async (e: FormEvent) => {
     e.preventDefault();
     if (!info || loadError || loading || pending) return;
     setError(null);
     setSaved(null);
-    setFieldErrors({});
-    const fe: typeof fieldErrors = {};
+    const fe: Pick<typeof fieldErrors, "jellyfinUrl" | "externalUrl"> = {};
     if (!jellyfinUrl.trim()) fe.jellyfinUrl = "Enter the Jellyfin URL.";
     if (!externalUrl.trim())
       fe.externalUrl = "Enter the Jellyfin external URL.";
+    // A Jellyfin save never judges the Whisparr draft: its errors stay.
+    setFieldErrors((prev) => {
+      const { jellyfinUrl: _u, externalUrl: _e, ...rest } = prev;
+      return Object.keys(fe).length > 0 ? { ...rest, ...fe } : rest;
+    });
+    if (Object.keys(fe).length > 0) return;
+    setPending(true);
+    try {
+      await api<unknown>("/api/admin/integrations", {
+        method: "PATCH",
+        body: JSON.stringify({
+          jellyfinUrl: jellyfinUrl.trim(),
+          jellyfinExternalUrl: externalUrl.trim(),
+          ...(jellyfinApiKey ? { jellyfinApiKey } : {}),
+        }),
+      });
+      setJellyfinApiKey("");
+      invalidateJellyfinTest();
+      setSaved("Integrations updated.");
+      setEditing((s) => ({ ...s, jellyfin: false }));
+      // The Whisparr editor keeps its open draft; only the saved card reloads.
+      load({ whisparr: false });
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 403) onForbidden();
+      else setError(messageOf(err));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const saveWhisparr = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!info || loadError || loading || pending) return;
+    setError(null);
+    setSaved(null);
+    const fe: Pick<typeof fieldErrors, "whisparrUrl" | "profile" | "root"> = {};
     if (!hasUrl && whisparrApiKey.trim() !== "") {
       fe.whisparrUrl =
         "A Whisparr API key needs the Whisparr URL — the URL is the connection, the key authenticates it.";
@@ -485,10 +529,12 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
     if (hasUrl && deliveryEnabled && !effectiveRoot.trim()) {
       fe.root = "A root folder is required while delivery is enabled.";
     }
-    if (Object.keys(fe).length > 0) {
-      setFieldErrors(fe);
-      return;
-    }
+    // A Whisparr save never judges the Jellyfin draft: its errors stay.
+    setFieldErrors((prev) => {
+      const { whisparrUrl: _u, profile: _p, root: _r, ...rest } = prev;
+      return Object.keys(fe).length > 0 ? { ...rest, ...fe } : rest;
+    });
+    if (Object.keys(fe).length > 0) return;
     if (hasUrl && halfMappings.length > 0) {
       setError(
         "Each path mapping needs both a Whisparr prefix and a Jellyfin prefix.",
@@ -500,9 +546,6 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
       await api<unknown>("/api/admin/integrations", {
         method: "PATCH",
         body: JSON.stringify({
-          jellyfinUrl: jellyfinUrl.trim(),
-          jellyfinExternalUrl: externalUrl.trim(),
-          ...(jellyfinApiKey ? { jellyfinApiKey } : {}),
           whisparrUrl: whisparrUrl.trim(),
           ...(whisparrApiKey ? { whisparrApiKey } : {}),
           // Delivery travels only when it exists on either side: enabled now,
@@ -531,13 +574,12 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
             : {}),
         }),
       });
-      setJellyfinApiKey("");
       setWhisparrApiKey("");
-      invalidateJellyfinTest();
       invalidateWhisparrTest();
       setSaved("Integrations updated.");
-      setEditing({ jellyfin: false, whisparr: false });
-      load();
+      setEditing((s) => ({ ...s, whisparr: false }));
+      // The Jellyfin editor keeps its open draft; only the saved card reloads.
+      load({ jellyfin: false });
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) onForbidden();
       else setError(messageOf(err));
@@ -547,12 +589,14 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
   };
 
   return (
-    <form
-      className="settings-connections"
-      onSubmit={(e) => void save(e)}
-      noValidate
-    >
-      <section className="panel p-5" aria-labelledby="jellyfin-settings-title">
+    <div className="settings-connections">
+      {/* One form per card: a card's Save submits only its own fields. */}
+      <form
+        className="panel p-5"
+        aria-labelledby="jellyfin-settings-title"
+        onSubmit={(e) => void saveJellyfin(e)}
+        noValidate
+      >
         <JellyfinCard
           onForbidden={onForbidden}
           open={jellyfinOpen}
@@ -698,8 +742,13 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
             />
           )}
         </JellyfinCard>
-      </section>
-      <section className="panel p-5" aria-labelledby="whisparr-settings-title">
+      </form>
+      <form
+        className="panel p-5"
+        aria-labelledby="whisparr-settings-title"
+        onSubmit={(e) => void saveWhisparr(e)}
+        noValidate
+      >
         <WhisparrCard
           onForbidden={onForbidden}
           open={whisparrOpen}
@@ -710,7 +759,10 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
               <>
                 <button
                   type="submit"
-                  className="btn btn-accent"
+                  // One accent per surface (DESIGN.md): the Jellyfin card is
+                  // first in reading order, so while its editor is open the
+                  // Whisparr Save stays secondary.
+                  className={jellyfinOpen ? "btn" : "btn btn-accent"}
                   disabled={fieldsDisabled}
                   aria-busy={pending || undefined}
                 >
@@ -1032,8 +1084,10 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
             />
           )}
         </WhisparrCard>
-      </section>
-      {(loadError || error || saved) && (
+      </form>
+      {/* `saved` is announced by the status line below; this panel is for
+          failures only — a saved-only state must not render an empty box. */}
+      {(loadError || error) && (
         <div className="panel p-5 settings-connection-save">
           {loadError && (
             <ErrorPanel
@@ -1043,7 +1097,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
                   : "Connection settings unavailable"
               }
               message={loadError}
-              onRetry={load}
+              onRetry={() => load()}
             />
           )}
           {error && <ErrorPanel title="Changes not saved" message={error} />}
@@ -1057,7 +1111,7 @@ function IntegrationsForm({ onForbidden }: { onForbidden: () => void }) {
       >
         {saved}
       </div>
-    </form>
+    </div>
   );
 }
 
