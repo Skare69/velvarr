@@ -8233,8 +8233,9 @@ test("scan lag: imported-but-unscanned is awaiting_scan; outage and denial stay 
   assert.equal((await outcomeOf(gone)).outcome, "missing");
 });
 
-// Sweep cache: one scan per user per window; stale-index verdicts re-check.
-test("availability: cached sweep serves repeated calls; removed title reads missing, gained title reads available", async (t) => {
+// Sweep cache: one scan per user per window; stale-index verdicts re-check
+// at most once per forced-sweep floor window.
+test("availability: cached sweep serves repeated calls; unsafe verdicts force at most one sweep per floor window; removed title reads missing, gained title reads available", async (t) => {
   // Each fixture change must follow the sweep timestamp; real millisecond
   // collisions otherwise make the cached entry correctly appear fresh.
   let now = Date.now();
@@ -8296,13 +8297,18 @@ test("availability: cached sweep serves repeated calls; removed title reads miss
   resetSweepCache();
 
   // (b) Available, then removed from the fixture library: within TTL and
-  // without a reset the wire reads missing, never denied — the stale-index
-  // denial forces one fresh sweep that no longer finds the item.
+  // without a reset the wire reads missing, never denied — once the sweep
+  // is older than the 30 s forced-sweep floor, the stale-index denial forces
+  // one fresh sweep that no longer finds the item.
+  const availBefore = fx.sweepHits;
   const avail = await call("GET", `/api/availability/tpdb/movie/${probeId}`, {
     cookie: member,
   });
   assert.equal((await outcomeOf(avail)).outcome, "available");
-  now++;
+  // Fixture pages one full sweep reads: every later count is a multiple.
+  const perSweep = fx.sweepHits - availBefore;
+  assert.ok(perSweep > 0, "the cold call sweeps the fixture");
+  now += 30_001;
   removeProbe();
   const afterRemoval = await call(
     "GET",
@@ -8311,18 +8317,34 @@ test("availability: cached sweep serves repeated calls; removed title reads miss
   );
   assert.equal((await outcomeOf(afterRemoval)).outcome, "missing");
 
-  // (c) Imported while absent reads as scan lag; once the fixture library
-  // gains the item, the very next call (no reset) reads available — the
-  // cached miss is re-checked against a fresh sweep.
+  // (c) Imported while absent reads as scan lag — an unsafe verdict. Serial
+  // scan-lag calls cost at most one forced sweep per 30 s floor window:
+  // none inside the window of the sweep (b) just forced, exactly one in the
+  // next window, never one per call.
   recordAcquisitionObservation(acq.id, {
     state: "imported",
     item: { whisparrId: 501, path: `/data/whisparr/${probeItem}.mkv` },
   });
-  const lagging = await call("GET", `/api/availability/tpdb/movie/${probeId}`, {
-    cookie: member,
-  });
-  assert.equal((await outcomeOf(lagging)).outcome, "awaiting_scan");
-  now++;
+  const lagRun = async () => {
+    const before = fx.sweepHits;
+    for (let i = 0; i < 5; i++) {
+      const lagging = await call(
+        "GET",
+        `/api/availability/tpdb/movie/${probeId}`,
+        { cookie: member },
+      );
+      assert.equal((await outcomeOf(lagging)).outcome, "awaiting_scan");
+      now += 5_000;
+    }
+    return fx.sweepHits - before;
+  };
+  assert.equal(await lagRun(), 0, "no forced sweep inside the floor window");
+  now += 5_001; // the (b) sweep is now 30_001 ms old
+  assert.equal(await lagRun(), perSweep, "one forced sweep for the window");
+
+  // Once the fixture library gains the item, the first call after the floor
+  // (no reset) reads available — the cached miss is re-checked live.
+  now += 5_001;
   fx.items.push({
     Id: probeItem,
     Name: "Cache Probe Movie",
@@ -8333,7 +8355,7 @@ test("availability: cached sweep serves repeated calls; removed title reads miss
     cookie: member,
   });
   assert.equal((await outcomeOf(back)).outcome, "available");
-  assert.ok(fx.sweepHits > recheckBefore, "cached miss was re-checked live");
+  assert.equal(fx.sweepHits - recheckBefore, perSweep, "one live re-check");
 
   // Restore the fixture for later tests.
   removeProbe();

@@ -2346,12 +2346,16 @@ test("resolvePlaybackAccess reports a capped sweep as unavailable, never missing
   });
 });
 
-test("resolvePlaybackAccess retries a truncated cached pool when the matched item 404s", async () => {
+test("resolvePlaybackAccess retries a truncated cached pool when the matched item 404s", async (t) => {
   // The stale-index case at the cap: Jellyfin replaces a matched item (an
   // upgraded file gets a new id), so the cached pool still holds the old id
   // whose Ancestors probe 404s into 'denied'. A truncated pool must not
   // blanket-skip the forced fresh retry — only its nothing-found verdict
   // stands; the retried walk finds the replacement and reads available.
+  // The retry fires only for a sweep older than the 30 s forced-sweep
+  // floor, so the clock is pinned and advanced past it.
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
   const entries: AvEntry[] = [
     {
       lib: LIB_A,
@@ -2403,6 +2407,7 @@ test("resolvePlaybackAccess retries a truncated cached pool when the matched ite
         path: "C:\\media\\movies\\Replaced Movie\\Replaced Movie.mkv",
       }),
     };
+    now += 30_001;
     const again = await resolvePlaybackAccess(
       cfg,
       TOKEN,

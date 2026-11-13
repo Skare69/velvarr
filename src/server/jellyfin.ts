@@ -1268,6 +1268,12 @@ async function sweepWalk(
 // provider-id index only if one sweep per window still hurts.
 const SWEEP_TTL_MS = 5 * 60_000;
 const SWEEP_CACHE_MAX = 20;
+// An unsafe verdict (see cachedSafeVerdict) re-checks only a sweep that
+// started more than this long ago, so a run of unsafe calls by one user
+// costs at most one forced sweep per window instead of one per call.
+// ponytail: the window is timed from the sweep's start; a sweep slower than
+// the floor can still run back to back (one at a time, never concurrent).
+const FORCED_SWEEP_FLOOR_MS = 30_000;
 // Keyed by server URL + the user id taken from the caller's own /Users/Me
 // read + the granted-library list the episode walks sweep, so one Jellyfin
 // user's sweep — and one account's grant set — is never served to another.
@@ -1455,13 +1461,14 @@ async function verdictForItem(
 // matching hint: a renamed file, a vanished media source, or a changed
 // edition set re-runs the match and can never resurrect a stale
 // 'available'. A verdict computed from a cached sweep (entry.at < started)
-// is returned only when it is 'available' or a plain 'missing'; any other
-// outcome — denied, ambiguous, unavailable, or a missing whose imported
-// hint would read as scan lag — re-runs ONCE against a forced-fresh sweep
-// and returns that verdict. So a title removed from the library can never
-// read as denied/ambiguous from a stale index, and an imported title's
-// miss is re-checked live, clearing the moment Jellyfin matches it. The
-// remaining staleness is a title added to Jellyfin outside Velvarr reading
+// is returned only when it is 'available' or a plain 'missing', or when its
+// sweep started within FORCED_SWEEP_FLOOR_MS; any other outcome — denied,
+// ambiguous, unavailable, or a missing whose imported hint would read as
+// scan lag — re-runs ONCE against a sweep from that window and returns that
+// verdict. So a title removed from the library reads as denied/ambiguous
+// from a stale index for at most the floor, and an imported title's miss is
+// re-checked live within the floor of Jellyfin matching it. The other
+// staleness is a title added to Jellyfin outside Velvarr reading
 // 'missing' for up to SWEEP_TTL_MS. Matching precedence, strictest first:
 // 1. exact ProviderIds match, compared in-process (no server-side filter
 //    exists on Jellyfin 12.0.0 — verified live);
@@ -1500,6 +1507,8 @@ export async function resolvePlaybackAccess(
   }
   try {
     const started = Date.now();
+    // Sweeps from this point on are fresh enough for an unsafe verdict.
+    const floor = started - FORCED_SWEEP_FLOOR_MS;
     const user = await getCurrentUser(config, userToken);
     const first = await resolveFromSweep(
       config,
@@ -1513,7 +1522,7 @@ export async function resolvePlaybackAccess(
     );
     if (
       first.sweepAt !== null &&
-      first.sweepAt < started &&
+      first.sweepAt < floor &&
       // Only a truncated pool's nothing-found verdict skips the forced
       // fresh retry: the cap is static — a fresh sweep truncates
       // identically — so the retry only doubles the walk cost. (This is
@@ -1526,16 +1535,16 @@ export async function resolvePlaybackAccess(
       !(first.truncated && first.access.outcome === "unavailable") &&
       !cachedSafeVerdict(first.access, hints)
     ) {
-      // Forced fresh: notBefore = started rejects the entry this verdict
-      // came from but accepts one a concurrent resolve inserted meanwhile,
-      // so concurrent forced-fresh callers still share one new sweep.
+      // Forced fresh: notBefore = floor rejects the entry this verdict came
+      // from but accepts one a concurrent resolve inserted meanwhile, so
+      // concurrent forced-fresh callers still share one new sweep.
       const fresh = await resolveFromSweep(
         config,
         userToken,
         user,
         account,
         hints,
-        started,
+        floor,
       );
       return fresh.access;
     }
