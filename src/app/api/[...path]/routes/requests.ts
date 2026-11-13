@@ -23,6 +23,7 @@ import {
   getAcquisitionByReference,
   acquisitionView,
   listAccounts,
+  listActiveIntentKeys,
   listRequests,
 } from "../../../../server/storage.ts";
 import { AppError } from "../../../../server/http.ts";
@@ -118,7 +119,10 @@ export const BULK_SCAN_PAGE = 24;
 // ponytail: a fixed read budget per pass. Five fully readable pages fill the
 // cap; ten (240 rows) leave headroom for rows the mapper drops. Raw provider
 // continuation alone never ends a listing of unreadable rows (TPDB lists up
-// to 10000), so a pass that has not filled the cap stops here, named.
+// to 10000), so a pass that has not filled the cap stops here, named. With
+// active-intent pre-filtering the same budget bounds the re-run's skip walk;
+// a performer with more titles than the ceiling leaves the tail unreachable
+// until a pass resumes from a provider cursor instead of page 1.
 export const BULK_SCAN_PAGES = 10;
 
 type BulkScanStop = {
@@ -144,14 +148,24 @@ export async function bulkRequestRoute(
   if (!isDeliverableMedia({ provider: performer.provider, kind })) {
     throw new AppError(400, "invalid_reference", UNDELIVERABLE_REASON);
   }
-  // ponytail: one sequential pass, hard-capped at BULK_REQUEST_CAP titles —
-  // a prolific performer needs re-runs to continue the backlog. Re-running
-  // is safe because the active-intent unique index makes every createRequest
-  // idempotent: already-requested titles surface as skipped, not duplicated.
+  // One sequential pass, hard-capped at BULK_REQUEST_CAP unfiled titles and
+  // bounded by BULK_SCAN_PAGES provider pages: a prolific performer needs
+  // re-runs to continue the backlog, which is exactly what the UI copy and
+  // the `capped` flag promise. Re-running is safe because the active-intent
+  // unique index makes every createRequest idempotent.
+  //
+  // Titles the account already holds an active intent for never count
+  // toward the cap — they are pre-skipped below (and still surface in
+  // `skipped`), so a re-run reaches the unfiled backlog past them instead
+  // of re-collecting the same first 100 rows. The key format matches
+  // listActiveIntentKeys ("<provider>:<kind>:<id>"); the set also dedupes
+  // rows the provider repeats within one pass.
+  const activeKeys = listActiveIntentKeys(ctx.account.id);
   const items: CatalogDetail[] = [];
-  let capped = false;
   let scanned = 0;
   let stopped: BulkScanStop | undefined;
+  let more = false;
+  let skipped = 0;
   for (let page = 1; ; page += 1) {
     // TPDB's performer filter is paging-only: no other filter may travel
     // with it. StashDB composes freely but has no movie entity.
@@ -178,12 +192,18 @@ export async function bulkRequestRoute(
           },
     );
     scanned += result.items.length;
-    items.push(...result.items);
-    if (items.length >= BULK_REQUEST_CAP) {
-      capped = result.hasMore || items.length > BULK_REQUEST_CAP;
-      break;
+    more = result.hasMore;
+    for (const item of result.items) {
+      const key = `${performer.provider}:${kind}:${item.reference.id}`;
+      if (activeKeys.has(key)) {
+        skipped += 1;
+        continue;
+      }
+      activeKeys.add(key);
+      items.push(item);
     }
-    if (!result.hasMore) break;
+    if (items.length >= BULK_REQUEST_CAP) break;
+    if (!more) break;
     // Continuation is left but the pass ends here: more titles may remain,
     // and the named stop says why the walk ended short of the cap.
     if (result.items.length === 0) {
@@ -191,20 +211,23 @@ export async function bulkRequestRoute(
         code: "unreadable_page",
         message: `Stopped at provider page ${page}: it held no readable titles, so later titles were not requested.`,
       };
-    } else if (page >= BULK_SCAN_PAGES) {
+      break;
+    }
+    if (page >= BULK_SCAN_PAGES) {
       stopped = {
         code: "scan_ceiling",
         message: `Stopped at the ${BULK_SCAN_PAGES}-page scan limit before the listing ended, so later titles were not requested.`,
       };
-    }
-    if (stopped !== undefined) {
-      capped = true;
       break;
     }
   }
-  if (items.length > BULK_REQUEST_CAP) items.length = BULK_REQUEST_CAP;
+  const overflow = items.length > BULK_REQUEST_CAP;
+  if (overflow) items.length = BULK_REQUEST_CAP;
+  // capped means another pass has something left: the provider still
+  // advertises pages (`more`), or scanned rows were dropped at the cap
+  // (`overflow`). A filmography that ran dry never reports capped.
+  const capped = more || overflow;
   let requested = 0;
-  let skipped = 0;
   let autoApproved = 0;
   const failed: { id: string; code: string }[] = [];
   for (const item of items) {

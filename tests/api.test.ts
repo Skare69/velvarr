@@ -159,6 +159,9 @@ const TPDB_MOVIE9 = "2a2b3c4d-0000-0000-0000-000000000009";
 const TPDB_PERFORMER3 = "2a2b3c4d-0000-0000-0000-00000000000d";
 const TPDB_PERFORMER = "2a2b3c4d-0000-0000-0000-00000000000f";
 const TPDB_PERFORMER2 = "2a2b3c4d-0000-0000-0000-00000000000e";
+// Filmography of 120 distinct titles across five 24-row pages: the bulk
+// continuation test needs unfiled backlog past the first 100 the cap files.
+const TPDB_PERFORMER_PAGING = "2a2b3c4d-0000-0000-0000-00000000b161";
 // A published cross-provider pair: the TPDB record links to the StashDB one,
 // so following either follows both. Fresh ids — every other performer follow
 // in this file must stay single-provider.
@@ -643,6 +646,11 @@ const tpdbFx = {
   lastQuery: "",
 };
 
+// Distinct uuids for the bulk continuation filmography: 120 titles the
+// paging fixture serves five pages of, in the performer's own id band.
+const bulkContinuationId = (n: number) =>
+  `2a2b3c4d-0000-0000-b161-${String(n).padStart(12, "0")}`;
+
 function tpdbMovieRow(id: string) {
   return {
     id,
@@ -936,6 +944,21 @@ async function tpdbHandler(
           : unreadable,
       meta: { total: 10000 },
       links: { next: "https://fixture.test/next" },
+    });
+  }
+  // Five 24-row pages of distinct titles (120 total); the first four pages
+  // carry a provider `next` link, the last runs dry. The bulk continuation
+  // test files the first 100 on one pass and the remaining 20 on the next.
+  if (p === `/performers/${TPDB_PERFORMER_PAGING}/movies`) {
+    const page = Number(url.searchParams.get("page") ?? "1");
+    const start = (page - 1) * 24;
+    return json(res, 200, {
+      data: Array.from({ length: 24 }, (_, i) => ({
+        ...tpdbMovieRow(bulkContinuationId(start + i + 1)),
+        title: `Bulk Continuation ${start + i + 1}`,
+      })),
+      meta: { total: 120 },
+      links: page < 5 ? { next: "https://fixture.test/next" } : {},
     });
   }
   // Family-proof filmography: every row this performer could return is one
@@ -7651,7 +7674,7 @@ test("bulk requests file one pending intent per provider item with honest counte
   assert.equal(rows[0]?.decision, "pending");
 });
 
-test("bulk requests stop at the cap, report it, and re-run without duplicating", async () => {
+test("bulk requests stop at the page ceiling when rows repeat, and re-run without duplicating", async () => {
   const body = {
     performer: { provider: "tpdb", kind: "performer", id: TPDB_PERFORMER_FULL },
     kind: "movie",
@@ -7685,14 +7708,16 @@ test("bulk requests stop at the cap, report it, and re-run without duplicating",
   });
   assert.equal(first.status, 200);
   const firstCounters = (await first.json()) as BulkCounters;
-  // The filmography never runs dry, so the pass reaches the hard cap on its
-  // fifth page (4 × 24 < 100 ≤ 5 × 24): 24 distinct titles filed, the
-  // repeats of later pages skipped, and no early-stop error.
-  assert.equal(tpdbFx.pageReads.get(path), 5);
+  // The filmography never runs dry and repeats the same 24 titles every
+  // page, so the pre-filter skips them toward the 10-page ceiling: 24
+  // distinct titles filed from page 1, every later repeat skipped during
+  // collection, and the named ceiling stop closes the pass.
+  assert.equal(tpdbFx.pageReads.get(path), BULK_SCAN_PAGES);
   assert.equal(firstCounters.capped, true);
-  assert.equal(firstCounters.error, undefined);
+  assert.equal(firstCounters.error?.code, "scan_ceiling");
+  assert.equal(firstCounters.scanned, BULK_SCAN_PAGES * 24);
   assert.equal(firstCounters.requested, 24);
-  assert.equal(firstCounters.skipped, 76);
+  assert.equal(firstCounters.skipped, (BULK_SCAN_PAGES - 1) * 24);
   assert.deepEqual(firstCounters.failed, []);
   assert.equal(await pendingTitles(), 24);
 
@@ -7702,9 +7727,12 @@ test("bulk requests stop at the cap, report it, and re-run without duplicating",
   });
   assert.equal(second.status, 200);
   const secondCounters = (await second.json()) as BulkCounters;
-  // Re-running the capped backlog files nothing new and duplicates nothing.
+  // Re-running files nothing new and duplicates nothing: every page now
+  // holds only active intents, so the pass ends at the ceiling again.
   assert.equal(secondCounters.requested, 0);
-  assert.equal(secondCounters.skipped, 100);
+  assert.equal(secondCounters.skipped, BULK_SCAN_PAGES * 24);
+  assert.equal(secondCounters.scanned, BULK_SCAN_PAGES * 24);
+  assert.equal(secondCounters.error?.code, "scan_ceiling");
   assert.deepEqual(secondCounters.failed, []);
   assert.equal(await pendingTitles(), 24);
 });
@@ -7769,6 +7797,74 @@ test("a bulk scan stops at a provider page with no readable titles", async () =>
         "Stopped at provider page 1: it held no readable titles, so later titles were not requested.",
     },
   });
+});
+
+test("a second bulk run files the titles past the first 100", async () => {
+  const body = {
+    performer: {
+      provider: "tpdb",
+      kind: "performer",
+      id: TPDB_PERFORMER_PAGING,
+    },
+    kind: "movie",
+  } as const;
+  const first = await call("POST", "/api/requests/bulk", {
+    cookie: member,
+    body,
+  });
+  assert.equal(first.status, 200);
+  const firstCounters = (await first.json()) as BulkCounters;
+  // 120 distinct rows scanned: the first 100 file, the 20 beyond the cap
+  // stay unfiled, and capped says so.
+  assert.deepEqual(firstCounters, {
+    requested: 100,
+    skipped: 0,
+    autoApproved: 0,
+    failed: [],
+    scanned: 120,
+    capped: true,
+  });
+
+  const second = await call("POST", "/api/requests/bulk", {
+    cookie: member,
+    body,
+  });
+  assert.equal(second.status, 200);
+  const secondCounters = (await second.json()) as BulkCounters;
+  // The re-run walks past the first 100 active intents and files the 20
+  // titles the first run could not reach; already-requested rows never
+  // count toward the cap.
+  assert.deepEqual(secondCounters, {
+    requested: 20,
+    skipped: 100,
+    autoApproved: 0,
+    failed: [],
+    scanned: 120,
+    capped: false,
+  });
+
+  const listed = await call("GET", "/api/requests", { cookie: owner });
+  const listedBody = (await listed.json()) as {
+    requests: {
+      media: { provider: string; kind: string; id: string };
+      decision: string;
+    }[];
+  };
+  const rows = listedBody.requests.filter(
+    (r) =>
+      r.media.provider === "tpdb" &&
+      r.media.kind === "movie" &&
+      r.media.id.startsWith("2a2b3c4d-0000-0000-b161-"),
+  );
+  // All 120 titles filed exactly once, all pending (the member holds no
+  // grant), and one beyond the first cap proves the second run reached it.
+  assert.equal(rows.length, 120);
+  assert.ok(rows.every((r) => r.decision === "pending"));
+  assert.ok(
+    rows.some(
+      (r) => r.media.id === bulkContinuationId(105) && r.decision === "pending",
+    ),
+  );
 });
 
 test("the autoApprove grant approves bulk requests and attaches the shared acquisition like the single path", async () => {

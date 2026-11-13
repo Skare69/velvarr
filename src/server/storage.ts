@@ -1662,6 +1662,21 @@ export function createRequest(
   });
 }
 
+/** The account's own active intents — the requests_active_intent predicate
+ * (decision 'pending' or 'approved') — as "<provider>:<kind>:<external_id>"
+ * keys, so a caller can pre-skip exactly what createRequest would refuse
+ * without re-deriving the index's rule. */
+export function listActiveIntentKeys(accountId: string): Set<string> {
+  const rows = S().listAccountRequests.all(accountId) as RequestRow[];
+  const keys = new Set<string>();
+  for (const row of rows) {
+    if (row.decision === "pending" || row.decision === "approved") {
+      keys.add(`${row.provider}:${row.kind}:${row.external_id}`);
+    }
+  }
+  return keys;
+}
+
 // --- performer follows ---
 
 /** Inserts a validated follow row inside the caller's transaction. */
