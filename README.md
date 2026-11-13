@@ -120,7 +120,7 @@ Put the variables in `.env.local`.
 | `VELVARR_JUDGMENT_PROVIDER`   | no              | `typesafe` (default), `ollama`, or `none` to disable AI. A choice saved in Settings wins. Tag suggestions need a choice saved in Settings. |
 | `OLLAMA_BASE_URL`             | no              | Ollama API root. Default `http://localhost:11434`. |
 | `OLLAMA_MODEL`                | no              | Ollama decision model. Default `nimble`. |
-| `VELVARR_UPDATE_CHECK`        | no              | `0` disables the release check. Otherwise, the server asks `api.github.com` at most once an hour after a success; a failed check is not cached, so the next request retries. |
+| `VELVARR_UPDATE_CHECK`        | no              | `0` disables the release check. Otherwise, the server asks `api.github.com` at most once an hour after a success and at most once a minute while it fails (a 403/429 `retry-after` or `x-ratelimit-reset` extends the wait); while a check fails, the last known answer stays up. |
 
 Unless `VELVARR_ORIGIN` is `https:`, the cookie is `Secure` only when the proxy sends `X-Forwarded-Proto: https` or the request URL is https. On each change request, a supplied `Sec-Fetch-Site` header must say `same-origin`, and a request that sends a body or a `Content-Type` header must send `application/json`.
 

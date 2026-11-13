@@ -1567,7 +1567,7 @@ test("update chip: VELVARR_UPDATE_CHECK=0 opts out with no github call", async (
   }
 });
 
-test("update chip: cache windows — one hour after success, a failure never caches", async () => {
+test("update chip: cache windows — one hour after success, one minute after failure", async () => {
   const realFetch = globalThis.fetch;
   const realNow = Date.now;
   let now = 1_700_000_000_000;
@@ -1577,9 +1577,9 @@ test("update chip: cache windows — one hour after success, a failure never cac
   let stub: () => Response = () => Response.json({});
   try {
     // README promises github is asked "at most once an hour after a
-    // success"; a failed check is never cached. The window is hardcoded
-    // here, not imported, so swapping FRESH_MS in src/server/update.ts
-    // fails this test.
+    // success" and at most once a minute while it fails. The windows are
+    // hardcoded here, not imported, so swapping FRESH_MS or
+    // FAILURE_BACKOFF_MS in src/server/update.ts fails this test.
     Date.now = () => now;
     globalThis.fetch = (async (
       input: RequestInfo | URL,
@@ -1620,25 +1620,45 @@ test("update chip: cache windows — one hour after success, a failure never cac
     await call("GET", "/api/update");
     assert.equal(calls, 2);
 
-    // A failed check is never cached (VELV-125): the very next call asks
-    // github again, so an outage cannot serve a stale no-update answer
-    // across page loads and launches — and a tag older than the current
-    // build correctly reports no update.
+    // A failed check arms a one-minute backoff, not a no-update window
+    // (VELV-135): calls inside the window cost github nothing and share the
+    // last successful answer — null here, because resetUpdateCache left no
+    // prior success to serve. The failure reason logs once per window.
     stub = () => new Response("rate limited", { status: 403 });
     resetUpdateCache();
-    const degraded = await call("GET", "/api/update");
-    assert.deepEqual(await degraded.json(), { update: null });
-    assert.equal(calls, 3);
-    await call("GET", "/api/update");
-    assert.equal(calls, 4);
-    stub = () =>
-      Response.json({
-        tag_name: "v0.0.1",
-        html_url: "https://github.com/Skare69/velvarr/releases/tag/v0.0.1",
-      });
-    const older = await call("GET", "/api/update");
-    assert.deepEqual(await older.json(), { update: null });
-    assert.equal(calls, 5);
+    const warnings: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    };
+    try {
+      const degraded = await call("GET", "/api/update");
+      assert.deepEqual(await degraded.json(), { update: null });
+      assert.equal(calls, 3);
+      assert.equal(warnings.length, 1);
+      for (let i = 0; i < 4; i++) {
+        const again = await call("GET", "/api/update");
+        assert.deepEqual(await again.json(), { update: null });
+      }
+      // Exactly one github fetch inside the backoff window, one log line.
+      assert.equal(calls, 3);
+      assert.equal(warnings.length, 1);
+
+      // Past the window the check runs again: a tag older than the current
+      // build still answers null — a failure never fabricates a no-update
+      // answer (VELV-125), and a real recovery surfaces real state.
+      now += 60 * 1000 + 1;
+      stub = () =>
+        Response.json({
+          tag_name: "v0.0.1",
+          html_url: "https://github.com/Skare69/velvarr/releases/tag/v0.0.1",
+        });
+      const older = await call("GET", "/api/update");
+      assert.deepEqual(await older.json(), { update: null });
+      assert.equal(calls, 4);
+    } finally {
+      console.warn = realWarn;
+    }
   } finally {
     Date.now = realNow;
     globalThis.fetch = realFetch;
@@ -1646,20 +1666,54 @@ test("update chip: cache windows — one hour after success, a failure never cac
   }
 });
 
-test("update chip: a failed check is not cached — the retry surfaces a multi-version gap", async () => {
+test("update chip: a 403/429 retry-after or x-ratelimit-reset extends the failure backoff", async () => {
   const realFetch = globalThis.fetch;
+  const realNow = Date.now;
+  // Divisible by 1000, so the epoch-second math stays exact.
+  let now = 1_700_000_000_000;
+  let calls = 0;
   try {
-    globalThis.fetch = (async () =>
-      new Response("rate limited", { status: 403 })) as typeof fetch;
+    Date.now = () => now;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response("rate limited", {
+        status: 403,
+        headers: { "retry-after": "120" },
+      });
+    }) as typeof fetch;
     resetUpdateCache();
     const degraded = await call("GET", "/api/update");
     assert.deepEqual(await degraded.json(), { update: null });
+    assert.equal(calls, 1);
+    // 61 s in: past the default 60 s backoff, still inside the honored
+    // retry-after — github is not asked again.
+    now += 61 * 1000;
+    const held = await call("GET", "/api/update");
+    assert.deepEqual(await held.json(), { update: null });
+    assert.equal(calls, 1);
 
-    // The failure must not arm a no-update window (VELV-125: a cached
-    // failure kept the chip hidden while github kept failing). The next
-    // call asks github again, and a release several versions ahead of this
-    // build surfaces at once.
-    let calls = 0;
+    // A 429 carrying x-ratelimit-reset (epoch seconds) honors the reset
+    // the same way.
+    now += 60 * 1000; // 121 s in: the retry-after window has expired
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response("rate limited", {
+        status: 429,
+        headers: {
+          "x-ratelimit-reset": String(Math.floor((now + 90 * 1000) / 1000)),
+        },
+      });
+    }) as typeof fetch;
+    const limited = await call("GET", "/api/update");
+    assert.deepEqual(await limited.json(), { update: null });
+    assert.equal(calls, 2);
+    now += 61 * 1000; // past the default backoff, inside the 90 s reset
+    const stillHeld = await call("GET", "/api/update");
+    assert.deepEqual(await stillHeld.json(), { update: null });
+    assert.equal(calls, 2);
+
+    // Both windows expire: the next call reaches github again.
+    now += 30 * 1000; // 91 s past the 429: the 90 s reset has passed
     globalThis.fetch = (async () => {
       calls++;
       return Response.json({
@@ -1674,8 +1728,83 @@ test("update chip: a failed check is not cached — the retry surfaces a multi-v
         url: "https://github.com/Skare69/velvarr/releases/tag/v9.9.9",
       },
     });
-    assert.equal(calls, 1);
+    assert.equal(calls, 3);
   } finally {
+    Date.now = realNow;
+    globalThis.fetch = realFetch;
+    resetUpdateCache();
+  }
+});
+
+test("update chip: a failed check serves the last successful answer, the retry surfaces a multi-version gap", async () => {
+  const realFetch = globalThis.fetch;
+  const realNow = Date.now;
+  let now = 1_700_000_000_000;
+  let calls = 0;
+  let stub: () => Response = () => Response.json({});
+  try {
+    Date.now = () => now;
+    globalThis.fetch = (async () => {
+      calls++;
+      return stub();
+    }) as typeof fetch;
+    // A success surfaces the chip and is trusted for an hour.
+    stub = () =>
+      Response.json({
+        tag_name: "v9.9.9",
+        html_url: "https://github.com/Skare69/velvarr/releases/tag/v9.9.9",
+      });
+    resetUpdateCache();
+    const first = await call("GET", "/api/update");
+    assert.deepEqual(await first.json(), {
+      update: {
+        version: "9.9.9",
+        url: "https://github.com/Skare69/velvarr/releases/tag/v9.9.9",
+      },
+    });
+    assert.equal(calls, 1);
+
+    // The cache expires and github then fails: the last successful answer
+    // stays up — a failure never drops the chip to a fabricated no-update
+    // (VELV-125) and never arms a no-update window either.
+    now += 60 * 60 * 1000 + 1;
+    stub = () => new Response("rate limited", { status: 403 });
+    const degraded = await call("GET", "/api/update");
+    assert.deepEqual(await degraded.json(), {
+      update: {
+        version: "9.9.9",
+        url: "https://github.com/Skare69/velvarr/releases/tag/v9.9.9",
+      },
+    });
+    assert.equal(calls, 2);
+    // Inside the one-minute backoff: no fetch, same last-known answer.
+    const held = await call("GET", "/api/update");
+    assert.deepEqual(await held.json(), {
+      update: {
+        version: "9.9.9",
+        url: "https://github.com/Skare69/velvarr/releases/tag/v9.9.9",
+      },
+    });
+    assert.equal(calls, 2);
+
+    // Past the backoff the retry runs, and a release several versions ahead
+    // of this build surfaces at once (VELV-125's multi-version gap).
+    now += 60 * 1000 + 1;
+    stub = () =>
+      Response.json({
+        tag_name: "v10.0.0",
+        html_url: "https://github.com/Skare69/velvarr/releases/tag/v10.0.0",
+      });
+    const recovered = await call("GET", "/api/update");
+    assert.deepEqual(await recovered.json(), {
+      update: {
+        version: "10.0.0",
+        url: "https://github.com/Skare69/velvarr/releases/tag/v10.0.0",
+      },
+    });
+    assert.equal(calls, 3);
+  } finally {
+    Date.now = realNow;
     globalThis.fetch = realFetch;
     resetUpdateCache();
   }
