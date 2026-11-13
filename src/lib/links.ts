@@ -14,7 +14,15 @@ function handleOf(url: string): string | null {
   const host = hostOf(url);
   if (host === null) return null;
   const first = new URL(url).pathname.split("/").find((s) => s !== "");
-  return first ? `${host}/${decodeURIComponent(first)}` : host;
+  if (!first) return host;
+  try {
+    return `${host}/${decodeURIComponent(first)}`;
+  } catch {
+    // StashDB handles are user-submitted: an invalid or incomplete
+    // percent-escape ("%zz", "%E0%A4%A") shows as written instead of
+    // throwing URIError out of the performer render.
+    return `${host}/${first}`;
+  }
 }
 
 /**
