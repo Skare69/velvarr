@@ -99,3 +99,21 @@ test("linkLabel renders a non-empty string for every parseable URL", () => {
     ),
   );
 });
+
+test("a malformed url shows the published label, never a crash or a bare host", () => {
+  const bad = { label: "Studio profile", url: "not a url" };
+  assert.equal(linkLabel(bad, [bad], "TPDB"), "Studio profile");
+});
+
+test("a label is generic only when it is exactly Studio profile", () => {
+  const prefix = {
+    label: "My studio profile",
+    url: "https://www.example.com/y",
+  };
+  const suffix = {
+    label: "Studio profile extra",
+    url: "https://www.example.com/x",
+  };
+  assert.equal(linkLabel(prefix, [prefix], "TPDB"), "My studio profile");
+  assert.equal(linkLabel(suffix, [suffix], "TPDB"), "Studio profile extra");
+});

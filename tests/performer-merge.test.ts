@@ -93,3 +93,100 @@ test("a death date comes whole from one side, with its own accuracy", () => {
   assert.equal(p?.deathDate, "2020-05-01");
   assert.equal(p?.deathDateAccuracy, "month");
 });
+
+test("each group comes from one side whole, so partial facts never mix", () => {
+  const a = base({
+    person: {
+      country: "DE",
+      birthDate: "2001-01-01",
+      deathDate: "2001-02-02",
+      cupSize: "32C",
+      careerStartYear: 2010,
+      tattoos: ["None"],
+    },
+  });
+  const b = base({
+    reference: { provider: "stashdb", kind: "performer", id: "s1" },
+    person: {
+      gender: "Female",
+      birthDate: "1994-09-21",
+      birthDateAccuracy: "day",
+      deathDate: "1999-09-09",
+      deathDateAccuracy: "month",
+      cupSize: "D",
+      bandSize: 36,
+      waistIn: 24,
+      hipIn: 34,
+      measurementsText: "36-24-34",
+      careerStartYear: 2005,
+      careerEndYear: 2020,
+    },
+  });
+  // The primary's partial group wins as a whole: its missing group members
+  // are deleted, never filled from the other side, and dropped keys are
+  // absent, not present-but-undefined.
+  assert.deepEqual(mergePerformerDetails(a, b).person, {
+    country: "DE",
+    gender: "Female",
+    birthDate: "2001-01-01",
+    deathDate: "2001-02-02",
+    cupSize: "32C",
+    careerStartYear: 2010,
+    tattoos: ["None"],
+  });
+});
+
+test("a one-sided person passes through unchanged", () => {
+  const p = { country: "DE", cupSize: "32C" };
+  const withPerson = base({ person: p });
+  const without = base({});
+  assert.deepEqual(mergePerformerDetails(withPerson, without).person, p);
+  assert.deepEqual(mergePerformerDetails(without, withPerson).person, p);
+});
+
+test("equal-length mod lists keep the primary's; a missing list takes the other's", () => {
+  const a = base({ person: { tattoos: ["None"] } });
+  const b = base({
+    reference: { provider: "stashdb", kind: "performer", id: "s1" },
+    person: { tattoos: ["Left wrist: star"] },
+  });
+  assert.deepEqual(mergePerformerDetails(a, b).person?.tattoos, ["None"]);
+  const c = base({ person: {} });
+  assert.deepEqual(mergePerformerDetails(c, b).person?.tattoos, [
+    "Left wrist: star",
+  ]);
+});
+
+test("aliases dedupe on the trimmed lowercased name but keep the published text", () => {
+  const a = base({ aliases: [" Jewelz "] });
+  const b = base({
+    reference: { provider: "stashdb", kind: "performer", id: "s1" },
+    aliases: ["jewelz", "", "Jewelz Blue"],
+  });
+  assert.deepEqual(mergePerformerDetails(a, b).aliases, [
+    " Jewelz ",
+    "Jewelz Blue",
+  ]);
+});
+
+test("one link per destination: case, www and extra slashes fold together", () => {
+  const a = base({
+    links: [
+      { label: "IAFD", url: "https://WWW.IAFD.com/P/1//" },
+      { label: "Broken", url: "not a url" },
+      { label: "Broken too", url: "also broken" },
+    ],
+  });
+  const b = base({
+    reference: { provider: "stashdb", kind: "performer", id: "s1" },
+    links: [{ label: "IAFD", url: "https://iafd.com/p/1" }],
+  });
+  // A malformed url cannot parse to a key, so it passes through on its own
+  // raw string instead of crashing the merge or colliding with another
+  // malformed link.
+  assert.deepEqual(mergePerformerDetails(a, b).links, [
+    { label: "IAFD", url: "https://WWW.IAFD.com/P/1//" },
+    { label: "Broken", url: "not a url" },
+    { label: "Broken too", url: "also broken" },
+  ]);
+});

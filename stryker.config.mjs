@@ -1,5 +1,28 @@
+import { readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// tap.testFiles is generated, not hand-picked: every tests/*.test.ts joins
+// the gate unless this exclusion set names it. The named suites are the
+// effect-heavy ones (sqlite storage, the service worker, the provider
+// adapters, notification delivery, the setup script, the shelf error
+// boundary, the whisparr large-library fixture). Their production code sits
+// outside the mutate set, so running them adds dry-run time and catches
+// nothing. A new pure-logic suite needs no config edit.
+const tapExcludedSuites = new Set([
+  "storage.test.ts",
+  "sw.test.ts",
+  "whisparr-large-library.test.ts",
+  "integrations.test.ts",
+  "notify.test.ts",
+  "setup-script.test.ts",
+  "shelf-error.test.ts",
+]);
+
+const tapTestFiles = readdirSync(new URL("./tests", import.meta.url))
+  .filter((name) => name.endsWith(".test.ts") && !tapExcludedSuites.has(name))
+  .sort()
+  .map((name) => `tests/${name}`);
 
 /**
  * Mutation testing over the pure decision logic: the src/lib modules plus the
@@ -22,8 +45,9 @@ const config = {
   // Per-test coverage with the tap runner means per test FILE: each suite in
   // tap.testFiles runs as the main module of its own node process, its
   // coverage lands in one pid-keyed stryker-output dump on process exit, and
-  // Stryker runs a mutant only against the files that executed its line. A
-  // new pure-logic test file must be added to tap.testFiles.
+  // Stryker runs a mutant only against the files that executed its line. The
+  // suite list is generated above, so a new pure-logic suite joins the gate
+  // without a config edit.
   // The invocation must NOT wrap the file in `node --test`: that spawns
   // grandchild processes, so the hook's pid-keyed coverage dump never
   // reaches the runner (every mutant came back NoCoverage when tried).
@@ -32,29 +56,7 @@ const config = {
   // cannot read, so every kill was miscategorized as an error when tried).
   coverageAnalysis: "perTest",
   tap: {
-    testFiles: [
-      "tests/status.test.ts",
-      "tests/tags.test.ts",
-      "tests/tag-wait.test.ts",
-      "tests/related.test.ts",
-      "tests/browse.test.ts",
-      "tests/browse-items.test.ts",
-      "tests/providers.test.ts",
-      "tests/api.test.ts",
-      "tests/approvals.test.ts",
-      "tests/decisions.test.ts",
-      "tests/names.test.ts",
-      "tests/update.test.ts",
-      "tests/browse-url.test.ts",
-      "tests/person.test.ts",
-      "tests/api-get.test.ts",
-      "tests/sorts.test.ts",
-      "tests/ollama.test.ts",
-      "tests/judgment.test.ts",
-      "tests/discovery.test.ts",
-      "tests/judgment-editor.test.ts",
-      "tests/provider-settings.test.ts",
-    ],
+    testFiles: tapTestFiles,
     nodeArgs: [
       "--experimental-strip-types",
       "--import",
@@ -180,7 +182,15 @@ const config = {
   // the scan guard only evicts a bucket refilled to full, and a kept full
   // bucket charges exactly like the fresh one eviction would hand over
   // (the re-insert delete only refreshes FIFO order among full buckets,
-  // which no observable charge can tell apart).
+  // which no observable charge can tell apart),
+  // and, from the suites this gate auto-wired (2026-11-13): links.ts's and
+  // performer-merge.ts's linkKey inner-"www." host strips (a "www." label
+  // never occurs mid-host in provider links, so leading-only and anywhere
+  // stripping strip the same hosts) and the uniform linkKey case flips (a
+  // whole-string case fold keeps every pair's equality, so dedupe outcomes
+  // cannot change), and credential-card.ts's pristine-state identity
+  // return in dropDraftResult (the reset branch spreads the same values,
+  // so the branch choice is invisible in the resulting state).
   thresholds: { high: 85, low: 75, break: 88.2 },
 };
 

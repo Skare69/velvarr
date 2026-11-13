@@ -12,6 +12,8 @@ function hostOf(url: string): string | null {
 /** "onlyfans.com/jewelzblu": the host plus the first path segment. */
 function handleOf(url: string): string | null {
   const host = hostOf(url);
+  // Stryker disable next-line ConditionalExpression -- linkLabel guards the
+  // null host on the same url before handleOf runs, so this branch is dead.
   if (host === null) return null;
   const first = new URL(url).pathname.split("/").find((s) => s !== "");
   if (!first) return host;

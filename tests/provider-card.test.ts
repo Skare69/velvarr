@@ -12,6 +12,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   applyCredentialSave,
@@ -126,6 +127,7 @@ test("a blank Save on a not-configured TPDB editor stays open and names the fiel
   assert.equal(run.state.editing, true, "the editor must stay open");
   assert.equal(run.state.blankMessage, "Enter a TPDB API token.");
   assert.equal(run.state.saved, null, "no save notice may appear");
+  assert.equal(run.saved, false, "the click reports that nothing was saved");
 
   const markup = renderEditor({
     id: "tpdb",
@@ -577,4 +579,277 @@ test("a draft test in flight counts as busy", () => {
     },
   });
   assert.equal(credentialCardBusy(state, false), false);
+});
+
+test("init state has every flag settled", () => {
+  assert.deepEqual(initCredentialCard(), {
+    editing: false,
+    draft: "",
+    check: null,
+    checking: false,
+    checkError: null,
+    draftCheck: null,
+    draftChecking: false,
+    draftCheckError: null,
+    saveError: null,
+    saved: null,
+    blankMessage: null,
+    forbidden: false,
+  });
+});
+
+test("the saved check runs through checking, checked and checkFailed", () => {
+  let state = reduceCredentialCard(initCredentialCard(), { type: "checking" });
+  assert.equal(state.checking, true);
+  assert.equal(state.check, null);
+  assert.equal(state.checkError, null);
+  state = reduceCredentialCard(state, {
+    type: "checked",
+    check: {
+      provider: "tpdb",
+      configured: true,
+      verified: true,
+      account: "someone",
+    },
+  });
+  assert.equal(state.checking, false, "a landed check clears its flag");
+  assert.deepEqual(state.check, {
+    provider: "tpdb",
+    configured: true,
+    verified: true,
+    account: "someone",
+  });
+  state = reduceCredentialCard(initCredentialCard(), { type: "checking" });
+  state = reduceCredentialCard(state, { type: "checkFailed", message: "down" });
+  assert.equal(state.checking, false);
+  assert.equal(state.check, null);
+  assert.equal(state.checkError, "down");
+});
+
+test("only a configured, rejected saved check reopens the editor", () => {
+  const reopen = (check: ProviderCheck) =>
+    reduceCredentialCard(initCredentialCard(), { type: "checked", check })
+      .editing;
+  // A check that ran without a stored key proves nothing about the editor.
+  assert.equal(reopen({ provider: "tpdb", configured: false }), false);
+  // A verified check needs no edit either.
+  assert.equal(
+    reopen({
+      provider: "tpdb",
+      configured: true,
+      verified: true,
+      account: "someone",
+    }),
+    false,
+  );
+});
+
+test("a draft check failure lands in its own error channel", () => {
+  let state = reduceCredentialCard(initCredentialCard(), { type: "edit" });
+  state = reduceCredentialCard(state, { type: "draftChecking" });
+  state = reduceCredentialCard(state, {
+    type: "draftCheckFailed",
+    message: "down",
+  });
+  assert.equal(state.draftChecking, false);
+  assert.equal(state.draftCheckError, "down");
+  assert.equal(state.draftCheck, null);
+});
+
+test("a forbidden account stops both request channels", () => {
+  let state = reduceCredentialCard(initCredentialCard(), { type: "checking" });
+  state = reduceCredentialCard(state, { type: "draftChecking" });
+  state = reduceCredentialCard(state, { type: "forbidden" });
+  assert.equal(state.forbidden, true);
+  assert.equal(state.checking, false);
+  assert.equal(state.draftChecking, false);
+});
+
+test("typing drops any draft check state: in flight, landed or failed", () => {
+  const verified: ProviderCheck = {
+    provider: "tpdb",
+    configured: true,
+    verified: true,
+    account: "someone",
+  };
+  const typing = (state: CredentialCardState) =>
+    reduceCredentialCard(state, { type: "draft", value: "x" });
+  // Typing abandons the in-flight round trip with the draft.
+  assert.equal(
+    typing(
+      reduceCredentialCard(
+        reduceCredentialCard(initCredentialCard(), { type: "edit" }),
+        { type: "draftChecking" },
+      ),
+    ).draftChecking,
+    false,
+  );
+  const failed = typing(
+    reduceCredentialCard(
+      reduceCredentialCard(initCredentialCard(), { type: "edit" }),
+      { type: "draftCheckFailed", message: "boom" },
+    ),
+  );
+  assert.equal(failed.draftCheckError, null);
+  const landed = typing(
+    reduceCredentialCard(
+      reduceCredentialCard(initCredentialCard(), { type: "edit" }),
+      { type: "draftChecked", check: verified },
+    ),
+  );
+  assert.equal(landed.draftChecking, false);
+  assert.equal(landed.draftCheck, null);
+});
+
+test("busy covers a saving click, the saved check and a forbidden account", () => {
+  assert.equal(credentialCardBusy(initCredentialCard(), true), true);
+  const checking = reduceCredentialCard(initCredentialCard(), {
+    type: "checking",
+  });
+  assert.equal(credentialCardBusy(checking, false), true);
+  const forbidden = reduceCredentialCard(initCredentialCard(), {
+    type: "forbidden",
+  });
+  assert.equal(credentialCardBusy(forbidden, false), true);
+});
+
+test("the editor markup carries the ids, classes and copy the styles key on", () => {
+  const markup = renderEditor({
+    id: "tpdb",
+    name: "TPDB",
+    label: "API token",
+    maxLength: 1024,
+    configured: false,
+    state: initCredentialCard(),
+  });
+  assert.match(markup, /class="settings-service-editor"/);
+  assert.match(
+    markup,
+    /<label class="label" for="provider-tpdb">TPDB API token<\/label>/,
+  );
+  assert.match(
+    markup,
+    /<input id="provider-tpdb" class="input mt-2" type="password" autoComplete="off" maxLength="1024" placeholder="Enter credential" value=""/,
+  );
+  // Rule 35: nothing disables the failed field's input when editing is allowed.
+  assert.doesNotMatch(markup, /<input[^>]*disabled/);
+  assert.match(
+    markup,
+    /<p class="mt-2 text-sm text-muted">Saved credentials are encrypted and take precedence over the environment\. Connection checks use the saved credential or environment fallback\.<\/p>/,
+  );
+  assert.match(
+    markup,
+    /<div class="settings-service-buttons settings-card-actions">/,
+  );
+});
+
+test("a blank rejection hint carries its own id, class and role", () => {
+  const state = reduceCredentialCard(
+    reduceCredentialCard(initCredentialCard(), { type: "edit" }),
+    { type: "blankRejected", message: "Enter a TPDB API token." },
+  );
+  const markup = renderEditor({
+    id: "tpdb",
+    name: "TPDB",
+    label: "API token",
+    maxLength: 1024,
+    configured: false,
+    state,
+  });
+  assert.match(
+    markup,
+    /<p id="blank-hint-tpdb" class="mt-2 text-sm text-muted" role="status">Enter a TPDB API token\.<\/p>/,
+  );
+});
+
+test("a blank-spaces draft keeps Save plain even though a click would cancel", () => {
+  const spaces = reduceCredentialCard(
+    reduceCredentialCard(initCredentialCard(), { type: "edit" }),
+    { type: "draft", value: "   " },
+  );
+  const markup = renderEditor({
+    id: "tpdb",
+    name: "TPDB",
+    label: "API token",
+    maxLength: 1024,
+    configured: true,
+    state: spaces,
+  });
+  assert.match(
+    markup,
+    /<button type="submit" class="btn" disabled="">Save<\/button>/,
+  );
+});
+
+test("a configured editor's Cancel is a real button that busy disables", () => {
+  const base = {
+    id: "stashdb",
+    name: "StashDB",
+    label: "API key",
+    maxLength: 512,
+    state: initCredentialCard(),
+  };
+  assert.match(
+    renderEditor({ ...base, configured: true }),
+    /<button type="button" class="btn">Cancel<\/button>/,
+  );
+  const markup = renderToStaticMarkup(
+    credentialEditorView({
+      ...base,
+      configured: true,
+      canEdit: true,
+      busy: true,
+      saving: false,
+      inputRef: null,
+      onDraftChange: () => undefined,
+      onCancel: () => undefined,
+      onSubmit: () => undefined,
+    }),
+  );
+  assert.match(
+    markup,
+    /<button type="button" class="btn" disabled="">Cancel<\/button>/,
+  );
+});
+
+test("optional card furniture renders and the input wiring calls through", () => {
+  const drafted: string[] = [];
+  const el = credentialEditorView({
+    id: "tpdb",
+    name: "TPDB",
+    label: "API token",
+    maxLength: 1024,
+    configured: true,
+    state: initCredentialCard(),
+    canEdit: true,
+    busy: false,
+    saving: false,
+    inputRef: null,
+    onDraftChange: (value: string) => drafted.push(value),
+    onCancel: () => undefined,
+    onSubmit: () => undefined,
+    // Element icons instead of text: element and text children render
+    // adjacent in static markup, so the pins cannot split on a comment node.
+    icons: { save: createElement("i"), cancel: createElement("i") },
+    trailing: "T",
+  });
+  const markup = renderToStaticMarkup(el);
+  assert.match(markup, /<i><\/i>Save</);
+  assert.match(markup, /<i><\/i>Cancel</);
+  assert.match(markup, /T<\/div>/);
+  // ReactElement types props as unknown; the tree is built two statements
+  // above, so children[1] is the password input by construction.
+  const tree = el.props as {
+    children: [
+      object,
+      {
+        type: string;
+        props: { onChange: (event: { target: { value: string } }) => void };
+      },
+    ];
+  };
+  const input = tree.children[1];
+  assert.equal(input.type, "input");
+  input.props.onChange({ target: { value: "abc" } });
+  assert.deepEqual(drafted, ["abc"]);
 });

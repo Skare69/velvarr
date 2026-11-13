@@ -14,6 +14,7 @@
     "check": "tsc --noEmit",
     "test": "node --experimental-strip-types --import ./tests/setup.ts --test --test-concurrency=4 tests/*.test.ts",
     "test:mutation": "stryker run",
+    "test:mutation:delta": "node scripts/mutation-delta.mjs",
     "setup": "node scripts/setup.mjs",
     "backup": "node scripts/backup.mjs",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{ts,tsx,json,mjs}\" \"tests/**/*.ts\" \"scripts/**/*.mjs\"",
