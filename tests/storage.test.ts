@@ -765,6 +765,35 @@ test("origin pin is optional: unset VELVARR_ORIGIN skips the configured pin", ()
       () => security.guardMutation(req({ origin: "null" })),
       (e: { code: string }) => e.code === "origin_mismatch",
     );
+    // Host values are authorities read under the Origin's scheme: an
+    // explicit default port and letter case name the same host, while a
+    // different port is still a different origin.
+    const proxied = (origin: string, forwardedHost: string) =>
+      new Request("http://velvarr:6699/api/logout", {
+        method: "POST",
+        headers: { origin, "x-forwarded-host": forwardedHost },
+      });
+    assert.doesNotThrow(() =>
+      security.guardMutation(proxied("http://velvarr.lan", "velvarr.lan:80")),
+    );
+    assert.doesNotThrow(() =>
+      security.guardMutation(proxied("https://velvarr.lan", "Velvarr.LAN:443")),
+    );
+    assert.doesNotThrow(() =>
+      security.guardMutation(proxied("http://velvarr.lan:80", "velvarr.lan")),
+    );
+    for (const [origin, forwardedHost] of [
+      ["http://velvarr.lan:8080", "velvarr.lan:8081"],
+      ["http://velvarr.lan", "velvarr.lan:8080"],
+      ["http://velvarr.lan:8080", "velvarr.lan"],
+      ["http://velvarr.lan", "velvarr.lan:443"],
+    ] as const) {
+      assert.throws(
+        () => security.guardMutation(proxied(origin, forwardedHost)),
+        (e: { code: string }) => e.code === "origin_mismatch",
+        `${origin} vs ${forwardedHost}`,
+      );
+    }
     process.env.VELVARR_ORIGIN = "http://127.0.0.1:5577";
     assert.throws(
       () => security.guardMutation(req({ "sec-fetch-site": "same-origin" })),

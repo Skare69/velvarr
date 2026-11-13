@@ -111,22 +111,37 @@ function enforceOriginConfig(): URL {
 function requireSameHostOrigin(request: Request): void {
   const header = request.headers.get("origin");
   if (header === null) return;
-  let got: string;
+  let got: URL;
   try {
-    got = new URL(header).host;
+    got = new URL(header);
   } catch {
     throw new AppError(403, "origin_mismatch", "origin not allowed");
   }
+  // Host values carry no scheme: read each one as an authority under the
+  // Origin's scheme, so letter case and an explicit default port
+  // (velvarr.lan:80 for http) normalize the same way URL.host does.
+  // A value with userinfo or a path is not a bare authority and never matches.
+  const authority = (value: string | null | undefined): string | null => {
+    if (!value) return null;
+    try {
+      const url = new URL(`${got.protocol}//${value.trim()}`);
+      return url.username || url.password || url.pathname !== "/"
+        ? null
+        : url.host;
+    } catch {
+      return null;
+    }
+  };
   const hosts = [
     request.headers.get("host"),
     request.headers.get("x-forwarded-host")?.split(",")[0],
     new URL(request.url).host,
   ];
-  if (!hosts.some((host) => host?.trim().toLowerCase() === got)) {
+  if (!hosts.some((host) => authority(host) === got.host)) {
     throw new AppError(
       403,
       "origin_mismatch",
-      `origin not allowed: set VELVARR_ORIGIN to the address you browse (got ${got})`,
+      `origin not allowed: set VELVARR_ORIGIN to the address you browse (got ${got.host})`,
     );
   }
 }
