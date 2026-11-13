@@ -24,12 +24,14 @@ import {
   identityLinkKey,
 } from "../src/server/identity-links.ts";
 import {
+  credentialFingerprint,
   expandCatalogTagTerm,
   fetchProviderArtwork,
   getCatalogDetail,
   getProviderStatus,
   isProviderImageUrl,
   linkedPerformerCounterpart,
+  rejectedKeyClearAllowed,
   resolveSort,
   requestJson,
   resetMetaCache,
@@ -4963,4 +4965,49 @@ test("an upstream outage returns the explicit unlinked reason unchanged, never t
     await outage.close();
     restore();
   }
+});
+
+test("the guarded clear refuses exactly a stored key the fingerprint does not match", () => {
+  // The compare-and-set invariant behind the rejected-key auto-clear
+  // (VELV-130): a guarded clear may delete only a stored credential that
+  // still matches the fingerprint its failed check carried. The identity
+  // oracle pins the decision itself; the second half round-trips the real
+  // SHA-256 fingerprint the route passes.
+  fc.assert(
+    fc.property(
+      fc.string({ minLength: 0, maxLength: 64 }),
+      fc.option(fc.string({ minLength: 0, maxLength: 64 }), {
+        nil: undefined,
+      }),
+      (probed, stored) => {
+        const identity = (value: string) => value;
+        assert.equal(
+          rejectedKeyClearAllowed({
+            stored,
+            expect: probed,
+            fingerprint: identity,
+          }),
+          stored === undefined || stored === probed,
+        );
+        if (stored !== undefined) {
+          assert.equal(
+            rejectedKeyClearAllowed({
+              stored,
+              expect: credentialFingerprint(stored),
+              fingerprint: credentialFingerprint,
+            }),
+            true,
+          );
+          assert.equal(
+            rejectedKeyClearAllowed({
+              stored,
+              expect: credentialFingerprint(probed),
+              fingerprint: credentialFingerprint,
+            }),
+            probed === stored,
+          );
+        }
+      },
+    ),
+  );
 });

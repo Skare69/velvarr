@@ -45,6 +45,7 @@
 //   studio records carry explicit provider URLs, which drive cross-provider
 //   linking; movies and scenes are never linked across providers.
 
+import { createHash } from "node:crypto";
 import {
   AppError,
   parseJson,
@@ -274,12 +275,47 @@ export async function requestJson<T>(
   }
 }
 
-function credential(provider: "tpdb" | "stashdb"): string | undefined {
+/** Only the Settings-stored credential — never the environment fallback.
+ * The rejected-key auto-clear fingerprints exactly this value and the
+ * guarded clear compares against it, so the guard reads the same source
+ * the probe used instead of re-implementing credential()'s precedence
+ * (and drifting from it, as providerConfigured's doc already warns). */
+export function storedProviderCredential(
+  provider: "tpdb" | "stashdb",
+): string | undefined {
   const stored = getConfig()?.providers;
   const value =
+    provider === "tpdb" ? stored?.tpdbApiToken : stored?.stashdbApiKey;
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+/** Opaque echo token for the rejected-key auto-clear: 32 hex chars of
+ * SHA-256. It travels to the admin client and back on the guarded clear;
+ * being a hash, it never carries the key itself. */
+export function credentialFingerprint(key: string): string {
+  return createHash("sha256").update(key).digest("hex").slice(0, 32);
+}
+
+/** Compare-and-set for the rejected-key auto-clear: a guarded clear may
+ * delete only a stored credential that still matches the fingerprint its
+ * failed check carried. Nothing stored allows the write (the clear is a
+ * no-op either way), as does an unguarded manual clear. The fingerprint
+ * function is injected so tests can use an identity oracle. */
+export function rejectedKeyClearAllowed(input: {
+  stored: string | undefined;
+  expect: string;
+  fingerprint: (key: string) => string;
+}): boolean {
+  if (input.stored === undefined) return true;
+  return input.fingerprint(input.stored) === input.expect;
+}
+
+function credential(provider: "tpdb" | "stashdb"): string | undefined {
+  const env =
     provider === "tpdb"
-      ? (stored?.tpdbApiToken ?? process.env.TPDB_API_TOKEN)
-      : (stored?.stashdbApiKey ?? process.env.STASHDB_API_KEY);
+      ? process.env.TPDB_API_TOKEN
+      : process.env.STASHDB_API_KEY;
+  const value = storedProviderCredential(provider) ?? env;
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 

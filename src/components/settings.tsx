@@ -1695,16 +1695,25 @@ function ProviderCredentialCard({
 
   // A stored credential the provider just rejected deletes itself at once —
   // no dialog, the provider proved the key wrong. An environment source never
-  // enters here. One delete at a time: results that land while a clear and
-  // its re-check are in flight (a config refresh, a duplicate check, the
-  // re-check itself) are skipped, so a rejected fallback cannot loop.
+  // enters here. The clear is guarded: it echoes the check's keyFingerprint
+  // in `<field>Expect`, and the server refuses (409) when the stored key
+  // changed under the failed probe, so a key another tab saved meanwhile
+  // survives. One attempt per check result: every result is decided exactly
+  // once, so a config refresh from any save on the page cannot replay a
+  // stale rejection, and a result landing while a clear is in flight stays
+  // decided-skipped (its failure chip and the Check button carry it).
   const clearing = useRef(false);
+  const handledCheck = useRef<ProviderCheck | null>(null);
   useEffect(() => {
-    if (!editor.check || !config || clearing.current) return;
-    if (
-      !shouldAutoClearOnReject({ check: editor.check, source: config.source })
-    )
-      return;
+    const check = editor.check;
+    if (!check || handledCheck.current === check) return;
+    // No source row yet: leave the check unmarked and retry when it lands.
+    if (!config) return;
+    handledCheck.current = check;
+    if (clearing.current) return;
+    if (!shouldAutoClearOnReject({ check, source: config.source })) return;
+    const fingerprint =
+      check.configured && !check.verified ? check.keyFingerprint : undefined;
     clearing.current = true;
     void (async () => {
       try {
@@ -1722,7 +1731,11 @@ function ProviderCredentialCard({
             label +
             ".",
           performSave: (value) =>
-            onSave({ [field]: value }).then(() => undefined),
+            onSave(
+              fingerprint === undefined
+                ? { [field]: value }
+                : { [field]: value, [`${field}Expect`]: fingerprint },
+            ).then(() => undefined),
           dispatch,
           failureOf,
         });

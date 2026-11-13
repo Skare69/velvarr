@@ -37,7 +37,12 @@ import {
   listUsers,
   getJellyfinStatus,
 } from "../../../../server/jellyfin.ts";
-import { getProviderStatus } from "../../../../server/providers.ts";
+import {
+  credentialFingerprint,
+  getProviderStatus,
+  rejectedKeyClearAllowed,
+  storedProviderCredential,
+} from "../../../../server/providers.ts";
 import {
   judgmentConfiguration,
   checkJudgmentConnection,
@@ -451,27 +456,95 @@ export function nextWhisparr(
   };
 }
 
+/** Provider-card PATCH fields: the credential/judgment values plus the
+ * rejected-key clear guards. A guarded clear must stay on the
+ * provider-only path — that path writes synchronously, so the
+ * compare-and-set sits directly next to saveConfig; the mixed path
+ * awaits Jellyfin in between and could validate a key that is already
+ * gone. */
+const PROVIDER_SAVE_FIELDS = [
+  "tpdbApiToken",
+  "stashdbApiKey",
+  "typesafeApiKey",
+  "judgmentProvider",
+  "ollamaUrl",
+  "ollamaModel",
+  "tpdbApiTokenExpect",
+  "stashdbApiKeyExpect",
+];
+
+const GUARDED_CLEARS = [
+  {
+    field: "tpdbApiToken",
+    guard: "tpdbApiTokenExpect",
+    provider: "tpdb",
+    name: "TPDB",
+    max: 1024,
+  },
+  {
+    field: "stashdbApiKey",
+    guard: "stashdbApiKeyExpect",
+    provider: "stashdb",
+    name: "StashDB",
+    max: 512,
+  },
+] as const;
+
+/** The rejected-key auto-clear must delete exactly the key its failed
+ * check probed. The client echoes the check's keyFingerprint in the
+ * guard field; the server compares it against the stored key as it is
+ * right now and refuses (409) on any difference, so a key another tab
+ * saved while the probe was in flight survives. A clear without a guard
+ * (the manual clear dialog) stays unconditional. */
+function guardProviderClear(body: Record<string, unknown>): void {
+  const guarded = GUARDED_CLEARS.filter(
+    (entry) => optionalText(body, entry.guard, 128) !== undefined,
+  );
+  if (guarded.length === 0) return;
+  if (!Object.keys(body).every((k) => PROVIDER_SAVE_FIELDS.includes(k)))
+    throw new AppError(
+      400,
+      "invalid_field",
+      "A guarded provider clear carries provider fields only.",
+    );
+  for (const entry of guarded) {
+    const expect = optionalText(body, entry.guard, 128)!;
+    if (optionalText(body, entry.field, entry.max) !== "")
+      throw new AppError(
+        400,
+        "invalid_field",
+        `${entry.guard} guards a clear of ${entry.field}; send it only with an empty ${entry.field}.`,
+      );
+    if (
+      !rejectedKeyClearAllowed({
+        stored: storedProviderCredential(entry.provider),
+        expect,
+        fingerprint: credentialFingerprint,
+      })
+    )
+      throw new AppError(
+        409,
+        "provider_key_mismatch",
+        `The stored ${entry.name} key changed since its check failed; it was not deleted. Check the connection again.`,
+      );
+  }
+}
+
 export async function adminUpdateIntegrations(
   request: Request,
   ctx: AuthContext,
 ): Promise<Response> {
   const body = await readJson(request);
+  // Before any write: the guard compares against the live stored key and
+  // must sit directly next to the synchronous provider-only saveConfig.
+  guardProviderClear(body);
   // Provider-only saves never touch Jellyfin/Whisparr: the provider card
   // sends just its fields, and re-validating the Jellyfin connection would
   // make provider keys uneditable whenever Jellyfin is briefly down.
   const bodyKeys = Object.keys(body);
   if (
     bodyKeys.length > 0 &&
-    bodyKeys.every((k) =>
-      [
-        "tpdbApiToken",
-        "stashdbApiKey",
-        "typesafeApiKey",
-        "judgmentProvider",
-        "ollamaUrl",
-        "ollamaModel",
-      ].includes(k),
-    )
+    bodyKeys.every((k) => PROVIDER_SAVE_FIELDS.includes(k))
   ) {
     const providers = nextProviderCredentials(ctx.config.providers, body);
     const patched: IntegrationConfig = {
@@ -549,10 +622,14 @@ export async function adminProviders(_ctx: AuthContext): Promise<Response> {
 }
 
 /** Only upstream failures are credential-status data. Storage, decryption,
- * and local configuration failures retain their original HTTP error. */
+ * and local configuration failures retain their original HTTP error.
+ * keyFingerprint marks a rejected STORED credential: it lets the client's
+ * auto-clear prove, on the server, that the key it deletes is the exact
+ * key this check rejected (see guardProviderClear). */
 export function providerCheckFailure(
   provider: CredentialProvider,
   error: unknown,
+  keyFingerprint?: string,
 ): ProviderCheck {
   const upstreamCodes = new Set([
     "upstream_auth",
@@ -569,6 +646,7 @@ export function providerCheckFailure(
     configured: true,
     verified: false,
     error: { code: error.code, message: error.message },
+    ...(keyFingerprint !== undefined ? { keyFingerprint } : {}),
   };
 }
 
@@ -580,10 +658,18 @@ export async function adminProviderCheck(
     throw new AppError(400, "invalid_provider", "Unknown credential provider.");
   }
   const provider = raw;
+  // The fingerprint must describe the credential the probe uses. Read it
+  // before the probe and in the same tick: credential() resolves its
+  // stored value synchronously before the first upstream await, so this
+  // always matches what the probe sent — or is absent with an environment
+  // fallback, which the auto-clear never touches.
+  const stored = storedProviderCredential(provider);
+  const keyFingerprint =
+    stored === undefined ? undefined : credentialFingerprint(stored);
   try {
     return json(await getProviderStatus(provider));
   } catch (err) {
-    return json(providerCheckFailure(provider, err));
+    return json(providerCheckFailure(provider, err, keyFingerprint));
   }
 }
 

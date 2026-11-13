@@ -3334,6 +3334,129 @@ test("provider credentials: stored config wins over environment, clear falls bac
   });
 });
 
+test("the rejected-key clear deletes only the key it probed", async () => {
+  // The auto-clear contract (VELV-130): the rejected check carries a
+  // fingerprint of the probed stored key, the clear echoes it, and the
+  // server refuses (409) when the stored key changed under the failed
+  // probe — a key another tab saved meanwhile must survive.
+  // boot() arms the provider fixture env for a standalone run; restore it
+  // after, so later tests see the environment they saw before this one —
+  // the requests tests assert StashDB unconfigured.
+  const prevTpdb = process.env.TPDB_API_TOKEN;
+  const prevTpdbBase = process.env.TPDB_BASE_URL;
+  const prevStash = process.env.STASHDB_API_KEY;
+  const prevStashBase = process.env.STASHDB_BASE_URL;
+  try {
+    await boot();
+    const admin = await loginAs("owner");
+    const store = await call("PATCH", "/api/admin/integrations", {
+      cookie: admin,
+      body: { tpdbApiToken: "wrong-stored-token" },
+    });
+    assert.equal(store.status, 200);
+    const rejected = await call("GET", "/api/admin/providers/tpdb", {
+      cookie: admin,
+    });
+    assert.equal(rejected.status, 200);
+    const rejectedText = await rejected.text();
+    const rejectedBody = JSON.parse(rejectedText) as Extract<
+      ProviderCheck,
+      { configured: true; verified: false }
+    >;
+    assert.equal(rejectedBody.error.code, "upstream_auth");
+    const fingerprint = rejectedBody.keyFingerprint;
+    assert.equal(typeof fingerprint, "string");
+    assert.ok(!rejectedText.includes("wrong-stored-token"));
+
+    // A second tab saves a working key while the first tab's probe is stale.
+    const good = await call("PATCH", "/api/admin/integrations", {
+      cookie: admin,
+      body: { tpdbApiToken: tpdbToken },
+    });
+    assert.equal(good.status, 200);
+
+    // The stale rejection's clear arrives: refused, and the working key
+    // stays stored and verifies.
+    const staleClear = await call("PATCH", "/api/admin/integrations", {
+      cookie: admin,
+      body: { tpdbApiToken: "", tpdbApiTokenExpect: fingerprint },
+    });
+    assert.equal(staleClear.status, 409);
+    assert.equal((await errorShape(staleClear)).code, "provider_key_mismatch");
+    const kept = (await (
+      await call("GET", "/api/admin/integrations", { cookie: admin })
+    ).json()) as { providers: { tpdb: { source: string } } };
+    assert.equal(kept.providers.tpdb.source, "stored");
+    const live = await call("GET", "/api/admin/providers/tpdb", {
+      cookie: admin,
+    });
+    assert.equal(live.status, 200);
+    assert.equal(
+      ((await live.json()) as { verified: boolean }).verified,
+      true,
+      "the working key saved after the failed probe must survive the stale clear",
+    );
+
+    // A guard only guards a clear: a non-empty paired field is invalid.
+    const misuse = await call("PATCH", "/api/admin/integrations", {
+      cookie: admin,
+      body: { tpdbApiToken: tpdbToken, tpdbApiTokenExpect: fingerprint },
+    });
+    assert.equal(misuse.status, 400);
+    assert.equal((await errorShape(misuse)).code, "invalid_field");
+    // A guarded clear stays on the provider-only path: mixing in a Jellyfin
+    // field would put an await between the compare and the write.
+    const mixed = await call("PATCH", "/api/admin/integrations", {
+      cookie: admin,
+      body: {
+        tpdbApiToken: "",
+        tpdbApiTokenExpect: fingerprint,
+        jellyfinUrl: jellyfinUrl,
+      },
+    });
+    assert.equal(mixed.status, 400);
+    assert.equal((await errorShape(mixed)).code, "invalid_field");
+
+    // The matching clear still deletes its own key: re-store the wrong key,
+    // probe, echo the fresh fingerprint, and the clear succeeds into the
+    // environment fallback.
+    const restore = await call("PATCH", "/api/admin/integrations", {
+      cookie: admin,
+      body: { tpdbApiToken: "wrong-stored-token" },
+    });
+    assert.equal(restore.status, 200);
+    const fresh = await call("GET", "/api/admin/providers/tpdb", {
+      cookie: admin,
+    });
+    assert.equal(fresh.status, 200);
+    const freshBody = JSON.parse(await fresh.text()) as Extract<
+      ProviderCheck,
+      { configured: true; verified: false }
+    >;
+    const matchingClear = await call("PATCH", "/api/admin/integrations", {
+      cookie: admin,
+      body: { tpdbApiToken: "", tpdbApiTokenExpect: freshBody.keyFingerprint },
+    });
+    assert.equal(matchingClear.status, 200);
+    const clearedShape = (await matchingClear.json()) as {
+      providers: { tpdb: { configured: boolean; source: string } };
+    };
+    assert.deepEqual(clearedShape.providers.tpdb, {
+      configured: true,
+      source: "environment",
+    });
+  } finally {
+    if (prevTpdb === undefined) delete process.env.TPDB_API_TOKEN;
+    else process.env.TPDB_API_TOKEN = prevTpdb;
+    if (prevTpdbBase === undefined) delete process.env.TPDB_BASE_URL;
+    else process.env.TPDB_BASE_URL = prevTpdbBase;
+    if (prevStash === undefined) delete process.env.STASHDB_API_KEY;
+    else process.env.STASHDB_API_KEY = prevStash;
+    if (prevStashBase === undefined) delete process.env.STASHDB_BASE_URL;
+    else process.env.STASHDB_BASE_URL = prevStashBase;
+  }
+});
+
 test("provider test route: typed key wins, blank key uses the saved one, nothing stores", async () => {
   const admin = owner;
   // Store a WRONG TPDB key, so the saved credential differs from the

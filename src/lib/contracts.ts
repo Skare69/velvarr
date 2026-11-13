@@ -724,7 +724,13 @@ export type CredentialProvider = "tpdb" | "stashdb";
 
 /** GET /api/admin/providers/:provider — one provider's live credential
  * check. A rejected key or an outage is status data (HTTP 200, verified:
- * false), never a 401: the client signs out on any 401. */
+ * false), never a 401: the client signs out on any 401. A rejected
+ * STORED key carries keyFingerprint (SHA-256, first 32 hex chars): the
+ * auto-clear echoes it back as the paired `<field>Expect` guard on the
+ * PATCH, and the server refuses the clear when the stored key's
+ * fingerprint differs — a key saved under the failed probe survives. An
+ * environment key carries no fingerprint, and the key itself never
+ * echoes. */
 export type ProviderCheck =
   | { provider: CredentialProvider; configured: false }
   | {
@@ -738,4 +744,5 @@ export type ProviderCheck =
       configured: true;
       verified: false;
       error: { code: string; message: string };
+      keyFingerprint?: string;
     };
