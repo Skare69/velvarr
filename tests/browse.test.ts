@@ -7,7 +7,7 @@
 // outages, the documented scan ceiling, and per-user hidden filtering.
 
 import assert from "node:assert/strict";
-import { test, beforeEach } from "node:test";
+import { mock, test, beforeEach } from "node:test";
 
 import {
   appError,
@@ -3350,6 +3350,53 @@ test("a browse page past the deepest scannable page is refused before any upstre
         browseTitles(deepQuery("movie", 80), hidden),
         appError(422, "query_too_broad"),
       );
+      assert.equal(moviesCalled, 40);
+    },
+  );
+});
+
+test("a page past the scannable depth reparses no cached provider page", async () => {
+  let moviesCalled = 0;
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [TAG_DEEP],
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(1), "Always hidden", "2024-01-01", [TAG_DEEP])],
+          next: "x",
+          total: 10000,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: () => {
+        moviesCalled += 1;
+      },
+    }),
+    async () => {
+      const hidden = [{ name: TAG_DEEP.name, tpdb: TAG_DEEP.uuid }];
+      // Warm the metadata cache with all 40 pages the ceiling allows.
+      await assert.rejects(
+        browseTitles(deepQuery("movie", 80), hidden),
+        appError(422, "query_too_broad"),
+      );
+      assert.equal(moviesCalled, 40);
+      const parse = mock.method(JSON, "parse");
+      try {
+        // A warm rescan reparses every cached page: the counter sees them.
+        await assert.rejects(
+          browseTitles(deepQuery("movie", 80), hidden),
+          appError(422, "query_too_broad"),
+        );
+        assert.equal(parse.mock.callCount(), 40);
+        parse.mock.resetCalls();
+        await assert.rejects(
+          browseTitles(deepQuery("movie", 81), hidden),
+          appError(422, "page_too_deep"),
+        );
+        assert.equal(parse.mock.callCount(), 0);
+      } finally {
+        parse.mock.restore();
+      }
       assert.equal(moviesCalled, 40);
     },
   );
