@@ -16,8 +16,9 @@
     "test:mutation": "stryker run",
     "setup": "node scripts/setup.mjs",
     "backup": "node scripts/backup.mjs",
-    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{ts,tsx,json,mjs}\" \"tests/**/*.ts\" \"scripts/**/*.mjs\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"*.{ts,tsx,json,mjs}\" \"tests/**/*.ts\" \"scripts/**/*.mjs\""
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{ts,tsx,json,mjs}\" \"tests/**/*.{ts,mjs}\" \"scripts/**/*.mjs\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"*.{ts,tsx,json,mjs}\" \"tests/**/*.{ts,mjs}\" \"scripts/**/*.mjs\"",
+    "test:ui": "playwright test"
   },
   "dependencies": {
     "@typesafe-ai/sdk": "^0.6.0",
@@ -33,6 +34,7 @@
     "zod": "^4.6.6"
   },
   "devDependencies": {
+    "@playwright/test": "1.65.0",
     "@stryker-mutator/core": "^10.0.0",
     "@stryker-mutator/tap-runner": "10.0.0",
     "@tailwindcss/postcss": "4.3.3",

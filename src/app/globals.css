@@ -1031,10 +1031,6 @@ body:has(.auth-page) {
   display: grid;
   gap: 22px;
 }
-.settings-connections {
-  display: grid;
-  gap: 22px;
-}
 .settings-service-heading h2 {
   font-size: 1.2rem;
   font-weight: 650;
@@ -1043,25 +1039,6 @@ body:has(.auth-page) {
   color: var(--color-muted);
   font-size: 0.875rem;
   margin-top: 4px;
-}
-.settings-connection-status {
-  border-top: 1px solid var(--color-edge);
-  border-bottom: 1px solid var(--color-edge);
-  margin-top: 18px;
-  padding: 16px 0;
-}
-/* Stacked provider cards share one divider instead of two. */
-.settings-connection-status + .settings-connection-status {
-  border-top: 0;
-  margin-top: 0;
-}
-.settings-connection-save {
-  display: grid;
-  gap: 16px;
-}
-.settings-save-status {
-  color: var(--color-ok);
-  font-size: 0.875rem;
 }
 /* The probe of the saved AI-matching settings, apart from the save notice. */
 .judgment-check {
@@ -1074,25 +1051,6 @@ body:has(.auth-page) {
 .judgment-check[data-state="failed"] {
   color: var(--color-danger);
 }
-.settings-connection-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-.settings-connection-actions p {
-  flex: 1 1 260px;
-}
-.settings-connection-actions button {
-  flex-shrink: 0;
-}
-@media (max-width: 600px) {
-  .settings-connection-actions button {
-    width: 100%;
-  }
-}
-
 .settings-service-summary {
   display: flex;
   align-items: center;

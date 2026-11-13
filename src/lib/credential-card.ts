@@ -1,4 +1,4 @@
-// The TPDB/StashDB credential card's lifecycle (settings.tsx renders
+// The TPDB/StashDB credential card's lifecycle (metadata-settings.tsx renders
 // ProviderCredentialCard through this module), React-API-free so node --test
 // can drive it directly: the test runner cannot import the .tsx component
 // itself, because type stripping does not parse JSX. The card keeps its
@@ -8,8 +8,15 @@
 // edit is a Cancel, and with nothing configured the editor stays open and
 // names the missing field (v0.41.0 regression, fde0b7b).
 
+import type { SettingsFailureOf } from "./settings-service.ts";
 import { createElement } from "react";
-import type { ChangeEvent, FormEvent, ReactElement, Ref } from "react";
+import type {
+  ChangeEvent,
+  FormEvent,
+  ReactElement,
+  ReactNode,
+  Ref,
+} from "react";
 import type { ProviderCheck } from "./contracts.ts";
 import { credentialSaveDecision } from "./provider-settings.ts";
 
@@ -131,7 +138,7 @@ export async function applyCredentialSave(input: {
   dispatch: (action: CredentialCardAction) => void;
   /** Classifies a failed performSave; messageOf stays the caller's job so
    * this module never imports client code. */
-  failureOf: (error: unknown) => { forbidden: boolean; message: string };
+  failureOf: SettingsFailureOf;
 }): Promise<{ saved: boolean }> {
   input.dispatch({ type: "saveStarted" });
   const save = credentialSaveDecision({
@@ -179,6 +186,7 @@ export function credentialEditorView(input: {
   state: CredentialCardState;
   canEdit: boolean;
   busy: boolean;
+  feedback?: ReactNode;
   /** Focus returns to this input when the editor opens. */
   inputRef: Ref<HTMLInputElement>;
   onDraftChange: (value: string) => void;
@@ -261,5 +269,6 @@ export function credentialEditorView(input: {
         "Cancel",
       ),
     ),
+    input.feedback,
   );
 }

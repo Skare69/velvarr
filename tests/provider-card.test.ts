@@ -1,6 +1,6 @@
 // The TPDB and StashDB credential editors' blank-Save case at the component
 // level (VELV-100): the real Save-click flow and the real editor markup, via
-// the exports settings.tsx renders ProviderCredentialCard with. node --test
+// the exports metadata-settings.tsx renders ProviderCredentialCard with. node --test
 // cannot import the .tsx component itself (type stripping does not parse
 // JSX), so the card delegates its state (reduceCredentialCard), its Save
 // click (applyCredentialSave) and its editor markup (credentialEditorView)
@@ -76,7 +76,7 @@ async function runSave(input: {
   return { state, actions, saves, saved };
 }
 
-/** Renders the same editor markup settings.tsx renders for the given
+/** Renders the same editor markup metadata-settings.tsx renders for the given
  * state. canEdit mirrors the card (a config row exists, nothing in
  * flight); the busy flags the reducer owns stay false here. */
 function renderEditor(input: {

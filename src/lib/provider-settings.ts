@@ -1,22 +1,6 @@
 import type { ProviderCheck } from "./contracts.ts";
 
-/** What one provider credential card shows about its connection. */
-export type ConnectionState =
-  | "unsaved"
-  | "checking"
-  | "connected"
-  | "failed"
-  | "not_configured"
-  | "unknown";
-
-export const CONNECTION_STATE_LABEL: Record<ConnectionState, string> = {
-  unsaved: "Unsaved changes",
-  checking: "Checking…",
-  connected: "Connected",
-  failed: "Failed",
-  not_configured: "Not configured",
-  unknown: "Unknown",
-};
+import type { ConnectionState } from "./settings-service.ts";
 
 /** Precedence, first match wins:
  * 1. a non-blank draft → "unsaved": the live result describes the saved key,
@@ -47,7 +31,7 @@ export const CREDENTIAL_CLEARED_NOTICE =
 
 /** What one Save click on a credential editor does, decided before any
  * network call so the button's disabled state and the click cannot drift
- * apart (settings.tsx renders both from this decision):
+ * apart (metadata-settings.tsx renders both from this decision):
  * - a non-blank draft saves the trimmed value;
  * - the confirmed clear (destructive dialog) saves "" so the environment
  *   settings apply again, even over a typed draft;
@@ -104,18 +88,4 @@ export function canClearCredential(input: {
   pending: boolean;
 }): boolean {
   return input.source === "stored" && !input.pending;
-}
-
-/** Saves and live probes share persisted configuration. Queue both kinds of
- * operation, including same-tick calls, and recover after a failed request. */
-export function createProviderSettingsQueue() {
-  let tail = Promise.resolve();
-  return function run<T>(operation: () => Promise<T>): Promise<T> {
-    const result = tail.then(operation);
-    tail = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
-  };
 }
