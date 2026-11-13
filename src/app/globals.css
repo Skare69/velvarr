@@ -565,8 +565,14 @@ body:has(.auth-page) {
    switch is instant on purpose: animating the width resizes every
    auto-fill grid frame by frame, so tiles stretch and then snap when a
    column is added. */
-.app-shell.is-collapsed {
-  --sidebar-width: 76px;
+/* The width var sits in a min-width query on purpose: below 1024px the
+   :root value is 0px, and an unscoped value on .app-shell would override
+   that for the topbar/main children and shift them 76px over the hidden
+   sidebar. */
+@media (min-width: 1024px) {
+  .app-shell.is-collapsed {
+    --sidebar-width: 76px;
+  }
 }
 .is-collapsed .app-sidebar {
   padding-inline: 12px;
