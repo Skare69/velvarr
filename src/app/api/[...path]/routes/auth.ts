@@ -392,9 +392,7 @@ export const routes: RouteDef[] = [
     auth: "session",
     exemptFromBudget: true,
     // The id comes from the session, never the URL: an account can only ever
-    // read its own avatar. ponytail: untagged URL, so a changed Jellyfin
-    // avatar can take the hour's max-age to show; carry the tag on /api/me
-    // if that ever matters.
+    // read its own avatar.
     run: async (ctx) => userAvatar(ctx, ctx.account.id),
   },
   {

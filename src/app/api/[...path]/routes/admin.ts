@@ -37,6 +37,7 @@ import {
   listUsers,
   getJellyfinStatus,
 } from "../../../../server/jellyfin.ts";
+import { privateImageResponse } from "./library.ts";
 import {
   credentialFingerprint,
   getProviderStatus,
@@ -119,22 +120,13 @@ export async function adminUsers(ctx: AuthContext): Promise<Response> {
 }
 
 /** One account's Jellyfin avatar bytes: admin rows ask by id, every account
- *  asks for its own through /api/me/avatar. No upstream avatar is a 404. */
+ *  asks for its own through /api/me/avatar. No upstream avatar is a 404.
+ *  Never browser-cached: /api/me/avatar is one URL for every account. */
 export async function userAvatar(
   ctx: AuthContext,
   id: string,
 ): Promise<Response> {
-  const image = await getUserImage(ctx.config, requireId(id));
-  return new Response(image.bytes as unknown as BodyInit, {
-    status: 200,
-    headers: {
-      "content-type": image.contentType,
-      // Admin rows use tag-keyed URLs, so a changed avatar is a new URL there;
-      // the untagged /api/me/avatar can lag by this max-age.
-      "cache-control": "private, max-age=3600",
-      "x-content-type-options": "nosniff",
-    },
-  });
+  return privateImageResponse(await getUserImage(ctx.config, requireId(id)));
 }
 
 export async function adminImport(

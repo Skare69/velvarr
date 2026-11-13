@@ -2304,10 +2304,10 @@ test("library access is bounded by grants; no path leakage; protected images", a
   });
   assert.equal(image.status, 200);
   assert.match(image.headers.get("content-type") ?? "", /^image\//);
-  // Cacheable per URL with ETag revalidation — the pop-in fix. Private, so
-  // no shared cache ever holds authenticated artwork.
-  assert.match(image.headers.get("cache-control") ?? "", /max-age=\d+/);
-  assert.match(image.headers.get("etag") ?? "", /^"/);
+  // Never stored by the browser: its cache keys on the URL, not the session,
+  // so a stored copy would reach the next account on this browser with no
+  // request and no grant check (VELV-148).
+  assert.equal(image.headers.get("cache-control"), "private, no-store");
   assert.equal(image.headers.get("x-content-type-options"), "nosniff");
   assert.ok((await image.arrayBuffer()).byteLength > 0);
 
@@ -8796,8 +8796,11 @@ test("user avatar proxy serves admins any row and every account its own", async 
 
   // A requester reads its own avatar; no upstream avatar is an honest 404
   // (the account menu then shows the initial), and no session is a 401.
+  // One URL for every account, so the browser must never store it: the next
+  // account on this browser would get this face without a request.
   const own = await call("GET", "/api/me/avatar", { cookie: member2 });
   assert.equal(own.status, 200);
+  assert.equal(own.headers.get("cache-control"), "private, no-store");
   assert.ok(Buffer.from(await own.arrayBuffer()).equals(PNG_1PX));
   assert.equal(
     (await call("GET", "/api/me/avatar", { cookie: member })).status,

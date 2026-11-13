@@ -98,10 +98,11 @@ export async function libraryItem(
   });
 }
 
-/** Shared image response: strong ETag + If-None-Match revalidation so F5 is a
- * 304 instead of a full refetch, and a private max-age so ordinary navigation
- * serves from the browser cache. Artwork and library art are stable per URL;
- * a changed image revalidates through the ETag. */
+/** Shared artwork response: strong ETag + If-None-Match revalidation so F5 is
+ * a 304 instead of a full refetch, and a private max-age so ordinary
+ * navigation serves from the browser cache. Only for bytes that every account
+ * may see (provider artwork): the browser cache keys on the URL, never the
+ * session, so a cached copy outlives a sign-out. */
 export function imageResponse(
   image: { bytes: Uint8Array; contentType: string },
   request: Request,
@@ -126,18 +127,32 @@ export function imageResponse(
   });
 }
 
+/** Account-scoped image bytes (library art, avatars): never stored by the
+ * browser. A stored copy is served to whoever uses this browser next, with
+ * no request, so the per-request access check never runs for them; Chromium
+ * also serves `Vary: Cookie` images from its memory cache after the cookie
+ * changes, so only no-store keeps every use behind the server check. */
+export function privateImageResponse(image: {
+  bytes: Uint8Array;
+  contentType: string;
+}): Response {
+  return new Response(image.bytes as unknown as BodyInit, {
+    status: 200,
+    headers: {
+      "content-type": image.contentType,
+      "cache-control": "private, no-store",
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
+
 export async function libraryImage(
   ctx: AuthContext,
-  request: Request,
   id: string,
 ): Promise<Response> {
-  const image = await getLibraryImage(
-    ctx.config,
-    ctx.token,
-    ctx.account,
-    requireId(id),
+  return privateImageResponse(
+    await getLibraryImage(ctx.config, ctx.token, ctx.account, requireId(id)),
   );
-  return imageResponse(image, request, 86400);
 }
 
 import type { RouteDef } from "../admission.ts";
@@ -166,6 +181,6 @@ export const routes: RouteDef[] = [
     segments: ["images", ":id"],
     auth: "session",
     exemptFromBudget: true,
-    run: async (ctx, request, p) => libraryImage(ctx, request, p.id!),
+    run: async (ctx, _request, p) => libraryImage(ctx, p.id!),
   },
 ];
