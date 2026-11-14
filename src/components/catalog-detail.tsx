@@ -254,7 +254,11 @@ function MediaActions({
           <span className="chip state-badge" data-state={requested.decision}>
             {DECISION_TEXT[requested.decision]}
           </span>
-          {autoApproved && <span className="chip">Auto-approved</span>}
+          {autoApproved && (
+            <span className="chip state-badge" data-state="approved">
+              Auto-approved
+            </span>
+          )}
         </div>
       ) : !isDeliverableMedia(target) ? (
         <p className="text-xs text-muted">
