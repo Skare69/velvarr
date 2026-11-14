@@ -6,6 +6,9 @@
 // real credentials: every fetch is stubbed and the base URLs point at a
 // discard port the stub never dials.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import {
@@ -69,12 +72,16 @@ function fingerprint(
 }
 
 /** The documented followed-cache key; discovery.ts computes the same key on
- * every cachedFollowed call for the account. */
+ * every cachedFollowed call for the account. The follows half is a sha256
+ * of the sorted provider:id list. */
 function followedKey(accountId: string, fp: string): string {
   const rows = listFollows(accountId).map(
     (f) => `${f.reference.provider}:${f.reference.id}`,
   );
-  return `discover:followed:${accountId}:${rows.sort().join(",")}:${fp}`;
+  const follows = createHash("sha256")
+    .update(rows.sort().join(","))
+    .digest("hex");
+  return `discover:followed:${accountId}:${follows}:${fp}`;
 }
 
 const TOKEN_KEYS = [
@@ -638,6 +645,79 @@ test("the followed cache key folds the account's follows into the key", async ()
             ),
           ),
           "the follow row's provider:id pair is part of the key",
+        );
+      },
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("the followed cache key stays fixed-size with 10 000 follows", async () => {
+  // The key once concatenated every follow id: one account's follow count
+  // set the byte size of a shared discover_cache row and its index entry.
+  importAccounts([
+    {
+      id: "acct-many",
+      name: "Many",
+      isDisabled: false,
+      enableRemoteAccess: false,
+      enableMediaPlayback: false,
+      isAdministrator: false,
+    },
+  ]);
+  updateAccount("acct-many", {
+    enabled: true,
+    role: "requester",
+    libraryIds: [],
+  });
+  const follow = (i: number) =>
+    followPerformer(
+      "acct-many",
+      {
+        provider: "tpdb",
+        kind: "performer",
+        id: `${i.toString(16).padStart(8, "0")}-0000-4000-8000-000000000000`,
+      },
+      `Performer ${i}`,
+      null,
+    );
+  const storedKeys = (): string[] => {
+    const raw = new DatabaseSync(
+      join(process.env.VELVARR_DATA_DIR!, "velvarr.sqlite"),
+    );
+    try {
+      return (
+        raw
+          .prepare(
+            "SELECT key FROM discover_cache WHERE key LIKE 'discover:followed:acct-many:%'",
+          )
+          .all() as { key: string }[]
+      ).map((row) => row.key);
+    } finally {
+      raw.close();
+    }
+  };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    jsonReply({ data: [], links: {}, meta: {} })) as typeof fetch;
+  try {
+    await withEnv(
+      { ...NO_PROVIDERS, TPDB_API_TOKEN: TPDB_TOKEN, TPDB_BASE_URL: DISCARD },
+      async () => {
+        follow(0);
+        assert.equal(await cachedFollowed("acct-many", []), null);
+        const [one] = storedKeys();
+        for (let i = 1; i < 10_000; i++) follow(i);
+        assert.equal(listFollows("acct-many").length, 10_000);
+        assert.equal(await cachedFollowed("acct-many", []), null);
+        const many = storedKeys().find((key) => key !== one);
+        assert.ok(one !== undefined && many !== undefined, "two stored keys");
+        // New follows still change the key, but never its size.
+        assert.equal(many.length, one.length);
+        assert.equal(
+          many,
+          followedKey("acct-many", fingerprint([], { tpdb: TPDB_TOKEN })),
         );
       },
     );

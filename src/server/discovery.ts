@@ -9,7 +9,11 @@
 // deduped), so one tag set maps to one key however the account orders it.
 // The warm job only covers the shared (empty hiddenTags) releases + trending
 // entries; per-account followed entries are read-through only and go cold
-// after the 1h prune or the 500-row cap.
+// after the 1h prune or the 500-row cap. The follows half of their key is a
+// sha256 of the sorted provider:id list, so a key stays fixed-size however
+// many performers the account follows.
+
+import { createHash } from "node:crypto";
 
 import {
   browseTitles,
@@ -94,7 +98,10 @@ function followsFingerprint(accountId: string): string {
   const rows = listFollows(accountId).map(
     (f) => `${f.reference.provider}:${f.reference.id}`,
   );
-  return rows.sort().join(",");
+  // Hashed, not concatenated: the raw list made one account's follow count
+  // set the byte size of its discover_cache key (and its primary-key index
+  // entry). The prune caps rows, not bytes.
+  return createHash("sha256").update(rows.sort().join(",")).digest("hex");
 }
 
 // Source codes that describe a fixed or bounded state rather than an
