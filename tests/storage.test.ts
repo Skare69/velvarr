@@ -537,10 +537,25 @@ test("guardMutation enforces exact configured origin and safe transport", () => 
       "content-type": "application/json",
     }),
   );
-  // No fetch metadata and no content type (bodyless POST) also passes.
-  security.guardMutation(
-    new Request("http://127.0.0.1:5577/api/login", { method: "POST" }),
+  // Bodyless POST without fetch metadata: the Origin decides. This pin
+  // moved: a POST with neither header used to pass unpinned, so a browser
+  // that omits both could carry a sibling port's cookie-bearing sign-out.
+  const bodyless = (headers: Record<string, string>) =>
+    new Request("http://127.0.0.1:5577/api/logout", {
+      method: "POST",
+      headers,
+    });
+  assert.throws(
+    () => security.guardMutation(bodyless({})),
+    (e: { code: string }) => e.code === "origin_missing",
   );
+  assert.throws(
+    () => security.guardMutation(bodyless({ origin: "http://127.0.0.1:8096" })),
+    (e: { code: string }) => e.code === "origin_mismatch",
+  );
+  security.guardMutation(bodyless({ origin: "http://127.0.0.1:5577" }));
+  // Fetch metadata vouches for the origin on its own.
+  security.guardMutation(bodyless({ "sec-fetch-site": "same-origin" }));
   delete process.env.VELVARR_ALLOW_HTTP;
   process.env.VELVARR_ORIGIN = "http://127.0.0.1:5577";
 });

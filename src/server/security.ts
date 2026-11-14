@@ -114,12 +114,16 @@ function enforceOriginConfig(): URL {
 // Sec-Fetch-Site only to trustworthy (https or loopback) URLs, so on a
 // plain-HTTP LAN origin a sibling port's bodyless no-cors POST arrives with
 // the SameSite=Strict cookie, no content type and only its own Origin.
-// A present Origin must therefore name the host the request was sent to.
-// A no-cors request cannot set Host or X-Forwarded-Host. Clients that send
-// no Origin (curl, scripts) are not browsers and carry no ambient cookie.
+// The Origin must therefore name the host the request was sent to.
+// A no-cors request cannot set Host or X-Forwarded-Host. Every supported
+// browser sends Origin on non-GET requests (MDN Baseline since July 2020),
+// so a mutation with neither header is a legacy browser, a header-stripping
+// proxy or a non-browser client: refused, as the pinned path refuses it.
 function requireSameHostOrigin(request: Request): void {
   const header = request.headers.get("origin");
-  if (header === null) return;
+  if (header === null) {
+    throw new AppError(403, "origin_missing", "missing Origin header");
+  }
   let got: URL;
   try {
     got = new URL(header);

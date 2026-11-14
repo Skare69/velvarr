@@ -8886,6 +8886,17 @@ test("same-site and form mutations are refused even with VELVARR_ORIGIN unset", 
     assert.equal((await errorShape(logout)).code, "origin_mismatch");
     assert.equal(logout.headers.get("set-cookie"), null);
 
+    // A browser that sends neither fetch metadata nor Origin (legacy, or a
+    // header-stripping proxy) gives no proof of origin: the bodyless POST is
+    // refused like the pinned path refuses it, and the session survives.
+    const bare = await call("POST", "/api/logout", {
+      origin: null,
+      cookie: owner,
+    });
+    assert.equal(bare.status, 403);
+    assert.equal((await errorShape(bare)).code, "origin_missing");
+    assert.equal(bare.headers.get("set-cookie"), null);
+
     // count() runs with the owner cookie: the session survived.
     assert.equal(await count(), before);
 
