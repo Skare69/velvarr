@@ -5,7 +5,14 @@ import {
   randomBytes,
   randomUUID,
 } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  statSync,
+} from "node:fs";
 import path from "node:path";
 import {
   DatabaseSync,
@@ -455,11 +462,29 @@ const MIGRATIONS: Record<number, string> = {
 let db: DatabaseSync | null = null;
 let stmts: Statements | null = null;
 
+// The database holds encrypted credentials and sessions, so keep it owner-only;
+// SQLite gives the -wal/-shm files the same mode as the main file.
+function restrictDatabaseFiles(file: string): void {
+  closeSync(openSync(file, "a", 0o600));
+  if (process.platform === "win32") return;
+  for (const f of [file, `${file}-wal`, `${file}-shm`]) {
+    try {
+      if (existsSync(f) && statSync(f).mode & 0o077) chmodSync(f, 0o600);
+    } catch (e) {
+      console.warn(
+        `velvarr: could not restrict permissions on ${f}: ${(e as Error).message}`,
+      );
+    }
+  }
+}
+
 function open(): DatabaseSync {
   if (db) return db;
   const dir = process.env.VELVARR_DATA_DIR || "./data";
-  mkdirSync(dir, { recursive: true });
-  const d = new DatabaseSync(path.join(dir, "velvarr.sqlite"));
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = path.join(dir, "velvarr.sqlite");
+  restrictDatabaseFiles(file);
+  const d = new DatabaseSync(file);
   try {
     d.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
     d.exec("PRAGMA journal_mode = WAL");

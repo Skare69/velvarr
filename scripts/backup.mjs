@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 // Consistent online backup of data/velvarr.sqlite via SQLite's VACUUM INTO.
 // Never copies live WAL files directly, never exports or prints key material,
-// and refuses to overwrite an existing backup. There is deliberately no
-// restore-overwrite command: restoring means copying the snapshot into a NEW
-// data directory/volume as velvarr.sqlite.
+// and refuses to overwrite an existing backup. The backup holds the encrypted
+// credentials and sessions, so it is owner-only (0600) from creation. There is
+// deliberately no restore-overwrite command: restoring means copying the
+// snapshot into a NEW data directory/volume as velvarr.sqlite.
 
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+} from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(
@@ -51,15 +59,31 @@ if (!existsSync(source)) {
 
 mkdirSync(path.dirname(destination), { recursive: true });
 
-const db = new DatabaseSync(source, { readOnly: true });
+// The backup holds the encrypted credentials and sessions: create it
+// exclusively and owner-only here, so it is never readable by other accounts,
+// whatever the umask. VACUUM INTO accepts an existing EMPTY destination.
 try {
+  closeSync(openSync(destination, "wx", 0o600));
+} catch (error) {
+  if (error?.code !== "EEXIST") throw error;
+  console.error(`Refusing to overwrite existing backup: ${destination}`);
+  process.exit(1);
+}
+
+let db;
+try {
+  db = new DatabaseSync(source, { readOnly: true });
   // Wait out a concurrent writer instead of failing the backup with a
   // spurious SQLITE_BUSY while the app holds the write lock for a moment.
   db.exec("PRAGMA busy_timeout = 5000");
-  // VACUUM INTO takes a consistent snapshot (WAL included) and fails if the file exists.
+  // VACUUM INTO takes a consistent snapshot (WAL included) into the empty file.
   db.exec(`VACUUM INTO '${destination.replaceAll("'", "''")}'`);
+} catch (error) {
+  // Remove this run's empty placeholder so a retry is not refused.
+  unlinkSync(destination);
+  throw error;
 } finally {
-  db.close();
+  db?.close();
 }
 
 // Fail loudly rather than report success on a corrupt snapshot.

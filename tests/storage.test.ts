@@ -8,12 +8,14 @@ import {
 } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -445,6 +447,29 @@ test("foreign and future databases are refused without data loss", async () => {
     (e: { code: string }) => e.code === "future_database",
   );
 });
+
+test(
+  "the database and its WAL are owner-only, and a loose existing database is tightened at open",
+  { skip: process.platform === "win32" },
+  () => {
+    const previousUmask = process.umask(0o022);
+    try {
+      const dir = freshDir();
+      const file = join(dir, "velvarr.sqlite");
+      const mode = (f: string) => statSync(f).mode & 0o777;
+      storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+      assert.equal(mode(file), 0o600);
+      assert.equal(mode(`${file}-wal`), 0o600);
+
+      storage.closeStorage();
+      chmodSync(file, 0o644);
+      assert.equal(storage.isInitialized(), true);
+      assert.equal(mode(file), 0o600);
+    } finally {
+      process.umask(previousUmask);
+    }
+  },
+);
 
 test("guardMutation enforces exact configured origin and safe transport", () => {
   process.env.VELVARR_ORIGIN = "http://127.0.0.1:5577";
