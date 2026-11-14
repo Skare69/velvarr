@@ -300,7 +300,7 @@ test("a normalized save and configuration sync preserve the subsequent probe res
   assert.equal(e.notice, "Settings saved.");
 });
 
-// The check button's disabled reason: settings.tsx renders it as the help
+// The check button's disabled reason: metadata-settings.tsx renders it as the help
 // line under the saved settings and as the button's title.
 const setupHint =
   "Enter your TypeSafe API key, then save to check the connection.";
@@ -351,4 +351,31 @@ test("the check reason falls back to the setup hint and clears when ready", () =
     judgmentCheckDisabledReason(undefined, false, setupHint),
     "Loading saved configuration.",
   );
+});
+
+test("opening an AI editor clears an old save notice without discarding the saved diagnosis", () => {
+  const previous = run(
+    { type: "saved", settings: ollama },
+    { type: "checking" },
+    { type: "checked", result: { connected: true, provider: "ollama" } },
+  );
+  const opened = reduceJudgmentEditor(previous, { type: "begin" });
+  assert.equal(opened.notice, null);
+  assert.deepEqual(opened.draft, previous.saved);
+  assert.equal(opened.check, previous.check);
+});
+
+test("a new AI save attempt drops stale success feedback while preserving saved settings and diagnosis", () => {
+  const previous = run(
+    { type: "saved", settings: ollama },
+    { type: "checking" },
+    {
+      type: "checked",
+      result: { connected: false, message: "Previous probe failed" },
+    },
+  );
+  const saving = reduceJudgmentEditor(previous, { type: "saveStarted" });
+  assert.equal(saving.notice, null);
+  assert.equal(saving.saved, previous.saved);
+  assert.equal(saving.check, previous.check);
 });

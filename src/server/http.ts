@@ -30,6 +30,26 @@ export class AppError extends Error {
   }
 }
 
+const UPSTREAM_CHECK_CODES = new Set([
+  "upstream_auth",
+  "upstream_forbidden",
+  "upstream_not_found",
+  "upstream_unavailable",
+  "upstream_timeout",
+  "upstream_bad_response",
+]);
+
+/** Only known upstream failures are status data. Local validation, storage,
+ * decryption, and unexpected errors retain their original failure boundary. */
+export function upstreamCheckError(error: unknown): {
+  code: string;
+  message: string;
+} {
+  if (!(error instanceof AppError) || !UPSTREAM_CHECK_CODES.has(error.code))
+    throw error;
+  return { code: error.code, message: error.message };
+}
+
 const DEFAULT_TIMEOUT_MS = 15_000;
 const JSON_LIMIT = 2 * 1024 * 1024;
 

@@ -1,4 +1,4 @@
-// The TPDB/StashDB credential card's lifecycle (settings.tsx renders
+// The TPDB/StashDB credential card's lifecycle (metadata-settings.tsx renders
 // ProviderCredentialCard through this module), React-API-free so node --test
 // can drive it directly: the test runner cannot import the .tsx component
 // itself, because type stripping does not parse JSX. The card keeps its
@@ -8,6 +8,7 @@
 // edit is a Cancel, and with nothing configured the editor stays open and
 // names the missing field (v0.41.0 regression, fde0b7b).
 
+import type { SettingsFailureOf } from "./settings-service.ts";
 import { createElement } from "react";
 import type {
   ChangeEvent,
@@ -189,21 +190,7 @@ export function credentialCardBusy(
   return saving || state.checking || state.draftChecking || state.forbidden;
 }
 
-/** Which Check connection a service card shows, decided before render so the
- * button and the click cannot drift apart:
- * - the editor is open → "draft": the button POSTs the form's values (a
- *   blank secret field means "use the saved secret");
- * - closed with a failed saved check → "retry": the GET probe of the saved
- *   settings again;
- * - otherwise hidden: the page probes every saved connection on load, and
- *   the status chip beside the title carries the result. */
-export function checkConnectionAction(input: {
-  editorOpen: boolean;
-  savedCheckFailed: boolean;
-}): "draft" | "retry" | null {
-  if (input.editorOpen) return "draft";
-  return input.savedCheckFailed ? "retry" : null;
-}
+export { checkConnectionAction } from "./settings-service.ts";
 
 /** The one rejected check that deletes the stored credential on its own:
  * the provider answered "unauthorized", so the stored key is proven wrong
@@ -248,7 +235,7 @@ export async function applyCredentialSave(input: {
   clearNotice?: string;
   /** Classifies a failed performSave; messageOf stays the caller's job so
    * this module never imports client code. */
-  failureOf: (error: unknown) => { forbidden: boolean; message: string };
+  failureOf: SettingsFailureOf;
 }): Promise<{ saved: boolean }> {
   input.dispatch({ type: "saveStarted" });
   const save = credentialSaveDecision({
@@ -296,6 +283,7 @@ export function credentialEditorView(input: {
   state: CredentialCardState;
   canEdit: boolean;
   busy: boolean;
+  feedback?: ReactNode;
   /** A save is in flight: Save reads "Saving…" and sets aria-busy. */
   saving: boolean;
   /** Focus returns to this input when the editor opens. */
@@ -363,7 +351,7 @@ export function credentialEditorView(input: {
     createElement(
       "p",
       { className: "mt-2 text-sm text-muted" },
-      "Saved credentials are encrypted and take precedence over the environment. Connection checks use the saved credential or environment fallback.",
+      "Saved credentials are encrypted and take precedence over the environment. Check connection tests this draft without saving; a blank field uses the saved credential or environment fallback.",
     ),
     createElement(
       "div",
@@ -398,5 +386,6 @@ export function credentialEditorView(input: {
           ),
       input.trailing ?? null,
     ),
+    input.feedback,
   );
 }
