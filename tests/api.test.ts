@@ -7852,14 +7852,26 @@ test("a second bulk run files the titles past the first 100", async () => {
     capped: false,
   });
 
-  const listed = await call("GET", "/api/requests", { cookie: owner });
-  const listedBody = (await listed.json()) as {
-    requests: {
-      media: { provider: string; kind: string; id: string };
-      decision: string;
-    }[];
+  // GET /api/requests answers one page (VELV-159), so walk every movie page.
+  type Listed = {
+    media: { provider: string; kind: string; id: string };
+    decision: string;
   };
-  const rows = listedBody.requests.filter(
+  const listedRows: Listed[] = [];
+  let cursor: string | null = null;
+  do {
+    const query: string = `?type=movie&limit=200${cursor === null ? "" : `&cursor=${encodeURIComponent(cursor)}`}`;
+    const listed = await call("GET", `/api/requests${query}`, {
+      cookie: owner,
+    });
+    const page = (await listed.json()) as {
+      requests: Listed[];
+      nextCursor: string | null;
+    };
+    listedRows.push(...page.requests);
+    cursor = page.nextCursor;
+  } while (cursor !== null);
+  const rows = listedRows.filter(
     (r) =>
       r.media.provider === "tpdb" &&
       r.media.kind === "movie" &&
