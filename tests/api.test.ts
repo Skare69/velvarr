@@ -2232,6 +2232,20 @@ test("session requirement and honest provider status", async () => {
   });
   assert.equal(garbage.status, 401);
 
+  // A same-host sibling origin (another port) can plant a second
+  // velvarr_session with a narrower Path; browsers send the longer path
+  // first (RFC 6265 §5.4). Neither order may pick a session: an ambiguous
+  // session cookie is no session.
+  for (const cookie of [
+    `velvarr_session=planted; ${owner}`,
+    `${owner}; velvarr_session=planted`,
+    `${owner}; ${owner}`,
+  ]) {
+    const res = await call("GET", "/api/me", { cookie });
+    assert.equal(res.status, 401, cookie);
+    assert.equal((await errorShape(res)).code, "unauthenticated");
+  }
+
   const me = await call("GET", "/api/me", { cookie: owner });
   assert.equal(me.status, 200);
   const body = (await me.json()) as {

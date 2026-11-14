@@ -394,14 +394,23 @@ export function readSessionToken(request: Request): string | null {
   return readCookie(request, COOKIE_NAME);
 }
 
+// A name sent more than once reads as absent. Cookies do not isolate by
+// port, so a sibling origin on the same host can plant a same-named cookie
+// with a narrower Path, and the browser sends it first (RFC 6265 §5.4).
+// Taking either copy would let that origin choose the session (login CSRF,
+// session fixation); Velvarr itself sets each cookie at one Path only.
 function readCookie(request: Request, name: string): string | null {
   const header = request.headers.get("cookie");
   if (!header) return null;
+  let value: string | null = null;
+  let seen = false;
   for (const part of header.split(";")) {
     const eq = part.indexOf("=");
     if (eq > 0 && part.slice(0, eq).trim() === name) {
-      return part.slice(eq + 1).trim() || null;
+      if (seen) return null;
+      seen = true;
+      value = part.slice(eq + 1).trim() || null;
     }
   }
-  return null;
+  return value;
 }
