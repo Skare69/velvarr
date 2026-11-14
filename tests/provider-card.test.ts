@@ -1,6 +1,6 @@
 // The TPDB and StashDB credential editors' blank-Save case at the component
 // level (VELV-100): the real Save-click flow and the real editor markup, via
-// the exports settings.tsx renders ProviderCredentialCard with. node --test
+// the exports metadata-settings.tsx renders ProviderCredentialCard with. node --test
 // cannot import the .tsx component itself (type stripping does not parse
 // JSX), so the card delegates its state (reduceCredentialCard), its Save
 // click (applyCredentialSave) and its editor markup (credentialEditorView)
@@ -84,7 +84,7 @@ async function runSave(input: {
   return { state, actions, saves, saved };
 }
 
-/** Renders the same editor markup settings.tsx renders for the given
+/** Renders the same editor markup metadata-settings.tsx renders for the given
  * state. canEdit mirrors the card (a config row exists, nothing in
  * flight); the busy flags the reducer owns stay false here. */
 function renderEditor(input: {
@@ -735,7 +735,7 @@ test("the editor markup carries the ids, classes and copy the styles key on", ()
   assert.doesNotMatch(markup, /<input[^>]*disabled/);
   assert.match(
     markup,
-    /<p class="mt-2 text-sm text-muted">Saved credentials are encrypted and take precedence over the environment\. Connection checks use the saved credential or environment fallback\.<\/p>/,
+    /<p class="mt-2 text-sm text-muted">Saved credentials are encrypted and take precedence over the environment\. Check connection tests this draft without saving; a blank field uses the saved credential or environment fallback\.<\/p>/,
   );
   assert.match(
     markup,

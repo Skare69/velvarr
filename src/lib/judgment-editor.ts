@@ -59,6 +59,8 @@ export type JudgmentEditorAction =
    * what a probe would answer, so the old result goes. */
   | { type: "loaded"; settings: JudgmentSettings }
   | { type: "edit"; patch: Partial<JudgmentSettings> }
+  | { type: "begin" }
+  | { type: "saveStarted" }
   | { type: "cancel" }
   /** The PATCH succeeded with these effective settings. */
   | { type: "saved"; settings: JudgmentSettings; notice?: string }
@@ -106,6 +108,10 @@ export function reduceJudgmentEditor(
             ? null
             : e.notice,
       };
+    case "begin":
+      return { ...e, draft: e.saved, notice: null };
+    case "saveStarted":
+      return { ...e, notice: null };
     case "cancel":
       return { ...e, draft: e.saved };
     // A result for the previous settings would describe settings no longer
