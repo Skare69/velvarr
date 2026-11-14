@@ -34,7 +34,6 @@ import {
   useApiGet,
   useSession,
 } from "./shared.tsx";
-import { LimitsPanel, ReleaseStatusPanel } from "./limits.tsx";
 import {
   initJudgmentEditor,
   judgmentCheckDisabledReason,
@@ -162,7 +161,6 @@ export function SettingsView() {
         {[
           ["connections", "Connections"],
           ["metadata", "Metadata providers"],
-          ["system", "System"],
         ].map(([id, label]) => (
           <button
             key={id}
@@ -182,12 +180,6 @@ export function SettingsView() {
       <div hidden={section !== "metadata"}>
         <div className="settings-content">
           <MetadataSettings />
-        </div>
-      </div>
-      <div hidden={section !== "system"}>
-        <div className="settings-content">
-          <LimitsPanel />
-          <ReleaseStatusPanel />
         </div>
       </div>
     </section>
