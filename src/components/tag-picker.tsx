@@ -61,21 +61,15 @@ function sources(t: CatalogTagSelection): string {
     .join(", ");
 }
 
-export function TagPicker({
-  id,
-  label,
-  selected,
-  onChange,
-  description,
-  disabled,
-  allowFreeText = false,
-  tone,
-  help,
-}: {
+/** One include row as the picker sees it: a single selection or — only in
+ * an include picker with allowGroups — an "or" group, an array of 2+
+ * selections that is ONE term ("Blonde or Redhead"). Exclude and hidden
+ * tags stay single selections (the server parses them strict). */
+type TagRow = CatalogTagSelection | CatalogTagSelection[];
+
+type TagPickerBase = {
   id: string;
   label: string;
-  selected: CatalogTagSelection[];
-  onChange: (tags: CatalogTagSelection[]) => void;
   description?: string;
   disabled?: boolean;
   /** Offer the typed term itself as a label-only selection, pinned at the
@@ -94,10 +88,44 @@ export function TagPicker({
   tone?: "include" | "exclude";
   /** Long matching rules, folded behind "How matching works". */
   help?: string;
-}) {
+};
+
+type TagPickerProps = TagPickerBase &
+  (
+    | {
+        allowGroups?: false;
+        selected: CatalogTagSelection[];
+        onChange: (tags: CatalogTagSelection[]) => void;
+      }
+    | {
+        allowGroups: true;
+        selected: TagRow[];
+        onChange: (tags: TagRow[]) => void;
+      }
+  );
+
+export function TagPicker(props: TagPickerProps) {
+  const {
+    id,
+    label,
+    description,
+    disabled,
+    allowFreeText = false,
+    tone,
+    help,
+    allowGroups = false,
+  } = props;
+  // The union exists for the callers: with allowGroups unset the picker
+  // can never emit a group, and the caller's types say so. Internally the
+  // code works over the wide row shape and branches on Array.isArray.
+  const rows = props.selected as TagRow[];
+  const emit = props.onChange as (tags: TagRow[]) => void;
   const [term, setTerm] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  // The chip whose or-group the next pick extends; null when none is
+  // armed. One pick consumes it — see pick().
+  const [orTarget, setOrTarget] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const t = term.trim();
   // The debounce commits the term; the route only ever sees settled input.
@@ -115,7 +143,13 @@ export function TagPicker({
     return () => clearTimeout(timer);
   }, [t]);
 
-  const capped = selected.length >= TAG_CAP;
+  // The server's cap counts every member, so a group of 3 is 3 toward 25 —
+  // the picker stops offering at the same number the server refuses at.
+  const memberCount = rows.reduce(
+    (n, r) => n + (Array.isArray(r) ? r.length : 1),
+    0,
+  );
+  const capped = memberCount >= TAG_CAP;
   // useApiGet owns the stale-response guard: only the latest query's
   // response is ever applied.
   const { data, error, loading, reload } = useApiGet<BrowseTagsResponse>(
@@ -142,16 +176,26 @@ export function TagPicker({
         : undefined;
     if (both === undefined) return;
     const label = normalizeFacetName(term);
-    onChange(
-      selected.map((s) =>
-        isFreeText(s) && normalizeFacetName(s.name) === label ? both : s,
+    emit(
+      rows.map((s) =>
+        !Array.isArray(s) &&
+        isFreeText(s) &&
+        normalizeFacetName(s.name) === label
+          ? both
+          : s,
       ),
     );
   }, [data, error, loading]);
 
-  const picked = new Set(selected.map((s) => normalizeFacetName(s.name)));
-  const take = (rows: CatalogTagSelection[] | undefined) =>
-    (rows ?? []).filter(
+  // A tag already carried — alone or inside a group — is never offered
+  // again.
+  const picked = new Set(
+    rows
+      .flatMap((r) => (Array.isArray(r) ? r : [r]))
+      .map((s) => normalizeFacetName(s.name)),
+  );
+  const take = (list: CatalogTagSelection[] | undefined) =>
+    (list ?? []).filter(
       (r) => realTag(r) && !picked.has(normalizeFacetName(r.name)),
     );
   // A failed search hides the previous list; a partial source failure keeps
@@ -221,10 +265,34 @@ export function TagPicker({
       : undefined;
     if (isFreeText(tag) && swap === undefined)
       waitTo({ type: "pickFreeText", term: t, loading });
-    onChange([...selected, swap ?? tag]);
+    const chosen = swap ?? tag;
+    // An armed or-button means this pick extends that group: the group
+    // stays a group, its member order stays put, and the arm always clears
+    // after the pick. A target that no longer points at a group (removed
+    // or shifted meanwhile) falls back to a plain append.
+    const target = orTarget;
+    setOrTarget(null);
+    if (target !== null && allowGroups) {
+      const row = rows[target];
+      if (Array.isArray(row)) {
+        emit(rows.map((r, i) => (i === target ? [...row, chosen] : r)));
+        setTerm("");
+        setOpen(false);
+        inputRef.current?.focus();
+        return;
+      }
+    }
+    emit([...rows, chosen]);
     setTerm("");
     setOpen(false);
     inputRef.current?.focus();
+  }
+
+  /** One row off the selection; also disarms the or-target, whose index
+   * would point somewhere else after the removal. */
+  function removeRow(i: number) {
+    setOrTarget(null);
+    emit(rows.filter((_, j) => j !== i));
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLInputElement>) {
@@ -386,15 +454,17 @@ export function TagPicker({
             )}
         </>
       )}
-      {selected.length > 0 && (
+      {rows.length > 0 && (
         <ul
           className="mt-2 flex list-none flex-wrap gap-1.5 p-0"
           aria-label={`Selected ${label}`}
         >
-          {selected.map((tag, i) => (
-            <li key={normalizeFacetName(tag.name)}>
-              {/* Same chip as the active-filter row above Browse results,
-                  so a tag looks the same in the drawer and on the page. */}
+          {rows.map((row, i) => {
+            const group = Array.isArray(row);
+            const text = group ? row.map((m) => m.name).join(" or ") : row.name;
+            // Same chip as the active-filter row above Browse results, so
+            // a tag looks the same in the drawer and on the page.
+            const chip = (
               <button
                 type="button"
                 className={`filter-chip${
@@ -405,10 +475,14 @@ export function TagPicker({
                       : ""
                 }`}
                 disabled={disabled}
-                onClick={() => onChange(selected.filter((_, j) => j !== i))}
+                onClick={() => removeRow(i)}
                 aria-label={`Remove ${
-                  isFreeText(tag) ? "free-text tag" : "tag"
-                }: ${tag.name}`}
+                  group
+                    ? "tag group"
+                    : isFreeText(row)
+                      ? "free-text tag"
+                      : "tag"
+                }: ${text}`}
               >
                 {tone && (
                   <Icon
@@ -416,17 +490,55 @@ export function TagPicker({
                     className="filter-chip-mark"
                   />
                 )}
-                {isFreeText(tag) && (
+                {!group && isFreeText(row) && (
                   <span className="text-muted">Free text:</span>
                 )}
-                {tag.name}
+                {text}
                 <span className="filter-chip-x" aria-hidden="true">
                   <Icon name="close" />
                 </span>
               </button>
-            </li>
-          ))}
+            );
+            return (
+              <li
+                key={`${group ? "group" : "tag"}:${i}:${normalizeFacetName(group ? (row[0]?.name ?? "") : row.name)}`}
+              >
+                {group ? (
+                  /* The or-affordance is a button BESIDE the chip, never
+                     nested inside it — a button inside a button is
+                     invalid HTML. */
+                  <span className="filter-chip-with">
+                    {chip}
+                    <button
+                      type="button"
+                      className="filter-chip-or"
+                      disabled={disabled}
+                      aria-pressed={orTarget === i}
+                      aria-label={`Add another tag to the group “${text}”`}
+                      title="Extend this or-group"
+                      onClick={() => setOrTarget(orTarget === i ? null : i)}
+                    >
+                      or
+                    </button>
+                  </span>
+                ) : (
+                  chip
+                )}
+              </li>
+            );
+          })}
         </ul>
+      )}
+      {/* The armed group names itself while waiting for the next pick; the
+          arm clears after that one pick (see pick()). */}
+      {allowGroups && orTarget !== null && Array.isArray(rows[orTarget]) && (
+        <p className="cat-note">
+          Adding to &ldquo;
+          {(rows[orTarget] as CatalogTagSelection[])
+            .map((m) => m.name)
+            .join(" or ")}{" "}
+          or &hellip;&rdquo; — pick another tag.
+        </p>
       )}
       {help !== undefined && (
         <details className="cat-help">

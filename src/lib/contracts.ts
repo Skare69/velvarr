@@ -313,6 +313,29 @@ export type CatalogTagSelection = {
   stashdb?: string;
 };
 
+/** One performer or studio entry of a multi-entity browse filter
+ * (`performers` / `studios`). Shape mirrors CatalogTagSelection with the
+ * label optional: a chip carries a name when the writer knew it, and code
+ * never matches on it — only the provider ids decide. At least one id is
+ * required; a TPDB studio id may also be a site slug. */
+export type BrowseEntity = {
+  name?: string;
+  tpdb?: string;
+  stashdb?: string;
+};
+
+/** Why a browse source skipped or narrowed a filter: a muted note beside
+ * the grid, never an error and never total-hiding. `entries` holds the
+ * affected entries exactly as the request sent them. */
+export type BrowseNotice = {
+  provider: CatalogProvider;
+  kind: "performer" | "studio";
+  /** not_searched: the source runs nothing for this filter.
+   * not_included: the source runs but cannot include these entries. */
+  code: "not_searched" | "not_included";
+  entries: BrowseEntity[];
+};
+
 /** The Discover carousels in their default display order. Shared vocabulary:
  * the server orders present shelves by the saved per-account order, the UI
  * renders titles from here, and storage validates saved ids against it. */

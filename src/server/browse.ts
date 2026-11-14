@@ -40,6 +40,7 @@ import { suggestTags, tagSuggestionsAllowed } from "./judgment.ts";
 import {
   listCatalogTags,
   MAX_ROWS_PER_PAGE_FACTOR,
+  resolveTpdbStudioFilter,
   searchCatalog,
   searchCatalogTags,
   tagCounterpart,
@@ -58,15 +59,31 @@ import type {
   CatalogSortKey,
   ReleaseDateOperation,
 } from "./providers.ts";
-import { getConfig, parseTagSelections } from "./storage.ts";
+import {
+  getConfig,
+  parseIncludeSelections,
+  parseTagSelections,
+} from "./storage.ts";
 import { isIsoDate, isUuid } from "./provider-rows.ts";
 import {
   CATALOG_YEAR_MAX,
   CATALOG_YEAR_MIN,
   normalizeFacetName,
 } from "../lib/contracts.ts";
+import {
+  MAX_BROWSE_ENTITIES,
+  entriesUnknownTo,
+  mergedSourceRestricted,
+  planStreams,
+  sourceRunsFor,
+  type BrowseStreamSeed,
+  type PerformerMode,
+  type StreamPlan,
+} from "../lib/browse-entities.ts";
 import { BROWSE_MIXED_SORTS, SORT_KEYS, sortSpec } from "../lib/sorts.ts";
 import type {
+  BrowseEntity,
+  BrowseNotice,
   BrowseTagsResponse,
   CatalogDetail,
   CatalogProvider,
@@ -83,15 +100,21 @@ export type BrowseType = "all" | "movie" | "scene";
 export type BrowseQuery = {
   type: BrowseType;
   q?: string;
-  include: CatalogTagSelection[];
+  /** Include terms AND together; a group element (a non-empty array) is one
+   * "or" term matching when ANY member matches. */
+  include: (CatalogTagSelection | CatalogTagSelection[])[];
   exclude: CatalogTagSelection[];
-  studioTpdb?: string;
-  studioStashdb?: string;
-  performerTpdb?: string;
-  performerStashdb?: string;
+  /** Up to MAX_BROWSE_ENTITIES performer/studio entries; old scalar keys
+   * consolidate into one entry each at parse time. */
+  performers: BrowseEntity[];
+  studios: BrowseEntity[];
+  performerMode: PerformerMode;
   performerStarred?: true;
   studioMode: "exact" | "withChildren";
+  /** Release-year window: `year` stays native on TPDB and exact-match on
+   * StashDB; `yearTo` adds the local upper bound on both. */
   year?: number;
+  yearTo?: number;
   date?: string;
   dateOperation?: ReleaseDateOperation;
   sort?: CatalogSortKey;
@@ -108,6 +131,9 @@ export type BrowsePage = {
   total?: number;
   totalCountKnown: boolean;
   errors: SourceError[];
+  /** Why a source skipped or narrowed an entity filter: muted notes beside
+   * the grid, never errors and never total-hiding. */
+  notices: BrowseNotice[];
 };
 
 // --- query-string parsing (shape validation only; combination policy lives
@@ -155,29 +181,96 @@ function parseId(params: URLSearchParams, key: string): string | undefined {
   return value.toLowerCase();
 }
 
-function parseSelections(
+function parseJsonArray(
   params: URLSearchParams,
   key: string,
-): CatalogTagSelection[] {
+  what: string,
+): unknown {
   const raw = params.get(key);
   if (raw === null || raw.trim() === "") return [];
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    return JSON.parse(raw);
   } catch {
-    throw invalidQuery(`${key} must be a JSON array of tag selections.`);
+    throw invalidQuery(`${key} must be a JSON array of ${what}.`);
   }
-  return parseTagSelections(parsed);
 }
 
-/** Optional keys stay absent rather than present-and-undefined: a caller
- * comparing queries must not see a key that was never supplied. */
-function omitUndefined(
-  fields: Record<string, string | undefined>,
-): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(fields).filter(([, v]) => v !== undefined),
-  ) as Record<string, string>;
+/** One performer or studio entry of the multi-entity filters. At least one
+ * provider id is required; a TPDB studio id may also be a site slug (same
+ * rule as parseId). Trimmed name kept, ids lowercased. */
+function parseEntityEntries(
+  params: URLSearchParams,
+  key: string,
+  kind: "performer" | "studio",
+): BrowseEntity[] {
+  const parsed = parseJsonArray(params, key, `${kind} entries`);
+  if (!Array.isArray(parsed)) {
+    throw invalidQuery(`${key} must be a JSON array of ${kind} entries.`);
+  }
+  if (parsed.length > MAX_BROWSE_ENTITIES) {
+    throw invalidQuery(`${key} holds at most ${MAX_BROWSE_ENTITIES} entries.`);
+  }
+  const entries: BrowseEntity[] = [];
+  for (const raw of parsed) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw invalidQuery(`${key} entries must be JSON objects.`);
+    }
+    const rec = raw as Record<string, unknown>;
+    for (const field of Object.keys(rec)) {
+      if (field !== "name" && field !== "tpdb" && field !== "stashdb") {
+        throw invalidQuery(
+          `${key} entries accept only name, tpdb and stashdb fields.`,
+        );
+      }
+    }
+    let name: string | undefined;
+    if (rec.name !== undefined) {
+      if (typeof rec.name !== "string") {
+        throw invalidQuery(`${key} entry name must be a string.`);
+      }
+      const trimmed = rec.name.trim();
+      if (trimmed.length < 1 || trimmed.length > 120) {
+        throw invalidQuery(`${key} entry name must be 1..120 characters.`);
+      }
+      name = trimmed;
+    }
+    let tpdb: string | undefined;
+    if (rec.tpdb !== undefined) {
+      const value = typeof rec.tpdb === "string" ? rec.tpdb.trim() : "";
+      // Same slug allowance as parseId: cross-provider studio links
+      // legitimately carry the /sites/<slug> token.
+      const slugOk = kind === "studio" && SITE_SLUG_RE.test(value);
+      if (!UUID_RE.test(value) && !slugOk) {
+        throw invalidQuery(
+          kind === "studio"
+            ? `${key} entry tpdb must be a provider UUID or site slug.`
+            : `${key} entry tpdb must be a provider UUID.`,
+        );
+      }
+      tpdb = value.toLowerCase();
+    }
+    let stashdb: string | undefined;
+    if (rec.stashdb !== undefined) {
+      const value = typeof rec.stashdb === "string" ? rec.stashdb.trim() : "";
+      if (!UUID_RE.test(value)) {
+        throw invalidQuery(`${key} entry stashdb must be a provider UUID.`);
+      }
+      stashdb = value.toLowerCase();
+    }
+    if (tpdb === undefined && stashdb === undefined) {
+      throw invalidQuery(`${key} entry needs a TPDB or StashDB id.`);
+    }
+    entries.push({
+      ...(name !== undefined ? { name } : {}),
+      ...(tpdb !== undefined ? { tpdb } : {}),
+      ...(stashdb !== undefined ? { stashdb } : {}),
+    });
+  }
+  return entries;
+}
+
+function refuse(message: string): never {
+  throw new AppError(400, "invalid_search", message);
 }
 
 /** Parses the pinned browse query string. Unknown values are explicit 400s,
@@ -189,6 +282,11 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
     params.get("studioMode"),
     ["exact", "withChildren"],
     "studioMode",
+  );
+  const performerMode = parseEnum(
+    params.get("performerMode"),
+    ["all", "any"],
+    "performerMode",
   );
   const sort = parseEnum(params.get("sort"), SORT_KEYS, "sort");
   const direction = parseEnum(
@@ -214,19 +312,33 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
   if (dateOperation !== undefined && date === "") {
     throw invalidQuery("date_operation requires date.");
   }
-  const yearRaw = params.get("year");
-  let year: number | undefined;
-  if (yearRaw !== null && yearRaw.trim() !== "") {
-    year = Number(yearRaw);
+  const parseYear = (key: string): number | undefined => {
+    const raw = params.get(key);
+    if (raw === null || raw.trim() === "") return undefined;
+    const value = Number(raw);
     if (
-      !Number.isInteger(year) ||
-      year < CATALOG_YEAR_MIN ||
-      year > CATALOG_YEAR_MAX
+      !Number.isInteger(value) ||
+      value < CATALOG_YEAR_MIN ||
+      value > CATALOG_YEAR_MAX
     ) {
       throw invalidQuery(
-        `year must be a calendar year between ${CATALOG_YEAR_MIN} and ${CATALOG_YEAR_MAX}.`,
+        `${key} must be a calendar year between ${CATALOG_YEAR_MIN} and ${CATALOG_YEAR_MAX}.`,
       );
     }
+    return value;
+  };
+  const year = parseYear("year");
+  const yearTo = parseYear("yearTo");
+  // A range is a pair, not two independent bounds; a date cutoff and a year
+  // window are different release-time vocabularies and never combine.
+  if (yearTo !== undefined && year === undefined) {
+    refuse("yearTo requires a year.");
+  }
+  if (yearTo !== undefined && year !== undefined && yearTo < year) {
+    refuse("yearTo cannot be before year.");
+  }
+  if (yearTo !== undefined && date !== "") {
+    refuse("yearTo cannot be combined with a date filter.");
   }
   const pageRaw = params.get("page");
   const perPageRaw = params.get("perPage");
@@ -245,28 +357,100 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
     ["1"],
     "performerStarred",
   );
+  // The new entry arrays and the old scalar keys never share a request:
+  // two spellings of one filter would silently AND disjoint entry sets.
+  const performerEntries = parseEntityEntries(
+    params,
+    "performers",
+    "performer",
+  );
+  const studioEntries = parseEntityEntries(params, "studios", "studio");
+  const oldPerformerTpdb = parseId(params, "performerTpdb");
+  const oldPerformerStashdb = parseId(params, "performerStashdb");
+  const oldStudioTpdb = parseId(params, "studioTpdb");
+  const oldStudioStashdb = parseId(params, "studioStashdb");
+  if (
+    (oldPerformerTpdb !== undefined || oldPerformerStashdb !== undefined) &&
+    performerEntries.length > 0
+  ) {
+    refuse(
+      "performers cannot be combined with performerTpdb/performerStashdb.",
+    );
+  }
+  if (
+    (oldStudioTpdb !== undefined || oldStudioStashdb !== undefined) &&
+    studioEntries.length > 0
+  ) {
+    refuse("studios cannot be combined with studioTpdb/studioStashdb.");
+  }
+  // One old key or both old keys of one kind consolidate into ONE unnamed
+  // entry — the unified tile shape the old URL always carried.
+  const performers =
+    oldPerformerTpdb !== undefined || oldPerformerStashdb !== undefined
+      ? [
+          {
+            ...(oldPerformerTpdb !== undefined
+              ? { tpdb: oldPerformerTpdb }
+              : {}),
+            ...(oldPerformerStashdb !== undefined
+              ? { stashdb: oldPerformerStashdb }
+              : {}),
+          },
+        ]
+      : performerEntries;
+  const studios =
+    oldStudioTpdb !== undefined || oldStudioStashdb !== undefined
+      ? [
+          {
+            ...(oldStudioTpdb !== undefined ? { tpdb: oldStudioTpdb } : {}),
+            ...(oldStudioStashdb !== undefined
+              ? { stashdb: oldStudioStashdb }
+              : {}),
+          },
+        ]
+      : studioEntries;
+  // The same provider id twice in one kind would double-count that source's
+  // stream or criterion: refuse rather than dedupe behind the caller's back.
+  for (const [key, entries] of [
+    ["performers", performers],
+    ["studios", studios],
+  ] as const) {
+    for (const side of ["tpdb", "stashdb"] as const) {
+      const ids = entries
+        .map((e) => e[side])
+        .filter((id): id is string => id !== undefined);
+      if (new Set(ids).size !== ids.length) {
+        refuse(
+          `${key} holds the same ${side === "tpdb" ? "TPDB" : "StashDB"} id twice.`,
+        );
+      }
+    }
+  }
   return {
     type: type ?? "all",
     ...(q !== undefined && q !== "" ? { q } : {}),
-    include: parseSelections(params, "include"),
     // Both lists accept labels with no provider id: an include label is a
     // free-text term that expands on each side's published tags — the
     // native any-of criterion when the expansion is complete and within
     // the native id cap, the local substring re-check otherwise — and an
     // exclude label runs the local family matcher. Neither can travel as
-    // an exact native tag, so neither is rejected here.
-    exclude: parseSelections(params, "exclude"),
-    ...omitUndefined({
-      studioTpdb: parseId(params, "studioTpdb"),
-      studioStashdb: parseId(params, "studioStashdb"),
-      performerTpdb: parseId(params, "performerTpdb"),
-      performerStashdb: parseId(params, "performerStashdb"),
-    }),
+    // an exact native tag, so neither is rejected here. An include element
+    // may also be an "or" group (a JSON array of selections).
+    include: parseIncludeSelections(
+      parseJsonArray(params, "include", "tag selections"),
+    ),
+    exclude: parseTagSelections(
+      parseJsonArray(params, "exclude", "tag selections"),
+    ),
+    performers,
+    studios,
+    performerMode: performerMode ?? "all",
     ...(performerStarred !== undefined
       ? { performerStarred: true as const }
       : {}),
     studioMode: studioMode ?? "exact",
     ...(year !== undefined ? { year } : {}),
+    ...(yearTo !== undefined ? { yearTo } : {}),
     ...(date !== "" && dateOperation !== undefined
       ? { date, dateOperation }
       : {}),
@@ -289,11 +473,28 @@ function isFreeTextSelection(sel: CatalogTagSelection): boolean {
   return sel.tpdb === undefined && sel.stashdb === undefined;
 }
 
+/** One include term: a plain selection or an "or" group (a non-empty array
+ * of selections matching when ANY member matches). */
+type IncludeTerm = CatalogTagSelection | CatalogTagSelection[];
+
+function includeTermMatcher(term: IncludeTerm): (tags: FoldedTags) => boolean {
+  if (!Array.isArray(term)) {
+    return tagMatcher(term, isFreeTextSelection(term) ? "substring" : "exact");
+  }
+  // An "or" group: anchored members match exact label, free-text members
+  // substring — one member matching satisfies the whole term.
+  const members = term.map((m) =>
+    tagMatcher(m, isFreeTextSelection(m) ? "substring" : "exact"),
+  );
+  return (tags) => members.some((matches) => matches(tags));
+}
+
 function visiblePredicate(
   hiddenTags: CatalogTagSelection[],
   exclude: CatalogTagSelection[],
-  include: CatalogTagSelection[],
-  year: number | undefined,
+  include: IncludeTerm[],
+  years: { from?: number; to?: number } | undefined,
+  creditsAllOf: string[],
 ): (d: CatalogDetail) => boolean {
   // Exclusions win over includes: a hidden or excluded match blocks the item
   // regardless of any include criterion. Selections fold once here, per
@@ -301,41 +502,60 @@ function visiblePredicate(
   const blocked = [...hiddenTags, ...exclude].map((sel) =>
     tagMatcher(sel, "family"),
   );
-  const required = include.map((sel) =>
-    tagMatcher(sel, isFreeTextSelection(sel) ? "substring" : "exact"),
+  const required = include.map(includeTermMatcher);
+  // TPDB all-mode filmography: the route only carries the first entry's
+  // performer, so the visible predicate re-checks every other entry's id
+  // in the rows' credits — the "all of" AND stays honest.
+  const credits = creditsAllOf.map(
+    (id) => (d: CatalogDetail) =>
+      d.credits.some(
+        (c) => c.reference.provider === "tpdb" && c.reference.id === id,
+      ),
   );
   return (d) => {
     const tags = new FoldedTags(d);
     if (blocked.some((matches) => matches(tags))) return false;
     if (!required.every((matches) => matches(tags))) return false;
-    if (year !== undefined && d.releaseDate?.slice(0, 4) !== String(year)) {
-      return false;
+    if (!credits.every((matches) => matches(d))) return false;
+    if (
+      years !== undefined &&
+      (years.from !== undefined || years.to !== undefined)
+    ) {
+      // A missing release date can never prove the year window, so it
+      // excludes — same rule as the old exact-year check.
+      const raw = d.releaseDate?.slice(0, 4);
+      if (raw === undefined) return false;
+      const year = Number(raw);
+      if (years.from !== undefined && year < years.from) return false;
+      if (years.to !== undefined && year > years.to) return false;
     }
     return true;
   };
 }
 
 /** The native include criteria one provider side can carry: `allOf` are
- * the anchored tag ids plus every singleton free-text expansion (AND
+ * the anchored tag ids plus every singleton term expansion (AND
  * criterion — a title satisfying the term AND must carry each of these
- * tags), `anyOf` the smallest free-text expansion (any-of criterion — a
+ * tags), `anyOf` the smallest term expansion (any-of criterion — a
  * valid pre-filter only, sent when no singleton or anchored id exists and
- * the expansion is complete and fits the native id cap). `localInclude`
- * holds the selections the visible predicate must still re-check locally:
- * the free-text terms (several AND together, which one upstream tag
- * criterion cannot express) and anchored chips whose exact-label
- * counterpart row is uuid-less (matched by exact label, never a native
- * criterion). `localFree` holds only the free-text part of `localInclude`
- * (uuid-less anchored chips excluded): the soft ceiling counts productive
- * native pre-filtering, which only a free-text local term beside a native
- * criterion provides — a uuid-less chip filters an unfiltered scan, so it
- * keeps the hard ceiling. */
+ * the expansion is complete and fits the native id cap). A term is a
+ * plain selection or an "or" group; a group's expansion is the deduped
+ * union of its members' native ids, and it follows the same rules as a
+ * free-text term. `localInclude` holds the terms the visible predicate
+ * must still re-check locally: the free-text and group terms (several AND
+ * together, which one upstream tag criterion cannot express) and anchored
+ * chips whose exact-label counterpart row is uuid-less (matched by exact
+ * label, never a native criterion). `localFree` holds the expanding terms
+ * part of `localInclude` (uuid-less anchored chips excluded): the soft
+ * ceiling counts productive native pre-filtering, which only an expanding
+ * local term beside a native criterion provides — a uuid-less chip filters
+ * an unfiltered scan, so it keeps the hard ceiling. */
 type ResolvedIncludes = {
   allOf: string[];
   anyOf: string[];
-  localInclude: CatalogTagSelection[];
-  localFree: CatalogTagSelection[];
-  /** True when at least one free-text term rides the native tag criterion
+  localInclude: IncludeTerm[];
+  localFree: IncludeTerm[];
+  /** True when at least one expanding term rides the native tag criterion
    * (a singleton expansion in `allOf`, or the `anyOf` group): at the scan
    * ceiling such a stream degrades softly — its pages were productive and
    * the matches found are a real partial answer. */
@@ -343,51 +563,106 @@ type ResolvedIncludes = {
 };
 
 /** Resolves the native include criteria for one provider side. Anchored
- * selections resolve as before: a selection already carrying the side's
- * UUID uses it; otherwise the counterpart id is resolved through the
- * providers' own published label pairing. A uuid-less exact-label match
+ * plain selections resolve as before: a selection already carrying the
+ * side's UUID uses it; otherwise the counterpart id is resolved through
+ * the providers' own published label pairing. A uuid-less exact-label match
  * (TPDB numeric-string id) keeps the anchored selection on the local
  * exact-label re-check — the tag exists there, so disqualifying the side
  * would claim an absence the provider never showed; only a label with no
  * tag row at all disqualifies the whole side (undefined) — it is NEVER
  * allowed to run unfiltered.
- * Free-text includes expand on THIS side's complete published tag listing
- * (expandCatalogTagTerm), anchored ids or not. Every term's expansion must
- * be complete and native — no capped walk, no uuid-less rows — before
- * anything free travels: a partial criterion would silently drop titles.
- * Anything incomplete keeps the WHOLE free group on the local substring
- * re-check with the side's approximate totals; a complete, freshness-
- * bounded expansion that holds no tag for a term (and no uuid-less match)
- * proves the side's AND can never match, and the side is skipped as exact
- * absence (undefined) instead of scanning unfiltered pages into the 422
- * ceiling. The rest of a
- * complete group set, the most selective valid pre-filter travels: every
- * singleton group joins the anchored ids in the all-of criterion (an AND
- * match must carry each of those tags), and with no singleton and no
- * anchored id the smallest group rides alone as any-of while the other
- * terms keep filtering locally. A lookup that fails
+ * An "or" group is ONE term whose expansion is the deduped union of its
+ * members' native ids: a member already carrying the side's UUID joins the
+ * union directly (never allOf — the group is an any-of set, even at one
+ * id), a free-text member expands on THIS side's published tag listing
+ * (expandCatalogTagTerm), and a member carrying only the other side's id
+ * resolves through the counterpart pairing — native joins the union,
+ * uuid-less can only match locally and makes the whole group local. The
+ * group rides the same rules as a free-text term (resolveIncludeCriteria):
+ * every expansion must be complete and native — no capped walk, no
+ * uuid-less rows — before anything travels; a partial criterion would
+ * silently drop titles. Anything incomplete keeps the WHOLE term set on
+ * the local re-check with the side's approximate totals; a complete,
+ * freshness-bounded expansion that holds no tag for a term (and no
+ * uuid-less match) proves the side's AND can never match, and the side is
+ * skipped as exact absence (undefined) instead of scanning unfiltered
+ * pages into the 422 ceiling. Of a complete term set, the most selective
+ * valid pre-filter travels: every singleton joins the anchored ids in the
+ * all-of criterion (an AND match must carry each of those tags), and with
+ * no singleton and no anchored id the smallest set rides alone as any-of
+ * while the other terms keep filtering locally. A lookup that fails
  * throws; browseTitles records the side as a failed source instead of
  * reading the outage as absence. */
 async function includeIdsForSide(
-  selections: CatalogTagSelection[],
+  selections: IncludeTerm[],
   side: "tpdb" | "stashdb",
   expandFree: boolean,
 ): Promise<ResolvedIncludes | undefined> {
   const allOf: string[] = [];
-  const free: CatalogTagSelection[] = [];
   // Anchored selections whose exact-label counterpart row is uuid-less:
   // the tag exists on this side but its id can never ride a native
   // criterion, so they join the local exact-label re-check.
   const local: CatalogTagSelection[] = [];
+  // The terms that ride resolveIncludeCriteria (free-text plains and every
+  // group), each with its expansion — plain free-text keeps today's shape.
+  const terms: { term: IncludeTerm; expansion: TagExpansion }[] = [];
   for (const sel of selections) {
+    if (Array.isArray(sel)) {
+      // "or" group: build one TagExpansion from the members' native ids.
+      const union: string[] = [];
+      let complete = true;
+      let dropped = false;
+      let allNative = true;
+      for (const member of sel) {
+        const direct = side === "tpdb" ? member.tpdb : member.stashdb;
+        if (direct !== undefined) {
+          if (!union.includes(direct)) union.push(direct);
+          continue;
+        }
+        if (isFreeTextSelection(member)) {
+          // The filmography route rejects tag parameters, so nothing
+          // expands there — the group stays entirely local.
+          if (!expandFree) {
+            allNative = false;
+            complete = false;
+            continue;
+          }
+          const expansion = await expandCatalogTagTerm(side, member.name);
+          for (const id of expansion.ids) {
+            if (!union.includes(id)) union.push(id);
+          }
+          complete = complete && expansion.complete;
+          dropped = dropped || expansion.dropped;
+          continue;
+        }
+        // tagCounterpart searches the OTHER provider by exact normalized
+        // label.
+        const counterpart = await tagCounterpart(
+          side === "tpdb" ? "stashdb" : "tpdb",
+          member.name,
+        );
+        if (counterpart === undefined) return undefined;
+        if (counterpart.native) {
+          if (!union.includes(counterpart.id)) union.push(counterpart.id);
+        } else {
+          // This member can only match locally, which makes the whole
+          // group local: a partial union would silently drop titles.
+          allNative = false;
+          complete = false;
+        }
+      }
+      terms.push({
+        term: sel,
+        expansion: { complete: complete && allNative, dropped, ids: union },
+      });
+      continue;
+    }
     const direct = side === "tpdb" ? sel.tpdb : sel.stashdb;
     if (direct !== undefined) {
       if (!allOf.includes(direct)) allOf.push(direct);
       continue;
     }
     if (!isFreeTextSelection(sel)) {
-      // tagCounterpart searches the OTHER provider by exact normalized
-      // label.
       const counterpart = await tagCounterpart(
         side === "tpdb" ? "stashdb" : "tpdb",
         sel.name,
@@ -400,37 +675,60 @@ async function includeIdsForSide(
       }
       continue;
     }
-    free.push(sel);
+    if (!expandFree) {
+      terms.push({
+        term: sel,
+        expansion: { complete: false, dropped: false, ids: [] },
+      });
+      continue;
+    }
+    terms.push({
+      term: sel,
+      expansion: await expandCatalogTagTerm(side, sel.name),
+    });
   }
-  if (free.length === 0 || !expandFree) {
+  if (terms.length === 0) {
     return {
       allOf,
       anyOf: [],
-      localInclude: [...free, ...local],
-      localFree: free,
+      localInclude: [...local],
+      localFree: [],
+      freeTextNative: false,
+    };
+  }
+  if (!expandFree) {
+    // Filmography side: nothing rides native tag criteria, every term
+    // (plain or group) stays on the local re-check.
+    const localTerms = terms.map((t) => t.term);
+    return {
+      allOf,
+      anyOf: [],
+      localInclude: [...localTerms, ...local],
+      localFree: localTerms,
       freeTextNative: false,
     };
   }
   // Every term expands before the decision: the tag listing behind
   // expandCatalogTagTerm is memoized, so reading every term costs no extra
-  // upstream traffic, and complete term indexes keep localInclude aligned
-  // with the caller's selections. The ride-local-or-native decision
-  // itself lives in resolveIncludeCriteria.
-  const expansions: TagExpansion[] = [];
-  for (const sel of free) {
-    expansions.push(await expandCatalogTagTerm(side, sel.name));
-  }
-  const criteria = resolveIncludeCriteria(allOf, expansions);
+  // upstream traffic. The ride-local-or-native decision itself lives in
+  // resolveIncludeCriteria.
+  const criteria = resolveIncludeCriteria(
+    allOf,
+    terms.map((t) => t.expansion),
+  );
   // Grounded absence (complete fresh listing, no uuid-less match, empty
-  // ids): the side is skipped — exact zero via the plans.length === 0
-  // path when no side survives — instead of a 40-page unfiltered scan
-  // ending in query_too_broad. An All browse keeps the surviving side.
+  // ids): the side is skipped — exact zero via the no-plans path when no
+  // side survives — instead of a 40-page unfiltered scan ending in
+  // query_too_broad. An All browse keeps the surviving side.
   if (criteria.provablyEmpty) return undefined;
   return {
     allOf: criteria.allOf,
     anyOf: criteria.anyOf,
-    localInclude: [...criteria.localTermIndexes.map((i) => free[i]!), ...local],
-    localFree: criteria.localTermIndexes.map((i) => free[i]!),
+    localInclude: [
+      ...criteria.localTermIndexes.map((i) => terms[i]!.term),
+      ...local,
+    ],
+    localFree: criteria.localTermIndexes.map((i) => terms[i]!.term),
     freeTextNative: criteria.freeTextNative,
   };
 }
@@ -591,12 +889,16 @@ class Stream {
 }
 
 function allSourcesFailed(streams: Stream[]): never {
-  const errors = streams.filter((s) => s.error !== undefined);
-  throw new AppError(
-    502,
-    "provider_unavailable",
-    errors.map((s) => `${s.error!.provider}: ${s.error!.message}`).join("; "),
-  );
+  // Same one-line-per-source rule as mergeStreams' errors list: several
+  // streams of one source failing is one story.
+  const seen = new Set<CatalogProvider>();
+  const messages: string[] = [];
+  for (const s of streams) {
+    if (s.error === undefined || seen.has(s.error.provider)) continue;
+    seen.add(s.error.provider);
+    messages.push(`${s.error.provider}: ${s.error.message}`);
+  }
+  throw new AppError(502, "provider_unavailable", messages.join("; "));
 }
 
 /** A side whose include resolution failed before any query ran: an
@@ -648,6 +950,7 @@ async function mergeStreams(
     | undefined,
   start: number,
   count: number,
+  notices: BrowseNotice[],
 ): Promise<BrowsePage> {
   refuseUnscannablePage(start, count, streams.filter((s) => s.live).length);
   const items: CatalogDetail[] = [];
@@ -688,9 +991,17 @@ async function mergeStreams(
     if (index >= start) items.push(detail);
     index += 1;
   }
-  const errors: SourceError[] = streams
-    .filter((s) => s.error !== undefined)
-    .map((s) => s.error!);
+  const failed = streams.filter((s) => s.error !== undefined);
+  // Several streams of one source failing is ONE named error in the page:
+  // first failure wins, the rest tell the same story.
+  const errors: SourceError[] = [];
+  const failedProviders = new Set<CatalogProvider>();
+  for (const s of failed) {
+    if (!failedProviders.has(s.error!.provider)) {
+      failedProviders.add(s.error!.provider);
+      errors.push(s.error!);
+    }
+  }
   // A 502 needs every side to have failed for real: a stream stopping on
   // its own scan ceiling is a bounded (if matchless) answer, not an outage,
   // so a ceiling beside a real outage — or beside another ceiling — stays
@@ -698,8 +1009,8 @@ async function mergeStreams(
   // leave nothing answered.
   if (
     items.length === 0 &&
-    errors.length === streams.length &&
-    errors.every((e) => e.code !== "scan_ceiling")
+    failed.length === streams.length &&
+    failed.every((s) => s.error!.code !== "scan_ceiling")
   ) {
     allSourcesFailed(streams); // all-source failure stays visible
   }
@@ -737,44 +1048,64 @@ async function mergeStreams(
     ...(totalKnown ? { total } : {}),
     totalCountKnown: totalKnown,
     errors,
+    notices,
   };
 }
 
 // --- native query assembly ---
 
+/** One planned stream's native query. The seed carries the provider, the
+ * kind and the entity criteria; the caller adds its side's resolved include
+ * criteria and the resolved TPDB studio site id. */
 function nativeQuery(
   query: BrowseQuery,
   plan: {
-    provider: CatalogProvider;
+    seed: BrowseStreamSeed;
     includeIds: string[];
-    /** True when includeIds are a free-text expansion: the native criterion
-     * is any-of (`tags`) instead of all-of (`tagsAll`). */
+    /** True when includeIds are a free-text or group expansion: the native
+     * criterion is any-of (`tags`) instead of all-of (`tagsAll`). */
     includeAny: boolean;
     excludeIds: string[];
+    /** Numeric TPDB site id resolved from the seed's studio entry. */
+    resolvedStudio?: string;
     performerIds?: string[];
+    performerAll?: boolean;
   },
   sort: SortOrder | undefined,
-  filmography: boolean,
   page: number,
   perPage: number,
 ): CatalogSearchQuery {
+  const seed = plan.seed;
   const date =
     query.date !== undefined && query.dateOperation !== undefined
       ? { cutoff: query.date, operation: query.dateOperation }
       : undefined;
-  if (plan.provider === "tpdb") {
-    // Filmography routes upstream-reject tag parameters, so includes stay
-    // local there; every other movie query passes the AND-of-includes
-    // natively.
+  if (seed.provider === "tpdb") {
+    if (seed.filmographyPerformer !== undefined) {
+      // Filmography route: paging-only. Query, year, date, studio, tags and
+      // sort are all refused before planning, so the performer id is the
+      // whole native query; includes stay in the visible predicate.
+      return {
+        provider: "tpdb",
+        kind: "movie",
+        performer: seed.filmographyPerformer,
+        page,
+        perPage,
+      };
+    }
+    // Every other movie query passes the AND-of-includes natively; yearTo
+    // never rides native (TPDB has no upper-bound param), the visible
+    // predicate bounds it.
     return {
       provider: "tpdb",
       kind: "movie",
       ...(query.q !== undefined ? { query: query.q } : {}),
       ...(query.year !== undefined ? { year: query.year } : {}),
       ...(date !== undefined ? { releaseDate: date } : {}),
-      ...(query.studioTpdb !== undefined ? { studio: query.studioTpdb } : {}),
-      ...(filmography ? { performer: query.performerTpdb } : {}),
-      ...(plan.includeIds.length > 0 && !filmography
+      ...(plan.resolvedStudio !== undefined
+        ? { studio: plan.resolvedStudio }
+        : {}),
+      ...(plan.includeIds.length > 0
         ? plan.includeAny
           ? { tags: plan.includeIds }
           : { tagsAll: plan.includeIds }
@@ -795,18 +1126,25 @@ function nativeQuery(
     provider: "stashdb",
     kind: "scene",
     ...(query.q !== undefined ? { query: query.q } : {}),
+    // performers INCLUDES (any-of) or INCLUDES_ALL (the "all of" browse
+    // mode); starred follows arrive pre-expanded as performerIds.
     ...(plan.performerIds !== undefined
-      ? { performers: plan.performerIds }
-      : query.performerStashdb !== undefined
-        ? { performer: query.performerStashdb }
-        : {}),
-    ...(query.studioStashdb !== undefined
-      ? { studio: query.studioStashdb, studioMode: query.studioMode }
+      ? {
+          performers: plan.performerIds,
+          ...(plan.performerAll === true ? { performerAll: true } : {}),
+        }
+      : {}),
+    // Exact studios: every known id in ONE INCLUDES criterion, so disjoint
+    // site lists keep exact summed totals. withChildren: one parentStudio
+    // search per studio seed.
+    ...(seed.studioIds !== undefined ? { studios: seed.studioIds } : {}),
+    ...(seed.parentStudioId !== undefined
+      ? { studio: seed.parentStudioId, studioMode: "withChildren" as const }
       : {}),
     // One upstream tag criterion: native includes (all-of anchored or any-of
-    // free-text expansion), or — only when no include is native — native
-    // excludes. Mixed include+exclude keeps the includes native and
-    // re-checks every exclusion locally.
+    // expansion), or — only when no include is native — native excludes.
+    // Mixed include+exclude keeps the includes native and re-checks every
+    // exclusion locally.
     ...(plan.includeIds.length > 0
       ? plan.includeAny
         ? { tags: plan.includeIds }
@@ -830,18 +1168,16 @@ function nativeQuery(
   };
 }
 
-function refuse(message: string): never {
-  throw new AppError(400, "invalid_search", message);
-}
-
 // --- browseTitles ---
 
 /** The one side decision, pure: which provider streams a browse query may
  * run, which combinations are refused outright, and what ordering each side
  * can carry. No IO and no per-user state — every refusal here is provable
  * from the query alone, which makes this the directly testable face of the
- * logic that once shipped mis-wired. browseTitles consumes the plan and adds
- * only IO: include-tag resolution and per-user hidden tags. */
+ * logic that once shipped mis-wired. planStreams is the only side/stream
+ * authority (its BrowseStreamSeed[] rides the plan verbatim); browseTitles
+ * consumes the plan and adds only IO: include-tag resolution, TPDB studio
+ * site-id resolution and per-user hidden tags. */
 export type BrowsePlan = {
   sides: CatalogProvider[];
   filmography: boolean;
@@ -849,56 +1185,53 @@ export type BrowsePlan = {
   mergeOrder:
     | { key: "recency" | "duration"; direction: CatalogSortDirection }
     | undefined;
+  /** One seed per upstream list, in entry order. A qualifying side whose
+   * filter set produced no seed (no performer, no studio) runs one plain
+   * search stream — browse is a catalog surface before it is a filter. */
+  seeds: BrowseStreamSeed[];
 };
 
 export function planBrowseSides(query: BrowseQuery): BrowsePlan {
-  // A source-scoped constraint on the wrong typed tab never refuses and
-  // never runs the other side unfiltered: the side it cannot constrain
-  // simply does not qualify, so the tab keeps the filter in the URL and
-  // shows an honest empty page. A unified pair (both performer ids, both
-  // studio ids) keeps the side the tab names — each side carries its own
-  // constraint.
-  if (
-    query.performerStarred !== undefined &&
-    query.performerTpdb !== undefined
-  ) {
+  // A starred-performer filter is a StashDB-scenes follow filter: it cannot
+  // share a request with picked performers.
+  if (query.performerStarred !== undefined && query.performers.length > 0) {
     refuse(
-      "A starred-performer filter cannot be combined with a TPDB performer.",
-    );
-  }
-  if (
-    query.performerStarred !== undefined &&
-    query.performerStashdb !== undefined
-  ) {
-    refuse(
-      "A starred-performer filter cannot be combined with a StashDB performer.",
+      "A starred-performer filter cannot be combined with picked performers.",
     );
   }
   if (query.studioMode === "withChildren") {
-    if (query.studioStashdb === undefined) {
+    if (!query.studios.some((e) => e.stashdb !== undefined)) {
       refuse("studioMode withChildren requires a StashDB studio.");
     }
-    if (query.studioTpdb !== undefined) {
+    if (query.studios.some((e) => e.tpdb !== undefined)) {
       refuse(
         "studioMode withChildren is StashDB-only; TPDB studios have no parent criterion.",
       );
     }
   }
-  const filmography = query.performerTpdb !== undefined;
-  // The filmography route constrains only the TPDB side: a unified
-  // performer pair on the Scenes tab runs the StashDB side alone, which
-  // accepts search, year, date and sort — refuse only where TPDB runs.
-  const tpdbFilmography = filmography && query.type !== "scene";
-  if (tpdbFilmography) {
-    // The filmography route is paging-only: query, year, date, studio and
-    // every sort are upstream-rejected, so refuse them here before any
-    // upstream call rather than mid-merge.
+  const streamPlan: StreamPlan = planStreams(
+    query.type,
+    query.performers,
+    query.studios,
+    query.performerMode,
+    query.studioMode,
+    query.performerStarred === true,
+  );
+  const filmography = streamPlan.filmography;
+  if (filmography) {
+    // The filmography route constrains only the TPDB side (planStreams
+    // never turns it on for the Scenes tab): a unified performer entry on
+    // the Scenes tab runs the StashDB side alone, which accepts search,
+    // year, date and sort — refuse only where TPDB runs. The route is
+    // paging-only: query, year, date, studio and every sort are
+    // upstream-rejected, so refuse them here before any upstream call
+    // rather than mid-merge.
     if (query.q !== undefined) {
       refuse(
         "A TPDB performer filmography cannot be combined with a search term.",
       );
     }
-    if (query.year !== undefined) {
+    if (query.year !== undefined || query.yearTo !== undefined) {
       refuse(
         "A TPDB performer filmography cannot be combined with a year filter.",
       );
@@ -908,7 +1241,7 @@ export function planBrowseSides(query: BrowseQuery): BrowsePlan {
         "A TPDB performer filmography cannot be combined with a date filter.",
       );
     }
-    if (query.studioTpdb !== undefined) {
+    if (query.studios.some((e) => e.tpdb !== undefined)) {
       refuse(
         "A TPDB performer filmography cannot be combined with a studio filter.",
       );
@@ -928,13 +1261,22 @@ export function planBrowseSides(query: BrowseQuery): BrowsePlan {
       `"${query.sort}" order is not available on both sources; browse All supports recency and duration, or pick Movies/Scenes for the rest.`,
     );
   }
+  // A source merging 2+ upstream lists (several TPDB studio site_ids, or
+  // several StashDB parent studios) accepts only the mixed vocabulary: any
+  // other order would claim a global order a stable concatenation cannot
+  // keep.
+  if (mergedSourceRestricted(streamPlan, query.sort)) {
+    refuse(
+      `"${query.sort}" order cannot merge several upstream lists from one source; a merged source supports only recency and duration.`,
+    );
+  }
 
   // Global order: an explicit recency/duration request, or the default
   // release recency (newest first) — but only where every qualifying stream
   // can genuinely carry it. The filmography route cannot sort, so its
   // queries claim no order at all where it runs. Other explicit sorts reach
   // exactly one stream and pass through natively.
-  const defaultSort: SortOrder | undefined = tpdbFilmography
+  const defaultSort: SortOrder | undefined = filmography
     ? undefined
     : { key: "recency", direction: "desc" };
   const explicitSort: SortOrder | undefined =
@@ -956,33 +1298,13 @@ export function planBrowseSides(query: BrowseQuery): BrowsePlan {
         }
       : undefined;
 
-  // One-sided clauses restrict only that side: a StashDB studio kills the
-  // movie query, a TPDB studio kills the scene query. A unified studio tile
-  // carries BOTH ids, and there the clauses are alternatives, not a
-  // conjunction — each provider query takes its own side, the overview is
-  // the union. AND-ing them could only ever return nothing. The performer
-  // pair unions the same way: both ids together run both sides; a lone
-  // TPDB-side clause still kills the scene side, and a lone StashDB id the
-  // movie side. On a typed tab the wrong-kind clause yields no sides at
-  // all: the tab keeps the filter and shows an honest empty page.
-  const bothPerformers =
-    query.performerTpdb !== undefined && query.performerStashdb !== undefined;
-  const movieWanted =
-    query.type !== "scene" &&
-    (query.performerStashdb === undefined || bothPerformers) &&
-    (query.studioStashdb === undefined || query.studioTpdb !== undefined) &&
-    query.performerStarred === undefined;
-  const sceneWanted =
-    query.type !== "movie" &&
-    (!filmography || bothPerformers) &&
-    (query.studioTpdb === undefined || query.studioStashdb !== undefined);
   const sides: CatalogProvider[] = [];
-  if (movieWanted) sides.push("tpdb");
-  if (sceneWanted) sides.push("stashdb");
+  if (streamPlan.tpdb) sides.push("tpdb");
+  if (streamPlan.stashdb) sides.push("stashdb");
   // An explicit order must be one the qualifying sides genuinely carry: the
-  // type=all refusal above covers only the merged vocabulary, while a typed
-  // tab (or an All query filtered down to one side) sends the sort to that
-  // one provider — where an unimplemented order dies upstream as
+  // refusals above cover only the merged vocabulary, while a typed tab (or
+  // an All query filtered down to one side) sends the sort to that one
+  // provider — where an unimplemented order dies upstream as
   // invalid_search, which a locally filtered stream would bury as a 502.
   if (query.sort !== undefined) {
     for (const provider of sides) {
@@ -1009,9 +1331,75 @@ export function planBrowseSides(query: BrowseQuery): BrowsePlan {
       }
     }
   }
-  return { sides, filmography, nativeSort, mergeOrder };
+  // A side with no seed runs one plain search stream; seeded sides keep
+  // their entry order exactly as planStreams emitted it.
+  const seeded = new Set(streamPlan.seeds.map((s) => s.provider));
+  for (const provider of ["tpdb", "stashdb"] as const) {
+    if (sides.includes(provider) && !seeded.has(provider)) {
+      streamPlan.seeds.push({
+        provider,
+        kind: provider === "tpdb" ? "movie" : "scene",
+      });
+    }
+  }
+  return {
+    sides,
+    filmography,
+    nativeSort,
+    mergeOrder,
+    seeds: streamPlan.seeds,
+  };
 }
 // Stryker disable all
+
+/** Why a source skipped or narrowed an entity filter, computed from the
+ * parsed query and the side qualification only — no IO, never an error: a
+ * muted note beside the grid. Only the tab's own sources are judged;
+ * performerStarred produces no notices (it carries no entries; the client
+ * explains starred elsewhere). Entries ride as the request sent them. */
+function buildNotices(query: BrowseQuery, plan: BrowsePlan): BrowseNotice[] {
+  const sources: CatalogProvider[] =
+    query.type === "all"
+      ? ["tpdb", "stashdb"]
+      : query.type === "movie"
+        ? ["tpdb"]
+        : ["stashdb"];
+  const notices: BrowseNotice[] = [];
+  for (const provider of sources) {
+    const specs: {
+      kind: "performer" | "studio";
+      entries: BrowseEntity[];
+      mode: PerformerMode;
+    }[] = [
+      {
+        kind: "performer",
+        entries: query.performers,
+        mode: query.performerMode,
+      },
+      { kind: "studio", entries: query.studios, mode: "any" },
+    ];
+    for (const { kind, entries, mode } of specs) {
+      if (entries.length === 0) continue;
+      const unknown = entriesUnknownTo(entries, provider);
+      if (!sourceRunsFor(entries, provider, mode)) {
+        notices.push({
+          provider,
+          kind,
+          code: "not_searched",
+          entries: unknown,
+        });
+      } else if (plan.sides.includes(provider) && unknown.length > 0) {
+        notices.push({
+          provider,
+          kind,
+          code: "not_included",
+          entries: unknown,
+        });
+      }
+    }
+  }
+  return notices;
+}
 
 /** Composes the visible catalog page: native provider filters first, local
  * mandatory predicates only where a provider cannot express them, stable
@@ -1022,6 +1410,7 @@ export async function browseTitles(
   starredPerformerIds: string[] = [],
 ): Promise<BrowsePage> {
   const plan = planBrowseSides(query);
+  const notices = buildNotices(query, plan);
   if (query.performerStarred === true && starredPerformerIds.length === 0) {
     // Starred but the account follows no StashDB-side performer: nothing can
     // match, provably, before any upstream call.
@@ -1033,6 +1422,7 @@ export async function browseTitles(
       total: 0,
       totalCountKnown: true,
       errors: [],
+      notices: [],
     };
   }
   const filmography = plan.filmography;
@@ -1065,46 +1455,128 @@ export async function browseTitles(
     resolveIncludes(sceneWanted, "stashdb"),
   ]);
 
-  const plans: {
-    provider: CatalogProvider;
+  // One plan per stream seed, in entry order; seeds of one side share that
+  // side's resolved include criteria. Anchored plain ids and singleton
+  // expansions share the one all-of criterion, so anyOf only ever rides
+  // alone.
+  type SeedPlan = {
+    seed: BrowseStreamSeed;
     includeIds: string[];
     includeAny: boolean;
     freeTextNative: boolean;
     excludeIds: string[];
     localFiltered: boolean;
-    localInclude: CatalogTagSelection[];
-    localFree: CatalogTagSelection[];
-    localYear?: number;
+    localInclude: IncludeTerm[];
+    localFree: IncludeTerm[];
+    localYearRange?: { from?: number; to?: number };
+    creditsAllOf: string[];
+    resolvedStudio?: string;
     performerIds?: string[];
-  }[] = [];
-  if (movieWanted && tpdbIncludes !== undefined) {
-    // Free-text includes expand natively on this side (the filmography
-    // route rejects tag parameters, so there they stay local); anchored
-    // ids and singleton expansions share the one all-of criterion, so
-    // anyOf only ever rides alone.
-    plans.push({
-      provider: "tpdb",
-      includeIds:
-        tpdbIncludes.allOf.length > 0 ? tpdbIncludes.allOf : tpdbIncludes.anyOf,
-      includeAny:
-        tpdbIncludes.allOf.length === 0 && tpdbIncludes.anyOf.length > 0,
-      freeTextNative: tpdbIncludes.freeTextNative,
-      excludeIds: [], // TPDB has no native exclude criterion
-      localFiltered:
-        hiddenTags.length > 0 ||
-        query.exclude.length > 0 ||
-        tpdbIncludes.localInclude.length > 0 ||
-        (filmography && query.include.length > 0),
-      localInclude: filmography ? query.include : tpdbIncludes.localInclude,
-      localFree: filmography ? query.include : tpdbIncludes.localFree,
-      localYear: undefined,
-    });
-  }
-  if (sceneWanted && stashIncludes !== undefined) {
+    performerAll?: boolean;
+  };
+  const seedPlans: SeedPlan[] = [];
+  const seenSiteIds = new Set<string>();
+  for (const seed of plan.seeds) {
+    if (seed.provider === "tpdb") {
+      if (tpdbIncludes === undefined) continue; // provable absence, or unresolved above
+      if (seed.filmographyPerformer !== undefined) {
+        // ponytail route limit: TPDB's filmography carries ONE performer, so
+        // "all of" rides the first entry's id and every other entry's id
+        // re-checks in the rows' credits — and the totals degrade, because
+        // the upstream list is not AND-ed. Widen only if TPDB ships a
+        // multi-performer criterion.
+        const creditsAllOf =
+          query.performerMode === "all"
+            ? query.performers
+                .filter((e) => e.tpdb !== undefined)
+                .map((e) => e.tpdb!)
+                .slice(1)
+            : [];
+        seedPlans.push({
+          seed,
+          includeIds: [],
+          includeAny: false,
+          freeTextNative: false,
+          excludeIds: [],
+          localFiltered:
+            hiddenTags.length > 0 ||
+            query.exclude.length > 0 ||
+            query.include.length > 0 ||
+            creditsAllOf.length > 0,
+          localInclude: query.include,
+          localFree: query.include,
+          creditsAllOf,
+        });
+        continue;
+      }
+      if (seed.tpdbStudio !== undefined) {
+        // The numeric site id resolves first, sequentially in seed order; a
+        // later entry resolving to the same site_id is dropped — one stream
+        // per distinct list, or the summed totals would double-count.
+        let siteId: string | undefined;
+        try {
+          siteId = await resolveTpdbStudioFilter(seed.tpdbStudio);
+        } catch (err) {
+          unresolved.push(unresolvedStream("tpdb", err));
+          continue;
+        }
+        // Unreachable in practice: parse guarantees a non-empty studio value.
+        if (siteId === undefined || seenSiteIds.has(siteId)) continue;
+        seenSiteIds.add(siteId);
+        seedPlans.push({
+          seed,
+          includeIds:
+            tpdbIncludes.allOf.length > 0
+              ? tpdbIncludes.allOf
+              : tpdbIncludes.anyOf,
+          includeAny:
+            tpdbIncludes.allOf.length === 0 && tpdbIncludes.anyOf.length > 0,
+          freeTextNative: tpdbIncludes.freeTextNative,
+          excludeIds: [], // TPDB has no native exclude criterion
+          localFiltered:
+            hiddenTags.length > 0 ||
+            query.exclude.length > 0 ||
+            tpdbIncludes.localInclude.length > 0 ||
+            query.yearTo !== undefined,
+          localInclude: tpdbIncludes.localInclude,
+          localFree: tpdbIncludes.localFree,
+          // year stays native upstream; only the upper bound is local here.
+          localYearRange:
+            query.yearTo !== undefined ? { to: query.yearTo } : undefined,
+          creditsAllOf: [],
+          resolvedStudio: siteId,
+        });
+        continue;
+      }
+      // Plain movie search seed (no entity narrowed this side).
+      seedPlans.push({
+        seed,
+        includeIds:
+          tpdbIncludes.allOf.length > 0
+            ? tpdbIncludes.allOf
+            : tpdbIncludes.anyOf,
+        includeAny:
+          tpdbIncludes.allOf.length === 0 && tpdbIncludes.anyOf.length > 0,
+        freeTextNative: tpdbIncludes.freeTextNative,
+        excludeIds: [], // TPDB has no native exclude criterion
+        localFiltered:
+          hiddenTags.length > 0 ||
+          query.exclude.length > 0 ||
+          tpdbIncludes.localInclude.length > 0 ||
+          query.yearTo !== undefined,
+        localInclude: tpdbIncludes.localInclude,
+        localFree: tpdbIncludes.localFree,
+        localYearRange:
+          query.yearTo !== undefined ? { to: query.yearTo } : undefined,
+        creditsAllOf: [],
+      });
+      continue;
+    }
+    if (stashIncludes === undefined) continue; // provable absence, or unresolved above
     const includesNative =
       stashIncludes.allOf.length > 0 || stashIncludes.anyOf.length > 0;
-    plans.push({
-      provider: "stashdb",
+    seedPlans.push({
+      seed,
       includeIds:
         stashIncludes.allOf.length > 0
           ? stashIncludes.allOf
@@ -1123,15 +1595,25 @@ export async function browseTitles(
         hiddenTags.length > 0 ||
         query.exclude.length > 0 ||
         stashIncludes.localInclude.length > 0 ||
-        query.year !== undefined,
+        query.year !== undefined ||
+        query.yearTo !== undefined,
       localInclude: stashIncludes.localInclude,
       localFree: stashIncludes.localFree,
-      localYear: query.year,
+      // Both year bounds check locally on StashDB; `yearTo` defaults the
+      // upper end so `year` alone stays an exact-year filter, as before.
+      localYearRange:
+        query.year !== undefined || query.yearTo !== undefined
+          ? { from: query.year, to: query.yearTo ?? query.year }
+          : undefined,
+      creditsAllOf: [],
       performerIds:
-        query.performerStarred === true ? starredPerformerIds : undefined,
+        query.performerStarred === true
+          ? starredPerformerIds
+          : seed.performerIds,
+      performerAll: seed.performerAll === true,
     });
   }
-  if (plans.length === 0) {
+  if (seedPlans.length === 0) {
     if (unresolved.length > 0) {
       // Every wanted side died resolving its includes: an outage, not a
       // provably empty catalog. mergeStreams turns all-failed streams into
@@ -1141,6 +1623,7 @@ export async function browseTitles(
         mergeOrder,
         (query.page - 1) * query.perPage,
         query.perPage,
+        notices,
       );
     }
     // Reachable when the query provably matches nothing before any upstream
@@ -1155,27 +1638,21 @@ export async function browseTitles(
       total: 0,
       totalCountKnown: true,
       errors: [],
+      notices,
     };
   }
 
   // Fast path: a single fully-native stream passes straight through with the
   // provider's own totals, continuation, and error semantics — one upstream
   // request for any page depth.
-  const single = plans.length === 1 ? plans[0]! : undefined;
+  const single = seedPlans.length === 1 ? seedPlans[0]! : undefined;
   if (
     single !== undefined &&
     !single.localFiltered &&
     unresolved.length === 0
   ) {
     const page = await searchCatalog(
-      nativeQuery(
-        query,
-        single,
-        nativeSort,
-        filmography,
-        query.page,
-        query.perPage,
-      ),
+      nativeQuery(query, single, nativeSort, query.page, query.perPage),
     );
     return {
       items: page.items,
@@ -1185,33 +1662,63 @@ export async function browseTitles(
       ...(page.total !== undefined ? { total: page.total } : {}),
       totalCountKnown: page.totalCountKnown,
       errors: [],
+      notices,
     };
   }
 
-  const streams: Stream[] = plans.map(
-    (plan) =>
+  const streams: Stream[] = [];
+  const dedupeSets = new Map<string, Set<string>>();
+  for (const seedPlan of seedPlans) {
+    const base = visiblePredicate(
+      hiddenTags,
+      query.exclude,
+      seedPlan.localInclude,
+      seedPlan.localYearRange,
+      seedPlan.creditsAllOf,
+    );
+    let visible = base;
+    let localFiltered = seedPlan.localFiltered;
+    if (seedPlan.seed.dedupeKey !== undefined) {
+      // Streams sharing a dedupeKey may surface the same title (overlapping
+      // filmographies, parent/child studios): the merge keeps only its
+      // first occurrence across the group. The set records only rows the
+      // base predicate passed, so an excluded row never poisons its twin's
+      // verdict; totals degrade to exhaustion-exact because the native
+      // lists overlap.
+      let set = dedupeSets.get(seedPlan.seed.dedupeKey);
+      if (set === undefined) {
+        set = new Set();
+        dedupeSets.set(seedPlan.seed.dedupeKey, set);
+      }
+      visible = (d) => {
+        const dedupeId = `${d.reference.provider}:${d.reference.id}`;
+        if (set.has(dedupeId)) return false;
+        if (!base(d)) return false;
+        set.add(dedupeId);
+        return true;
+      };
+      localFiltered = true;
+    }
+    streams.push(
       new Stream(
-        nativeQuery(query, plan, nativeSort, filmography, 1, query.perPage),
-        visiblePredicate(
-          hiddenTags,
-          query.exclude,
-          plan.localInclude,
-          plan.localYear,
-        ),
+        nativeQuery(query, seedPlan, nativeSort, 1, query.perPage),
+        visible,
         query.perPage,
-        plan.localFiltered,
+        localFiltered,
         softCeilingFor({
-          localInclude: plan.localFree,
-          freeTextNative: plan.freeTextNative,
+          localInclude: seedPlan.localFree,
+          freeTextNative: seedPlan.freeTextNative,
         }),
       ),
-  );
+    );
+  }
   streams.push(...unresolved);
   return mergeStreams(
     streams,
     mergeOrder,
     (query.page - 1) * query.perPage,
     query.perPage,
+    notices,
   );
 }
 

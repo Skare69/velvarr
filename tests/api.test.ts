@@ -791,16 +791,23 @@ async function tpdbHandler(
     }
     // TPDB caps unfiltered totals at the fake 10000 marker; a countable
     // filter (q) yields a real total. Mirrors the live provider behavior.
+    // VELV-166: the two rows gain performer credits so a TPDB filmography
+    // for the fixture performers returns real credited rows (tpdbCredits
+    // maps performers[].id into the details' credits).
     const realTotal = url.searchParams.get("q") !== null;
     return json(res, 200, {
       // Second row feeds the unified facet shelves an unlinked studio tile
       // (TPDB_STUDIO2) and a counterpart-less genre tile (TAG_C).
       data: [
-        tpdbMovieRow(TPDB_MOVIE),
+        {
+          ...tpdbMovieRow(TPDB_MOVIE),
+          performers: [{ id: TPDB_PERFORMER, name: "Fixture Performer" }],
+        },
         {
           ...tpdbMovieRow(TPDB_MOVIE9),
           site: { name: "Second Studio", uuid: TPDB_STUDIO2 },
           tags: [{ id: 71, uuid: TAG_C, name: "Fixture Tag C" }],
+          performers: [{ id: TPDB_PERFORMER3, name: "Bulk Fixture Performer" }],
         },
         ...extraTpdbMovies,
       ],
@@ -914,7 +921,14 @@ async function tpdbHandler(
   // single-page bulk test asserts.)
   if (p === `/performers/${TPDB_PERFORMER3}/movies`)
     return json(res, 200, {
-      data: [tpdbMovieRow(TPDB_MOVIE6)],
+      data: [
+        {
+          ...tpdbMovieRow(TPDB_MOVIE6),
+          // VELV-166: the filmography row credits her, so an all-mode
+          // browse whose entries re-check credits returns real rows.
+          performers: [{ id: TPDB_PERFORMER3, name: "Bulk Fixture Performer" }],
+        },
+      ],
       meta: { total: 1 },
       links: { next: "https://fixture.test/next" },
     });
@@ -9587,6 +9601,14 @@ interface BrowsePageBody {
   total?: number;
   totalCountKnown: boolean;
   errors: { provider: string; code: string; message: string }[];
+  /** Why a source skipped or narrowed an entity filter: muted notes beside
+   * the grid, never errors. */
+  notices: {
+    provider: string;
+    kind: "performer" | "studio";
+    code: "not_searched" | "not_included";
+    entries: { name?: string; tpdb?: string; stashdb?: string }[];
+  }[];
   hiddenTagCount: number;
 }
 
@@ -10136,6 +10158,86 @@ test("impossible dates and foreign per-tab sorts refuse as 400 before upstream, 
     });
     assert.equal(restored.status, 200);
   }
+});
+
+test("browse caps entity entries, keeps the old one-id URL, and reports notices beside the grid", async () => {
+  // Six performer entries: the one-browse cap refuses at parse time with
+  // the suite's error shape, before any upstream call.
+  const tpdbBefore = tpdbFx.calls;
+  const stashBefore = stashdbFx.calls;
+  const six = Array.from({ length: 6 }, (_, i) => ({
+    tpdb: `2a2b3c4d-0000-0000-0000-${String(0x100 + i).padStart(12, "0")}`,
+  }));
+  const capped = await call(
+    "GET",
+    `/api/browse?performers=${encodeURIComponent(JSON.stringify(six))}`,
+    { cookie: member },
+  );
+  assert.equal(capped.status, 400);
+  const cappedShape = await errorShape(capped);
+  assert.equal(cappedShape.code, "invalid_query");
+  assert.match(cappedShape.message, /at most 5 entries/);
+  assert.equal(tpdbFx.calls, tpdbBefore, "no upstream call may fire");
+  assert.equal(stashdbFx.calls, stashBefore, "no upstream call may fire");
+
+  // The old one-id URL still parses and serves the same items shape as
+  // its new-key equivalent: the scalars consolidate into ONE unified
+  // entry and both sides run.
+  const newEntries = encodeURIComponent(
+    JSON.stringify([{ tpdb: TPDB_PERFORMER, stashdb: STASH_PERFORMER }]),
+  );
+  const oldResponse = await call(
+    "GET",
+    `/api/browse?performerTpdb=${TPDB_PERFORMER}&performerStashdb=${STASH_PERFORMER}`,
+    { cookie: member },
+  );
+  assert.equal(oldResponse.status, 200);
+  const oldPage = (await oldResponse.json()) as BrowsePageBody;
+  const newResponse = await call(
+    "GET",
+    `/api/browse?performers=${newEntries}`,
+    {
+      cookie: member,
+    },
+  );
+  assert.equal(newResponse.status, 200);
+  const newPage = (await newResponse.json()) as BrowsePageBody;
+  // Same items shape: the consolidated entry runs the same sides, so the
+  // reference ids (and totals) line up.
+  const oldIds = oldPage.items.map((item) => refOf(item)?.id).sort();
+  const newIds = newPage.items.map((item) => refOf(item)?.id).sort();
+  assert.deepEqual(oldIds, newIds);
+  assert.equal(oldPage.total, newPage.total);
+  assert.equal(oldPage.totalCountKnown, newPage.totalCountKnown);
+  assert.deepEqual(oldPage.notices, newPage.notices);
+  assert.deepEqual(oldPage.errors, []);
+  assert.equal(oldPage.items.length > 0, true, "the filmography returned rows");
+
+  // A stashdb-only entry on All: TPDB cannot know her, so it runs nothing
+  // and the page names the skip in a notice — {provider, kind, code,
+  // entries} beside the grid, never inside errors.
+  const stashOnly = await call(
+    "GET",
+    `/api/browse?performers=${encodeURIComponent(
+      JSON.stringify([{ stashdb: STASH_PERFORMER }]),
+    )}`,
+    { cookie: member },
+  );
+  assert.equal(stashOnly.status, 200);
+  const stashPage = (await stashOnly.json()) as BrowsePageBody;
+  assert.deepEqual(stashPage.notices, [
+    {
+      provider: "tpdb",
+      kind: "performer",
+      code: "not_searched",
+      entries: [{ stashdb: STASH_PERFORMER }],
+    },
+  ]);
+  assert.deepEqual(stashPage.errors, []);
+  assert.ok(
+    stashPage.items.every((item) => refOf(item)?.provider === "stashdb"),
+    "only the knowing source ran",
+  );
 });
 
 test("related titles: admission, reference validation before upstream, rank vocabulary", async () => {

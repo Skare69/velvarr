@@ -843,7 +843,17 @@ export type CatalogSearchQuery =
       /** Any-of performer inclusion (INCLUDES) for the starred-performers
        * browse filter: multiple ids, never combined with `performer`. */
       performers?: string[];
+      /** All-of performer inclusion (INCLUDES_ALL) flipping `performers` to
+       * the browse "all of" mode. The field is schema-legal on
+       * MultiIDCriterionInput but its INCLUDES_ALL modifier has never been
+       * live-checked against StashDB — treat upstream rejection of the
+       * combination as a provider outage, not a parsed 400. */
+      performerAll?: boolean;
       studio?: string;
+      /** Exact-mode multi-studio criterion (studios INCLUDES): every known
+       * id in ONE query, so disjoint site lists keep exact summed totals.
+       * Mutually exclusive with `studio` — one criterion per query. */
+      studios?: string[];
       /** Only real on a StashDB scene search paired with `studio`. Omitted or
        * "exact" keeps the studios INCLUDES criterion (this studio only);
        * "withChildren" issues the parentStudio criterion instead so scenes
@@ -1051,8 +1061,10 @@ function rejectUnusedFilters(
 /** TPDB filters scenes/movies by NUMERIC site_id (verified live 2026-09-11:
  * a uuid is rejected upstream), while site identity everywhere else is the
  * uuid beside its published /sites/<slug>. A uuid or slug resolves once
- * through /sites/{id}; a numeric string passes straight through. */
-async function resolveTpdbStudioFilter(
+ * through /sites/{id}; a numeric string passes straight through. Exported
+ * for the multi-studio browse planner, which resolves each TPDB studio
+ * entry to its site_id before one stream per distinct site. */
+export async function resolveTpdbStudioFilter(
   v: unknown,
 ): Promise<string | undefined> {
   const s = cleanString(v, 64);
@@ -1496,13 +1508,37 @@ export async function searchCatalog(
       modifier: "INCLUDES",
     };
   } else if (query.performers !== undefined) {
-    // Any-of (INCLUDES): the starred-performers browse filter.
+    // INCLUDES (any-of) by default: the starred-performers browse filter.
+    // performerAll flips the modifier to INCLUDES_ALL for the browse
+    // "all of" performer mode.
     input.performers = {
       value: query.performers.map(requireStashPerformerId),
-      modifier: "INCLUDES",
+      modifier: query.performerAll === true ? "INCLUDES_ALL" : "INCLUDES",
     };
   }
-  if (query.studio !== undefined) {
+  if (query.studio !== undefined && query.studios !== undefined) {
+    throw new AppError(
+      400,
+      "invalid_search",
+      "Choose either studio or studios; StashDB exposes one studio criterion per query.",
+    );
+  }
+  if (query.studios !== undefined && query.studioMode === "withChildren") {
+    // studios is the exact-mode criterion; parent inclusion is a
+    // per-studio search via studio+studioMode, never a flag on the union.
+    throw new AppError(
+      400,
+      "invalid_search",
+      "studios is exact-mode only; use studio with studioMode for parent inclusion.",
+    );
+  }
+  if (query.studios !== undefined) {
+    // Exact-mode multi-studio criterion: scenes of ANY listed studio.
+    input.studios = {
+      value: query.studios.map(requireStashStudioId),
+      modifier: "INCLUDES",
+    };
+  } else if (query.studio !== undefined) {
     // Verified live 2026-09-11: SceneQueryInput.studios is a MultiIDCriterionInput
     // (INCLUDES = this studio only), while parentStudio is a plain ID string —
     // scenes under that studio's child rows. The two are mutually exclusive.

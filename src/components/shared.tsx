@@ -15,6 +15,7 @@ import { useRouter } from "next/navigation";
 import { isDeliverableMedia } from "../lib/contracts.ts";
 import type {
   Account,
+  BrowseEntity,
   CatalogDetail,
   CatalogDetailResponse,
   CatalogProvider,
@@ -383,11 +384,44 @@ export function legacyBrowsePatch(
 ): Record<string, string | null> | null {
   const legacyView = p.get("view");
   const facet = p.get("facet");
-  if (legacyView !== "movies" && legacyView !== "scenes" && !facet) return null;
+  // Scalar entity keys are legacy on every view now: any of them present
+  // fires the rewrite, so a stale in-app link or old bookmark lands
+  // canonical even without an old view or facet param.
+  const scalarEntity =
+    p.get("performerTpdb") !== null ||
+    p.get("performerStashdb") !== null ||
+    p.get("studioTpdb") !== null ||
+    p.get("studioStashdb") !== null;
+  if (
+    legacyView !== "movies" &&
+    legacyView !== "scenes" &&
+    !facet &&
+    !scalarEntity
+  )
+    return null;
 
   const patch: Record<string, string | null> = { view: "titles" };
   const idsOf = (key: string): string[] =>
     (p.get(key) ?? "").split(",").filter(Boolean);
+  // One old key or both old keys of one kind fold into ONE entry of the new
+  // array key — both ids ride the same entity. A present new key wins
+  // (mixed old + new of a kind is the server's 400, not a rewrite); the
+  // fold keeps the patch idempotent across a repeat run.
+  const foldEntity = (
+    tpdbKey: string,
+    stashdbKey: string,
+    arrayKey: "performers" | "studios",
+  ): void => {
+    if (p.get(arrayKey) || (!p.get(tpdbKey) && !p.get(stashdbKey))) return;
+    const entry: BrowseEntity = {};
+    if (p.get(tpdbKey)) entry.tpdb = p.get(tpdbKey)!;
+    if (p.get(stashdbKey)) entry.stashdb = p.get(stashdbKey)!;
+    patch[arrayKey] = JSON.stringify([entry]);
+    patch[tpdbKey] = null;
+    patch[stashdbKey] = null;
+  };
+  foldEntity("performerTpdb", "performerStashdb", "performers");
+  foldEntity("studioTpdb", "studioStashdb", "studios");
 
   if (facet) {
     // Old discover facet tiles: view=titles&facet=studio|tag&name=N&tpdb=I[&stashdb=J].
@@ -401,21 +435,29 @@ export function legacyBrowsePatch(
       // refuses it, so an id-less old link normalizes to plain Browse.
       if (sel.tpdb !== undefined || sel.stashdb !== undefined)
         patch.include = JSON.stringify([sel]);
-    } else if (p.get("tpdb")) {
-      patch.studioTpdb = p.get("tpdb");
-      if (p.get("stashdb")) patch.studioStashdb = p.get("stashdb");
-    } else if (p.get("stashdb")) {
-      patch.studioStashdb = p.get("stashdb");
+    } else if (p.get("tpdb") || p.get("stashdb")) {
+      // One studios entry carries both ids, so browse runs both sides at
+      // once; the facet name labels the chip and the heading.
+      const entry: BrowseEntity = {};
+      if (p.get("name")) entry.name = p.get("name")!;
+      if (p.get("tpdb")) entry.tpdb = p.get("tpdb")!;
+      if (p.get("stashdb")) entry.stashdb = p.get("stashdb")!;
+      patch.studios = JSON.stringify([entry]);
     }
     return { ...patch, facet: null, tpdb: null, stashdb: null };
   }
 
   // Old split views: movies were the TPDB surface, scenes the StashDB one.
+  // Scalar-triggered rewrites on other views skip the view mapping — only
+  // these two views carried the split shape (and the tags* keys it maps).
   const side = legacyView === "movies" ? "tpdb" : "stashdb";
-  const suffix = side === "tpdb" ? "Tpdb" : "Stashdb";
-  patch.type = legacyView === "movies" ? "movie" : "scene";
-  if (p.get("performer")) patch[`performer${suffix}`] = p.get("performer");
-  if (p.get("studio")) patch[`studio${suffix}`] = p.get("studio");
+  if (legacyView === "movies" || legacyView === "scenes") {
+    patch.type = legacyView === "movies" ? "movie" : "scene";
+    if (p.get("performer"))
+      patch.performers = JSON.stringify([{ [side]: p.get("performer") }]);
+    if (p.get("studio"))
+      patch.studios = JSON.stringify([{ [side]: p.get("studio") }]);
+  }
   const tagged = (id: string) => ({ name: `#${id.slice(0, 8)}`, [side]: id });
   const include = [...idsOf("tags"), ...idsOf("tagsAll")].map(tagged);
   if (include.length > 0) patch.include = JSON.stringify(include);

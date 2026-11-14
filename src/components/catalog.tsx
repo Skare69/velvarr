@@ -32,6 +32,8 @@ import {
   useSession,
 } from "./shared";
 import type {
+  BrowseEntity,
+  BrowseNotice,
   CatalogDetail,
   CatalogKind,
   CatalogProvider,
@@ -41,7 +43,7 @@ import type {
 import { CATALOG_YEAR_MAX, CATALOG_YEAR_MIN } from "../lib/contracts";
 // Names for studio/tag filter ids live in lib/names, seeded at navigation
 // time (details, picks, tiles) — URLs carry ids, chips still get labels.
-import { filterName, seedPerformerPick } from "../lib/names";
+import { filterName, seedName, seedPerformerPick } from "../lib/names";
 // Detail views (payload types, DetailSections, RelatedTitles,
 // CatalogDetailView) live in catalog-detail.tsx; the browse view hosts the
 // detail overlay and reads its target from the URL.
@@ -60,16 +62,30 @@ import {
   browseFilterPatch,
   clearBrowseKeys,
   countActiveFilters,
-  performerStashdbPatch,
-  performerTpdbPatch,
+  performerModePatch,
+  performersPatch,
   starredPatch,
+  studiosPatch,
   typePatch,
+  yearRangePatch,
+  type BrowseEntryState,
   type BrowseFilter,
 } from "../lib/browse-url";
+// The multi-entity browse semantics (source qualification, stream seeds,
+// merged-source sort restriction) live beside the server's planner in
+// browse-entities.ts; the client reads the same functions so its offers
+// can never drift from what the server accepts.
+import {
+  MAX_BROWSE_ENTITIES,
+  planStreams,
+  tpdbFilmographyRuns,
+  type PerformerMode,
+} from "../lib/browse-entities";
 // Sort capability is shared with the server: the options offered per tab,
 // the labels and the direction rule all derive from src/lib/sorts.ts — one
 // table answers what the client offers and what the server accepts.
 import {
+  BROWSE_MIXED_SORTS,
   browseSortIsDirectional,
   browseSortsFor,
   SORT_LABELS,
@@ -197,6 +213,7 @@ function SortSelect({
   sort,
   direction,
   disabled,
+  merged,
   onSort,
   onDirection,
 }: {
@@ -207,10 +224,17 @@ function SortSelect({
   /** TPDB filmography route rejects sort — disabled while a TPDB performer
    * filter is active. */
   disabled?: boolean;
+  /** A source that pages 2+ merged upstream lists (2+ TPDB studio lists,
+   * 2+ StashDB child-studio searches) only orders honestly by recency and
+   * duration: the offers clamp to BROWSE_MIXED_SORTS, the same refusal the
+   * server applies. */
+  merged?: boolean;
   onSort: (v: string) => void;
   onDirection: (v: "asc" | "desc") => void;
 }) {
-  const sorts = browseSortsFor(type);
+  const sorts = browseSortsFor(type).filter(
+    (s) => !merged || BROWSE_MIXED_SORTS.includes(s),
+  );
   if (sorts.length === 0) return null;
   // Rule 39: up to five exclusive orders read at once as segments (equal
   // width, .segmented); a longer list keeps the select with its visible
@@ -375,52 +399,88 @@ function SearchBox({
   );
 }
 
-function YearBox({
-  id,
-  value,
-  onCommit,
+/** The server accepts nothing but a 4-digit year inside the catalog band;
+ * the range boxes never commit junk past this predicate. */
+function isCatalogYear(v: string): boolean {
+  return (
+    /^\d{4}$/.test(v) &&
+    Number(v) >= CATALOG_YEAR_MIN &&
+    Number(v) <= CATALOG_YEAR_MAX
+  );
+}
+
+/** One commit writes both year bounds: `from` is the native `year` key, an
+ * empty `to` means one year, and clearing `from` clears the whole range —
+ * a `yearTo` without a `year` would 400. */
+function YearRange({
+  fromId,
+  toId,
+  year,
+  yearTo,
   disabled,
+  onCommit,
 }: {
-  id: string;
-  value: string;
-  onCommit: (v: string) => void;
+  fromId: string;
+  toId: string;
+  year: string;
+  yearTo: string;
   disabled?: boolean;
+  onCommit: (year: string, yearTo: string) => void;
 }) {
-  const { input, setInput, mark } = useSyncedInput(value);
-  const commit = useCallback(() => {
+  const from = useSyncedInput(year);
+  const to = useSyncedInput(yearTo);
+  const commit = (fromRaw: string, toRaw: string) => {
     if (disabled) return;
-    const t = input.trim();
-    // Server rejects anything but a 4-digit year in range; never send junk.
-    if (t !== "" && !/^\d{4}$/.test(t)) return;
-    if (
-      t !== "" &&
-      (Number(t) < CATALOG_YEAR_MIN || Number(t) > CATALOG_YEAR_MAX)
-    )
-      return;
-    mark(t);
-    onCommit(t);
-  }, [disabled, input, mark, onCommit]);
+    const f = fromRaw.trim();
+    const t = f === "" ? "" : toRaw.trim();
+    if (f !== "" && !isCatalogYear(f)) return;
+    if (t !== "" && !isCatalogYear(t)) return;
+    from.mark(f);
+    to.mark(t);
+    onCommit(f, t);
+  };
   return (
     <div>
-      <label className="label" htmlFor={id}>
+      <span className="label" id={`${fromId}-label`}>
         Year
-      </label>
-      <input
-        id={id}
-        type="number"
-        inputMode="numeric"
-        min={CATALOG_YEAR_MIN}
-        max={CATALOG_YEAR_MAX}
-        placeholder="Any year"
-        className="input"
-        value={input}
-        disabled={disabled}
-        onChange={(e) => setInput(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") commit();
-        }}
-      />
+      </span>
+      <div className="flex items-center gap-2">
+        <input
+          id={fromId}
+          type="number"
+          inputMode="numeric"
+          min={CATALOG_YEAR_MIN}
+          max={CATALOG_YEAR_MAX}
+          placeholder="From"
+          aria-labelledby={`${fromId}-label`}
+          className="input"
+          value={from.input}
+          disabled={disabled}
+          onChange={(e) => from.setInput(e.target.value)}
+          onBlur={() => commit(from.input, to.input)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit(from.input, to.input);
+          }}
+        />
+        <span className="text-sm text-muted">to</span>
+        <input
+          id={toId}
+          type="number"
+          inputMode="numeric"
+          min={CATALOG_YEAR_MIN}
+          max={CATALOG_YEAR_MAX}
+          placeholder="To"
+          aria-label="Year to"
+          className="input"
+          value={to.input}
+          disabled={disabled}
+          onChange={(e) => to.setInput(e.target.value)}
+          onBlur={() => commit(from.input, to.input)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit(from.input, to.input);
+          }}
+        />
+      </div>
     </div>
   );
 }
@@ -548,15 +608,18 @@ function DateCutoff({
   );
 }
 
-/** Debounced performer lookup behind the performer filter: the filter takes
- * a provider-native id, so the user picks a result — a typed name is never
- * sent. One field searches both sources; each result carries its side.
- * Failures stay per side and sides the session marks not configured are
- * skipped, so one source failing never hides the other source's rows.
- * TPDB performer search is paged; StashDB is unpaged and caps its result
- * list, which the picker says out loud. */
-function usePerformerOptions(term: string): {
-  items: { performer: CatalogDetail; side: CatalogProvider }[];
+/** Debounced lookup behind the performer and studio filters: the filters
+ * take provider-native ids, so the user picks a result — a typed name is
+ * never sent. One field searches both sources; each result carries its
+ * side. Failures stay per side and sides the session marks not configured
+ * are skipped, so one source failing never hides the other source's rows.
+ * TPDB search is paged; StashDB is unpaged and caps its result list, which
+ * the pickers say out loud. */
+function useCatalogOptions(
+  kind: Extract<CatalogKind, "performer" | "studio">,
+  term: string,
+): {
+  items: { detail: CatalogDetail; side: CatalogProvider }[];
   errors: { provider: CatalogProvider; message: string }[];
   skipped: CatalogProvider[];
   loading: boolean;
@@ -577,7 +640,7 @@ function usePerformerOptions(term: string): {
   const search = (provider: CatalogProvider) =>
     `/api/catalog/search?${new URLSearchParams({
       provider,
-      kind: "performer",
+      kind,
       q: committed ?? "",
       ...(provider === "tpdb" ? { page: "1", perPage: "10" } : {}),
     })}`;
@@ -613,12 +676,12 @@ function usePerformerOptions(term: string): {
     : [];
   return {
     items: [
-      ...(tpdb.data?.items ?? []).map((performer) => ({
-        performer,
+      ...(tpdb.data?.items ?? []).map((detail) => ({
+        detail,
         side: "tpdb" as const,
       })),
-      ...(stash.data?.items ?? []).map((performer) => ({
-        performer,
+      ...(stash.data?.items ?? []).map((detail) => ({
+        detail,
         side: "stashdb" as const,
       })),
     ],
@@ -628,36 +691,128 @@ function usePerformerOptions(term: string): {
   };
 }
 
+/** The chip label for one browse entity: the writer's captured name when it
+ * travelled, else the seeded name for each id it carries (a TPDB studio id
+ * may be a slug), joined when one entry pairs both providers. Never a fake
+ * label — an unseeded id stays a #fragment (see filterName). */
+function entityLabel(e: BrowseEntity, kind: "performer" | "studio"): string {
+  if (e.name) return e.name;
+  return [
+    e.tpdb !== undefined ? filterName("tpdb", kind, e.tpdb) : "",
+    e.stashdb !== undefined ? filterName("stashdb", kind, e.stashdb) : "",
+  ]
+    .filter((s) => s !== "")
+    .join(" + ");
+}
+
+/** The picked entries of one entity filter, as removable chips — the same
+ * chip the active-filter row uses, so a pick looks the same in the drawer
+ * and on the page. */
+function EntityChips({
+  entries,
+  kind,
+  onRemove,
+}: {
+  entries: BrowseEntity[];
+  kind: "performer" | "studio";
+  onRemove: (entry: BrowseEntity) => void;
+}) {
+  if (entries.length === 0) return null;
+  return (
+    <ul
+      className="mt-2 flex list-none flex-wrap gap-1.5 p-0"
+      aria-label={`Picked ${kind}s`}
+    >
+      {entries.map((entry, i) => (
+        <li key={`${i}:${entry.tpdb ?? ""}:${entry.stashdb ?? ""}`}>
+          <button
+            type="button"
+            className="filter-chip"
+            onClick={() => onRemove(entry)}
+            aria-label={`Remove ${kind}: ${entityLabel(entry, kind)}`}
+          >
+            {entityLabel(entry, kind)}
+            <span className="filter-chip-x" aria-hidden="true">
+              <Icon name="close" />
+            </span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** The provider ids a filter's entries already hold, per side — the
+ * namespaces differ, so each side checks its own set. A search result the
+ * filter holds is never offered twice. */
+function heldEntityIds(entries: BrowseEntity[]): {
+  tpdb: Set<string>;
+  stashdb: Set<string>;
+} {
+  return {
+    tpdb: new Set(
+      entries.flatMap((e) => (e.tpdb !== undefined ? [e.tpdb] : [])),
+    ),
+    stashdb: new Set(
+      entries.flatMap((e) => (e.stashdb !== undefined ? [e.stashdb] : [])),
+    ),
+  };
+}
+
 function PerformerPicker({
   id,
-  onPick,
+  entries,
+  performerMode,
   starred,
   onStarred,
+  onMode,
+  onRemove,
+  onPick,
 }: {
   id: string;
-  onPick: (side: CatalogProvider, performerId: string, name: string) => void;
+  entries: BrowseEntity[];
+  performerMode: PerformerMode;
   starred: boolean;
   onStarred: (on: boolean) => void;
+  onMode: (mode: PerformerMode) => void;
+  onRemove: (entry: BrowseEntity) => void;
+  onPick: (side: CatalogProvider, performerId: string, name: string) => void;
 }) {
   const [term, setTerm] = useState("");
-  const { items, errors, skipped, loading } = usePerformerOptions(term);
+  const { items, errors, skipped, loading } = useCatalogOptions(
+    "performer",
+    term,
+  );
+  const capped = entries.length >= MAX_BROWSE_ENTITIES;
+  const held = heldEntityIds(entries);
+  const rows = items.filter(
+    ({ detail, side }) => !held[side].has(detail.reference.id),
+  );
   return (
     <div>
       <label className="label" htmlFor={id}>
         Performer
       </label>
-      <div className="input-lead">
-        <Icon name="performer" />
-        <input
-          id={id}
-          type="search"
-          className="input"
-          maxLength={200}
-          placeholder="Search performers…"
-          value={term}
-          onChange={(e) => setTerm(e.target.value)}
-        />
-      </div>
+      {capped ? (
+        <p className="cat-note">
+          Performer limit reached ({MAX_BROWSE_ENTITIES}) — remove one before
+          adding another.
+        </p>
+      ) : (
+        <div className="input-lead">
+          <Icon name="performer" />
+          <input
+            id={id}
+            type="search"
+            className="input"
+            maxLength={200}
+            placeholder="Search performers…"
+            value={term}
+            onChange={(e) => setTerm(e.target.value)}
+          />
+        </div>
+      )}
+      <EntityChips entries={entries} kind="performer" onRemove={onRemove} />
       {/* Starred is a mode of this one filter: the server refuses a starred
           filter beside a picked performer, so "any" and "starred" are two
           states of one criterion, shown as one choice under the field. */}
@@ -682,47 +837,185 @@ function PerformerPicker({
           Starred only
         </button>
       </div>
+      {/* Two or more picked performers read as one question: does a title
+          need all of them or any of them (StashDB's all/any). The visible
+          caption keeps the row from reading as a fourth state of the
+          starred choice above it. */}
+      {entries.length >= 2 && (
+        <div>
+          <span className="label">Match</span>
+          <div
+            role="group"
+            aria-label="How the performers match"
+            className="segmented"
+          >
+            <button
+              type="button"
+              aria-pressed={performerMode === "all"}
+              onClick={() => onMode("all")}
+            >
+              All of them
+            </button>
+            <button
+              type="button"
+              aria-pressed={performerMode === "any"}
+              onClick={() => onMode("any")}
+            >
+              Any of them
+            </button>
+          </div>
+        </div>
+      )}
       <p className="cat-note">
         {starred
           ? "Scenes featuring any performer you follow. Picking a performer replaces this; performers known only to TPDB cannot match."
-          : "A TPDB performer opens their movies and replaces the other filters until removed; a StashDB performer filters scenes (StashDB caps results at about ten rows)."}
+          : `Up to ${MAX_BROWSE_ENTITIES} performers, each pickable from either source; with 2 or more, choose All of them or Any of them. A TPDB performer opens movies through the filmography route; a StashDB performer filters scenes (StashDB caps results at about ten rows).`}
       </p>
-      {loading ? (
-        <p className="cat-note" aria-live="polite">
-          Searching…
+      {!capped &&
+        (loading ? (
+          <p className="cat-note" aria-live="polite">
+            Searching…
+          </p>
+        ) : rows.length > 0 ? (
+          <ul className="cat-picker">
+            {rows.map(({ detail, side }) => (
+              <li key={`${side}:${detail.reference.id}`}>
+                <button
+                  type="button"
+                  className="cat-picker-row"
+                  onClick={() => {
+                    seedPerformerPick(side, detail);
+                    onPick(side, detail.reference.id, detail.title);
+                    setTerm("");
+                  }}
+                >
+                  <ItemImage
+                    name={detail.title}
+                    src={imgSrc(detail.imageUrl)}
+                    className="cat-picker-img"
+                  />
+                  <span>{detail.title}</span>
+                  <span className="text-xs text-muted">
+                    {side === "tpdb" ? "TPDB" : "StashDB"}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : term.trim() !== "" &&
+          errors.length === 0 &&
+          skipped.length === 0 ? (
+          // Empty is only claimed when nothing failed and nothing was skipped:
+          // the notes below carry the failures, like the grid's per-provider
+          // panels.
+          <p className="cat-note">No performers match “{term.trim()}”.</p>
+        ) : null)}
+      {errors.map((e) => (
+        <p key={e.provider} className="cat-note" role="alert">
+          {providerLabel(e.provider)} search failed: {e.message}
         </p>
-      ) : items.length > 0 ? (
-        <ul className="cat-picker">
-          {items.map(({ performer, side }) => (
-            <li key={`${side}:${performer.reference.id}`}>
-              <button
-                type="button"
-                className="cat-picker-row"
-                onClick={() => {
-                  seedPerformerPick(side, performer);
-                  onPick(side, performer.reference.id, performer.title);
-                  setTerm("");
-                }}
-              >
-                <ItemImage
-                  name={performer.title}
-                  src={imgSrc(performer.imageUrl)}
-                  className="cat-picker-img"
-                />
-                <span>{performer.title}</span>
-                <span className="text-xs text-muted">
-                  {side === "tpdb" ? "TPDB" : "StashDB"}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : term.trim() !== "" && errors.length === 0 && skipped.length === 0 ? (
-        // Empty is only claimed when nothing failed and nothing was skipped:
-        // the notes below carry the failures, like the grid's per-provider
-        // panels.
-        <p className="cat-note">No performers match “{term.trim()}”.</p>
-      ) : null}
+      ))}
+      {skipped.map((p) => (
+        <p key={`skipped-${p}`} className="cat-note">
+          {providerLabel(p)} is not configured, so it was not searched.
+        </p>
+      ))}
+    </div>
+  );
+}
+
+/** The studio filter's picker, the performer picker minus the starred
+ * mode: same dual-source search, same chips, same cap, and a result the
+ * filter holds is never offered twice. */
+function StudioPicker({
+  id,
+  entries,
+  onRemove,
+  onPick,
+}: {
+  id: string;
+  entries: BrowseEntity[];
+  onRemove: (entry: BrowseEntity) => void;
+  onPick: (side: CatalogProvider, studioId: string, name: string) => void;
+}) {
+  const [term, setTerm] = useState("");
+  const { items, errors, skipped, loading } = useCatalogOptions("studio", term);
+  const capped = entries.length >= MAX_BROWSE_ENTITIES;
+  const held = heldEntityIds(entries);
+  const rows = items.filter(
+    ({ detail, side }) => !held[side].has(detail.reference.id),
+  );
+  return (
+    <div>
+      <label className="label" htmlFor={id}>
+        Studio
+      </label>
+      {capped ? (
+        <p className="cat-note">
+          Studio limit reached ({MAX_BROWSE_ENTITIES}) — remove one before
+          adding another.
+        </p>
+      ) : (
+        <div className="input-lead">
+          <Icon name="movie" />
+          <input
+            id={id}
+            type="search"
+            className="input"
+            maxLength={200}
+            placeholder="Search studios…"
+            value={term}
+            onChange={(e) => setTerm(e.target.value)}
+          />
+        </div>
+      )}
+      <EntityChips entries={entries} kind="studio" onRemove={onRemove} />
+      <p className="cat-note">
+        Up to {MAX_BROWSE_ENTITIES} studios; a title from any of them matches.
+      </p>
+      {!capped &&
+        (loading ? (
+          <p className="cat-note" aria-live="polite">
+            Searching…
+          </p>
+        ) : rows.length > 0 ? (
+          <ul className="cat-picker">
+            {rows.map(({ detail, side }) => (
+              <li key={`${side}:${detail.reference.id}`}>
+                <button
+                  type="button"
+                  className="cat-picker-row"
+                  onClick={() => {
+                    seedName(
+                      {
+                        provider: side,
+                        kind: "studio",
+                        id: detail.reference.id,
+                      },
+                      detail.title,
+                    );
+                    onPick(side, detail.reference.id, detail.title);
+                    setTerm("");
+                  }}
+                >
+                  <ItemImage
+                    name={detail.title}
+                    src={imgSrc(detail.imageUrl)}
+                    className="cat-picker-img"
+                  />
+                  <span>{detail.title}</span>
+                  <span className="text-xs text-muted">
+                    {side === "tpdb" ? "TPDB" : "StashDB"}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : term.trim() !== "" &&
+          errors.length === 0 &&
+          skipped.length === 0 ? (
+          <p className="cat-note">No studios match “{term.trim()}”.</p>
+        ) : null)}
       {errors.map((e) => (
         <p key={e.provider} className="cat-note" role="alert">
           {providerLabel(e.provider)} search failed: {e.message}
@@ -761,6 +1054,9 @@ type BrowsePage = {
   total?: number;
   totalCountKnown: boolean;
   errors: { provider: CatalogProvider; code: string; message: string }[];
+  /** Query-scoped, so every page of one query carries the same set: the
+   * latest page's value wins in the accumulator, never a merge. */
+  notices?: BrowseNotice[];
   hiddenTagCount?: number;
 };
 
@@ -774,23 +1070,71 @@ type BrowseAccum = {
   total?: number;
   totalCountKnown: boolean;
   errors: { provider: CatalogProvider; code: string; message: string }[];
+  notices: BrowseNotice[];
   hiddenTagCount: number;
 };
 
-/** include/exclude ride the URL as JSON arrays of CatalogTagSelection.
- * A malformed value degrades to none — the server is the authority on
- * shape, the URL is just a carrier. */
+/** One tag selection as it travels the include list: a single selection or
+ * a 2+-selection "or" group (the members are one term — "Blonde or
+ * Redhead" — whose union matches). */
+type IncludeTag = CatalogTagSelection | CatalogTagSelection[];
+
+function isTagSelection(r: unknown): r is CatalogTagSelection {
+  return (
+    typeof r === "object" &&
+    r !== null &&
+    "name" in r &&
+    typeof r.name === "string"
+  );
+}
+
+/** exclude rides the URL as a JSON array of CatalogTagSelection. A
+ * malformed value degrades to none — the server is the authority on shape,
+ * the URL is just a carrier. */
 function parseTags(v: string | null): CatalogTagSelection[] {
   if (!v) return [];
   try {
     const rows: unknown = JSON.parse(v);
     if (!Array.isArray(rows)) return [];
-    return rows.filter((r): r is CatalogTagSelection => {
+    return rows.filter(isTagSelection);
+  } catch {
+    return [];
+  }
+}
+
+/** include rides the URL as a JSON array whose elements are selections or
+ * selection arrays ("or" groups). A malformed element degrades to none,
+ * exactly like parseTags — the server is the authority on shape. */
+function parseIncludeTags(v: string | null): IncludeTag[] {
+  if (!v) return [];
+  try {
+    const rows: unknown = JSON.parse(v);
+    if (!Array.isArray(rows)) return [];
+    return rows.flatMap((r): IncludeTag[] => {
+      if (isTagSelection(r)) return [r];
+      if (Array.isArray(r) && r.length >= 2 && r.every(isTagSelection))
+        return [r];
+      return [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+/** Performers/studios ride the URL as JSON arrays of 1–5 entries, each
+ * carrying at least one provider id (`{name?, tpdb?, stashdb?}`). A
+ * malformed value degrades to none — same carrier rule as the tags. */
+function parseEntities(v: string | null): BrowseEntity[] {
+  if (!v) return [];
+  try {
+    const rows: unknown = JSON.parse(v);
+    if (!Array.isArray(rows)) return [];
+    return rows.filter((r): r is BrowseEntity => {
       return (
         typeof r === "object" &&
         r !== null &&
-        "name" in r &&
-        typeof r.name === "string"
+        (("tpdb" in r && typeof r.tpdb === "string") ||
+          ("stashdb" in r && typeof r.stashdb === "string"))
       );
     });
   } catch {
@@ -798,22 +1142,47 @@ function parseTags(v: string | null): CatalogTagSelection[] {
   }
 }
 
+/** The muted note for one browse notice: which titles the source skipped
+ * or narrowed and why, naming the affected entries and the source that
+ * cannot know them. A note, never an error — the grid's total stays
+ * honest. A provider's notice always concerns its own media: TPDB owns
+ * movies, StashDB scenes. */
+function noticeText(n: BrowseNotice): string {
+  const media = n.provider === "tpdb" ? "Movies" : "Scenes";
+  const source = providerLabel(n.provider);
+  const names = n.entries
+    .map((e) => {
+      if (e.name) return e.name;
+      const id = n.provider === "tpdb" ? e.tpdb : e.stashdb;
+      return id !== undefined ? filterName(n.provider, n.kind, id) : "";
+    })
+    .filter((s) => s !== "")
+    .join(", ");
+  const one = n.entries.length === 1;
+  if (n.code === "not_searched")
+    return `${media} were not searched: ${names} ${one ? "has" : "have"} no ${source} id in this filter.`;
+  return n.kind === "studio"
+    ? `${media} from ${names} ${one ? "is" : "are"} not included: no ${source} id in this filter.`
+    : `${media} are not filtered by ${names}: no ${source} id in this filter.`;
+}
+
 /** Builds the filter part of the GET /api/browse path from canonical URL
- * keys — verbatim plan names, include/exclude as JSON, `date_operation` for
- * dateOperation. The caller appends `&page=${n}`: pages are component
- * state under endless scroll. An outage is an error, never an empty page. */
+ * keys — verbatim plan names, performers/studios/include/exclude as JSON,
+ * `date_operation` for dateOperation. The caller appends `&page=${n}`:
+ * pages are component state under endless scroll. An outage is an error,
+ * never an empty page. */
 function browsePath(f: {
   type: "all" | "movie" | "scene";
   q: string;
-  include: CatalogTagSelection[];
+  include: IncludeTag[];
   exclude: CatalogTagSelection[];
-  studioTpdb: string;
-  studioStashdb: string;
-  performerTpdb: string;
-  performerStashdb: string;
+  performers: BrowseEntity[];
+  studios: BrowseEntity[];
+  performerMode: PerformerMode;
   performerStarred: boolean;
   studioMode: string;
   year: string;
+  yearTo: string;
   date: string;
   dateOperation: string;
   sort: string;
@@ -825,13 +1194,18 @@ function browsePath(f: {
   if (f.q) qs.set("q", f.q);
   if (f.include.length > 0) qs.set("include", JSON.stringify(f.include));
   if (f.exclude.length > 0) qs.set("exclude", JSON.stringify(f.exclude));
-  if (f.studioTpdb) qs.set("studioTpdb", f.studioTpdb);
-  if (f.studioStashdb) qs.set("studioStashdb", f.studioStashdb);
-  if (f.performerTpdb) qs.set("performerTpdb", f.performerTpdb);
-  if (f.performerStashdb) qs.set("performerStashdb", f.performerStashdb);
+  if (f.performers.length > 0)
+    qs.set("performers", JSON.stringify(f.performers));
+  if (f.studios.length > 0) qs.set("studios", JSON.stringify(f.studios));
+  if (f.performerMode === "any") qs.set("performerMode", "any");
   if (f.performerStarred) qs.set("performerStarred", "1");
   if (f.studioMode) qs.set("studioMode", f.studioMode);
-  if (f.year) qs.set("year", f.year);
+  // The range's upper bound travels only beside a start year — a yearTo
+  // without a year would 400.
+  if (f.year) {
+    qs.set("year", f.year);
+    if (f.yearTo) qs.set("yearTo", f.yearTo);
+  }
   if (f.date) {
     qs.set("date", f.date);
     qs.set("date_operation", f.dateOperation);
@@ -865,8 +1239,8 @@ const TYPE_LABELS = { all: "All", movie: "Movies", scene: "Scenes" } as const;
  * grid behind GET /api/browse, told apart by the cards' own badges.
  * All/Movies/Scenes is a filter (URL `type`), never separate navigation;
  * a media detail opens over the grid, which stays mounted but hidden.
- * URL keys are the plan's canonical browse keys — include/exclude ride as
- * JSON arrays of CatalogTagSelection. */
+ * URL keys are the plan's canonical browse keys — performers/studios/
+ * include ride as JSON arrays, include with optional "or" groups. */
 export function TitlesView() {
   const params = useSearchParams();
   const setP = useParamsSetter();
@@ -878,26 +1252,47 @@ export function TitlesView() {
   // Anything that is not movie/scene reads as the `all` default.
   const type = typeRaw === "movie" || typeRaw === "scene" ? typeRaw : "all";
   const q = params.get("q") ?? "";
-  const include = parseTags(params.get("include"));
+  const include = parseIncludeTags(params.get("include"));
   const exclude = parseTags(params.get("exclude"));
-  const studioTpdb = params.get("studioTpdb") ?? "";
-  const studioStashdb = params.get("studioStashdb") ?? "";
-  const performerTpdb = params.get("performerTpdb") ?? "";
-  const performerStashdb = params.get("performerStashdb") ?? "";
+  const performers = parseEntities(params.get("performers"));
+  const studios = parseEntities(params.get("studios"));
+  // `all` is the default and never travels the URL.
+  const performerMode = params.get("performerMode") === "any" ? "any" : "all";
   const performerStarred = params.get("performerStarred") === "1";
   const studioMode =
     params.get("studioMode") === "withChildren" ? "withChildren" : "";
   const year = params.get("year") ?? "";
+  const yearTo = params.get("yearTo") ?? "";
   // date + date_operation commit as one pair; half a pair is never sent.
   const dateRaw = params.get("date") ?? "";
   const opRaw = params.get("date_operation") ?? "";
   const date = dateRaw !== "" && opRaw !== "" ? dateRaw : "";
   const dateOperation = date !== "" ? opRaw : "";
-  // A sort the selected type does not support is clamped to the provider
-  // default — visible in the select, never sent upstream for a 400. A
-  // direction rides only on sorts that take one: a stale direction next to
-  // TPDB relevance would 400 the search.
-  const sorts = browseSortsFor(type);
+  // The stream plan is the client half of the server's planner: the same
+  // seeds order the merge, and a source that pages 2+ merged upstream
+  // lists (2+ TPDB studio lists, 2+ StashDB child-studio searches) only
+  // orders honestly by recency and duration. The offers and the stale-sort
+  // clamp below keep the URL from ever forming a request the server
+  // refuses with invalid_search — same clamp the per-type check applies.
+  const streamPlan = planStreams(
+    type,
+    performers,
+    studios,
+    performerMode,
+    studioMode === "withChildren" ? "withChildren" : "exact",
+    performerStarred,
+  );
+  const merged =
+    streamPlan.seeds.filter((s) => s.tpdbStudio !== undefined).length > 1 ||
+    streamPlan.seeds.filter((s) => s.parentStudioId !== undefined).length > 1;
+  // A sort the selected type does not support — or one a merged source
+  // would refuse — is clamped to the provider default: visible in the
+  // select, never sent upstream for a 400. A direction rides only on sorts
+  // that take one: a stale direction next to TPDB relevance would 400 the
+  // search.
+  const sorts = browseSortsFor(type).filter(
+    (s) => !merged || BROWSE_MIXED_SORTS.includes(s),
+  );
   const sortRaw = params.get("sort") ?? "";
   const sort = (sorts as readonly string[]).includes(sortRaw) ? sortRaw : "";
   const dirRaw = params.get("direction") ?? "";
@@ -907,6 +1302,23 @@ export function TitlesView() {
     (dirRaw === "asc" || dirRaw === "desc")
       ? dirRaw
       : "";
+  // Everything the entry patches need to re-clamp the sort when a pick or
+  // a removal changes a source's merge status.
+  const entryState: BrowseEntryState = {
+    type,
+    sortRaw,
+    dirRaw,
+    performerMode,
+    performers,
+    studios,
+    performerStarred,
+  };
+  // The TPDB filmography route refuses search, sort and date everywhere
+  // but the Scenes tab, where StashDB owns the side and it never runs.
+  const filmography = tpdbFilmographyRuns(type, performers, performerMode);
+  // Child studios are a StashDB-only criterion: one TPDB id in the studio
+  // entries blocks the whole scope choice.
+  const studioBlocked = studios.some((e) => e.tpdb !== undefined);
   const [perPage, setPerPage] = useState(() =>
     Math.min(100, Math.max(1, intOr(params.get("perPage"), 24))),
   );
@@ -953,13 +1365,13 @@ export function TitlesView() {
         q,
         include,
         exclude,
-        studioTpdb,
-        studioStashdb,
-        performerTpdb,
-        performerStashdb,
+        performers,
+        studios,
+        performerMode,
         performerStarred,
         studioMode,
         year,
+        yearTo,
         date,
         dateOperation,
         sort,
@@ -971,13 +1383,13 @@ export function TitlesView() {
       q,
       include,
       exclude,
-      studioTpdb,
-      studioStashdb,
-      performerTpdb,
-      performerStashdb,
+      performers,
+      studios,
+      performerMode,
       performerStarred,
       studioMode,
       year,
+      yearTo,
       date,
       dateOperation,
       sort,
@@ -1008,6 +1420,7 @@ export function TitlesView() {
               total: page.total,
               totalCountKnown: page.totalCountKnown,
               errors: page.errors,
+              notices: page.notices ?? [],
               hiddenTagCount: page.hiddenTagCount ?? 0,
             };
           }
@@ -1032,6 +1445,9 @@ export function TitlesView() {
               ),
               ...page.errors,
             ],
+            // Notices are query-scoped, not page-scoped: the latest page's
+            // set replaces, never accumulates.
+            notices: page.notices ?? [],
             hiddenTagCount: page.hiddenTagCount ?? prev.hiddenTagCount,
           };
         });
@@ -1087,12 +1503,12 @@ export function TitlesView() {
       // Sorts are per-type — see typePatch; filters never drop on a tab
       // switch. One clamp: a TPDB performer filmography only composes on
       // the Scenes tab, so moving off it drops the filters that route
-      // refuses (typePatch's tpdbPerformer branch).
-      setP(typePatch(t, sortRaw, dirRaw, performerTpdb !== ""), {
+      // refuses (typePatch's performer branch).
+      setP(typePatch(t, sortRaw, dirRaw, performers, performerMode, studios), {
         push: true,
       });
     },
-    [setP, sortRaw, dirRaw, performerTpdb],
+    [setP, sortRaw, dirRaw, performers, performerMode, studios],
   );
   // Typed fields refine mid-edit (SearchBox debounces, the date input fires
   // per keystroke): push only when the value appears or disappears, replace
@@ -1103,7 +1519,7 @@ export function TitlesView() {
     [q, setP],
   );
   const onInclude = useCallback(
-    (tags: CatalogTagSelection[]) =>
+    (tags: IncludeTag[]) =>
       setP(
         {
           include: tags.length > 0 ? JSON.stringify(tags) : null,
@@ -1126,35 +1542,33 @@ export function TitlesView() {
       ),
     [setP],
   );
-  // TPDB's performer filter is the filmography route — everything else
-  // goes, see performerTpdbPatch.
-  const onPerformerTpdb = useCallback(
-    (id: string) => setP(performerTpdbPatch(id, type), { push: true }),
-    [setP, type],
+  // One performer pick or removal: the patch carries the whole entry list
+  // and the state it needs to re-clamp the sort (the filmography route
+  // refuses sort; a starred filter and a pick refuse each other — see
+  // performersPatch).
+  const onPerformers = useCallback(
+    (next: BrowseEntity[]) =>
+      setP(performersPatch(next, entryState), { push: true }),
+    [setP, entryState],
   );
-  // StashDB composes a performer with everything else — no other key moves.
-  const onPerformerStashdb = useCallback(
-    // Starred and a picked performer refuse each other on the server; the
-    // pick replaces the starred filter instead of letting the browse 400.
-    // A StashDB performer cannot constrain the movies side: on that tab no
-    // side would qualify and the grid would show an empty page that names
-    // the wrong cause — drop to the combined browse, keeping the sort only
-    // where the all tab supports it (the clamp onStarred applies).
-    (id: string) =>
-      setP(performerStashdbPatch(id, type, sortRaw, dirRaw), { push: true }),
-    [setP, type, sortRaw, dirRaw],
+  const onStudios = useCallback(
+    (next: BrowseEntity[]) =>
+      setP(studiosPatch(next, entryState), { push: true }),
+    [setP, entryState],
+  );
+  const onPerformerMode = useCallback(
+    (m: PerformerMode) => setP(performerModePatch(m), { push: true }),
+    [setP],
   );
   const onStarred = useCallback(
     (on: boolean) =>
       setP(starredPatch(on, type, sortRaw, dirRaw), { push: true }),
     [setP, type, sortRaw, dirRaw],
   );
-  const onYear = useCallback(
-    (v: string) =>
-      setP(
-        { year: v || null, date: null, date_operation: null },
-        { push: true },
-      ),
+  // Both year bounds commit together — one entry point, one patch; the
+  // year still displaces a date cutoff (the server refuses the pair).
+  const onYearRange = useCallback(
+    (y: string, yTo: string) => setP(yearRangePatch(y, yTo), { push: true }),
     [setP],
   );
   // Both halves commit together — one without the other is a 400.
@@ -1186,15 +1600,6 @@ export function TitlesView() {
     (d: "asc" | "desc") => setP({ direction: d }, { push: true }),
     [setP],
   );
-  const onStudioTpdb = useCallback(
-    (id: string | null) => setP({ studioTpdb: id, name: null }, { push: true }),
-    [setP],
-  );
-  const onStudioStashdb = useCallback(
-    (id: string | null) =>
-      setP({ studioStashdb: id, name: null }, { push: true }),
-    [setP],
-  );
   const onStudioMode = useCallback(
     (m: string) =>
       setP({ studioMode: m === "withChildren" ? m : null }, { push: true }),
@@ -1210,18 +1615,18 @@ export function TitlesView() {
   }, [setP]);
 
   // An active studio/tag id without a captured name stays an id — never a
-  // fake label (see filterName).
+  // fake label (see filterName). The entity arrays count by length;
+  // performerMode and yearTo are modes of other constraints, never a
+  // constraint of their own (the plan's countActiveFilters skips).
   const filterCount = countActiveFilters({
     q,
     year,
     date,
-    performerTpdb,
-    performerStashdb,
     performerStarred,
-    studioTpdb,
-    studioStashdb,
     studioMode,
     sort,
+    performers,
+    studios,
     include,
     exclude,
   });
@@ -1269,27 +1674,23 @@ export function TitlesView() {
     );
   };
   if (q) chip("Title", "q", `“${q}”`, () => onQ(""));
-  if (year) chip("Release", "year", `Year ${year}`, () => onYear(""));
+  if (year)
+    chip(
+      "Release",
+      "year",
+      yearTo !== "" ? `Years ${year}–${yearTo}` : `Year ${year}`,
+      // One remove clears the whole range.
+      () => onYearRange("", ""),
+    );
   if (date)
     chip("Release", "date", `${dateOpLabel(dateOperation)} ${date}`, () =>
       onDate(null, null),
     );
-  // Chip removal only drops the constraint — unlike picking a performer,
-  // which starts the filmography browse and clears the rest.
-  if (performerTpdb)
-    chip(
-      "Performer",
-      "performerTpdb",
-      `${filterName("tpdb", "performer", performerTpdb)} (TPDB)`,
-      () => setP({ performerTpdb: null }, { push: true }),
-    );
-  if (performerStashdb)
-    chip(
-      "Performer",
-      "performerStashdb",
-      `${filterName("stashdb", "performer", performerStashdb)} (StashDB)`,
-      () => setP({ performerStashdb: null }, { push: true }),
-    );
+  performers.forEach((entry, i) =>
+    chip("Performer", `performer:${i}`, entityLabel(entry, "performer"), () =>
+      onPerformers(performers.filter((_, j) => j !== i)),
+    ),
+  );
   if (performerStarred)
     chip(
       "Performer",
@@ -1298,32 +1699,26 @@ export function TitlesView() {
       () => setP({ performerStarred: null }, { push: true }),
       "star",
     );
-  if (studioTpdb)
-    chip(
-      "Studio",
-      "studioTpdb",
-      `${filterName("tpdb", "studio", studioTpdb)} (TPDB)`,
-      () => onStudioTpdb(null),
-    );
-  if (studioStashdb)
-    chip(
-      "Studio",
-      "studioStashdb",
-      `${filterName("stashdb", "studio", studioStashdb)} (StashDB)`,
-      () => onStudioStashdb(null),
-    );
-  if (studioMode === "withChildren")
-    chip("Studio", "studioMode", "with child studios", () => onStudioMode(""));
-  include.forEach((tag, i) =>
-    chip(
-      "Tags",
-      `include:${tag.name}:${tag.tpdb ?? ""}:${tag.stashdb ?? ""}:${i}`,
-      tag.name,
-      () => onInclude(include.filter((t) => t !== tag)),
-      "plus",
-      isFreeText(tag) ? "Free text:" : undefined,
+  studios.forEach((entry, i) =>
+    chip("Studio", `studio:${i}`, entityLabel(entry, "studio"), () =>
+      onStudios(studios.filter((_, j) => j !== i)),
     ),
   );
+  if (studioMode === "withChildren")
+    chip("Studio", "studioMode", "with child studios", () => onStudioMode(""));
+  include.forEach((tag, i) => {
+    const group = Array.isArray(tag);
+    chip(
+      "Tags",
+      `include:${i}`,
+      // An "or" group is ONE term: the chip names it whole and its remove
+      // drops the group.
+      group ? tag.map((m) => m.name).join(" or ") : tag.name,
+      () => onInclude(include.filter((_, j) => j !== i)),
+      "plus",
+      !group && isFreeText(tag) ? "Free text:" : undefined,
+    );
+  });
   exclude.forEach((tag, i) =>
     chip(
       "Tags",
@@ -1402,13 +1797,15 @@ export function TitlesView() {
               </div>
             </div>
             {/* TPDB filmography refuses search and order only where the
-                TPDB side runs; the Scenes tab runs her StashDB side. */}
+                TPDB side runs; the Scenes tab runs the StashDB side. A
+                merged source offers only recency and duration. */}
             <SortSelect
               id="titles-sort"
               type={type}
               sort={sort}
               direction={direction}
-              disabled={performerTpdb !== "" && type !== "scene"}
+              disabled={filmography}
+              merged={merged}
               onSort={onSort}
               onDirection={onDirection}
             />
@@ -1485,6 +1882,17 @@ export function TitlesView() {
                   />
                 ),
               )}
+              {/* Query-scoped muted notes: a source that skipped or
+                  narrowed the filter says so here — never an alert, never
+                  hiding the total or the grid. */}
+              {acc.notices.map((n, i) => (
+                <p
+                  key={`${n.provider}:${n.kind}:${n.code}:${i}`}
+                  className="cat-note"
+                >
+                  {noticeText(n)}
+                </p>
+              ))}
               {acc.items.length === 0 ? (
                 // Empty is only claimed when no source failed: the error
                 // panels above carry the failures.
@@ -1576,19 +1984,63 @@ export function TitlesView() {
             label="Title"
             value={q}
             onCommit={onQ}
-            disabled={performerTpdb !== "" && type !== "scene"}
+            disabled={filmography}
           />
+        </div>
+        <div
+          className="cat-group"
+          role="group"
+          aria-labelledby="titles-g-performers"
+        >
+          <h3 className="cat-group-title" id="titles-g-performers">
+            Performers
+          </h3>
           <PerformerPicker
             id="titles-performer"
+            entries={performers}
+            performerMode={performerMode}
             starred={performerStarred}
             onStarred={onStarred}
-            onPick={(side, performerId) =>
-              side === "tpdb"
-                ? onPerformerTpdb(performerId)
-                : onPerformerStashdb(performerId)
+            onMode={onPerformerMode}
+            onRemove={(entry) =>
+              onPerformers(performers.filter((e) => e !== entry))
+            }
+            onPick={(side, performerId, name) =>
+              onPerformers([
+                ...performers,
+                side === "tpdb"
+                  ? { name, tpdb: performerId }
+                  : { name, stashdb: performerId },
+              ])
             }
           />
-          {studioStashdb !== "" && (
+        </div>
+        <div
+          className="cat-group"
+          role="group"
+          aria-labelledby="titles-g-studios"
+        >
+          <h3 className="cat-group-title" id="titles-g-studios">
+            Studios
+          </h3>
+          <StudioPicker
+            id="titles-studio"
+            entries={studios}
+            onRemove={(entry) => onStudios(studios.filter((e) => e !== entry))}
+            onPick={(side, studioId, name) =>
+              onStudios([
+                ...studios,
+                side === "tpdb"
+                  ? { name, tpdb: studioId }
+                  : { name, stashdb: studioId },
+              ])
+            }
+          />
+          {/* Child studios are a StashDB criterion: it offers itself once a
+              studio entry carries a StashDB id, and a TPDB id in the same
+              filter blocks it (the TPDB side takes the site itself, never
+              its children). */}
+          {studios.some((e) => e.stashdb !== undefined) && (
             <div>
               <span className="label" id="titles-studio-scope-label">
                 Studio scope
@@ -1601,6 +2053,7 @@ export function TitlesView() {
                 <button
                   type="button"
                   aria-pressed={(studioMode || "exact") === "exact"}
+                  disabled={studioBlocked}
                   onClick={() => onStudioMode("exact")}
                 >
                   Exact studio only
@@ -1608,11 +2061,18 @@ export function TitlesView() {
                 <button
                   type="button"
                   aria-pressed={(studioMode || "exact") === "withChildren"}
+                  disabled={studioBlocked}
                   onClick={() => onStudioMode("withChildren")}
                 >
                   Include child studios
                 </button>
               </div>
+              {studioBlocked && (
+                <p className="cat-note">
+                  Include child studios is StashDB-only; a studio entry with a
+                  TPDB id blocks it.
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -1627,7 +2087,8 @@ export function TitlesView() {
             selected={include}
             onChange={onInclude}
             allowFreeText
-            description="Titles need every tag here."
+            allowGroups
+            description="Titles need every tag here; tags joined by or form one group."
           />
           <TagPicker
             id="titles-exclude"
@@ -1662,26 +2123,32 @@ export function TitlesView() {
           <h3 className="cat-group-title" id="titles-g-release">
             Release
           </h3>
-          <YearBox
-            id="titles-year"
-            value={year}
-            onCommit={onYear}
-            disabled={performerTpdb !== "" && type !== "scene"}
+          <YearRange
+            fromId="titles-year"
+            toId="titles-year-to"
+            year={year}
+            yearTo={yearTo}
+            onCommit={onYearRange}
+            disabled={filmography}
           />
           <DateCutoff
             id="titles-date"
             date={date}
             operation={dateOperation}
-            disabled={performerTpdb !== "" && type !== "scene"}
+            disabled={filmography}
             onCommit={onDate}
           />
-          {/* Year and date apply to both sides: TPDB natively, StashDB with
-            the year checked locally, so scene totals are approximate. The
-            note says exactly that — never silently ignored. */}
+          {/* The note names the sources a bound is checked on: the start
+              year is TPDB-native, every other bound runs locally, so those
+              totals are approximate — never silently ignored. */}
           {(year !== "" || date !== "") && (
             <p className="cat-note">
-              Year and release date apply to TPDB movies and StashDB scenes; the
-              year is checked locally for scenes, so totals are approximate.
+              {year !== "" &&
+                (yearTo !== ""
+                  ? "The year range applies to TPDB movies and StashDB scenes; the start year is TPDB-native and the upper bound is checked locally, so TPDB movie totals are approximate, and StashDB scene totals are approximate too (the range is checked locally). "
+                  : "The year applies to TPDB movies and StashDB scenes; StashDB scene totals are approximate (the year is checked locally). ")}
+              {date !== "" &&
+                "The release date applies to TPDB movies and StashDB scenes."}
             </p>
           )}
         </div>

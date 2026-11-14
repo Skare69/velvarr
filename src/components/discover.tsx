@@ -269,8 +269,9 @@ function useRailNav(label: string, hasRail: boolean) {
 /** One mixed grid per facet: the tile's own provider side plus its resolved
  * counterpart, when one exists. `name` is a display label only — results are
  * keyed by the provider ids, so a forged label can never change them. The
- * link is the canonical browse shape: a studio constraint per provider key,
- * or one typed tag selection carrying both provider UUIDs as JSON. */
+ * link is the canonical browse shape: one studios entry carrying every known
+ * provider id, or one typed tag selection carrying both provider UUIDs as
+ * JSON. */
 function FacetTile({ item }: { item: FacetItem }) {
   const studio = item.facet === "studio";
   // A studio rail shows brand marks; its portrait poster belongs to the hero,
@@ -281,10 +282,11 @@ function FacetTile({ item }: { item: FacetItem }) {
     name: item.name,
   };
   if (studio) {
-    params[item.provider === "tpdb" ? "studioTpdb" : "studioStashdb"] = item.id;
-    if (item.linked)
-      params[item.linked.provider === "tpdb" ? "studioTpdb" : "studioStashdb"] =
-        item.linked.id;
+    // One studios entry carries both ids, so browse runs both sides at once.
+    const entry: Record<string, string> = { name: item.name };
+    entry[item.provider] = item.id;
+    if (item.linked) entry[item.linked.provider] = item.linked.id;
+    params.studios = JSON.stringify([entry]);
   } else {
     const sel: Record<string, string> = { name: item.name };
     sel[item.provider] = item.id;

@@ -20,6 +20,7 @@ import {
   type FixtureHandler,
 } from "./fixture.ts";
 import { AppError } from "../src/server/http.ts";
+import { parseIncludeSelections } from "../src/server/storage.ts";
 import { resetMetaCache, resolveSort } from "../src/server/providers.ts";
 import {
   browseSortIsDirectional,
@@ -35,6 +36,14 @@ import {
   TAG_FILTER_ID_CAP,
 } from "../src/lib/browse-includes.ts";
 import {
+  browseSideRuns,
+  MAX_BROWSE_ENTITIES,
+  mergedSourceRestricted,
+  planStreams,
+  sourceRunsFor,
+  tpdbFilmographyRuns,
+} from "../src/lib/browse-entities.ts";
+import {
   browseTitles,
   parseBrowseQuery,
   planBrowseSides,
@@ -49,6 +58,7 @@ import {
 import fc from "fast-check";
 import type { BrowsePage, BrowseQuery } from "../src/server/browse.ts";
 import type {
+  BrowseEntity,
   CatalogDetail,
   CatalogProvider,
   CatalogTagSelection,
@@ -99,11 +109,20 @@ interface TagRow {
   name: string;
 }
 
+/** A performer credit as TPDB embeds it in a movie row: tpdbCredits maps
+ * `id` (a UUID) + `name` into the detail's credits, which the all-mode
+ * filmography re-check reads. */
+interface CreditRow {
+  id: string;
+  name: string;
+}
+
 function tpdbRow(
   id: string,
   title: string,
   date: string,
   tags: TagRow[] = [],
+  performers: CreditRow[] = [],
 ): unknown {
   return {
     id,
@@ -111,7 +130,7 @@ function tpdbRow(
     date,
     duration: 600,
     tags,
-    performers: [],
+    performers,
     scenes: [],
     movies: [],
     posters: {},
@@ -362,12 +381,16 @@ test("parseBrowseQuery round-trips pinned keys and rejects malformed input", () 
         "&sort=duration&direction=asc&page=3&perPage=48",
     ),
   );
+  // Contract move (VELV-166): the scalar studio key parses into ONE
+  // unnamed entry in the studios array; performerMode defaults to all.
   assert.deepEqual(parsed, {
     type: "scene",
     q: "big",
     include: [],
     exclude: [],
-    studioStashdb: uuid(9),
+    performers: [],
+    studios: [{ stashdb: uuid(9) }],
+    performerMode: "all",
     studioMode: "withChildren",
     year: 2020,
     date: "2026-01-31",
@@ -393,9 +416,9 @@ test("parseBrowseQuery round-trips pinned keys and rejects malformed input", () 
     /performerStarred must be one of: 1/,
   );
   // TPDB site slugs are studio identity beside the uuid.
-  assert.equal(
-    parseBrowseQuery(new URLSearchParams("studioTpdb=evilangel")).studioTpdb,
-    "evilangel",
+  assert.deepEqual(
+    parseBrowseQuery(new URLSearchParams("studioTpdb=evilangel")).studios,
+    [{ tpdb: "evilangel" }],
   );
 
   const bad: [string, string][] = [
@@ -482,28 +505,31 @@ test("browseTitles refuses unsupported combinations before any upstream call", a
           "withChildren needs stash studio",
           { type: "all", studioMode: "withChildren" },
         ],
+        // Contract move (VELV-166): one unified studio entry carrying both
+        // ids replaces the old scalar pair.
         [
           "withChildren is stash-only",
           {
             type: "all",
             studioMode: "withChildren",
-            studioStashdb: uuid(2),
-            studioTpdb: uuid(1),
+            studios: [{ stashdb: uuid(2), tpdb: uuid(1) }],
           },
         ],
+        // Contract move (VELV-166): a picked performer rides the performers
+        // array; the filmography refusals are unchanged.
         [
           "filmography + sort",
-          { type: "all", performerTpdb: uuid(1), sort: "recency" },
+          { type: "all", performers: [{ tpdb: uuid(1) }], sort: "recency" },
         ],
         [
           "filmography + year",
-          { type: "all", performerTpdb: uuid(1), year: 2020 },
+          { type: "all", performers: [{ tpdb: uuid(1) }], year: 2020 },
         ],
         [
           "filmography + date",
           {
             type: "all",
-            performerTpdb: uuid(1),
+            performers: [{ tpdb: uuid(1) }],
             date: "2026-01-01",
             dateOperation: "<",
           },
@@ -518,6 +544,9 @@ test("browseTitles refuses unsupported combinations before any upstream call", a
               include: [],
               exclude: [],
               studioMode: "exact",
+              performers: [],
+              studios: [],
+              performerMode: "all",
               page: 1,
               perPage: 24,
               ...extra,
@@ -550,9 +579,11 @@ test("browseTitles keeps a source-scoped filter on the wrong typed tab: honest e
     async () => {
       // A scenes-only performer filter cannot run on the movie tab, and
       // nothing may run unfiltered in its place: no side qualifies, so the
-      // page is provably empty before any upstream call.
+      // page is provably empty before any upstream call. Contract move
+      // (VELV-166): the empty page now names the skipped source in a
+      // notice — a muted note, never an error.
       const page = await browseTitles(
-        planQuery({ type: "movie", performerStashdb: uuid(2) }),
+        planQuery({ type: "movie", performers: [{ stashdb: uuid(2) }] }),
         [],
       );
       assert.deepEqual(page, {
@@ -563,6 +594,14 @@ test("browseTitles keeps a source-scoped filter on the wrong typed tab: honest e
         total: 0,
         totalCountKnown: true,
         errors: [],
+        notices: [
+          {
+            provider: "tpdb",
+            kind: "performer",
+            code: "not_searched",
+            entries: [{ stashdb: uuid(2) }],
+          },
+        ],
       });
       assert.equal(upstreamCalls, 0);
     },
@@ -608,6 +647,9 @@ test("browse All merges movies and scenes by release recency with native AND inc
           include: [{ name: "Tag A", tpdb: TPDB_TAG.uuid, stashdb: STASH_TAG }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -672,6 +714,9 @@ test("browse All asks StashDB for scenes while TPDB is still answering movies", 
           include: [],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -714,6 +759,9 @@ test("an include without a resolvable StashDB id drops the scene source instead 
           include: [{ name: "Unpaired", tpdb: TPDB_TAG.uuid }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -759,6 +807,9 @@ test("a failed StashDB tag listing keeps the movie page but names the outage ins
           include: [{ name: "Unpaired", tpdb: TPDB_TAG.uuid }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -803,6 +854,9 @@ test("when every wanted side's include lookup fails, browse is a 502 instead of 
             ],
             exclude: [],
             studioMode: "exact",
+            performers: [],
+            studios: [],
+            performerMode: "all",
             page: 1,
             perPage: 10,
           },
@@ -846,6 +900,9 @@ test("every side failing after a side already delivered rows keeps the partial p
         include: [],
         exclude: [],
         studioMode: "exact",
+        performers: [],
+        studios: [],
+        performerMode: "all",
         page: 1,
         perPage: 10,
       },
@@ -1147,6 +1204,9 @@ test("a free-text include expands on each provider's tags and travels as a nativ
           include: [{ name: "xyz" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -1221,6 +1281,9 @@ test("a free-text term that expands on no TPDB tag drops the movie side and keep
           include: [{ name: "xyz" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -1280,6 +1343,9 @@ test("a 30-tag TPDB expansion filters the movie side locally instead of sending 
           include: [{ name: "filler" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -1345,6 +1411,9 @@ test("a union at the native id cap stays native; one past it filters locally", a
             include: [{ name: "filler" }],
             exclude: [],
             studioMode: "exact",
+            performers: [],
+            studios: [],
+            performerMode: "all",
             page: 1,
             perPage: 10,
           },
@@ -1404,6 +1473,9 @@ test("a 30-tag StashDB expansion filters the scene side locally instead of sendi
           include: [{ name: "filler" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -1464,6 +1536,9 @@ test("the TPDB expansion walk reads past page one and a later page's tag travels
           include: [{ name: "xyz" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -1520,6 +1595,9 @@ test("the StashDB expansion walk reads past page one and a later page's tag trav
           include: [{ name: "xyz" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -1576,6 +1654,9 @@ test("a rows-less StashDB page before count keeps the expansion local", async ()
           include: [{ name: "xyz" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -1636,6 +1717,9 @@ test("an endless TPDB listing caps the walk and never sends the capped tag nativ
           include: [{ name: "xyz" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -1702,6 +1786,9 @@ test("a capped TPDB walk keeps the hard ceiling on an endless movie source", asy
             include: [{ name: "xyz" }],
             exclude: [],
             studioMode: "exact",
+            performers: [],
+            studios: [],
+            performerMode: "all",
             page: 5,
             perPage: 10,
           },
@@ -1753,6 +1840,9 @@ test("a capped StashDB walk keeps the hard ceiling on an endless scene source", 
             include: [{ name: "xyz" }],
             exclude: [],
             studioMode: "exact",
+            performers: [],
+            studios: [],
+            performerMode: "all",
             page: 5,
             perPage: 10,
           },
@@ -1801,6 +1891,9 @@ test("the memoized tag listing expires and the re-walk picks up newly published 
           type: "movie" as const,
           include: [{ name: "foo" }],
           exclude: [],
+          performers: [],
+          studios: [],
+          performerMode: "all" as const,
           studioMode: "exact" as const,
           page: 1,
           perPage: 10,
@@ -1884,6 +1977,9 @@ test("a complete fresh listing with no match answers the side provably empty wit
           include: [{ name: "zzqx" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -1922,6 +2018,9 @@ test("an incomplete listing keeps the local scan and the hard 422 ceiling", asyn
             include: [{ name: "zzqx" }],
             exclude: [],
             studioMode: "exact",
+            performers: [],
+            studios: [],
+            performerMode: "all",
             page: 1,
             perPage: 10,
           },
@@ -1966,6 +2065,9 @@ test("one provably empty side drops while the other side still streams", async (
           include: [{ name: "drama" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -2021,6 +2123,9 @@ test("two free-text includes that each match one tag go native as an all-of AND"
           include: [{ name: "xyz" }, { name: "abc" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -2080,6 +2185,9 @@ test("a free-text include whose TPDB expansion holds a uuid-less tag filters the
           include: [{ name: "legacy" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -2141,6 +2249,9 @@ test("a uuid-less TPDB expansion keeps the movie side local while StashDB stays 
           include: [{ name: "legacy" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -2200,6 +2311,9 @@ test("a free-text term matching only uuid-less TPDB tags runs the movie side loc
           include: [{ name: "vintage" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -2260,6 +2374,9 @@ test("an anchored include whose TPDB counterpart is uuid-less runs the movie sid
           include: [{ name: "Legacy", stashdb: STASH_TAG }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -2319,6 +2436,9 @@ test("an anchored uuid-less counterpart keeps totals approximate until the local
           include: [{ name: "Legacy", stashdb: STASH_TAG }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -2359,10 +2479,14 @@ test("TPDB performer filmography keeps a uuid-less anchored include local instea
       const page = await browseTitles(
         {
           type: "movie",
-          performerTpdb: performer,
           include: [{ name: "Legacy", stashdb: STASH_TAG }],
           exclude: [],
           studioMode: "exact",
+          // Contract move (VELV-166): the scalar performer key became an
+          // entry in the performers array.
+          performers: [{ tpdb: performer }],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -2417,6 +2541,9 @@ test("an anchored include whose label has no TPDB tag at all still disqualifies 
           include: [{ name: "Ghost", stashdb: STASH_TAG }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -2507,6 +2634,9 @@ test("a multi-match free-text AND pre-filters natively, ANDs locally, and degrad
           include: [{ name: "xyz" }, { name: "abc" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -2565,6 +2695,9 @@ test("a multi-match free-text AND returns the partial matches beside the ceiling
           include: [{ name: "xyz" }, { name: "abc" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -2615,6 +2748,9 @@ test("a scan-ceiling side beside a real outage returns the partial page, not a 5
           include: [{ name: "xyz" }, { name: "abc" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -2666,6 +2802,9 @@ test("a free-text include expands by folded substring, not family", async () => 
           include: [{ name: "yz" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -2711,6 +2850,9 @@ test("a free-text singleton joins the anchored tag in the native all-of criterio
           include: [{ name: "Tag A", tpdb: TAG_A.uuid }, { name: "xyz" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -2767,6 +2909,9 @@ test("a multi-match free-text AND with no singleton sends the smallest expansion
           include: [{ name: "xyz" }, { name: "abc" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -2829,6 +2974,9 @@ test("exclusions and hidden tags override includes on matching items", async () 
           include: [{ name: TAG_A.name, tpdb: TAG_A.uuid }],
           exclude: [{ name: TAG_B.name, tpdb: TAG_B.uuid }],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -2893,6 +3041,9 @@ test("a hidden tag past position 50 hides the title; a local free-text AND still
           include: [],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -2914,6 +3065,9 @@ test("a hidden tag past position 50 hides the title; a local free-text AND still
           include: [{ name: "legacy" }, { name: "last tag" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -2972,6 +3126,9 @@ test("a page fills from later upstream pages when earlier candidates are blocked
           include: [],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 1,
         },
@@ -3020,6 +3177,9 @@ test("unequal streams exhaust cleanly: no skips, no duplicates, honest combined 
           include: [],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -3042,6 +3202,9 @@ test("unequal streams exhaust cleanly: no skips, no duplicates, honest combined 
           include: [],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 2,
           perPage: 10,
         },
@@ -3089,6 +3252,9 @@ test("the same UUID on both providers is two distinct tags; hidden hides on each
           include: [],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -3120,6 +3286,9 @@ test("provider outage keeps the healthy source visible and reports the failure",
           include: [],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -3154,6 +3323,9 @@ test("a partial outage ends the browse: no page offers endless empty continuatio
           include: [],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -3172,6 +3344,9 @@ test("a partial outage ends the browse: no page offers endless empty continuatio
           include: [],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 2,
           perPage: 10,
         },
@@ -3202,6 +3377,9 @@ test("a single-source outage propagates and an all-source outage is never an emp
             include: [],
             exclude: [],
             studioMode: "exact",
+            performers: [],
+            studios: [],
+            performerMode: "all",
             page: 1,
             perPage: 10,
           },
@@ -3216,6 +3394,9 @@ test("a single-source outage propagates and an all-source outage is never an emp
             include: [],
             exclude: [],
             studioMode: "exact",
+            performers: [],
+            studios: [],
+            performerMode: "all",
             page: 1,
             perPage: 10,
           },
@@ -3255,6 +3436,9 @@ test("an unbounded narrow query ends in a visible ceiling error, not a fake end"
             include: [],
             exclude: [],
             studioMode: "exact",
+            performers: [],
+            studios: [],
+            performerMode: "all",
             page: 1,
             perPage: 1,
           },
@@ -3293,10 +3477,12 @@ test("a filmography free-text include keeps the hard ceiling error", async () =>
         browseTitles(
           {
             type: "movie",
-            performerTpdb: uuid(55),
             include: [{ name: "rare" }],
             exclude: [],
             studioMode: "exact",
+            performers: [{ tpdb: uuid(55) }],
+            studios: [],
+            performerMode: "all",
             page: 1,
             perPage: 10,
           },
@@ -3321,6 +3507,9 @@ function deepQuery(type: BrowseQuery["type"], page: number): BrowseQuery {
     type,
     include: [],
     exclude: [],
+    performers: [],
+    studios: [],
+    performerMode: "all",
     studioMode: "exact",
     page,
     perPage: 1,
@@ -3524,6 +3713,9 @@ test("an anchored tag beside a matchless free-text term answers provably empty",
           ],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -3573,6 +3765,9 @@ test("an anchored tag beside a multi-match free-text term keeps the hard ceiling
             ],
             exclude: [],
             studioMode: "exact",
+            performers: [],
+            studios: [],
+            performerMode: "all",
             page: 1,
             perPage: 10,
           },
@@ -3623,6 +3818,9 @@ test("a uuid-less anchored tag beside a native free-text term keeps the hard cei
             ],
             exclude: [],
             studioMode: "exact",
+            performers: [],
+            studios: [],
+            performerMode: "all",
             page: 1,
             perPage: 10,
           },
@@ -3672,6 +3870,9 @@ test("a free-text AND starved by hidden tags still degrades at the ceiling", asy
           include: [{ name: "xyz" }, { name: "abc" }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -3718,6 +3919,9 @@ test("year filters natively on TPDB and locally on StashDB", async () => {
           exclude: [],
           studioMode: "exact",
           year: 2020,
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -3762,10 +3966,14 @@ test("TPDB performer filmography applies includes locally without tag parameters
       const page = await browseTitles(
         {
           type: "movie",
-          performerTpdb: performer,
           include: [{ name: TAG_A.name, tpdb: TAG_A.uuid }],
           exclude: [],
           studioMode: "exact",
+          // Contract move (VELV-166): the scalar performer key became an
+          // entry in the performers array.
+          performers: [{ tpdb: performer }],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -4166,6 +4374,9 @@ test("a hidden single-word tag removes child-labelled titles while a longer unre
           include: [],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -4208,6 +4419,9 @@ test("family excludes need contiguous words; provider UUID still wins over label
           include: [],
           exclude: [{ name: "Double Penetration", tpdb: uuid(102) }],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -4250,6 +4464,9 @@ test("a free-text exclude carries no provider id and still hides by label family
           include: [],
           exclude: [{ name: "Anal" }],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -4291,7 +4508,11 @@ test("a TPDB studio slug resolves through /sites to its numeric site_id", async 
           type: "movie",
           include: [],
           exclude: [],
-          studioTpdb: "evilangel",
+          // Contract move (VELV-166): the scalar studio key became an
+          // entry in the studios array (slugs stay legal there).
+          studios: [{ tpdb: "evilangel" }],
+          performers: [],
+          performerMode: "all",
           studioMode: "exact",
           page: 1,
           perPage: 10,
@@ -4336,8 +4557,11 @@ test("a studio filter on both sides means OR: each source keeps its own clause",
           type: "all",
           include: [],
           exclude: [],
-          studioTpdb: uuid(3),
-          studioStashdb: uuid(4),
+          // Contract move (VELV-166): the two scalar studio keys became one
+          // unified entry; the sides still keep their own clauses.
+          studios: [{ tpdb: uuid(3), stashdb: uuid(4) }],
+          performers: [],
+          performerMode: "all",
           studioMode: "exact",
           page: 1,
           perPage: 10,
@@ -4379,10 +4603,14 @@ test("filmography local includes stay exact: a parent label never returns child-
       const page = await browseTitles(
         {
           type: "movie",
-          performerTpdb: performer,
           include: [{ name: PARENT.name, tpdb: PARENT.uuid }],
           exclude: [],
           studioMode: "exact",
+          // Contract move (VELV-166): the scalar performer key became an
+          // entry in the performers array.
+          performers: [{ tpdb: performer }],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -4425,6 +4653,9 @@ test("native includes stay exact: the parent travels as its provider id, child r
           include: [{ name: PARENT.name, tpdb: PARENT.uuid }],
           exclude: [],
           studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
           page: 1,
           perPage: 10,
         },
@@ -4454,6 +4685,9 @@ function planQuery(overrides: Partial<BrowseQuery> = {}): BrowseQuery {
     type: "all",
     include: [],
     exclude: [],
+    performers: [],
+    studios: [],
+    performerMode: "all",
     studioMode: "exact",
     page: 1,
     perPage: 60,
@@ -4461,27 +4695,27 @@ function planQuery(overrides: Partial<BrowseQuery> = {}): BrowseQuery {
   };
 }
 
-// Contract move: a source-scoped filter on the wrong typed tab no longer
-// refuses (400) — the tab keeps the filter in the URL and shows an honest
-// empty page, and a unified pair keeps running the side the tab names.
+// Contract move (VELV-166): the source-scoped scalar keys (performerTpdb &
+// co.) became entry arrays — every old one-sided-clause pin now rides the
+// entries, same sides.
 test("planBrowseSides keeps source-scoped filters on the wrong kind: no side qualifies; unions keep the side that can", () => {
-  for (const [field, type] of [
-    ["performerStashdb", "movie"],
-    ["studioStashdb", "movie"],
-    ["performerTpdb", "scene"],
-    ["studioTpdb", "scene"],
-    ["performerStarred", "movie"],
-  ] as const) {
+  const cases: [BrowseEntity[], BrowseQuery["type"], string][] = [
+    [[{ stashdb: uuid(1) }], "movie", "stashdb-only performers"],
+    [[{ stashdb: uuid(1) }], "movie", "stashdb-only studios (performers)"],
+    [[{ tpdb: uuid(1) }], "scene", "tpdb-only performers"],
+    [[{ tpdb: uuid(1) }], "scene", "tpdb-only studios (performers)"],
+  ];
+  for (const [entries, type, label] of cases) {
     const sides = planBrowseSides(
-      planQuery({
-        type,
-        // ponytail: computed key needs the cast — the loop covers exactly
-        // the five source-scoped fields above.
-        [field]: field === "performerStarred" ? true : uuid(1),
-      } as Partial<BrowseQuery>),
+      planQuery({ type, performers: entries, studios: entries }),
     ).sides;
-    assert.deepEqual(sides, [], `${field} on ${type} runs no side`);
+    assert.deepEqual(sides, [], `${label} on ${type} runs no side`);
   }
+  assert.deepEqual(
+    planBrowseSides(planQuery({ type: "movie", performerStarred: true })).sides,
+    [],
+    "starred on movie runs no side",
+  );
   // The performer union (both ids) runs the one side the tab names, with
   // its own constraint: Movies shows her TPDB filmography, Scenes her
   // StashDB side.
@@ -4489,8 +4723,7 @@ test("planBrowseSides keeps source-scoped filters on the wrong kind: no side qua
     planBrowseSides(
       planQuery({
         type: "movie",
-        performerTpdb: uuid(1),
-        performerStashdb: uuid(6),
+        performers: [{ tpdb: uuid(1), stashdb: uuid(6) }],
       }),
     ).sides,
     ["tpdb"],
@@ -4499,8 +4732,7 @@ test("planBrowseSides keeps source-scoped filters on the wrong kind: no side qua
     planBrowseSides(
       planQuery({
         type: "scene",
-        performerTpdb: uuid(1),
-        performerStashdb: uuid(6),
+        performers: [{ tpdb: uuid(1), stashdb: uuid(6) }],
       }),
     ).sides,
     ["stashdb"],
@@ -4508,13 +4740,19 @@ test("planBrowseSides keeps source-scoped filters on the wrong kind: no side qua
   // The unified studio tile behaves the same way.
   assert.deepEqual(
     planBrowseSides(
-      planQuery({ type: "movie", studioTpdb: uuid(1), studioStashdb: uuid(2) }),
+      planQuery({
+        type: "movie",
+        studios: [{ tpdb: uuid(1), stashdb: uuid(2) }],
+      }),
     ).sides,
     ["tpdb"],
   );
   assert.deepEqual(
     planBrowseSides(
-      planQuery({ type: "scene", studioTpdb: uuid(1), studioStashdb: uuid(2) }),
+      planQuery({
+        type: "scene",
+        studios: [{ tpdb: uuid(1), stashdb: uuid(2) }],
+      }),
     ).sides,
     ["stashdb"],
   );
@@ -4525,13 +4763,25 @@ test("planBrowseSides refuses withChildren without a StashDB studio and with a T
     () => planBrowseSides(planQuery({ studioMode: "withChildren" })),
     /requires a StashDB studio/,
   );
+  // A TPDB-only entry cannot ground the parent criterion either.
   assert.throws(
     () =>
       planBrowseSides(
         planQuery({
           studioMode: "withChildren",
-          studioStashdb: uuid(2),
-          studioTpdb: uuid(3),
+          studios: [{ tpdb: uuid(3) }],
+        }),
+      ),
+    /requires a StashDB studio/,
+  );
+  // Contract move (VELV-166): the scalar pair became one unified entry
+  // carrying both ids; the StashDB-only rule and its wording are unchanged.
+  assert.throws(
+    () =>
+      planBrowseSides(
+        planQuery({
+          studioMode: "withChildren",
+          studios: [{ stashdb: uuid(2), tpdb: uuid(3) }],
         }),
       ),
     /StashDB-only/,
@@ -4539,15 +4789,16 @@ test("planBrowseSides refuses withChildren without a StashDB studio and with a T
 });
 
 test("planBrowseSides refuses every filmography combination that upstream rejects", () => {
+  // Contract move (VELV-166): the picked performer rides the entries.
   const filmography = {
-    performerTpdb: uuid(4),
+    performers: [{ tpdb: uuid(4) }],
     type: "all" as const,
   };
   for (const extra of [
     { q: "term" },
     { year: 2024 },
     { date: "2024-02-03" },
-    { studioTpdb: uuid(5) },
+    { studios: [{ tpdb: uuid(5) }] },
     { sort: "title" as const },
   ]) {
     assert.throws(
@@ -4591,8 +4842,9 @@ test("planBrowseSides refuses orders the qualifying side cannot carry", () => {
   // The recency vocabulary still maps onto the StashDB DATE order, so an
   // All query filtered down to the StashDB side alone keeps its order.
   assert.deepEqual(
-    planBrowseSides(planQuery({ studioStashdb: uuid(2), sort: "recency" }))
-      .sides,
+    planBrowseSides(
+      planQuery({ studios: [{ stashdb: uuid(2) }], sort: "recency" }),
+    ).sides,
     ["stashdb"],
     "recency survives on a StashDB-only All plan",
   );
@@ -4603,8 +4855,7 @@ test("planBrowseSides keeps search and sort on the Scenes tab of a unified perfo
   const searched = planBrowseSides(
     planQuery({
       type: "scene",
-      performerTpdb: uuid(4),
-      performerStashdb: uuid(6),
+      performers: [{ tpdb: uuid(4), stashdb: uuid(6) }],
       q: "term",
     }),
   );
@@ -4616,8 +4867,7 @@ test("planBrowseSides keeps search and sort on the Scenes tab of a unified perfo
     planBrowseSides(
       planQuery({
         type: "scene",
-        performerTpdb: uuid(4),
-        performerStashdb: uuid(6),
+        performers: [{ tpdb: uuid(4), stashdb: uuid(6) }],
         sort: "title",
       }),
     ).nativeSort,
@@ -4636,25 +4886,26 @@ test("planBrowseSides picks sides: one-sided clauses kill only their own side", 
   // A StashDB filter (performer or studio) kills the movie side: the user
   // asked for StashDB scenes. A TPDB studio likewise kills the scene side.
   assert.deepEqual(
-    planBrowseSides(planQuery({ performerStashdb: uuid(6) })).sides,
+    planBrowseSides(planQuery({ performers: [{ stashdb: uuid(6) }] })).sides,
     ["stashdb"],
   );
   assert.deepEqual(
-    planBrowseSides(planQuery({ studioStashdb: uuid(7) })).sides,
+    planBrowseSides(planQuery({ studios: [{ stashdb: uuid(7) }] })).sides,
     ["stashdb"],
   );
   // A unified studio tile carries both ids: the clauses are alternatives,
   // not a conjunction, so both sides run.
   assert.deepEqual(
-    planBrowseSides(planQuery({ studioStashdb: uuid(7), studioTpdb: uuid(8) }))
-      .sides,
+    planBrowseSides(
+      planQuery({ studios: [{ tpdb: uuid(8), stashdb: uuid(7) }] }),
+    ).sides,
     ["tpdb", "stashdb"],
   );
   // The performer pair unions by the same alternative-clauses rule as the
   // unified studio tile: both ids together run both sides.
   assert.deepEqual(
     planBrowseSides(
-      planQuery({ performerTpdb: uuid(1), performerStashdb: uuid(6) }),
+      planQuery({ performers: [{ tpdb: uuid(1), stashdb: uuid(6) }] }),
     ).sides,
     ["tpdb", "stashdb"],
   );
@@ -4666,7 +4917,7 @@ test("planBrowseSides derives order: filmography claims none, defaults are relea
   assert.deepEqual(def.mergeOrder, { key: "recency", direction: "desc" });
 
   const film = planBrowseSides(
-    planQuery({ performerTpdb: uuid(4), type: "movie" }),
+    planQuery({ performers: [{ tpdb: uuid(4) }], type: "movie" }),
   );
   assert.equal(film.filmography, true);
   assert.equal(film.nativeSort, undefined);
@@ -4674,7 +4925,7 @@ test("planBrowseSides derives order: filmography claims none, defaults are relea
 
   // The performer union keeps the filmography route's no-sort claim.
   const union = planBrowseSides(
-    planQuery({ performerTpdb: uuid(4), performerStashdb: uuid(6) }),
+    planQuery({ performers: [{ tpdb: uuid(4), stashdb: uuid(6) }] }),
   );
   assert.equal(union.filmography, true);
   assert.equal(union.nativeSort, undefined);
@@ -4707,7 +4958,7 @@ test("planBrowseSides routes the starred-performer filter: stashdb scenes only, 
   assert.equal(starred.filmography, false);
   assert.deepEqual(
     planBrowseSides(
-      planQuery({ performerStarred: true, studioStashdb: uuid(7) }),
+      planQuery({ performerStarred: true, studios: [{ stashdb: uuid(7) }] }),
     ).sides,
     ["stashdb"],
   );
@@ -4717,19 +4968,25 @@ test("planBrowseSides routes the starred-performer filter: stashdb scenes only, 
     planBrowseSides(planQuery({ performerStarred: true, type: "movie" })).sides,
     [],
   );
+  // Contract move (VELV-166): the two scalar refusals became one — the
+  // starred filter refuses picked performers of ANY shape with a single
+  // message, so the wording no longer names a provider.
   assert.throws(
     () =>
       planBrowseSides(
-        planQuery({ performerStarred: true, performerTpdb: uuid(1) }),
+        planQuery({ performerStarred: true, performers: [{ tpdb: uuid(1) }] }),
       ),
-    /A starred-performer filter cannot be combined with a TPDB performer\./,
+    /A starred-performer filter cannot be combined with picked performers\./,
   );
   assert.throws(
     () =>
       planBrowseSides(
-        planQuery({ performerStarred: true, performerStashdb: uuid(6) }),
+        planQuery({
+          performerStarred: true,
+          performers: [{ stashdb: uuid(6) }],
+        }),
       ),
-    /A starred-performer filter cannot be combined with a StashDB performer\./,
+    /A starred-performer filter cannot be combined with picked performers\./,
   );
 });
 
@@ -4743,6 +5000,7 @@ test("browseTitles with starred and no StashDB-side follows returns an honest em
     total: 0,
     totalCountKnown: true,
     errors: [],
+    notices: [],
   });
 });
 
@@ -4841,4 +5099,1502 @@ test("every sort-table row is observable: membership, direction rule, offers", (
   // A key the tab's side does not carry reads as non-directional: a stale
   // relevance on the Scenes tab clamps its direction off, never crashes.
   assert.equal(browseSortIsDirectional("scene", "relevance"), false);
+});
+
+// --- VELV-166: several performers and studios, year ranges, or-groups ---
+
+// The entry semantics behind the planner, tested directly: qualification in
+// all and any mode with known and unknown ids, the filmography gate, the
+// stream seeds, and the merged-sort restriction. All pure — no fixture.
+test("sourceRunsFor generalizes the one-sided clause truth table to entries", () => {
+  const tpdbOnly = [{ tpdb: uuid(1) }];
+  const stashOnly = [{ stashdb: uuid(2) }];
+  const unified = [{ tpdb: uuid(1), stashdb: uuid(2) }];
+  // No entries: the constraint is absent — both sources qualify.
+  assert.equal(sourceRunsFor([], "tpdb", "all"), true);
+  assert.equal(sourceRunsFor([], "stashdb", "any"), true);
+  // all mode: a source must know EVERY entry.
+  assert.equal(sourceRunsFor(tpdbOnly, "tpdb", "all"), true);
+  assert.equal(sourceRunsFor(tpdbOnly, "stashdb", "all"), false);
+  assert.equal(sourceRunsFor(unified, "tpdb", "all"), true);
+  assert.equal(sourceRunsFor(unified, "stashdb", "all"), true);
+  // any mode (and studios, always any-of): one known entry suffices.
+  assert.equal(sourceRunsFor([...tpdbOnly, ...stashOnly], "tpdb", "any"), true);
+  assert.equal(
+    sourceRunsFor([...tpdbOnly, ...stashOnly], "stashdb", "any"),
+    true,
+  );
+  // Mixed entries in all mode disqualify both sources.
+  const mixed = [...tpdbOnly, ...stashOnly];
+  assert.equal(sourceRunsFor(mixed, "tpdb", "all"), false);
+  assert.equal(sourceRunsFor(mixed, "stashdb", "all"), false);
+});
+
+test("tpdbFilmographyRuns gates on entries, tab and mode", () => {
+  const tpdbPerformer = { tpdb: uuid(1) };
+  const stashPerformer = { stashdb: uuid(2) };
+  // At least one TPDB-known performer and a non-scene tab.
+  assert.equal(tpdbFilmographyRuns("all", [tpdbPerformer], "all"), true);
+  assert.equal(tpdbFilmographyRuns("movie", [tpdbPerformer], "any"), true);
+  // Never on the Scenes tab: StashDB owns the side there.
+  assert.equal(tpdbFilmographyRuns("scene", [tpdbPerformer], "all"), false);
+  // A stashdb-only entry gives TPDB nothing to page.
+  assert.equal(tpdbFilmographyRuns("movie", [stashPerformer], "all"), false);
+  // In any mode one TPDB-known entry among unknown ones still runs.
+  assert.equal(
+    tpdbFilmographyRuns("movie", [stashPerformer, tpdbPerformer], "any"),
+    true,
+  );
+  // In all mode it does not: TPDB cannot know every entry.
+  assert.equal(
+    tpdbFilmographyRuns("movie", [stashPerformer, tpdbPerformer], "all"),
+    false,
+  );
+});
+
+test("browseSideRuns applies the starred clause to the TPDB side only", () => {
+  const tpdbPerformer = { tpdb: uuid(1) };
+  assert.deepEqual(browseSideRuns("all", [tpdbPerformer], [], "all", true), {
+    tpdb: false,
+    stashdb: false,
+  });
+  // Scene tab: starred kills the TPDB side, and the tpdb-only entry
+  // disqualifies the stash side too — no side qualifies at all.
+  assert.deepEqual(browseSideRuns("scene", [tpdbPerformer], [], "any", true), {
+    tpdb: false,
+    stashdb: false,
+  });
+  // A stashdb-known entry keeps the scene side running under starred.
+  assert.deepEqual(
+    browseSideRuns("scene", [{ stashdb: uuid(2) }], [], "any", true),
+    { tpdb: false, stashdb: true },
+  );
+  assert.deepEqual(browseSideRuns("all", [tpdbPerformer], [], "all", false), {
+    tpdb: true,
+    stashdb: false,
+  });
+});
+
+test("planStreams seeds one stream per upstream list in entry order", () => {
+  const P1 = { tpdb: uuid(1), stashdb: uuid(6) };
+  const P2 = { tpdb: uuid(2) };
+  const S1 = { tpdb: uuid(3) };
+  const S2 = { stashdb: uuid(4) };
+  // TPDB all-mode filmography: ONE stream, the first known entry's route.
+  const allMode = planStreams("movie", [P1, P2], [], "all", "exact", false);
+  assert.equal(allMode.filmography, true);
+  assert.deepEqual(allMode.seeds, [
+    { provider: "tpdb", kind: "movie", filmographyPerformer: uuid(1) },
+  ]);
+  // TPDB any-mode: one filmography per known entry, sharing a dedupe key.
+  const anyMode = planStreams("movie", [P1, P2], [], "any", "exact", false);
+  assert.deepEqual(anyMode.seeds, [
+    {
+      provider: "tpdb",
+      kind: "movie",
+      filmographyPerformer: uuid(1),
+      dedupeKey: "tpdb-filmographies",
+    },
+    {
+      provider: "tpdb",
+      kind: "movie",
+      filmographyPerformer: uuid(2),
+      dedupeKey: "tpdb-filmographies",
+    },
+  ]);
+  // TPDB studios: one seed per known studio id.
+  const tpdbStudios = planStreams("movie", [], [S1], "all", "exact", false);
+  assert.deepEqual(tpdbStudios.seeds, [
+    { provider: "tpdb", kind: "movie", tpdbStudio: uuid(3) },
+  ]);
+  // StashDB exact studios: every known id in ONE INCLUDES stream.
+  const stashExact = planStreams("scene", [], [S2], "all", "exact", false);
+  assert.deepEqual(stashExact.seeds, [
+    {
+      provider: "stashdb",
+      kind: "scene",
+      studioIds: [uuid(4)],
+    },
+  ]);
+  // StashDB withChildren: one parentStudio stream per studio ≥2.
+  const children = planStreams(
+    "scene",
+    [],
+    [{ stashdb: uuid(4) }, { stashdb: uuid(5) }],
+    "all",
+    "withChildren",
+    false,
+  );
+  assert.deepEqual(children.seeds, [
+    {
+      provider: "stashdb",
+      kind: "scene",
+      parentStudioId: uuid(4),
+      dedupeKey: "stashdb-parent-studios",
+    },
+    {
+      provider: "stashdb",
+      kind: "scene",
+      parentStudioId: uuid(5),
+      dedupeKey: "stashdb-parent-studios",
+    },
+  ]);
+  // A single withChildren studio keeps the plain single-stream shape.
+  const singleChild = planStreams(
+    "scene",
+    [],
+    [{ stashdb: uuid(4) }],
+    "all",
+    "withChildren",
+    false,
+  );
+  assert.deepEqual(singleChild.seeds, [
+    { provider: "stashdb", kind: "scene", parentStudioId: uuid(4) },
+  ]);
+  // Unified performer pair on Scenes: the stash side alone, all-mode criterion.
+  const scenes = planStreams("scene", [P1], [], "all", "exact", false);
+  assert.deepEqual(scenes.seeds, [
+    {
+      provider: "stashdb",
+      kind: "scene",
+      performerIds: [uuid(6)],
+      performerAll: true,
+    },
+  ]);
+  // Starred: the criterion marks present, ids arrive at IO time.
+  const starred = planStreams("scene", [], [], "all", "exact", true);
+  assert.deepEqual(starred.seeds, [
+    {
+      provider: "stashdb",
+      kind: "scene",
+      performerIds: [],
+      performerAll: false,
+    },
+  ]);
+});
+
+test("mergedSourceRestricted refuses only sorts outside the mixed vocabulary on merged sources", () => {
+  const twoTpdbStudios = planStreams(
+    "movie",
+    [],
+    [{ tpdb: uuid(3) }, { tpdb: uuid(4) }],
+    "all",
+    "exact",
+    false,
+  );
+  const mergedStash = planStreams(
+    "scene",
+    [],
+    [{ stashdb: uuid(4) }, { stashdb: uuid(5) }],
+    "all",
+    "withChildren",
+    false,
+  );
+  const single = planStreams(
+    "movie",
+    [],
+    [{ tpdb: uuid(3) }],
+    "all",
+    "exact",
+    false,
+  );
+  for (const plan of [twoTpdbStudios, mergedStash]) {
+    assert.equal(mergedSourceRestricted(plan, "title"), true);
+    assert.equal(mergedSourceRestricted(plan, "trending"), true);
+    // The mixed vocabulary stays legal.
+    assert.equal(mergedSourceRestricted(plan, "recency"), false);
+    assert.equal(mergedSourceRestricted(plan, "duration"), false);
+    assert.equal(mergedSourceRestricted(plan, undefined), false);
+  }
+  // A single-stream source is never restricted.
+  assert.equal(mergedSourceRestricted(single, "title"), false);
+});
+
+test("planBrowseSides refuses a sort a merged multi-list source cannot keep", () => {
+  // Two TPDB studio entries merge two site_id lists: only recency/duration
+  // may order them. The refusal names the rule.
+  assert.throws(
+    () =>
+      planBrowseSides(
+        planQuery({
+          type: "movie",
+          studios: [{ tpdb: uuid(3) }, { tpdb: uuid(4) }],
+          sort: "title",
+        }),
+      ),
+    (err: unknown) =>
+      appError(400, "invalid_search")(err) &&
+      (err as AppError).message.includes(
+        "a merged source supports only recency and duration",
+      ),
+  );
+  // recency stays legal.
+  assert.deepEqual(
+    planBrowseSides(
+      planQuery({
+        type: "movie",
+        studios: [{ tpdb: uuid(3) }, { tpdb: uuid(4) }],
+        sort: "recency",
+      }),
+    ).sides,
+    ["tpdb"],
+  );
+  // withChildren with two stashdb studios merges parent lists: same rule.
+  assert.throws(
+    () =>
+      planBrowseSides(
+        planQuery({
+          type: "scene",
+          studios: [{ stashdb: uuid(4) }, { stashdb: uuid(5) }],
+          studioMode: "withChildren",
+          sort: "title",
+        }),
+      ),
+    (err: unknown) =>
+      appError(400, "invalid_search")(err) &&
+      (err as AppError).message.includes(
+        "a merged source supports only recency and duration",
+      ),
+  );
+  // A single studio of either shape keeps every sort its side carries.
+  assert.deepEqual(
+    planBrowseSides(
+      planQuery({
+        type: "scene",
+        studios: [{ stashdb: uuid(4) }],
+        sort: "title",
+      }),
+    ).nativeSort,
+    { key: "title" },
+  );
+});
+
+// --- the caps: 1..5 entries per kind, never the same id twice, never both
+// spellings of one kind ---
+
+test("parseBrowseQuery caps entity arrays at five and refuses duplicates and mixed spellings", () => {
+  const six = Array.from({ length: 6 }, (_, i) => ({ tpdb: uuid(10 + i) }));
+  assert.throws(
+    () =>
+      parseBrowseQuery(
+        new URLSearchParams({
+          performers: JSON.stringify(six),
+        }),
+      ),
+    appError(400, "invalid_query"),
+    "six performer entries",
+  );
+  assert.throws(
+    () =>
+      parseBrowseQuery(new URLSearchParams({ studios: JSON.stringify(six) })),
+    appError(400, "invalid_query"),
+    "six studio entries",
+  );
+  // Five is the cap and parses.
+  assert.equal(
+    parseBrowseQuery(
+      new URLSearchParams({
+        performers: JSON.stringify(six.slice(0, MAX_BROWSE_ENTITIES)),
+      }),
+    ).performers.length,
+    5,
+  );
+  // The same provider id twice in one kind would double-count a stream.
+  assert.throws(
+    () =>
+      parseBrowseQuery(
+        new URLSearchParams({
+          performers: JSON.stringify([{ tpdb: uuid(1) }, { tpdb: uuid(1) }]),
+        }),
+      ),
+    appError(400, "invalid_search"),
+    "duplicate tpdb id",
+  );
+  assert.throws(
+    () =>
+      parseBrowseQuery(
+        new URLSearchParams({
+          studios: JSON.stringify([{ stashdb: uuid(2) }, { stashdb: uuid(2) }]),
+        }),
+      ),
+    appError(400, "invalid_search"),
+    "duplicate stashdb id",
+  );
+  // The same uuid under BOTH providers is two identities and stays legal.
+  assert.equal(
+    parseBrowseQuery(
+      new URLSearchParams({
+        performers: JSON.stringify([{ tpdb: uuid(1), stashdb: uuid(1) }]),
+      }),
+    ).performers.length,
+    1,
+  );
+  // Old scalar key + new array key of one kind: two spellings of one filter
+  // would silently AND disjoint entry sets.
+  assert.throws(
+    () =>
+      parseBrowseQuery(
+        new URLSearchParams({
+          performers: JSON.stringify([{ tpdb: uuid(1) }]),
+          performerTpdb: uuid(2),
+        }),
+      ),
+    appError(400, "invalid_search"),
+    "old + new performer key",
+  );
+  assert.throws(
+    () =>
+      parseBrowseQuery(
+        new URLSearchParams({
+          studios: JSON.stringify([{ stashdb: uuid(2) }]),
+          studioStashdb: uuid(3),
+        }),
+      ),
+    appError(400, "invalid_search"),
+    "old + new studio key",
+  );
+  // The other kind's old key composes freely.
+  const both = parseBrowseQuery(
+    new URLSearchParams({
+      performers: JSON.stringify([{ tpdb: uuid(1) }]),
+      studioStashdb: uuid(3),
+    }),
+  );
+  assert.deepEqual(both.performers, [{ tpdb: uuid(1) }]);
+  assert.deepEqual(both.studios, [{ stashdb: uuid(3) }]);
+});
+
+test("parseBrowseQuery validates each entity entry's shape", () => {
+  const bad: [string, string, RegExp][] = [
+    ["performers", "not-json", /must be a JSON array/],
+    // Unknown fields are refused — the entry shape is pinned.
+    [
+      "performers",
+      JSON.stringify([{ tpdb: uuid(1), nickname: "x" }]),
+      /accept only name, tpdb and stashdb/,
+    ],
+    [
+      "performers",
+      JSON.stringify([{ stashdb: uuid(1) }, "nope"]),
+      /entries must be JSON objects/,
+    ],
+    // A performer entry refuses the TPDB site slug; a studio entry keeps it
+    // (cross-provider studio links legitimately carry the slug).
+    [
+      "performers",
+      JSON.stringify([{ tpdb: "evilangel" }]),
+      /performers entry tpdb must be a provider UUID\./,
+    ],
+    // An entry with no id can never qualify a source.
+    [
+      "performers",
+      JSON.stringify([{ name: "Just A Name" }]),
+      /needs a TPDB or StashDB id/,
+    ],
+    ["studios", JSON.stringify([{}]), /needs a TPDB or StashDB id/],
+    // Display labels are optional but bounded.
+    [
+      "performers",
+      JSON.stringify([{ name: "x".repeat(121), tpdb: uuid(1) }]),
+      /name must be 1\.\.120/,
+    ],
+    [
+      "studios",
+      JSON.stringify([{ name: "   ", tpdb: uuid(2) }]),
+      /name must be 1\.\.120/,
+    ],
+    // Ids must be provider UUIDs (or, for studios on TPDB, site slugs).
+    [
+      "studios",
+      JSON.stringify([{ stashdb: "not-a-uuid" }]),
+      /entry stashdb must be a provider UUID/,
+    ],
+  ];
+  for (const [key, value, message] of bad) {
+    assert.throws(
+      () => parseBrowseQuery(new URLSearchParams({ [key]: value })),
+      (err: unknown) =>
+        appError(400, "invalid_query")(err) &&
+        message.test((err as AppError).message),
+      `${key}=${value}`,
+    );
+  }
+  // The studio slug acceptance, positively.
+  assert.deepEqual(
+    parseBrowseQuery(
+      new URLSearchParams({
+        studios: JSON.stringify([{ tpdb: "evil-angel" }]),
+      }),
+    ).studios,
+    [{ tpdb: "evil-angel" }],
+  );
+  // Names trim; ids lowercase.
+  const normalized = parseBrowseQuery(
+    new URLSearchParams({
+      performers: JSON.stringify([
+        { name: "  Jane Doe  ", tpdb: uuid(1).toUpperCase(), stashdb: uuid(2) },
+      ]),
+    }),
+  );
+  assert.deepEqual(normalized.performers, [
+    { name: "Jane Doe", tpdb: uuid(1), stashdb: uuid(2) },
+  ]);
+});
+
+// --- year ranges ---
+
+test("parseBrowseQuery treats a year range as a pair with the old refusals and codes", () => {
+  const cases: [string, string][] = [
+    ["yearTo=2024", "invalid_search"], // upper bound without the lower one
+    ["year=2024&yearTo=2020", "invalid_search"], // inverted range
+    [
+      "year=2024&yearTo=2026&date=2026-01-31&date_operation=%3C",
+      "invalid_search",
+    ],
+    ["year=2024&yearTo=notayear", "invalid_query"], // shape errors keep invalid_query
+    ["year=2024&yearTo=1899", "invalid_query"],
+    ["year=2024&yearTo=2101", "invalid_query"],
+  ];
+  for (const [query, code] of cases) {
+    assert.throws(
+      () => parseBrowseQuery(new URLSearchParams(query)),
+      appError(400, code),
+      query,
+    );
+  }
+  // An equal range is a legal single-year window.
+  const single = parseBrowseQuery(new URLSearchParams("year=2024&yearTo=2024"));
+  assert.equal(single.year, 2024);
+  assert.equal(single.yearTo, 2024);
+  // A valid range parses both bounds.
+  const range = parseBrowseQuery(new URLSearchParams("year=1990&yearTo=2000"));
+  assert.equal(range.year, 1990);
+  assert.equal(range.yearTo, 2000);
+  // The filmography route refuses the year window like any other year
+  // filter — parse alone cannot see the combination, so the refusal is
+  // plan-level and needs a TPDB-known performer entry.
+  const filmographyUrl = `type=movie&performers=${encodeURIComponent(
+    JSON.stringify([{ tpdb: uuid(4) }]),
+  )}&year=1990&yearTo=2000`;
+  assert.throws(
+    () =>
+      planBrowseSides(parseBrowseQuery(new URLSearchParams(filmographyUrl))),
+    appError(400, "invalid_search"),
+  );
+  // While the plain search keeps it: the plan carries the range through.
+  const planned = planBrowseSides(
+    parseBrowseQuery(new URLSearchParams("type=all&year=1990&yearTo=2000")),
+  );
+  assert.deepEqual(planned.sides, ["tpdb", "stashdb"]);
+});
+
+// --- or-groups and entities at the fixture level ---
+
+test("StashDB receives one performers criterion: INCLUDES_ALL in all mode, INCLUDES in any mode", async () => {
+  const P1 = uuid(1);
+  const P2 = uuid(6);
+  const sceneInputs: Record<string, unknown>[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [],
+      scenes: {
+        count: 1,
+        rows: [stashRow(uuid(3), "Their Scene", "2024-03-03")],
+      },
+      onScenesRequest: (input) => sceneInputs.push(input),
+    }),
+    async () => {
+      const allMode = await browseTitles(
+        planQuery({
+          type: "scene",
+          performers: [
+            { stashdb: P1, name: "Jane" },
+            { stashdb: P2, name: "Dee" },
+          ],
+        }),
+        [],
+      );
+      assert.equal(allMode.items.length, 1);
+      const anyMode = await browseTitles(
+        planQuery({
+          type: "scene",
+          performerMode: "any",
+          performers: [{ stashdb: P1 }, { stashdb: P2 }],
+        }),
+        [],
+      );
+      assert.equal(anyMode.items.length, 1);
+    },
+  );
+  assert.deepEqual(sceneInputs[0]!.performers, {
+    value: [P1, P2],
+    modifier: "INCLUDES_ALL",
+  });
+  assert.deepEqual(sceneInputs[1]!.performers, {
+    value: [P1, P2],
+    modifier: "INCLUDES",
+  });
+});
+
+test("TPDB all-mode filmography keeps only movies crediting every performer", async () => {
+  const P1 = uuid(1);
+  const P2 = uuid(2);
+  const urls: string[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(
+              uuid(10),
+              "Both Credit",
+              "2024-01-01",
+              [],
+              [
+                { id: P1, name: "Jane" },
+                { id: P2, name: "Dee" },
+              ],
+            ),
+            tpdbRow(
+              uuid(11),
+              "Only First",
+              "2023-01-01",
+              [],
+              [{ id: P1, name: "Jane" }],
+            ),
+          ],
+          next: null,
+          total: 2,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: (_page, _qs, url) => urls.push(url),
+    }),
+    async () => {
+      // All mode: the route pages ONE performer's list and the visible
+      // predicate re-checks the other entries in the rows' credits.
+      const page = await browseTitles(
+        planQuery({
+          type: "movie",
+          performers: [{ tpdb: P1 }, { tpdb: P2 }],
+        }),
+        [],
+      );
+      assert.match(urls[0]!, new RegExp(`/performers/${P1}/movies`));
+      assert.deepEqual(
+        page.items.map((d) => d.title),
+        ["Both Credit"],
+      );
+      // The upstream list is not AND-ed, so totals degrade to
+      // exhaustion-exact over the rows the credits re-check admitted —
+      // "Only First" was read upstream and dropped locally.
+      assert.equal(page.totalCountKnown, true);
+      assert.equal(page.total, 1);
+    },
+  );
+});
+
+test("TPDB any-mode filmographies concatenate deduped: a shared movie stays at its first place", async () => {
+  const P1 = uuid(1);
+  const P2 = uuid(2);
+  const SHARED = uuid(9);
+  const urls: string[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(
+              uuid(10),
+              "First Film",
+              "2024-02-01",
+              [],
+              [{ id: P1, name: "Jane" }],
+            ),
+            tpdbRow(
+              SHARED,
+              "Shared Movie",
+              "2024-01-01",
+              [],
+              [{ id: P1, name: "Jane" }],
+            ),
+          ],
+          next: null,
+          total: 2,
+        },
+        {
+          rows: [
+            tpdbRow(
+              uuid(20),
+              "Second Film",
+              "2023-06-01",
+              [],
+              [{ id: P2, name: "Dee" }],
+            ),
+            tpdbRow(
+              SHARED,
+              "Shared Movie",
+              "2024-01-01",
+              [],
+              [{ id: P2, name: "Dee" }],
+            ),
+          ],
+          next: null,
+          total: 2,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: (_page, _qs, url) => urls.push(url),
+    }),
+    async () => {
+      const page = await browseTitles(
+        planQuery({
+          type: "movie",
+          performerMode: "any",
+          performers: [{ tpdb: P1 }, { tpdb: P2 }],
+        }),
+        [],
+      );
+      // Both filmographies ran, in entry order, and the shared movie
+      // appears once — at its first place (the first entry's list).
+      assert.deepEqual(
+        urls.map((u) => (u.match(/performers\/([^/]+)\/movies/) ?? [])[1]),
+        [P1, P2],
+      );
+      assert.deepEqual(
+        page.items.map((d) => d.title),
+        ["First Film", "Shared Movie", "Second Film"],
+      );
+      // Deduped streams count as locally filtered: exact at exhaustion.
+      assert.equal(page.totalCountKnown, true);
+      assert.equal(page.total, 3);
+    },
+  );
+});
+
+test("two TPDB studios merge two site_id lists in recency order with the summed total", async () => {
+  const S1 = uuid(3);
+  const S2 = uuid(4);
+  const siteIdsSeen: string[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(10), "Older Movie", "2023-06-01")],
+          next: null,
+          total: 7,
+        },
+        {
+          rows: [tpdbRow(uuid(20), "Newer Movie", "2024-06-01")],
+          next: null,
+          total: 5,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      siteIds: { [S1]: 70, [S2]: 80 },
+      onMovieRequest: (_page, qs) => siteIdsSeen.push(qs.get("site_id") ?? "?"),
+    }),
+    async () => {
+      const page = await browseTitles(
+        planQuery({
+          type: "movie",
+          studios: [{ tpdb: S1 }, { tpdb: S2 }],
+        }),
+        [],
+      );
+      // One site_id request per entry, in entry order; the slug never rides.
+      assert.deepEqual(siteIdsSeen, ["70", "80"]);
+      // The lists are disjoint, so the recency merge interleaves them and
+      // the provider totals sum exactly.
+      assert.deepEqual(
+        page.items.map((d) => d.title),
+        ["Newer Movie", "Older Movie"],
+      );
+      assert.equal(page.totalCountKnown, true);
+      assert.equal(page.total, 12);
+    },
+  );
+});
+
+test("withChildren with two StashDB studios sends two parentStudio searches and dedupes", async () => {
+  const St1 = uuid(4);
+  const St2 = uuid(5);
+  const sceneInputs: Record<string, unknown>[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [],
+      scenes: {
+        count: 2,
+        rows: [
+          stashRow(uuid(30), "Child Scene", "2024-05-01"),
+          stashRow(uuid(31), "Second Scene", "2024-04-01"),
+        ],
+      },
+      onScenesRequest: (input) => sceneInputs.push(input),
+    }),
+    async () => {
+      // Both searches return the same rows (the fixture network is one
+      // studio family), so the merge sees each scene twice and keeps the
+      // first occurrence.
+      const page = await browseTitles(
+        planQuery({
+          type: "scene",
+          studios: [{ stashdb: St1 }, { stashdb: St2 }],
+          studioMode: "withChildren",
+        }),
+        [],
+      );
+      assert.deepEqual(
+        sceneInputs.map((input) => input.parentStudio),
+        [St1, St2],
+      );
+      for (const input of sceneInputs) {
+        assert.equal(input.studios, undefined, "exact union never rides");
+      }
+      assert.deepEqual(
+        page.items.map((d) => d.title),
+        ["Child Scene", "Second Scene"],
+      );
+      assert.equal(page.totalCountKnown, true);
+      assert.equal(page.total, 2);
+    },
+  );
+});
+
+test("a year range bounds both sources locally; a lone year keeps the native/local split", async () => {
+  const movieUrls: string[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(uuid(10), "Inside Movie", "2020-06-01"),
+            tpdbRow(uuid(11), "Late Movie", "2022-06-01"),
+          ],
+          next: null,
+          total: 2,
+        },
+        // The second page serves the second browse (each browse reads one
+        // page; the scripted upstream hands pages out in request order).
+        {
+          rows: [
+            tpdbRow(uuid(10), "Inside Movie", "2020-06-01"),
+            tpdbRow(uuid(11), "Late Movie", "2022-06-01"),
+          ],
+          next: null,
+          total: 2,
+        },
+      ],
+      scenes: {
+        count: 2,
+        rows: [
+          stashRow(uuid(30), "Inside Scene", "2020-03-03"),
+          stashRow(uuid(31), "Late Scene", "2022-03-03"),
+        ],
+      },
+      onMovieRequest: (_page, qs) => movieUrls.push(qs.toString()),
+    }),
+    async () => {
+      const ranged = await browseTitles(
+        planQuery({ year: 2019, yearTo: 2021 }),
+        [],
+      );
+      // `year` stays native on TPDB (the lower bound rides the URL);
+      // `yearTo` is the local upper bound on BOTH sources.
+      assert.match(movieUrls[0]!, /year=2019/);
+      assert.deepEqual(ranged.items.map((d) => d.title).sort(), [
+        "Inside Movie",
+        "Inside Scene",
+      ]);
+      assert.equal(ranged.totalCountKnown, true);
+      assert.equal(ranged.total, 2);
+
+      // A lone year keeps today's behavior: the year rides TPDB's native
+      // query (the fixture ignores it, so both rows survive locally) while
+      // StashDB's year is a local exact-match (2022 drops).
+      movieUrls.length = 0;
+      const lone = await browseTitles(planQuery({ year: 2020 }), []);
+      assert.match(movieUrls[0]!, /year=2020/);
+      assert.deepEqual(lone.items.map((d) => d.title).sort(), [
+        "Inside Movie",
+        "Inside Scene",
+        "Late Movie",
+      ]);
+      assert.equal(lone.totalCountKnown, true);
+      assert.equal(lone.total, 3);
+    },
+  );
+});
+
+test("an or-group include matches either member, ANDs with plains, and drops matchless titles", async () => {
+  const A = { id: 11, uuid: uuid(101), name: "Blonde" };
+  const B = { id: 12, uuid: uuid(102), name: "Redhead" };
+  const C = { id: 13, uuid: uuid(103), name: "Lesbian" };
+  const movieUrls: string[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [A, B, C],
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(uuid(10), "Blonde And Lesbian", "2024-03-01", [A, C]),
+            tpdbRow(uuid(11), "Redhead Only", "2024-02-01", [B]),
+            tpdbRow(uuid(12), "Lesbian Only", "2024-01-01", [C]),
+            tpdbRow(uuid(13), "Untagged", "2023-01-01"),
+          ],
+          next: null,
+          total: 4,
+        },
+        // The second page serves the second browse (group + plain).
+        {
+          rows: [
+            tpdbRow(uuid(10), "Blonde And Lesbian", "2024-03-01", [A, C]),
+            tpdbRow(uuid(11), "Redhead Only", "2024-02-01", [B]),
+            tpdbRow(uuid(12), "Lesbian Only", "2024-01-01", [C]),
+            tpdbRow(uuid(13), "Untagged", "2023-01-01"),
+          ],
+          next: null,
+          total: 4,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: (_page, qs) => movieUrls.push(qs.toString()),
+    }),
+    async () => {
+      // The or-group alone: one or-term rides the native any-of criterion
+      // exactly (no local re-check needed), so the URL carries tags[..] for
+      // both members and never tag_and. The fixture ignores tag params, so
+      // all rows surface — the page is as exact as the native criterion.
+      const either = await browseTitles(
+        planQuery({
+          type: "movie",
+          include: [
+            [
+              { name: A.name, tpdb: A.uuid },
+              { name: B.name, tpdb: B.uuid },
+            ],
+          ],
+        }),
+        [],
+      );
+      // The any-of criterion carries the rows' numeric tag keys (11, 12),
+      // learned from the published tag listing.
+      assert.match(movieUrls[0]!, /tags%5B11%5D=1|tags\[11\]=1/);
+      assert.match(movieUrls[0]!, /tags%5B12%5D=1|tags\[12\]=1/);
+      assert.doesNotMatch(movieUrls[0]!, /tag_and/);
+      assert.deepEqual(either.items.map((d) => d.title).sort(), [
+        "Blonde And Lesbian",
+        "Lesbian Only",
+        "Redhead Only",
+        "Untagged",
+      ]);
+      assert.equal(either.totalCountKnown, true);
+      assert.equal(either.total, 4);
+      // Group + plain AND together: the plain rides the native all-of
+      // criterion (the fixture cannot enforce it, so the URL carries it)
+      // while the group re-checks locally — a C-only title drops because
+      // it lacks both group members.
+      const both = await browseTitles(
+        planQuery({
+          type: "movie",
+          include: [
+            [
+              { name: A.name, tpdb: A.uuid },
+              { name: B.name, tpdb: B.uuid },
+            ],
+            { name: C.name, tpdb: C.uuid },
+          ],
+        }),
+        [],
+      );
+      assert.deepEqual(both.items.map((d) => d.title).sort(), [
+        "Blonde And Lesbian",
+        "Redhead Only",
+      ]);
+      assert.equal(both.totalCountKnown, true);
+      assert.equal(both.total, 2);
+      // The plain term rides the native all-of criterion (tag_and with the
+      // anchored id); the group never travels as a native tag.
+      assert.match(movieUrls[1]!, /tag_and=1/);
+      assert.match(movieUrls[1]!, /tags%5B13%5D=1|tags\[13\]=1/);
+      assert.doesNotMatch(movieUrls[1]!, /tags%5B11%5D=1|tags\[11\]=1/);
+      assert.doesNotMatch(movieUrls[1]!, /tags%5B12%5D=1|tags\[12\]=1/);
+    },
+  );
+});
+
+test("notices name the sources an entity filter skips or narrows, per tab", async () => {
+  const stashOnlyPerformer = { stashdb: uuid(6), name: "Scene Only" };
+  const sceneInputs: Record<string, unknown>[] = [];
+  let movieCalls = 0;
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [],
+      scenes: {
+        count: 1,
+        rows: [stashRow(uuid(30), "Their Scene", "2024-03-03")],
+      },
+      onScenesRequest: (input) => sceneInputs.push(input),
+      onMovieRequest: () => {
+        movieCalls += 1;
+      },
+    }),
+    async () => {
+      // All tab, all mode, a stashdb-only performer: TPDB cannot know her,
+      // so it runs nothing and the page says so; StashDB runs her scenes.
+      const page = await browseTitles(
+        planQuery({ performers: [stashOnlyPerformer] }),
+        [],
+      );
+      assert.deepEqual(page.notices, [
+        {
+          provider: "tpdb",
+          kind: "performer",
+          code: "not_searched",
+          entries: [stashOnlyPerformer],
+        },
+      ]);
+      assert.deepEqual(page.errors, []);
+      assert.deepEqual(
+        page.items.map((d) => d.title),
+        ["Their Scene"],
+      );
+      assert.equal(movieCalls, 0, "the skipped source never reads upstream");
+
+      // Movies tab: only the TPDB side is judged — no stashdb notice.
+      const movies = await browseTitles(
+        planQuery({ type: "movie", performers: [stashOnlyPerformer] }),
+        [],
+      );
+      assert.equal(movies.notices.length, 1);
+      assert.equal(movies.notices[0]!.provider, "tpdb");
+      assert.equal(movies.notices[0]!.code, "not_searched");
+
+      // Any mode with a tpdb-known and a stashdb-only studio: both sources
+      // run with the entries they know, each naming the other one.
+      const mixed = await browseTitles(
+        planQuery({
+          type: "scene",
+          performerMode: "any",
+          studios: [
+            { tpdb: uuid(3), name: "Movie Studio" },
+            { stashdb: uuid(4) },
+          ],
+        }),
+        [],
+      );
+      const stashNotice = mixed.notices.find(
+        (n) => n.provider === "stashdb" && n.kind === "studio",
+      );
+      assert.deepEqual(stashNotice, {
+        provider: "stashdb",
+        kind: "studio",
+        code: "not_included",
+        entries: [{ tpdb: uuid(3), name: "Movie Studio" }],
+      });
+
+      // The old one-id URL on All consolidates to one entry: StashDB
+      // cannot know the TPDB id, so it is not_searched; the TPDB side
+      // runs her filmography.
+      const oldUrl = parseBrowseQuery(
+        new URLSearchParams(`performerTpdb=${uuid(1)}`),
+      );
+      const oldPage = await browseTitles(oldUrl, []);
+      assert.deepEqual(oldPage.notices, [
+        {
+          provider: "stashdb",
+          kind: "performer",
+          code: "not_searched",
+          entries: oldUrl.performers,
+        },
+      ]);
+    },
+  );
+  assert.ok(sceneInputs.length > 0);
+});
+
+test("notices never ride inside errors: a real outage beside a notice stays one story each", async () => {
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(10), "Studio Movie", "2024-01-01")],
+          next: null,
+          total: 1,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      siteIds: { [uuid(3)]: 70 },
+      stashStatus: 500,
+    }),
+    async () => {
+      // Any mode: the TPDB side runs its studio; the StashDB side is down
+      // AND carries an entry it does not know. The page keeps the outage
+      // in errors and the narrowing in notices.
+      const page = await browseTitles(
+        planQuery({
+          performerMode: "any",
+          studios: [{ tpdb: uuid(3) }, { stashdb: uuid(4) }],
+        }),
+        [],
+      );
+      assert.equal(page.errors.length, 1);
+      assert.equal(page.errors[0]!.provider, "stashdb");
+      const err = page.errors[0] as unknown as Record<string, unknown>;
+      assert.equal("kind" in err, false);
+      assert.equal("entries" in err, false);
+      assert.ok(
+        page.notices.some(
+          (n) => n.provider === "stashdb" && n.code === "not_included",
+        ),
+        "the narrowing note stays a notice",
+      );
+    },
+  );
+});
+
+test("old one-id URLs and flat include arrays give the same items and totals as the new keys", async () => {
+  const A = { id: 11, uuid: uuid(101), name: "Alpha" };
+  const B = { id: 12, uuid: uuid(102), name: "Beta" };
+  const P = uuid(1);
+  const S = uuid(6);
+  const movieTitles = (page: BrowsePage) => page.items.map((d) => d.title);
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [A, B],
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(
+              uuid(10),
+              "Pair Movie",
+              "2024-02-01",
+              [A, B],
+              [{ id: P, name: "Jane" }],
+            ),
+            tpdbRow(
+              uuid(11),
+              "Alpha Movie",
+              "2024-01-01",
+              [A],
+              [{ id: P, name: "Jane" }],
+            ),
+          ],
+          next: null,
+          total: 2,
+        },
+        // The three browses below each read one page; the scripted upstream
+        // hands pages out in request order, so the fixture repeats the page.
+        {
+          rows: [
+            tpdbRow(
+              uuid(10),
+              "Pair Movie",
+              "2024-02-01",
+              [A, B],
+              [{ id: P, name: "Jane" }],
+            ),
+            tpdbRow(
+              uuid(11),
+              "Alpha Movie",
+              "2024-01-01",
+              [A],
+              [{ id: P, name: "Jane" }],
+            ),
+          ],
+          next: null,
+          total: 2,
+        },
+        {
+          rows: [
+            tpdbRow(
+              uuid(10),
+              "Pair Movie",
+              "2024-02-01",
+              [A, B],
+              [{ id: P, name: "Jane" }],
+            ),
+            tpdbRow(
+              uuid(11),
+              "Alpha Movie",
+              "2024-01-01",
+              [A],
+              [{ id: P, name: "Jane" }],
+            ),
+          ],
+          next: null,
+          total: 2,
+        },
+      ],
+      scenes: {
+        count: 1,
+        rows: [stashRow(uuid(30), "Pair Scene", "2024-03-03")],
+      },
+    }),
+    async () => {
+      // Old scalar performer pair vs new unified entry: same items, totals.
+      const oldQuery = parseBrowseQuery(
+        new URLSearchParams(`performerTpdb=${P}&performerStashdb=${S}`),
+      );
+      const newQuery = parseBrowseQuery(
+        new URLSearchParams({
+          performers: JSON.stringify([{ tpdb: P, stashdb: S }]),
+        }),
+      );
+      assert.deepEqual(newQuery.performers, oldQuery.performers);
+      const oldPage = await browseTitles(oldQuery, []);
+      const newPage = await browseTitles(newQuery, []);
+      assert.deepEqual(movieTitles(oldPage), movieTitles(newPage));
+      assert.equal(oldPage.total, newPage.total);
+      assert.equal(oldPage.totalCountKnown, newPage.totalCountKnown);
+      assert.deepEqual(newPage.notices, oldPage.notices);
+
+      // Old scalar studio pair vs new unified studio entry: same shape.
+      const oldStudios = parseBrowseQuery(
+        new URLSearchParams(`studioTpdb=${uuid(3)}&studioStashdb=${S}`),
+      );
+      const newStudios = parseBrowseQuery(
+        new URLSearchParams({
+          studios: JSON.stringify([{ tpdb: uuid(3), stashdb: S }]),
+        }),
+      );
+      assert.deepEqual(newStudios.studios, oldStudios.studios);
+
+      // A flat include array still parses to plains that AND together —
+      // the group syntax added a term shape, never changed the flat one.
+      // Both anchored plains ride the native all-of criterion (the fixture
+      // ignores tag params, so both rows surface locally unfiltered).
+      const flat = parseBrowseQuery(
+        new URLSearchParams({
+          type: "movie",
+          include: JSON.stringify([
+            { name: A.name, tpdb: A.uuid },
+            { name: B.name, tpdb: B.uuid },
+          ]),
+        }),
+      );
+      assert.ok(flat.include.every((term) => !Array.isArray(term)));
+      const flatPage = await browseTitles(flat, []);
+      assert.deepEqual(flatPage.items.map((d) => d.title).sort(), [
+        "Alpha Movie",
+        "Pair Movie",
+      ]);
+      assert.equal(flatPage.totalCountKnown, true);
+      assert.equal(flatPage.total, 2);
+    },
+  );
+});
+
+// --- properties: the new parsers at the trust boundary (fast-check,
+// fixed seed, fixed run count — CI-stable) ---
+
+const entityArb = fc.record({
+  name: fc.option(fc.string({ maxLength: 150 }), { nil: undefined }),
+  tpdb: fc.option(
+    fc.oneof(
+      fc.uuid(),
+      fc.constant("evil-angel"),
+      fc.constant("not a uuid"),
+      fc.constant(""),
+    ),
+    { nil: undefined },
+  ),
+  stashdb: fc.option(fc.oneof(fc.uuid(), fc.constant("junk-id")), {
+    nil: undefined,
+  }),
+});
+
+test("property: the entity parser returns 400 or entries inside the caps (seed 42)", () => {
+  const paramArb = fc.oneof(
+    // Structured-ish entries: the parser's shape rules are under test.
+    fc.array(entityArb, { maxLength: MAX_BROWSE_ENTITIES + 2 }),
+    // Raw junk that never parses as the pinned shape.
+    fc.jsonValue().map((v) => JSON.stringify(v)),
+    fc.constant("not json at all"),
+    fc.constant("[]"),
+  );
+  fc.assert(
+    fc.property(
+      fc.constantFrom("performers", "studios"),
+      paramArb,
+      (key, raw) => {
+        const params = new URLSearchParams();
+        if (typeof raw === "string") params.set(key, raw);
+        else params.set(key, JSON.stringify(raw));
+        try {
+          const query = parseBrowseQuery(params);
+          const entries =
+            key === "performers" ? query.performers : query.studios;
+          assert.ok(
+            entries.length >= 0 && entries.length <= MAX_BROWSE_ENTITIES,
+            `${key} length inside the cap`,
+          );
+          for (const entry of entries) {
+            assert.ok(
+              entry.tpdb !== undefined || entry.stashdb !== undefined,
+              "every parsed entry carries an id",
+            );
+            if (entry.name !== undefined) {
+              assert.ok(
+                entry.name.length >= 1 && entry.name.length <= 120,
+                "parsed name is trimmed into 1..120",
+              );
+            }
+            if (entry.tpdb !== undefined) {
+              assert.equal(entry.tpdb, entry.tpdb.toLowerCase());
+              assert.match(
+                entry.tpdb,
+                /^[0-9a-f-]{36}$|^[a-z0-9][a-z0-9-]{0,63}$/,
+              );
+            }
+            if (entry.stashdb !== undefined) {
+              assert.equal(entry.stashdb, entry.stashdb.toLowerCase());
+              assert.match(entry.stashdb, /^[0-9a-f-]{36}$/);
+            }
+          }
+        } catch (err) {
+          // The parser is total: every refusal is the pinned 400 family.
+          assert.ok(
+            err instanceof AppError && err.status === 400,
+            `expected a 400 AppError, got ${String(err)}`,
+          );
+        }
+      },
+    ),
+    { seed: 42, numRuns: 150 },
+  );
+});
+
+test("property: parseIncludeSelections normalizes groups or refuses with invalid_preferences (seed 42)", () => {
+  // Labels stay letter/digit so the folded label is the identity and the
+  // comparisons measure parsing, not normalization; punctuation-only labels
+  // are generated separately and must always refuse.
+  const selectionArb = fc.record({
+    name: fc.stringMatching(/^[a-z0-9]{1,12}$/),
+    tpdb: fc.option(fc.uuid(), { nil: undefined }),
+    stashdb: fc.option(fc.uuid(), { nil: undefined }),
+  });
+  const elementArb = fc.oneof(
+    selectionArb,
+    fc.array(selectionArb, { minLength: 1, maxLength: 4 }),
+  );
+  fc.assert(
+    fc.property(fc.array(elementArb, { maxLength: 12 }), (input) => {
+      try {
+        const out = parseIncludeSelections(input);
+        let count = 0;
+        const plainLabels = new Set<string>();
+        for (const term of out) {
+          if (Array.isArray(term)) {
+            // A survivor group has 2+ members, each a valid selection, and
+            // no two groups share the member-label set.
+            assert.ok(term.length >= 2, "groups keep at least two members");
+            count += term.length;
+          } else {
+            count += 1;
+            assert.ok(
+              !plainLabels.has(term.name),
+              `plain labels are unique: ${term.name}`,
+            );
+            plainLabels.add(term.name);
+          }
+        }
+        assert.ok(count <= 25, `selection cap counted ${count}`);
+        // A 1-member group always surfaces as a plain selection.
+        for (const raw of input) {
+          if (
+            Array.isArray(raw) &&
+            raw.length === 1 &&
+            !plainLabels.has(raw[0]!.name)
+          ) {
+            // It may also have been consolidated away by label-collision;
+            // then some plain with that label exists.
+            assert.ok(
+              out.some(
+                (t) => !Array.isArray(t) && t.name === raw[0]!.name.trim(),
+              ) || plainLabels.size === 0,
+              "1-member groups unwrap to plains",
+            );
+          }
+        }
+      } catch (err) {
+        assert.ok(
+          err instanceof AppError &&
+            err.status === 400 &&
+            err.code === "invalid_preferences",
+          `expected invalid_preferences, got ${String(err)}`,
+        );
+      }
+    }),
+    { seed: 42, numRuns: 150 },
+  );
+  // Punctuation-only labels inside a valid group still refuse: the group's
+  // own parseTagSelections call is the same boundary.
+  assert.throws(
+    () => parseIncludeSelections([[{ name: "++" }]]),
+    appError(400, "invalid_preferences"),
+  );
+});
+
+test("property: entity and include queries round-trip through the URL form (seed 42)", () => {
+  type Entity = {
+    name?: string;
+    tpdb?: string;
+    stashdb?: string;
+  };
+  // Entries with per-side unique ids: the duplicate-id refusal is a
+  // different pin (tested above), so the round trip never hits it. Each
+  // entry draws fresh ids from per-side pools sized to the entry count, so
+  // no side ever repeats.
+  const distinctEntities = (kind: "performer" | "studio") =>
+    fc.nat(MAX_BROWSE_ENTITIES - 1).chain((extra) => {
+      const n = 1 + extra;
+      const tpdbId = fc.uniqueArray(
+        kind === "studio"
+          ? fc.oneof(fc.uuid(), fc.stringMatching(/^[a-z0-9][a-z0-9-]{0,20}$/))
+          : fc.uuid(),
+        { minLength: n, maxLength: n },
+      );
+      const stashId = fc.uniqueArray(fc.uuid(), {
+        minLength: n,
+        maxLength: n,
+      });
+      const shapes = fc.array(fc.constantFrom("tpdb", "stashdb", "both"), {
+        minLength: n,
+        maxLength: n,
+      });
+      const names = fc.array(
+        fc.option(fc.stringMatching(/^[a-z0-9]{1,20}$/), { nil: undefined }),
+        { minLength: n, maxLength: n },
+      );
+      return fc
+        .tuple(tpdbId, stashId, shapes, names)
+        .map(([tpdbIds, stashIds, shapes, names]): Entity[] => {
+          let ti = 0;
+          let si = 0;
+          const entries: Entity[] = [];
+          for (let i = 0; i < n; i++) {
+            const entry: Entity = {};
+            if (names[i] !== undefined) entry.name = names[i];
+            if (shapes[i] !== "stashdb") entry.tpdb = tpdbIds[ti++];
+            if (shapes[i] !== "tpdb") entry.stashdb = stashIds[si++];
+            entries.push(entry);
+          }
+          return entries;
+        });
+    });
+  // Include terms drawn from one label pool, each label used at most once:
+  // plains stay label-unique, groups never share a label set (the collapse
+  // rule would drop a term and break the 1:1 input oracle), and every
+  // group carries 2-3 members (a 1-member group unwraps to a plain).
+  type Term = Entity | Entity[];
+  const includeArb = fc
+    .uniqueArray(fc.stringMatching(/^[a-z0-9]{1,10}$/), {
+      minLength: 1,
+      maxLength: 11,
+    })
+    .chain((labels) =>
+      fc
+        .array(fc.nat(2), { minLength: 1, maxLength: labels.length })
+        .map((sizes): Term[] => {
+          const terms: Term[] = [];
+          let i = 0;
+          for (const size of sizes) {
+            if (i >= labels.length) break;
+            const take = Math.min(size + 1, labels.length - i);
+            const members = labels.slice(i, i + take).map((name) => ({
+              name,
+            }));
+            i += take;
+            terms.push(take === 1 ? members[0]! : members);
+          }
+          return terms;
+        }),
+    );
+  fc.assert(
+    fc.property(
+      distinctEntities("performer"),
+      distinctEntities("studio"),
+      includeArb,
+      fc.option(fc.constantFrom("all", "any"), { nil: undefined }),
+      fc.option(
+        fc.tuple(
+          fc.integer({ min: 1900, max: 2100 }),
+          fc.integer({ min: 1900, max: 2100 }),
+        ),
+        { nil: undefined },
+      ),
+      (performers, studios, include, performerMode, years) => {
+        const params = new URLSearchParams();
+        params.set("performers", JSON.stringify(performers));
+        params.set("studios", JSON.stringify(studios));
+        if (include.length > 0) params.set("include", JSON.stringify(include));
+        if (performerMode !== undefined)
+          params.set("performerMode", performerMode);
+        if (years !== undefined) {
+          const [from, to] = years;
+          params.set("year", String(Math.min(from, to)));
+          params.set("yearTo", String(Math.max(from, to)));
+        }
+        const p1 = parseBrowseQuery(params);
+        // Input oracle: the parse carries the generated shape verbatim.
+        // Generated values are plain-keyed (JSON.stringify drops undefined
+        // fields) and lowercase, exactly what the parser emits.
+        const plainEntity = (e: Entity): Entity => ({
+          ...(e.name !== undefined ? { name: e.name } : {}),
+          ...(e.tpdb !== undefined ? { tpdb: e.tpdb } : {}),
+          ...(e.stashdb !== undefined ? { stashdb: e.stashdb } : {}),
+        });
+        assert.deepEqual(p1.performers, performers.map(plainEntity));
+        assert.deepEqual(p1.studios, studios.map(plainEntity));
+        assert.deepEqual(
+          p1.include,
+          // The parser emits plains first (consolidated), then groups —
+          // order each section as generated.
+          [
+            ...include
+              .filter((t): t is Entity => !Array.isArray(t))
+              .map((t) => ({
+                name: t.name,
+                tpdb: t.tpdb,
+                stashdb: t.stashdb,
+              })),
+            ...include
+              .filter((t): t is Entity[] => Array.isArray(t))
+              .map((t) =>
+                t.map((s) => ({
+                  name: s.name,
+                  tpdb: s.tpdb,
+                  stashdb: s.stashdb,
+                })),
+              ),
+          ],
+        );
+        // Canonical serialization: only the keys that ride the wire.
+        const out = new URLSearchParams();
+        out.set("performers", JSON.stringify(p1.performers));
+        out.set("studios", JSON.stringify(p1.studios));
+        if (p1.include.length > 0)
+          out.set("include", JSON.stringify(p1.include));
+        if (p1.performerMode === "any") out.set("performerMode", "any");
+        if (p1.year !== undefined) out.set("year", String(p1.year));
+        if (p1.yearTo !== undefined) out.set("yearTo", String(p1.yearTo));
+        const p2 = parseBrowseQuery(out);
+        // fast-check records are null-prototype; compare through JSON.
+        assert.deepStrictEqual(
+          JSON.parse(JSON.stringify(p2)),
+          JSON.parse(JSON.stringify(p1)),
+        );
+      },
+    ),
+    { seed: 42, numRuns: 150 },
+  );
 });

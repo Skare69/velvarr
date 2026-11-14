@@ -2289,6 +2289,76 @@ export function parseTagSelections(input: unknown): CatalogTagSelection[] {
   return consolidated;
 }
 
+/** Trust boundary for the browse include list, where one element may also be
+ * an "or" group: a JSON array of selections matches when ANY member matches.
+ * Plain elements collect and run through parseTagSelections (same member
+ * validation, same by-label consolidation as today); a group parses as its
+ * own parseTagSelections call, a one-member survivor unwraps to the plain
+ * shape, and two groups whose member labels normalize to the same set
+ * collapse into the first (an "or" of the same set is the same filter). A
+ * plain selection and a group sharing a label both stay: the AND of a term
+ * and its own or-group is still well-defined. The cap counts every group
+ * member, because every member filters every page. parseTagSelections stays
+ * strict (arrays are invalid there), so exclude and hidden tags keep the
+ * flat shape. Pure — no database access. */
+export function parseIncludeSelections(
+  input: unknown,
+): (CatalogTagSelection | CatalogTagSelection[])[] {
+  if (!Array.isArray(input)) {
+    throw new AppError(
+      400,
+      "invalid_preferences",
+      "tag selections must be an array",
+    );
+  }
+  const plains: unknown[] = [];
+  const groups: CatalogTagSelection[][] = [];
+  for (const raw of input) {
+    if (Array.isArray(raw)) {
+      if (raw.length === 0) {
+        throw new AppError(
+          400,
+          "invalid_preferences",
+          "a tag group needs at least one selection",
+        );
+      }
+      groups.push(parseTagSelections(raw));
+    } else {
+      plains.push(raw);
+    }
+  }
+  const consolidated = parseTagSelections(plains);
+  const out: (CatalogTagSelection | CatalogTagSelection[])[] = [
+    ...consolidated,
+  ];
+  const seenGroupLabels = new Set<string>();
+  let count = consolidated.length;
+  for (const group of groups) {
+    count += group.length;
+    if (group.length === 1) {
+      out.push(group[0]!);
+      continue;
+    }
+    const key = JSON.stringify(
+      group
+        .map((m) => normalizeFacetName(m.name) || m.name.trim().toLowerCase())
+        .sort(),
+    );
+    if (!seenGroupLabels.has(key)) {
+      seenGroupLabels.add(key);
+      out.push(group);
+    }
+  }
+  if (count > MAX_HIDDEN_TAGS) {
+    throw new AppError(
+      400,
+      "invalid_preferences",
+      `at most ${MAX_HIDDEN_TAGS} tags may be selected`,
+    );
+  }
+  return out;
+}
+
 /** Shared trust boundary for a saved carousel order: an array of distinct
  * registered shelf ids, at most one entry per shelf (so it can never exceed
  * the registry length). [] restores the default order. Pure — no database

@@ -2,7 +2,9 @@
 // pure URL policy, no React, no IO. Every function returns a param patch for
 // useParamsSetter — null deletes a key. The server side stays the authority;
 // this module only keeps the URL from ever forming a request the server would
-// 400. Adding a browse key is one edit in BROWSE_KEYS; changing an
+// 400. Side qualification reads browse-entities.ts — the same functions the
+// server planner reads — so the URL can never qualify a source the planner
+// refuses. Adding a browse key is one edit in BROWSE_KEYS; changing an
 // exclusivity rule is one function plus its test.
 
 // Sort capability is the shared SORT_CAPABILITIES table (sorts.ts) — the
@@ -13,22 +15,39 @@ import {
   browseSortsFor,
   type SortKey,
 } from "./sorts.ts";
-import type { CatalogProvider, CatalogTagSelection } from "./contracts.ts";
+import {
+  browseSideRuns,
+  tpdbFilmographyRuns,
+  type PerformerMode,
+} from "./browse-entities.ts";
+import type {
+  BrowseEntity,
+  CatalogProvider,
+  CatalogTagSelection,
+} from "./contracts.ts";
 
 export type BrowseType = "all" | "movie" | "scene";
 
+// performers / studios carry JSON arrays of 1..5 {name?, tpdb?, stashdb?}.
+// The four scalar keys are legacy: kept listed so clearBrowseKeys still
+// deletes them, but only the server's old-key parser and legacyBrowsePatch
+// read them — every writer writes the array keys.
 export const BROWSE_KEYS = [
   "type",
   "q",
   "include",
   "exclude",
+  "studios",
   "studioTpdb",
   "studioStashdb",
+  "performers",
+  "performerMode",
   "performerTpdb",
   "performerStashdb",
   "performerStarred",
   "studioMode",
   "year",
+  "yearTo",
   "date",
   "date_operation",
   "sort",
@@ -72,22 +91,35 @@ export function typePatch(
   t: BrowseType,
   sortRaw: string,
   dirRaw: string,
-  tpdbPerformer = false,
+  performers: BrowseEntity[],
+  performerMode: PerformerMode,
+  studios: BrowseEntity[],
 ): Record<string, string | null> {
   // A TPDB performer filmography only composes on the Scenes tab (the
   // unified pair runs the StashDB side there). Moving to All/Movies would
-  // refuse the search, year, date, studio and sort the Scenes tab allowed
-  // — drop exactly those, keeping the performer pick.
-  if (tpdbPerformer && t !== "scene") {
+  // refuse the search, year range, date and sort the tab allowed — drop
+  // exactly those. The studios keep their StashDB halves (that side still
+  // qualifies on All); entries known to TPDB only lose their last id and
+  // drop out with the studio constraint they carried.
+  if (tpdbFilmographyRuns(t, performers, performerMode)) {
+    const stashdbOnly = studios
+      .filter((e) => e.stashdb !== undefined)
+      .map((e) => ({
+        ...(e.name !== undefined ? { name: e.name } : {}),
+        stashdb: e.stashdb!,
+      }));
     return {
       type: t === "all" ? null : t,
       q: null,
       year: null,
+      yearTo: null,
       date: null,
       date_operation: null,
-      studioTpdb: null,
       sort: null,
       direction: null,
+      ...(stashdbOnly.length === 0
+        ? { studios: null }
+        : { studios: JSON.stringify(stashdbOnly) }),
     };
   }
   const { sort, direction } = sortPair(t, sortRaw, dirRaw);
@@ -105,12 +137,14 @@ export function starredPatch(
   dirRaw: string,
 ): Record<string, string | null> {
   if (!on) return { performerStarred: null };
-  // Turning starred on drops a picked performer (the server refuses the
+  // Turning starred on drops the picked performers (the server refuses the
   // pair) and cannot run on the movies tab — it drops to the combined
   // browse, the same visible clamp a tab switch applies in reverse.
   const { sort, direction } = sortPair("all", sortRaw, dirRaw);
   return {
     performerStarred: "1",
+    performers: null,
+    performerMode: null,
     performerTpdb: null,
     performerStashdb: null,
     ...(type === "movie"
@@ -123,65 +157,123 @@ export function starredPatch(
   };
 }
 
-// TPDB's performer filter is the filmography route: everything else goes,
-// including sort (the route rejects all of it).
-export function performerTpdbPatch(
-  id: string,
-  type: BrowseType,
+/** The drawer's view of the browse state a patch builds on: the current
+ * tab, sort and entity lists exactly as the URL carries them. */
+export type BrowseEntryState = {
+  type: BrowseType;
+  sortRaw: string;
+  dirRaw: string;
+  performerMode: PerformerMode;
+  performers: BrowseEntity[]; // CURRENT entries
+  studios: BrowseEntity[]; // CURRENT entries
+  performerStarred: boolean;
+};
+
+/** The drawer's performer change: the entries replace the list wholesale.
+ * Adding an entry always drops the starred filter — starred refuses picked
+ * performers. With no side left qualifying on this tab the clamp drops to
+ * the combined browse; when the TPDB filmography route runs after the
+ * change, the route refuses everything else, so the same drop-set as before
+ * the array keys applies (studios included — the route composes with
+ * neither studio key). */
+export function performersPatch(
+  next: BrowseEntity[],
+  state: BrowseEntryState,
+): Record<string, string | null> {
+  const patch: Record<string, string | null> = {
+    performers: next.length === 0 ? null : JSON.stringify(next),
+    performerStarred: null,
+  };
+  // Starred was just dropped above, so qualification is judged without it —
+  // the sides the patched URL will actually run.
+  const sides = browseSideRuns(
+    state.type,
+    next,
+    state.studios,
+    state.performerMode,
+    false,
+  );
+  if (!sides.tpdb && !sides.stashdb) {
+    // No side qualifies on this tab (TPDB-only entries on the Scenes tab,
+    // say): the grid would show an empty page naming the wrong cause —
+    // drop to the combined browse, the clamp starredPatch applies too.
+    const { sort, direction } = sortPair("all", state.sortRaw, state.dirRaw);
+    return { ...patch, type: null, sort, direction };
+  }
+  if (tpdbFilmographyRuns(state.type, next, state.performerMode)) {
+    return {
+      ...patch,
+      q: null,
+      include: null,
+      exclude: null,
+      year: null,
+      yearTo: null,
+      date: null,
+      date_operation: null,
+      studios: null,
+      studioMode: null,
+      sort: null,
+      direction: null,
+      // `name` is the facet display label; this reset drops the studio/tag
+      // constraints it names, so it never survives the filmography route.
+      name: null,
+    };
+  }
+  return patch;
+}
+
+/** The drawer's studio change: studios compose freely with every other
+ * filter (both sides honor them), so the only clamp is a tab neither source
+ * qualifies on. */
+export function studiosPatch(
+  next: BrowseEntity[],
+  state: BrowseEntryState,
+): Record<string, string | null> {
+  const patch: Record<string, string | null> = {
+    studios: next.length === 0 ? null : JSON.stringify(next),
+  };
+  const sides = browseSideRuns(
+    state.type,
+    state.performers,
+    next,
+    state.performerMode,
+    state.performerStarred,
+  );
+  if (!sides.tpdb && !sides.stashdb) {
+    const { sort, direction } = sortPair("all", state.sortRaw, state.dirRaw);
+    return { ...patch, type: null, sort, direction };
+  }
+  return patch;
+}
+
+/** The drawer's all/any toggle. `all` is the default and never rides the
+ * URL; it never counts as a filter of its own. */
+export function performerModePatch(
+  mode: PerformerMode,
+): Record<string, string | null> {
+  return { performerMode: mode === "any" ? "any" : null };
+}
+
+/** The drawer's year range: `year` is the lower bound, `yearTo` the upper
+ * one. Either bound may ride alone; an absent upper bound (empty box, or a
+ * repeated year) deletes the key. A date window refuses the pair, the same
+ * clamp the year filter applied before. */
+export function yearRangePatch(
+  year: string,
+  yearTo: string,
 ): Record<string, string | null> {
   return {
-    performerTpdb: id,
-    performerStarred: null,
-    q: null,
-    include: null,
-    exclude: null,
-    year: null,
+    year: year || null,
+    yearTo: yearTo !== "" && yearTo !== year ? yearTo : null,
     date: null,
     date_operation: null,
-    studioTpdb: null,
-    studioStashdb: null,
-    studioMode: null,
-    sort: null,
-    direction: null,
-    // `name` is the facet display label; this reset drops the studio/tag
-    // constraints it names, so it never survives the filmography route.
-    name: null,
-    // A TPDB performer cannot constrain the scenes side: on that tab no
-    // side would qualify and the grid would show an empty page that names
-    // the wrong cause — drop to the combined browse, the same clamp
-    // starredPatch applies in the other direction.
-    ...(type === "scene" ? { type: null } : {}),
   };
 }
 
-export function performerStashdbPatch(
-  id: string,
-  type: BrowseType,
-  sortRaw: string,
-  dirRaw: string,
-): Record<string, string | null> {
-  // Starred and a picked performer refuse each other on the server; the
-  // pick replaces the starred filter instead of letting the browse 400.
-  // A StashDB performer cannot constrain the movies side: on that tab no
-  // side would qualify and the grid would show an empty page that names
-  // the wrong cause — drop to the combined browse, keeping the sort only
-  // where the all tab supports it (the clamp starredPatch applies).
-  const { sort, direction } = sortPair("all", sortRaw, dirRaw);
-  return {
-    performerStashdb: id,
-    performerStarred: null,
-    ...(type === "movie"
-      ? {
-          type: null,
-          sort,
-          direction,
-        }
-      : {}),
-  };
-}
-
-// Tab, paging and the direction/date_operation carriers are not constraints
-// of their own. Scalars truthy count, arrays count length, missing keys 0.
+// Tab, paging and the direction/date_operation/performerMode/yearTo
+// carriers are not constraints of their own. Scalars truthy count, arrays
+// count length (callers pass performers/studios as the parsed arrays, so
+// their entries count), missing keys 0.
 export function countActiveFilters(
   values: Record<string, string | boolean | readonly unknown[]>,
 ): number {
@@ -191,7 +283,9 @@ export function countActiveFilters(
       key === "type" ||
       key === "perPage" ||
       key === "direction" ||
-      key === "date_operation"
+      key === "date_operation" ||
+      key === "performerMode" ||
+      key === "yearTo"
     )
       continue;
     const v = values[key];
@@ -206,7 +300,9 @@ export function countActiveFilters(
  * rides for `include` and as a co-filter on the performer params;
  * `studioMode` only for StashDB studios; `counterpart` only with the
  * performer params — her id on the other provider, so browse runs both
- * sides at once. */
+ * sides at once. `name` is optional: a writer that knows the display label
+ * puts it in the entry (and the URL's `name` facet heading), so chips label
+ * themselves without a name-cache hit; code never matches on it. */
 export type BrowseFilter = {
   param:
     | "studioTpdb"
@@ -217,6 +313,7 @@ export type BrowseFilter = {
     | "include";
   provider: CatalogProvider;
   id: string;
+  name?: string;
   tag?: CatalogTagSelection;
   studioMode?: "withChildren";
   counterpart?: { param: "performerTpdb" | "performerStashdb"; id: string };
@@ -241,9 +338,9 @@ export function browseFilterPatch(
     // drops that view's own keys (provider, per-view paging).
     ...clearBrowseKeys(),
     view: "titles",
-    // The old facet label never rides a fresh browse; the jump names no
-    // facet of its own (chips carry the labels).
-    name: null,
+    // The jump names no facet of its own; a writer that knows the label
+    // passes it as `name` (see BrowseFilter).
+    name: filter.name ?? null,
     type:
       filter.param === "year" || filter.provider === "tpdb" ? "movie" : "scene",
     provider: null,
@@ -261,18 +358,39 @@ export function browseFilterPatch(
   });
   if (filter.param === "include" && filter.tag !== undefined) {
     patch.include = JSON.stringify([cleanTag(filter.tag)]);
-  } else {
-    patch[filter.param] = filter.id;
-    // A union jump rides both of her ids; no single type can run both
-    // providers, so it lands on browse All.
+  } else if (
+    filter.param === "performerTpdb" ||
+    filter.param === "performerStashdb"
+  ) {
+    // One performers entry carries every known id, so the counterpart
+    // rides the same constraint and browse runs both sides at once; no
+    // single type can, so it lands on browse All.
+    const entry: BrowseEntity = {};
+    if (filter.name !== undefined) entry.name = filter.name;
+    if (filter.param === "performerTpdb") entry.tpdb = filter.id;
+    else entry.stashdb = filter.id;
     if (filter.counterpart !== undefined) {
-      patch[filter.counterpart.param] = filter.counterpart.id;
+      if (filter.counterpart.param === "performerTpdb")
+        entry.tpdb = filter.counterpart.id;
+      else entry.stashdb = filter.counterpart.id;
       patch.type = null;
     }
-    if (filter.studioMode) patch.studioMode = filter.studioMode;
-    if (filter.tag !== undefined) {
-      patch.include = JSON.stringify([cleanTag(filter.tag)]);
-    }
+    patch.performers = JSON.stringify([entry]);
+  } else if (
+    filter.param === "studioTpdb" ||
+    filter.param === "studioStashdb"
+  ) {
+    const entry: BrowseEntity = {};
+    if (filter.name !== undefined) entry.name = filter.name;
+    if (filter.param === "studioTpdb") entry.tpdb = filter.id;
+    else entry.stashdb = filter.id;
+    patch.studios = JSON.stringify([entry]);
+  } else {
+    patch[filter.param] = filter.id;
+  }
+  if (filter.studioMode) patch.studioMode = filter.studioMode;
+  if (filter.tag !== undefined && filter.param !== "include") {
+    patch.include = JSON.stringify([cleanTag(filter.tag)]);
   }
   return patch;
 }

@@ -9,6 +9,7 @@ import type {
   CatalogReference,
 } from "../lib/contracts.ts";
 import { clearBrowseKeys } from "../lib/browse-url.ts";
+import { seedName } from "../lib/names.ts";
 import {
   detailParams,
   ErrorPanel,
@@ -73,11 +74,26 @@ function StudioCard({
   item: CatalogDetail;
   onOpen: (r: CatalogReference) => void;
 }) {
+  // The open() click carries only the id (CatalogReference has no title),
+  // so the browse chip labels from this cache — seed it while the card
+  // renders, the same seeding the facet tiles do on their clicks.
+  seedName(
+    {
+      provider: item.reference.provider,
+      kind: "studio",
+      id: item.reference.id,
+    },
+    item.title,
+  );
+  // One studios entry carries the name beside the id: the chip labels from
+  // the URL itself when the cache misses.
+  const entry: Record<string, string> = { name: item.title };
+  entry[item.reference.provider] = item.reference.id;
   return (
     // A studio result lands on browse filtered by that studio, as search's
     // own open() does; the href is that same URL for a new tab.
     <a
-      href={`/?view=titles&${item.reference.provider === "stashdb" ? "studioStashdb" : "studioTpdb"}=${encodeURIComponent(item.reference.id)}`}
+      href={`/?view=titles&studios=${encodeURIComponent(JSON.stringify([entry]))}`}
       className="card block p-3 text-left text-inherit no-underline"
       onClick={spaClick(() => onOpen(item.reference))}
     >
@@ -239,12 +255,15 @@ export function SearchView() {
       if (r.kind === "studio") {
         // A studio card is a browse constraint on the unified titles view —
         // source-only facets stay source-only (a present key means only that
-        // source qualifies).
+        // source qualifies). The reference carries no title; the chip labels
+        // from the name cache the StudioCard seeded on render.
         setP(
           {
             ...clear,
             view: "titles",
-            [r.provider === "stashdb" ? "studioStashdb" : "studioTpdb"]: r.id,
+            studios: JSON.stringify([
+              r.provider === "tpdb" ? { tpdb: r.id } : { stashdb: r.id },
+            ]),
           },
           push,
         );

@@ -643,6 +643,33 @@ a.filter-chip:hover {
   background: color-mix(in oklab, var(--color-raised) 70%, var(--color-ink));
   color: var(--color-ink);
 }
+/* An or-group's chip and its "or" affordance read as one control: the
+   small button sits beside the chip (never nested inside it — a button
+   inside a button is invalid HTML) and lights up while it is armed. */
+.filter-chip-with {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.filter-chip-or {
+  border: 1px dashed
+    color-mix(in oklab, var(--color-muted) 70%, var(--color-ink));
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 650;
+  padding: 0.12rem 0.42rem;
+  cursor: pointer;
+}
+.filter-chip-or:hover,
+.filter-chip-or:focus-visible,
+.filter-chip-or[aria-pressed="true"] {
+  color: var(--color-ink);
+  border-color: var(--color-accent-text);
+  background: color-mix(in oklab, var(--color-raised) 82%, var(--color-ink));
+}
 /* Five date comparisons wrap into rows of three in the narrow drawer
    instead of scrolling a cut label out of view. */
 .segmented.segmented-wrap {
