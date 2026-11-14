@@ -1275,10 +1275,7 @@ a.media-card {
 }
 .settings-content {
   display: grid;
-  gap: 22px;
-}
-.settings-connections {
-  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 22px;
 }
 .settings-service-heading h2 {

@@ -29,7 +29,11 @@ import {
   saveConfig,
   updateAccount,
 } from "../../../../server/storage.ts";
-import { AppError, validateBaseUrl } from "../../../../server/http.ts";
+import {
+  AppError,
+  upstreamCheckError,
+  validateBaseUrl,
+} from "../../../../server/http.ts";
 import {
   getServer,
   getUserImage,
@@ -578,26 +582,17 @@ export async function adminUpdateIntegrations(
   return json(integrationsShape(config));
 }
 
-/** Upstream rejection or outage is status information, never a dead Velvarr
- * session: an HTTP 401 here would fire the client's global sign-out and
- * bounce the admin off the settings page in a loop. Storage, decryption, and
- * local configuration failures keep their original HTTP error. */
+/** Only known upstream failures become connection-status data; local faults
+ * retain their HTTP error. Shared by saved probes and draft-only tests. */
 async function upstreamAsStatus(
   probe: () => Promise<unknown>,
 ): Promise<unknown> {
   try {
     return await probe();
-  } catch (err) {
-    if (err instanceof AppError && err.status >= 400) {
-      return {
-        configured: true,
-        error: { code: err.code, message: err.message },
-      };
-    }
-    throw err;
+  } catch (error) {
+    return { configured: true, error: upstreamCheckError(error) };
   }
 }
-
 export async function adminWhisparr(ctx: AuthContext): Promise<Response> {
   return json(await upstreamAsStatus(() => getWhisparrStatus(ctx.config)));
 }
@@ -623,21 +618,12 @@ export function providerCheckFailure(
   error: unknown,
   keyFingerprint?: string,
 ): ProviderCheck {
-  const upstreamCodes = new Set([
-    "upstream_auth",
-    "upstream_forbidden",
-    "upstream_not_found",
-    "upstream_unavailable",
-    "upstream_timeout",
-    "upstream_bad_response",
-  ]);
-  if (!(error instanceof AppError) || !upstreamCodes.has(error.code))
-    throw error;
+  const statusError = upstreamCheckError(error);
   return {
     provider,
     configured: true,
     verified: false,
-    error: { code: error.code, message: error.message },
+    error: statusError,
     ...(keyFingerprint !== undefined ? { keyFingerprint } : {}),
   };
 }
@@ -730,7 +716,18 @@ export async function adminJellyfinTest(
   // status data inside the 200, like any upstream rejection.
   return json(
     await upstreamAsStatus(async () => {
-      await checkJellyfinDraft(jellyfin);
+      try {
+        await checkJellyfinDraft(jellyfin);
+      } catch (error) {
+        // A different server is a negative draft verdict. Other local faults
+        // still propagate; the shared wrapper handles only known upstream errors.
+        if (error instanceof AppError && error.code === "server_mismatch")
+          return {
+            configured: true,
+            error: { code: error.code, message: error.message },
+          };
+        throw error;
+      }
       return getJellyfinStatus({ ...ctx.config, jellyfin });
     }),
   );

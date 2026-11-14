@@ -4,9 +4,12 @@
 /data/
 /cache/
 
-# Local-only project documentation.
+# Keep local notes private; publish only the maintained guides.
 /docs/*
 !/docs/how-it-works.md
+!/docs/connections.md
+!/docs/metadata-providers.md
+!/docs/testing.md
 
 # Generated files.
 /node_modules/
@@ -17,3 +20,6 @@ next-env.d.ts
 report.xml
 stryker.log
 
+# Browser test output.
+/test-results/
+/playwright-report/

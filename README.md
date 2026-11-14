@@ -79,6 +79,8 @@ Checks before a commit:
 bun run format && bun run check && bun run test && bun run build
 ```
 
+See [Testing](docs/testing.md) for browser regressions and connection-logic coverage.
+
 [`docs/how-it-works.md`](docs/how-it-works.md) explains how the code is
 put together: the architecture map, the request-to-playback flow, and
 the acquisition life cycle, each tied to its source paths.
@@ -99,7 +101,7 @@ the acquisition life cycle, each tied to its source paths.
 
 ## Configuration
 
-Put the variables in `.env.local`.
+Put the variables in `.env.local`. See the [connection settings guide](docs/connections.md) for Jellyfin and Whisparr, and the [metadata providers guide](docs/metadata-providers.md) for TPDB, StashDB, and AI-assisted matching.
 
 | Variable                      | Required        | Meaning |
 | ----------------------------- | --------------- | ------- |
