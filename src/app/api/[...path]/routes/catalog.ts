@@ -37,9 +37,11 @@ import { imageResponse } from "./library.ts";
 import {
   fetchProviderArtwork,
   getCatalogDetail,
+  isArtworkWidth,
   isProviderImageUrl,
   linkedPerformerCounterpart,
   searchCatalog,
+  type ArtworkWidth,
   type CatalogSearchQuery,
   type CatalogSortDirection,
   type CatalogSortKey,
@@ -595,15 +597,18 @@ export async function catalogDetail(
 
 // Artwork proxy: provider-hosted URLs only, byte-capped pass-through,
 // cacheable per URL (ETag + private max-age, revalidated on F5). Upstream
-// bytes are cached in server memory (never on disk) for a day, so a browser
-// revalidation or another device skips the upstream fetch. No Velvarr or
-// provider credentials ever reach the image host (fetchProviderArtwork sends
-// none).
+// originals are cached in server memory for a day, so a browser revalidation
+// or another device skips the upstream fetch; an optional `w` (200|400|600)
+// answers a resized WebP variant from the on-disk store with an immutable
+// content-addressed ETag, and a source smaller than `w` passes through
+// unchanged (never upscaled). No Velvarr or provider credentials ever reach
+// the image host (fetchProviderArtwork sends none).
 export async function catalogImage(
   ctx: AuthContext,
   request: Request,
 ): Promise<Response> {
-  const target = new URL(request.url).searchParams.get("url");
+  const query = new URL(request.url).searchParams;
+  const target = query.get("url");
   if (target === null || target === "") {
     throw new AppError(400, "invalid_query", "url is required.");
   }
@@ -615,16 +620,43 @@ export async function catalogImage(
       `Rejected artwork URL: ${check.reason}.`,
     );
   }
-  const { bytes, contentType } = await fetchProviderArtwork(target, {
-    // exemptFromBudget only skips the dispatch charge, so a page of cached
-    // tiles stays free; every upstream cache miss charges the account's
-    // artwork lane here, keeping provider fetches bounded without letting a
-    // cold page's tile flood drain the dispatch budget that meters the
-    // rate-limited provider APIs (v0.39.0 shared one bucket and a cold
-    // discover or detail page 429'd itself mid-load).
-    onMiss: () => chargeRateBudget(ctx.account.id, "artwork"),
-  });
-  const response = imageResponse({ bytes, contentType }, request, 604800);
+  // Optional display width (VELV-123 design §4.3): only the ladder values,
+  // so any other answer is a bad query, like a bad page or limit elsewhere.
+  const rawWidth = query.get("w");
+  let width: ArtworkWidth | undefined;
+  if (rawWidth !== null) {
+    const parsed = /^\d+$/.test(rawWidth) ? Number(rawWidth) : Number.NaN;
+    if (!isArtworkWidth(parsed)) {
+      throw new AppError(400, "invalid_query", "Invalid w.");
+    }
+    width = parsed;
+  }
+  const { bytes, contentType, hash, isVariant } = await fetchProviderArtwork(
+    target,
+    {
+      width,
+      // exemptFromBudget only skips the dispatch charge, so a page of cached
+      // tiles stays free; every upstream cache miss charges the account's
+      // artwork lane here, keeping provider fetches bounded without letting a
+      // cold page's tile flood drain the dispatch budget that meters the
+      // rate-limited provider APIs (v0.39.0 shared one bucket and a cold
+      // discover or detail page 429'd itself mid-load).
+      onMiss: () => chargeRateBudget(ctx.account.id, "artwork"),
+    },
+  );
+  // A stored variant is content-addressed (<hash>-<w>.webp): its name is the
+  // ETag and the bytes never change, so the copy is immutable. A no-upscale
+  // passthrough keeps today's per-fetch revalidation.
+  const variantEtag =
+    isVariant === true && hash !== undefined && width !== undefined
+      ? `"${hash}-${width}"`
+      : undefined;
+  const response = imageResponse(
+    { bytes, contentType },
+    request,
+    variantEtag === undefined ? 604800 : 31_536_000,
+    variantEtag,
+  );
   if (response.status === 304) return response;
   // Provider logos include SVG, which is active content. Nothing here is
   // trusted markup: no script, no embedding, and never a top-level

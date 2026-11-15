@@ -521,7 +521,9 @@ const IMAGE_BYTE_CAP = 8 * 1024 * 1024;
  * lowercase sha256 of the source bytes. `onMiss` runs synchronously when and
  * only when an upstream fetch is about to start — once per coalesced burst,
  * never on a cache hit or an in-flight join — so callers can bound their
- * upstream fetches. */
+ * upstream fetches. `isVariant` is true only when the bytes are that stored
+ * WebP variant; a no-upscale passthrough or an unreadable source hands back
+ * the source bytes unchanged. */
 export async function fetchProviderArtwork(
   url: string,
   options: {
@@ -530,7 +532,12 @@ export async function fetchProviderArtwork(
     width?: ArtworkWidth;
     onMiss?: () => void;
   } = {},
-): Promise<{ bytes: Uint8Array; contentType: string; hash?: string }> {
+): Promise<{
+  bytes: Uint8Array;
+  contentType: string;
+  hash?: string;
+  isVariant?: boolean;
+}> {
   // Validation always runs, even on a cache hit: the cache key is only as
   // trustworthy as the gate that fed it.
   const check = isProviderImageUrl(url);
@@ -608,7 +615,12 @@ export async function fetchProviderArtwork(
   const derive = async (source: {
     bytes: Uint8Array;
     contentType: string;
-  }): Promise<{ bytes: Uint8Array; contentType: string; hash?: string }> => {
+  }): Promise<{
+    bytes: Uint8Array;
+    contentType: string;
+    hash?: string;
+    isVariant?: boolean;
+  }> => {
     if (width === undefined) return source;
     const variant = await artworkVariantFor(source, width);
     rememberArtworkVariant(url, variant.hash);

@@ -17,6 +17,11 @@ import { rmTempDir } from "./setup.ts";
 import { Buffer } from "node:buffer";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resetMetaCache } from "../src/server/providers.ts";
+import sharp from "sharp";
+import {
+  artworkStoreStateForTest,
+  setArtworkStoreBudgetForTest,
+} from "../src/server/artwork-store.ts";
 import { normalizeFacetName } from "../src/lib/contracts.ts";
 import type { IntegrationConfig, ProviderCheck } from "../src/lib/contracts.ts";
 import {
@@ -332,6 +337,11 @@ const PNG_1PX = Uint8Array.from(
     "base64",
   ),
 );
+
+// Resolvable artwork sources for the width-variant tests, one distinct image
+// per path (populated lazily with sharp), so each URL hashes to its own
+// variant file. Every other .png/.jpg path keeps serving PNG_1PX.
+const artworkSources = new Map<string, Buffer>();
 
 function jfUser(user: FxUser) {
   return {
@@ -753,7 +763,7 @@ async function tpdbHandler(
   if (p.endsWith(".png") || p.endsWith(".jpg")) {
     tpdbFx.imageAuth = auth;
     res.writeHead(200, { "content-type": "image/png" });
-    res.end(Buffer.from(PNG_1PX));
+    res.end(artworkSources.get(p) ?? Buffer.from(PNG_1PX));
     return;
   }
   if (tpdbFx.fail > 0) {
@@ -4496,6 +4506,167 @@ test("catalog artwork proxy: query and non-image paths refused; misses charge, c
   assert.equal(hit.status, 200, "cached tiles stay free after the lane drains");
   const apiAfter = await call("GET", "/api/me", { cookie: member });
   assert.equal(apiAfter.status, 200, "dispatch survives a drained art lane");
+});
+
+test("catalog artwork width: ladder validation, variant headers, no-upscale passthrough, 304", async () => {
+  resetRateBuckets();
+  // A real resolvable source well above the ladder rung: the 400w request
+  // must answer a true 400-px-wide WebP variant with immutable,
+  // content-addressed caching.
+  artworkSources.set(
+    "/artwork-wide.png",
+    await sharp({
+      create: {
+        width: 800,
+        height: 1200,
+        channels: 3,
+        background: { r: 180, g: 40, b: 90 },
+      },
+    })
+      .png()
+      .toBuffer(),
+  );
+  const wide = encodeURIComponent(`${tpdbUrl}/artwork-wide.png`);
+  const variant = await call("GET", `/api/catalog/image?url=${wide}&w=400`, {
+    cookie: member,
+  });
+  assert.equal(variant.status, 200);
+  assert.equal(variant.headers.get("content-type"), "image/webp");
+  const meta = await sharp(Buffer.from(await variant.arrayBuffer())).metadata();
+  assert.equal(meta.width, 400);
+  assert.equal(meta.format, "webp");
+  // The ETag is the variant file name: <sha256(source)>-<width>.
+  const variantEtag = variant.headers.get("etag");
+  assert.match(variantEtag ?? "", /^"[0-9a-f]{64}-400"$/);
+  assert.equal(
+    variant.headers.get("cache-control"),
+    "private, max-age=31536000, immutable",
+  );
+  assert.equal(
+    variant.headers.get("cross-origin-resource-policy"),
+    "same-origin",
+  );
+  assert.equal(variant.headers.get("x-content-type-options"), "nosniff");
+
+  // The variant ETag revalidates to a body-less 304 that refreshes the
+  // immutable cached headers.
+  const revalidate = await call("GET", `/api/catalog/image?url=${wide}&w=400`, {
+    cookie: member,
+    headers: { "if-none-match": variantEtag! },
+  });
+  assert.equal(revalidate.status, 304);
+  assert.equal(revalidate.headers.get("etag"), variantEtag);
+  assert.equal(
+    revalidate.headers.get("cache-control"),
+    "private, max-age=31536000, immutable",
+  );
+  assert.equal((await revalidate.arrayBuffer()).byteLength, 0);
+
+  // Off-ladder widths are bad queries, not upstream failures.
+  const offLadder = await call("GET", `/api/catalog/image?url=${wide}&w=300`, {
+    cookie: member,
+  });
+  assert.equal(offLadder.status, 400);
+  assert.equal((await errorShape(offLadder)).code, "invalid_query");
+  const notANumber = await call("GET", `/api/catalog/image?url=${wide}&w=abc`, {
+    cookie: member,
+  });
+  assert.equal(notANumber.status, 400);
+  assert.equal((await errorShape(notANumber)).code, "invalid_query");
+
+  // The provider gate runs unchanged for width requests: a disallowed URL is
+  // rejected before any fetch even with a valid width.
+  const callsBefore = tpdbFx.calls;
+  await errorShape(
+    await call(
+      "GET",
+      `/api/catalog/image?url=${encodeURIComponent(
+        "https://evil.example/art.png",
+      )}&w=400`,
+      { cookie: member },
+    ),
+  );
+  assert.equal(tpdbFx.calls, callsBefore, "the gate must refuse before fetch");
+
+  // Never upscale: a 1x1 source asked for 400px hands back the source bytes,
+  // the source content type and today's revalidation headers.
+  const small = encodeURIComponent(`${tpdbUrl}/artwork-small-1px.png`);
+  const passthrough = await call(
+    "GET",
+    `/api/catalog/image?url=${small}&w=400`,
+    { cookie: member },
+  );
+  assert.equal(passthrough.status, 200);
+  assert.equal(passthrough.headers.get("content-type"), "image/png");
+  assert.deepEqual(new Uint8Array(await passthrough.arrayBuffer()), PNG_1PX);
+  assert.equal(
+    passthrough.headers.get("cache-control"),
+    "private, max-age=604800",
+  );
+  // The passthrough ETag hashes the source bytes, same as without `w`.
+  const plain = await call("GET", `/api/catalog/image?url=${small}`, {
+    cookie: member,
+  });
+  assert.equal(plain.status, 200);
+  assert.equal(plain.headers.get("etag"), passthrough.headers.get("etag"));
+});
+
+test("catalog artwork width: an evicted variant regenerates over HTTP", async () => {
+  resetRateBuckets();
+  // Three distinct resolvable sources: each upstream path answers its own
+  // bytes, so each 400w variant lands under its own content hash.
+  for (const i of [1, 2, 3] as const) {
+    artworkSources.set(
+      `/artwork-evict-${i}.png`,
+      await sharp({
+        create: {
+          width: 700 + i * 10,
+          height: 900 + i * 10,
+          channels: 3,
+          background: { r: 30 * i, g: 90, b: 160 },
+        },
+      })
+        .png()
+        .toBuffer(),
+    );
+  }
+  const variantUrl = (path: string) =>
+    `/api/catalog/image?url=${encodeURIComponent(`${tpdbUrl}${path}`)}&w=400`;
+  const first = await call("GET", variantUrl("/artwork-evict-1.png"), {
+    cookie: member,
+  });
+  assert.equal(first.status, 200);
+  const etag1 = first.headers.get("etag");
+  assert.match(etag1 ?? "", /^"[0-9a-f]{64}-400"$/);
+
+  // Cap the store at zero spare bytes: the next variant write sweeps every
+  // older entry except the one just written, evicting the first variant.
+  setArtworkStoreBudgetForTest(0);
+  try {
+    const second = await call("GET", variantUrl("/artwork-evict-2.png"), {
+      cookie: member,
+    });
+    assert.equal(second.status, 200);
+    assert.ok(
+      artworkStoreStateForTest().files <= 2,
+      "the sweep must evict older entries",
+    );
+    // The evicted variant regenerates over HTTP: same URL, same content
+    // hash, byte-identical immutable response — derived again, not served
+    // from the evicted file.
+    const regenerated = await call("GET", variantUrl("/artwork-evict-1.png"), {
+      cookie: member,
+    });
+    assert.equal(regenerated.status, 200);
+    assert.equal(regenerated.headers.get("content-type"), "image/webp");
+    assert.equal(regenerated.headers.get("etag"), etag1);
+    assert.deepEqual(
+      new Uint8Array(await regenerated.arrayBuffer()),
+      new Uint8Array(await first.arrayBuffer()),
+    );
+  } finally {
+    setArtworkStoreBudgetForTest(null);
+  }
 });
 
 test("requests: lifecycle, autoApprove, privacy, roles, origin", async () => {

@@ -29,8 +29,12 @@ export function isArtworkWidth(value: unknown): value is ArtworkWidth {
 
 export interface ArtworkVariantResult {
   bytes: Uint8Array;
-  contentType: string; // "image/webp" for a stored/generated variant; the source contentType on passthrough or degrade
+  contentType: string;
   hash: string; // lowercase hex sha256 of the SOURCE bytes
+  /** True only when bytes are the stored/generated WebP variant; false on
+   * no-upscale passthrough or degrade, where bytes are the untouched source
+   * and contentType is the source's. */
+  isVariant: boolean;
 }
 
 // Variants are regenerable derivatives, so the store is a bounded cache, not
@@ -97,7 +101,12 @@ function passthroughDegrade(
       reason instanceof Error ? reason.message : String(reason)
     }`,
   );
-  return { bytes: source.bytes, contentType: source.contentType, hash };
+  return {
+    bytes: source.bytes,
+    contentType: source.contentType,
+    hash,
+    isVariant: false,
+  };
 }
 
 /** Atomic write: temp file in the target's own directory, then rename, so a
@@ -234,7 +243,12 @@ function readIndexHash(url: string): string | null {
 export function lookupArtworkVariant(
   url: string,
   width: ArtworkWidth,
-): { bytes: Uint8Array; contentType: string; hash: string } | null {
+): {
+  bytes: Uint8Array;
+  contentType: string;
+  hash: string;
+  isVariant: boolean;
+} | null {
   const hash = readIndexHash(url);
   if (hash === null) return null;
   const hit = readVariantIfFresh(variantPath(hash, width));
@@ -245,7 +259,7 @@ export function lookupArtworkVariant(
   } catch {
     // The variant hit stands even if the touch fails.
   }
-  return { bytes: hit, contentType: "image/webp", hash };
+  return { bytes: hit, contentType: "image/webp", hash, isVariant: true };
 }
 
 /** Remember url → hash so a restart can serve variants without re-fetching
@@ -276,7 +290,7 @@ export async function artworkVariantFor(
   const file = variantPath(hash, width);
   const hit = readVariantIfFresh(file);
   if (hit !== null) {
-    return { bytes: hit, contentType: "image/webp", hash };
+    return { bytes: hit, contentType: "image/webp", hash, isVariant: true };
   }
 
   let meta;
@@ -287,7 +301,12 @@ export async function artworkVariantFor(
   }
   // Never upscale: at or below the ladder rung the source is the answer.
   if (meta.width !== undefined && meta.width <= width) {
-    return { bytes: source.bytes, contentType: source.contentType, hash };
+    return {
+      bytes: source.bytes,
+      contentType: source.contentType,
+      hash,
+      isVariant: false,
+    };
   }
 
   let variant: Buffer;
@@ -305,7 +324,7 @@ export async function artworkVariantFor(
 
   writeFileAtomic(file, variant);
   sweepArtworkStore(file);
-  return { bytes: variant, contentType: "image/webp", hash };
+  return { bytes: variant, contentType: "image/webp", hash, isVariant: true };
 }
 
 /** Test seam: walks the store tree for the current file count and bytes. */

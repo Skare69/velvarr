@@ -113,9 +113,14 @@ export function imageResponse(
   image: { bytes: Uint8Array; contentType: string },
   request: Request,
   maxAgeSeconds: number,
+  /** Content-addressed variant copy (<hash>-<w>.webp): names the ETag and
+   * adds `immutable`, so the browser never revalidates the bytes. */
+  variantEtag?: string,
 ): Response {
-  const etag = `"${createHash("sha256").update(image.bytes).digest("base64url")}"`;
-  const cache = `private, max-age=${maxAgeSeconds}`;
+  const etag =
+    variantEtag ??
+    `"${createHash("sha256").update(image.bytes).digest("base64url")}"`;
+  const cache = `private, max-age=${maxAgeSeconds}${variantEtag === undefined ? "" : ", immutable"}`;
   if (request.headers.get("if-none-match") === etag) {
     return new Response(null, {
       status: 304,
