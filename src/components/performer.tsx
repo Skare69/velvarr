@@ -1490,7 +1490,7 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
                 and the facts in their own panel on the right, so the hero's
                 right half carries content. Below lg the facts drop under the
                 identity; below sm everything stacks. */}
-              <div className="relative grid items-start gap-5 p-5 sm:grid-cols-[12rem_minmax(0,1fr)] sm:gap-6 sm:p-6 lg:grid-cols-[12rem_minmax(0,1fr)_19rem]">
+              <div className="relative grid items-start gap-5 p-5 sm:grid-cols-[12rem_minmax(0,1fr)] sm:gap-6 sm:p-6 lg:grid-cols-[12rem_minmax(0,1fr)_19rem] xl:grid-cols-[12rem_minmax(0,1fr)_24rem] 2xl:grid-cols-[12rem_minmax(0,1fr)_28rem]">
                 <EnlargeableImage
                   name={d.title}
                   imageUrl={d.imageUrl}
