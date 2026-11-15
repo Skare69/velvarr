@@ -15,6 +15,7 @@ import {
   proseSystemMessage,
   type ProseDraft,
 } from "../lib/prose-draft.ts";
+import { redactSecret, secretSpans } from "../lib/redact.ts";
 import { AppError, validateBaseUrl } from "./http.ts";
 
 type Providers = IntegrationConfig["providers"];
@@ -134,9 +135,13 @@ async function readUpTo(
 }
 
 /** The server's own words for a failed check: JSON `error.message` (or a
- * string `error`) first, else the text; control characters removed, at most
- * 200 characters. "" when nothing readable came back. */
-async function serverMessage(res: Response): Promise<string> {
+ * string `error`) first, else the text; control characters removed, the
+ * stored key redacted, at most 200 characters. "" when nothing readable
+ * came back. */
+async function serverMessage(
+  res: Response,
+  apiKey: string | undefined,
+): Promise<string> {
   let text: string;
   try {
     text = new TextDecoder().decode(
@@ -155,11 +160,40 @@ async function serverMessage(res: Response): Promise<string> {
   } catch {
     // Not JSON: the plain text is the message.
   }
-  return text
-    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 200);
+  // A server can repeat the Authorization value in its error text. The key
+  // goes before the cut, so the cut never leaves a piece of it behind.
+  return redactSecret(
+    text
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim(),
+    apiKey,
+  ).slice(0, 200);
+}
+
+/** Every string value of a draft. */
+function draftStrings(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(draftStrings);
+  if (value !== null && typeof value === "object")
+    return Object.values(value).flatMap(draftStrings);
+  return [];
+}
+
+/** Whether a draft holds a span of the key that the member's text does not
+ * hold. The model never receives the key (it travels only in the
+ * Authorization header), so such a span comes from a server that writes the
+ * header back into its reply. A span that the member typed is their text. */
+function draftRepeatsKey(
+  draft: ProseDraft,
+  text: string,
+  apiKey: string,
+): boolean {
+  // A stored key has no white space, so no span crosses a line break.
+  const values = draftStrings(draft).join("\n");
+  return secretSpans(values, apiKey).some(
+    ([start, end]) => !text.includes(values.slice(start, end)),
+  );
 }
 
 /** The chat reply envelope → a validated draft, or a named error. */
@@ -204,8 +238,9 @@ function draftFromReply(bytes: Uint8Array): ProseDraft {
 }
 
 /** One chat request for a configured server. `quoteServer` adds the server's
- * error text to an HTTP failure: only the connection check sets it, because
- * an error body can echo the member's text. */
+ * error text, with the stored key redacted, to an HTTP failure: only the
+ * connection check sets it, because an error body can echo the member's
+ * text. */
 async function postDraft(
   config: ProseChatConfiguration,
   apiKey: string | undefined,
@@ -254,7 +289,7 @@ async function postDraft(
   }
   if (!res.ok) {
     let detail = "";
-    if (quoteServer) detail = await serverMessage(res);
+    if (quoteServer) detail = await serverMessage(res, apiKey);
     else await res.body?.cancel().catch(() => undefined); // best-effort release
     throw failed(
       `The chat server answered HTTP ${res.status}${detail ? `: ${detail}` : "."}`,
@@ -268,7 +303,12 @@ async function postDraft(
   }
   if (!body.complete)
     throw badReply("The chat server's reply is larger than 256 KiB.");
-  return draftFromReply(body.bytes);
+  const draft = draftFromReply(body.bytes);
+  // Draft values reach notes, the URL and provider searches, so a reply that
+  // repeats the key is refused whole: no part of it reaches anyone.
+  if (apiKey && draftRepeatsKey(draft, text, apiKey))
+    throw badReply("The chat server's reply repeats the stored API key.");
+  return draft;
 }
 
 /** Sends the member's text to the configured chat server and returns the

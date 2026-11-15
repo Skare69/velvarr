@@ -191,6 +191,7 @@ Administrators can always use natural-language search. Other accounts need the g
 - Hosted models can refuse adult text. The search then fails with a message that says so. A local model, for example in Ollama or LM Studio, has no hosted content filter.
 - This switch is separate from AI-assisted matching. **Standard matching (no AI)** does not turn off natural-language search.
 - The stored API key stays bound to the origin of the server URL. When you move the URL to a different origin, enter the key again.
+- Velvarr never shows the stored API key. When the server repeats the key in an error message, the connection check shows `[redacted]` in its place. This also applies to each part of the key with 8 or more characters. A search reply that repeats the key fails with an error.
 - **Off** keeps the URL, the model, and the key for later use.
 
 ## Backup and recovery

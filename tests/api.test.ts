@@ -11462,7 +11462,14 @@ type ProseChatHit = {
 type ProseChatFixture = {
   server: Server;
   url: string;
-  reply: "draft" | "refusal" | "bad_json" | "redirect" | "hold";
+  reply:
+    | "draft"
+    | "refusal"
+    | "bad_json"
+    | "redirect"
+    | "hold"
+    | "echo_error"
+    | "echo_draft";
   hits: ProseChatHit[];
   /** Resolved when a request arrives; armed by the test that waits. */
   arrived?: PromiseWithResolvers<void>;
@@ -11500,7 +11507,26 @@ async function startProseChat(): Promise<ProseChatFixture> {
       res.writeHead(302, { location: "/elsewhere" }).end();
       return;
     }
+    // The echo modes stand for a server that writes the Authorization value
+    // back: into its error text (whole, then cut short), or into the reply.
+    const auth = req.headers.authorization ?? "";
+    const key = auth.replace(/^Bearer /, "");
+    if (state.reply === "echo_error") {
+      json(res, 401, {
+        error: {
+          message: `Incorrect API key provided: ${auth}. It starts with ${key.slice(0, 9)}…`,
+        },
+      });
+      return;
+    }
     if (state.reply === "hold") await state.release?.promise;
+    const draft =
+      state.reply === "echo_draft"
+        ? {
+            ...PROSE_SUMMER_DRAFT,
+            titleWords: { value: key, source: "summer" },
+          }
+        : PROSE_SUMMER_DRAFT;
     const message =
       state.reply === "refusal"
         ? {
@@ -11511,9 +11537,7 @@ async function startProseChat(): Promise<ProseChatFixture> {
         : {
             role: "assistant",
             content:
-              state.reply === "bad_json"
-                ? "not json"
-                : JSON.stringify(PROSE_SUMMER_DRAFT),
+              state.reply === "bad_json" ? "not json" : JSON.stringify(draft),
             refusal: null,
           };
     json(res, 200, {
@@ -11932,6 +11956,60 @@ test("prose search: the admin connection check answers connected for a valid dra
     role: "user",
     content: PROSE_CHECK_TEXT,
   });
+});
+
+test("prose search: the connection check hides the stored key when the chat server repeats it", async () => {
+  const { admin, chat } = await proseSetup();
+  await proseOn(admin, chat);
+  chat.reply = "echo_error";
+  try {
+    const check = await call("POST", "/api/admin/prose/check", {
+      cookie: admin,
+      body: {},
+    });
+    assert.equal(check.status, 200, await check.clone().text());
+    const wire = await check.text();
+    // The server's own words stay; the whole key and its cut copy do not.
+    assert.deepEqual(JSON.parse(wire), {
+      connected: false,
+      error:
+        "The chat server answered HTTP 401: Incorrect API key provided: Bearer [redacted]. It starts with [redacted]…",
+    });
+    assert.equal(wire.includes(PROSE_KEY.slice(0, 8)), false);
+  } finally {
+    chat.reply = "draft";
+  }
+});
+
+test("prose search: a reply that repeats the stored key fails, and nothing from it reaches the member", async () => {
+  const { admin, chat } = await proseSetup();
+  await proseOn(admin, chat);
+  chat.reply = "echo_draft";
+  try {
+    const res = await proseSearchCall(admin, "summer");
+    assert.equal(res.status, 502, await res.clone().text());
+    assert.equal((await res.clone().text()).includes(PROSE_KEY), false);
+    const error = await errorShape(res, 502);
+    assert.equal(error.code, "prose_search_bad_reply");
+    // The check reads the same reply rule.
+    const check = await call("POST", "/api/admin/prose/check", {
+      cookie: admin,
+      body: {},
+    });
+    assert.deepEqual(await check.json(), {
+      connected: false,
+      error: error.message,
+    });
+    // Text the member typed is theirs: the reply repeats it, nothing more.
+    const typed = await proseSearchCall(admin, `summer ${PROSE_KEY}`);
+    assert.equal(typed.status, 200, await typed.clone().text());
+    const body = (await typed.json()) as {
+      params: Record<string, string | null> | null;
+    };
+    assert.equal(body.params?.q, PROSE_KEY);
+  } finally {
+    chat.reply = "draft";
+  }
 });
 
 test("prose search: the block restores the chat settings, the grant and the fixtures", async () => {
