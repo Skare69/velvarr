@@ -5866,7 +5866,7 @@ test("withChildren with two StashDB studios sends two parentStudio searches and 
   );
 });
 
-test("a year range bounds both sources locally; a lone year keeps the native/local split", async () => {
+test("a year range rides its lower bound on the TPDB date pair; a lone year stays native", async () => {
   const movieUrls: string[] = [];
   await runBrowse(
     scriptedUpstream({
@@ -5874,18 +5874,20 @@ test("a year range bounds both sources locally; a lone year keeps the native/loc
       moviePages: [
         {
           rows: [
-            tpdbRow(uuid(10), "Inside Movie", "2020-06-01"),
-            tpdbRow(uuid(11), "Late Movie", "2022-06-01"),
+            tpdbRow(uuid(10), "First-Year Movie", "2019-06-01"),
+            tpdbRow(uuid(11), "Inside Movie", "2020-06-01"),
+            tpdbRow(uuid(12), "Upper Movie", "2021-06-01"),
+            tpdbRow(uuid(13), "Late Movie", "2022-06-01"),
           ],
           next: null,
-          total: 2,
+          total: 4,
         },
         // The second page serves the second browse (each browse reads one
         // page; the scripted upstream hands pages out in request order).
         {
           rows: [
-            tpdbRow(uuid(10), "Inside Movie", "2020-06-01"),
-            tpdbRow(uuid(11), "Late Movie", "2022-06-01"),
+            tpdbRow(uuid(11), "Inside Movie", "2020-06-01"),
+            tpdbRow(uuid(13), "Late Movie", "2022-06-01"),
           ],
           next: null,
           total: 2,
@@ -5905,15 +5907,24 @@ test("a year range bounds both sources locally; a lone year keeps the native/loc
         planQuery({ year: 2019, yearTo: 2021 }),
         [],
       );
-      // `year` stays native on TPDB (the lower bound rides the URL);
-      // `yearTo` is the local upper bound on BOTH sources.
-      assert.match(movieUrls[0]!, /year=2019/);
+      // Contract fix (VELV-166 send-back): TPDB `year` is an EXACT one-year
+      // filter upstream, so the range's lower bound rides the native date
+      // pair (>= the first year's January 1) and `year` itself never rides.
+      // `yearTo` stays the local upper bound on BOTH sources.
+      assert.match(movieUrls[0]!, /date=2019-01-01/);
+      assert.match(movieUrls[0]!, /date_operation=%3E%3D/);
+      assert.doesNotMatch(movieUrls[0]!, /year=/);
+      // Every year of the range shows — 2019 through 2021 — and only the
+      // year past the upper bound drops. The local upper bound keeps the
+      // totals exact at exhaustion.
       assert.deepEqual(ranged.items.map((d) => d.title).sort(), [
+        "First-Year Movie",
         "Inside Movie",
         "Inside Scene",
+        "Upper Movie",
       ]);
       assert.equal(ranged.totalCountKnown, true);
-      assert.equal(ranged.total, 2);
+      assert.equal(ranged.total, 4);
 
       // A lone year keeps today's behavior: the year rides TPDB's native
       // query (the fixture ignores it, so both rows survive locally) while
@@ -5921,6 +5932,7 @@ test("a year range bounds both sources locally; a lone year keeps the native/loc
       movieUrls.length = 0;
       const lone = await browseTitles(planQuery({ year: 2020 }), []);
       assert.match(movieUrls[0]!, /year=2020/);
+      assert.doesNotMatch(movieUrls[0]!, /date=/);
       assert.deepEqual(lone.items.map((d) => d.title).sort(), [
         "Inside Movie",
         "Inside Scene",

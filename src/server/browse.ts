@@ -1093,14 +1093,27 @@ function nativeQuery(
         perPage,
       };
     }
-    // Every other movie query passes the AND-of-includes natively; yearTo
-    // never rides native (TPDB has no upper-bound param), the visible
-    // predicate bounds it.
+    // Every other movie query passes the AND-of-includes natively. A year
+    // range's LOWER bound rides the native date pair: TPDB `year` is an
+    // exact one-year filter, so it would clip the range to its first year
+    // and hide every later one. `yearTo` never rides native (TPDB has no
+    // upper-bound param); the visible predicate bounds it (localYearRange),
+    // which keeps range totals approximate. A single year (no yearTo) keeps
+    // the native exact-year filter, exactly as before.
     return {
       provider: "tpdb",
       kind: "movie",
       ...(query.q !== undefined ? { query: query.q } : {}),
-      ...(query.year !== undefined ? { year: query.year } : {}),
+      ...(query.yearTo !== undefined && query.year !== undefined
+        ? {
+            releaseDate: {
+              cutoff: `${query.year}-01-01`,
+              operation: ">=" as const,
+            },
+          }
+        : query.year !== undefined
+          ? { year: query.year }
+          : {}),
       ...(date !== undefined ? { releaseDate: date } : {}),
       ...(plan.resolvedStudio !== undefined
         ? { studio: plan.resolvedStudio }
@@ -1483,8 +1496,12 @@ export async function browseTitles(
         // ponytail route limit: TPDB's filmography carries ONE performer, so
         // "all of" rides the first entry's id and every other entry's id
         // re-checks in the rows' credits — and the totals degrade, because
-        // the upstream list is not AND-ed. Widen only if TPDB ships a
-        // multi-performer criterion.
+        // the upstream list is not AND-ed. ponytail ceiling: the rows map
+        // at most MAX.credits (50) performers, so a movie whose 51st or
+        // later credit is one of the required performers drops without
+        // notice — an empty result here is honest absence at the cap, never
+        // a wrong one. Widen only if TPDB ships a multi-performer criterion
+        // or raises the mapped-credit cap.
         const creditsAllOf =
           query.performerMode === "all"
             ? query.performers

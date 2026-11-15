@@ -247,11 +247,52 @@ export function studiosPatch(
 }
 
 /** The drawer's all/any toggle. `all` is the default and never rides the
- * URL; it never counts as a filter of its own. */
+ * URL; it never counts as a filter of its own. A switch can START the TPDB
+ * filmography route: in `all` mode an entry the TPDB side does not know
+ * keeps TPDB off the page, so year, q and sort are legal there — `any`
+ * runs TPDB after the change and the route refuses them. The drop-set is
+ * the same one performersPatch applies when a pick starts the route. A
+ * switch to `all` can also stop every side (entries split across the two
+ * sources know no complete set); the tab clamp then drops to the combined
+ * browse like the other patch builders. */
 export function performerModePatch(
   mode: PerformerMode,
+  state: BrowseEntryState,
 ): Record<string, string | null> {
-  return { performerMode: mode === "any" ? "any" : null };
+  const patch: Record<string, string | null> = {
+    performerMode: mode === "any" ? "any" : null,
+  };
+  if (tpdbFilmographyRuns(state.type, state.performers, mode)) {
+    return {
+      ...patch,
+      q: null,
+      include: null,
+      exclude: null,
+      year: null,
+      yearTo: null,
+      date: null,
+      date_operation: null,
+      studios: null,
+      studioMode: null,
+      sort: null,
+      direction: null,
+      // `name` is the facet display label; this reset drops the studio/tag
+      // constraints it names, so it never survives the filmography route.
+      name: null,
+    };
+  }
+  const sides = browseSideRuns(
+    state.type,
+    state.performers,
+    state.studios,
+    mode,
+    state.performerStarred,
+  );
+  if (!sides.tpdb && !sides.stashdb) {
+    const { sort, direction } = sortPair("all", state.sortRaw, state.dirRaw);
+    return { ...patch, type: null, sort, direction };
+  }
+  return patch;
 }
 
 /** The drawer's year range: `year` is the lower bound, `yearTo` the upper

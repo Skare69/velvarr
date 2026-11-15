@@ -386,10 +386,84 @@ test("studiosPatch replaces the list; its only clamp is a tab neither source qua
   });
 });
 
-test("performerModePatch rides only the non-default mode", () => {
+test("performerModePatch rides only the non-default mode when nothing else moves", () => {
   // `all` is the default: it never rides the URL.
-  assert.deepEqual(performerModePatch("all"), { performerMode: null });
-  assert.deepEqual(performerModePatch("any"), { performerMode: "any" });
+  assert.deepEqual(performerModePatch("all", state()), {
+    performerMode: null,
+  });
+  assert.deepEqual(performerModePatch("any", state()), {
+    performerMode: "any",
+  });
+});
+
+test("performerModePatch drops the filmography-refused set when the switch starts the route", () => {
+  // In `all` mode the stashdb-only entry keeps TPDB off the page, so year,
+  // q and sort are legal there. Switching to `any` starts the TPDB
+  // filmography, and the route refuses them — the patch drops the same set
+  // performersPatch drops when a pick starts the route.
+  const tpdbId = "55b0c8d6-1111-4222-8333-444455556666";
+  const stashId = "55b0c8d6-aaaa-4bbb-8ccc-ddddeeeeffff";
+  const mixed = [{ tpdb: tpdbId }, { stashdb: stashId }];
+  const started = performerModePatch(
+    "any",
+    state({ performers: mixed, performerMode: "all" }),
+  );
+  assert.equal(started.performerMode, "any");
+  for (const key of [
+    "q",
+    "include",
+    "exclude",
+    "year",
+    "yearTo",
+    "date",
+    "date_operation",
+    "studios",
+    "studioMode",
+    "sort",
+    "direction",
+    "name",
+  ] as const) {
+    assert.equal(started[key], null, `${key} drops when the route starts`);
+  }
+  // The same switch without a TPDB-known entry starts no filmography, so
+  // nothing else moves. A switch back to `all` over stashdb-only entries
+  // keeps the StashDB side running — also no clamp.
+  assert.deepEqual(
+    performerModePatch(
+      "any",
+      state({ performers: [{ stashdb: stashId }], performerMode: "all" }),
+    ),
+    { performerMode: "any" },
+  );
+  assert.deepEqual(
+    performerModePatch(
+      "all",
+      state({ performers: [{ stashdb: stashId }], performerMode: "any" }),
+    ),
+    { performerMode: null },
+  );
+  // A switch to `all` that leaves no side running (entries split across the
+  // sources, no complete set anywhere) clamps to the combined browse.
+  const stranded = performerModePatch(
+    "all",
+    state({ performers: mixed, performerMode: "any", type: "all" }),
+  );
+  assert.equal(stranded.performerMode, null);
+  assert.equal(stranded.type, null);
+  assert.equal(stranded.sort, "duration");
+  assert.equal(stranded.direction, "asc");
+  // A TPDB-only entry keeps the filmography (and the tab) on a switch to
+  // `any` on the Movies tab: the clamp fires and drops the route's set.
+  const onMovies = performerModePatch(
+    "any",
+    state({
+      performers: [{ tpdb: tpdbId }],
+      performerMode: "all",
+      type: "movie",
+    }),
+  );
+  assert.equal(onMovies.year, null);
+  assert.equal(onMovies.type, undefined);
 });
 
 test("yearRangePatch writes the pair, deletes an absent or repeated upper bound, and refuses date windows", () => {
@@ -566,14 +640,44 @@ test("mirror: patched queries always pass parseBrowseQuery + planBrowseSides", (
       yearRangePatch("1990", "2000"),
     ),
   );
-  // The all/any toggle alone never forms a 400 — even beside entries.
+  // The all/any toggle alone never forms a 400 — even beside entries that
+  // start the filmography on the switch (the clamp drops the refused keys;
+  // none are present here).
   const anyModeUrl = applyPatch(
     new URLSearchParams({
       performers: JSON.stringify([{ tpdb: tpdbId }, { stashdb: stashId }]),
     }),
-    performerModePatch("any"),
+    performerModePatch(
+      "any",
+      state({
+        performers: [{ tpdb: tpdbId }, { stashdb: stashId }],
+        performerMode: "all",
+      }),
+    ),
   );
   assertPlanAccepts(anyModeUrl);
+  // And beside keys the route refuses: the clamp drops them, so the patched
+  // URL parses and plans cleanly instead of 400ing.
+  const anyModeClamped = applyPatch(
+    new URLSearchParams({
+      performers: JSON.stringify([{ tpdb: tpdbId }, { stashdb: stashId }]),
+      year: "2020",
+      q: "term",
+      sort: "duration",
+      direction: "asc",
+    }),
+    performerModePatch(
+      "any",
+      state({
+        performers: [{ tpdb: tpdbId }, { stashdb: stashId }],
+        performerMode: "all",
+      }),
+    ),
+  );
+  assert.equal(anyModeClamped.get("year"), null);
+  assert.equal(anyModeClamped.get("q"), null);
+  assert.equal(anyModeClamped.get("sort"), null);
+  assertPlanAccepts(anyModeClamped);
 });
 
 // --- property tests (fast-check, fixed seed 42 per property) ---

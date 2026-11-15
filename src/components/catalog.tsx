@@ -1282,19 +1282,27 @@ export function TitlesView() {
     studioMode === "withChildren" ? "withChildren" : "exact",
     performerStarred,
   );
+  // The filmography route refuses every order; a sort still in the URL when
+  // it runs (a forged URL, or a mode switch that started it) would 400.
+  // Declared here: the sort clamp, the drawer's disabled props and the
+  // entryState comment below all read it.
+  const filmography = tpdbFilmographyRuns(type, performers, performerMode);
   const merged =
     streamPlan.seeds.filter((s) => s.tpdbStudio !== undefined).length > 1 ||
     streamPlan.seeds.filter((s) => s.parentStudioId !== undefined).length > 1;
-  // A sort the selected type does not support — or one a merged source
-  // would refuse — is clamped to the provider default: visible in the
-  // select, never sent upstream for a 400. A direction rides only on sorts
-  // that take one: a stale direction next to TPDB relevance would 400 the
-  // search.
+  // A sort the selected type does not support — one a merged source would
+  // refuse, or one the filmography route rejects — is clamped to the
+  // provider default: visible in the select, never sent upstream for a
+  // 400. A direction rides only on sorts that take one: a stale direction
+  // next to TPDB relevance would 400 the search.
   const sorts = browseSortsFor(type).filter(
     (s) => !merged || BROWSE_MIXED_SORTS.includes(s),
   );
   const sortRaw = params.get("sort") ?? "";
-  const sort = (sorts as readonly string[]).includes(sortRaw) ? sortRaw : "";
+  const sort =
+    !filmography && (sorts as readonly string[]).includes(sortRaw)
+      ? sortRaw
+      : "";
   const dirRaw = params.get("direction") ?? "";
   const direction =
     sort !== "" &&
@@ -1313,9 +1321,6 @@ export function TitlesView() {
     studios,
     performerStarred,
   };
-  // The TPDB filmography route refuses search, sort and date everywhere
-  // but the Scenes tab, where StashDB owns the side and it never runs.
-  const filmography = tpdbFilmographyRuns(type, performers, performerMode);
   // Child studios are a StashDB-only criterion: one TPDB id in the studio
   // entries blocks the whole scope choice.
   const studioBlocked = studios.some((e) => e.tpdb !== undefined);
@@ -1557,8 +1562,9 @@ export function TitlesView() {
     [setP, entryState],
   );
   const onPerformerMode = useCallback(
-    (m: PerformerMode) => setP(performerModePatch(m), { push: true }),
-    [setP],
+    (m: PerformerMode) =>
+      setP(performerModePatch(m, entryState), { push: true }),
+    [setP, entryState],
   );
   const onStarred = useCallback(
     (on: boolean) =>
