@@ -10,6 +10,7 @@ import {
   studiosPatch,
   typePatch,
   yearRangePatch,
+  dateRangePatch,
   type BrowseEntryState,
 } from "../src/lib/browse-url.ts";
 import { browseSortsFor, SORT_KEYS } from "../src/lib/sorts.ts";
@@ -41,13 +42,15 @@ const state = (
   ...overrides,
 });
 
-test("BROWSE_KEYS is the 20 canonical browse keys; the four legacy scalars stay listed", () => {
+test("BROWSE_KEYS is the 21 canonical browse keys; the four legacy scalars stay listed", () => {
   // Contract move (VELV-166): performers/studios became JSON-array keys
   // beside performerMode/yearTo. The four scalar keys stay listed so
   // clearBrowseKeys still deletes them — only the server's legacy parse
-  // and legacyBrowsePatch read them.
+  // and legacyBrowsePatch read them. Contract move: the drawer's release
+  // date range added the inclusive upper bound `dateTo`.
   assert.deepEqual([...BROWSE_KEYS].sort(), [
     "date",
+    "dateTo",
     "date_operation",
     "direction",
     "exclude",
@@ -81,6 +84,7 @@ test("clearBrowseKeys nulls every key; keep spares exactly the named keys", () =
   const kept = clearBrowseKeys(["type", "perPage"]);
   assert.deepEqual(Object.keys(kept).sort(), [
     "date",
+    "dateTo",
     "date_operation",
     "direction",
     "exclude",
@@ -171,6 +175,7 @@ test("typePatch drops filmography-refused filters when TPDB entries leave the Sc
       yearTo: null,
       date: null,
       date_operation: null,
+      dateTo: null,
       sort: null,
       direction: null,
       studios: null,
@@ -183,6 +188,7 @@ test("typePatch drops filmography-refused filters when TPDB entries leave the Sc
     yearTo: null,
     date: null,
     date_operation: null,
+    dateTo: null,
     sort: null,
     direction: null,
     studios: null,
@@ -467,33 +473,67 @@ test("performerModePatch drops the filmography-refused set when the switch start
 });
 
 test("yearRangePatch writes the pair, deletes an absent or repeated upper bound, and refuses date windows", () => {
-  // A real range keeps both bounds and drops any date window.
+  // A real range keeps both bounds and drops any date window — including
+  // the date range's `dateTo`, which the server refuses beside a year.
+  const noDate = { date: null, date_operation: null, dateTo: null };
   assert.deepEqual(yearRangePatch("1990", "2000"), {
     year: "1990",
     yearTo: "2000",
-    date: null,
-    date_operation: null,
+    ...noDate,
   });
   // An empty upper bound deletes yearTo (the range ends at year).
   assert.deepEqual(yearRangePatch("1990", ""), {
     year: "1990",
     yearTo: null,
-    date: null,
-    date_operation: null,
+    ...noDate,
   });
   // A repeated year is a single-year window: yearTo stays off the URL.
   assert.deepEqual(yearRangePatch("1990", "1990"), {
     year: "1990",
     yearTo: null,
-    date: null,
-    date_operation: null,
+    ...noDate,
   });
   // An empty lower bound clears the whole range.
   assert.deepEqual(yearRangePatch("", ""), {
     year: null,
     yearTo: null,
+    ...noDate,
+  });
+});
+
+test("dateRangePatch writes the range on the existing date keys and drops a year window", () => {
+  const noYear = { year: null, yearTo: null };
+  // From and to: a `>=` start date plus the inclusive dateTo.
+  assert.deepEqual(dateRangePatch("2019-01-01", "2021-12-31"), {
+    ...noYear,
+    date: "2019-01-01",
+    date_operation: ">=",
+    dateTo: "2021-12-31",
+  });
+  // Bounds in the wrong order swap instead of sending a refused range.
+  assert.deepEqual(
+    dateRangePatch("2021-12-31", "2019-01-01"),
+    dateRangePatch("2019-01-01", "2021-12-31"),
+  );
+  // One bound alone is the plain `>=` or `<=` pair the server always took.
+  assert.deepEqual(dateRangePatch("2019-01-01", ""), {
+    ...noYear,
+    date: "2019-01-01",
+    date_operation: ">=",
+    dateTo: null,
+  });
+  assert.deepEqual(dateRangePatch("", "2021-12-31"), {
+    ...noYear,
+    date: "2021-12-31",
+    date_operation: "<=",
+    dateTo: null,
+  });
+  // Both empty clears every date key.
+  assert.deepEqual(dateRangePatch("", ""), {
+    ...noYear,
     date: null,
     date_operation: null,
+    dateTo: null,
   });
 });
 

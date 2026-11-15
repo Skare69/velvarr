@@ -894,6 +894,7 @@ export async function mapProseDraft(
     yearTo: year !== undefined && year.hi !== year.lo ? String(year.hi) : null,
     date: date?.date ?? null,
     date_operation: date?.operation ?? null,
+    dateTo: null,
     sort: sort ?? null,
     direction,
   };

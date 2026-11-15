@@ -1114,6 +1114,70 @@ body:has(.auth-page) {
   text-underline-offset: 0.2em;
 }
 
+/* Info chip (InfoTip in shared.tsx): a quiet "i" beside a label that opens
+   the field's rule text in a native popover. Click or tap toggles, so it
+   works on touch; Escape or a click elsewhere closes. 24px target (44px on
+   touch through an invisible hit area, so the label row keeps its height). */
+.info-tip {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--color-muted);
+  cursor: pointer;
+}
+.info-tip:hover,
+.info-tip:focus-visible {
+  background: var(--color-raised);
+  color: var(--color-ink);
+}
+.info-tip .icon {
+  width: 1rem;
+  height: 1rem;
+}
+@media (pointer: coarse) {
+  .info-tip {
+    min-height: 0;
+  }
+  .info-tip::after {
+    content: "";
+    position: absolute;
+    inset: -10px;
+  }
+}
+/* An overlay, so it may float with a shadow. Without anchor positioning
+   the browser centres the popover; with it, it sits under its chip. */
+.info-pop {
+  max-width: min(20rem, calc(100vw - 2rem));
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--color-edge);
+  border-radius: 10px;
+  background: var(--color-raised);
+  color: var(--color-ink);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+}
+.info-pop p {
+  margin: 0;
+}
+.info-pop p + p {
+  margin-top: 0.5rem;
+}
+@supports (position-area: bottom) {
+  .info-pop {
+    margin: 6px 0 0;
+    position-area: bottom span-right;
+    position-try-fallbacks: flip-inline, flip-block;
+  }
+}
+
 /* Artwork lightbox (EnlargeableImage in shared.tsx: performer photo, title
    poster): the whole image, never cropped or upscaled, on the dialog scrim.
    The trigger marks itself with a zoom cursor and, on hover or keyboard

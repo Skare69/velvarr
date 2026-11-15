@@ -50,6 +50,7 @@ export const BROWSE_KEYS = [
   "yearTo",
   "date",
   "date_operation",
+  "dateTo",
   "sort",
   "direction",
   "perPage",
@@ -115,6 +116,7 @@ export function typePatch(
       yearTo: null,
       date: null,
       date_operation: null,
+      dateTo: null,
       sort: null,
       direction: null,
       ...(stashdbOnly.length === 0
@@ -210,6 +212,7 @@ export function performersPatch(
       yearTo: null,
       date: null,
       date_operation: null,
+      dateTo: null,
       studios: null,
       studioMode: null,
       sort: null,
@@ -272,6 +275,7 @@ export function performerModePatch(
       yearTo: null,
       date: null,
       date_operation: null,
+      dateTo: null,
       studios: null,
       studioMode: null,
       sort: null,
@@ -308,7 +312,30 @@ export function yearRangePatch(
     yearTo: yearTo !== "" && yearTo !== year ? yearTo : null,
     date: null,
     date_operation: null,
+    dateTo: null,
   };
+}
+
+/** The drawer's release date range on the existing URL keys: from-only is
+ * `date` + `>=`, to-only `date` + `<=`, a full range `date` + `>=` plus
+ * the inclusive `dateTo`. Bounds given in the wrong order swap. A date
+ * displaces a year window, which the server refuses beside it. */
+export function dateRangePatch(
+  from: string,
+  to: string,
+): Record<string, string | null> {
+  const [lo, hi] =
+    from !== "" && to !== "" && to < from ? [to, from] : [from, to];
+  const none = { year: null, yearTo: null, dateTo: null };
+  if (lo !== "")
+    return {
+      ...none,
+      date: lo,
+      date_operation: ">=",
+      dateTo: hi !== "" ? hi : null,
+    };
+  if (hi !== "") return { ...none, date: hi, date_operation: "<=" };
+  return { ...none, date: null, date_operation: null };
 }
 
 // Tab, paging and the direction/date_operation/performerMode/yearTo
@@ -325,6 +352,7 @@ export function countActiveFilters(
       key === "perPage" ||
       key === "direction" ||
       key === "date_operation" ||
+      key === "dateTo" ||
       key === "performerMode" ||
       key === "yearTo"
     )

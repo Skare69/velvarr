@@ -18,6 +18,7 @@ import {
   ErrorPanel,
   GridSkeleton,
   Icon,
+  InfoTip,
   imgSrc,
   intOr,
   ItemImage,
@@ -41,10 +42,9 @@ import type {
   CatalogReference,
   CatalogTagSelection,
 } from "../lib/contracts";
-import { CATALOG_YEAR_MAX, CATALOG_YEAR_MIN } from "../lib/contracts";
 // Names for studio/tag filter ids live in lib/names, seeded at navigation
 // time (details, picks, tiles) — URLs carry ids, chips still get labels.
-import { filterName, seedName, seedPerformerPick } from "../lib/names";
+import { filterName, hasName, seedName, seedPerformerPick } from "../lib/names";
 // Detail views (payload types, DetailSections, RelatedTitles,
 // CatalogDetailView) live in catalog-detail.tsx; the browse view hosts the
 // detail overlay and reads its target from the URL.
@@ -64,6 +64,7 @@ import {
   browseFilterPatch,
   clearBrowseKeys,
   countActiveFilters,
+  dateRangePatch,
   performerModePatch,
   performersPatch,
   starredPatch,
@@ -238,68 +239,21 @@ function SortSelect({
     (s) => !merged || BROWSE_MIXED_SORTS.includes(s),
   );
   if (sorts.length === 0) return null;
-  // Rule 39: up to five exclusive orders read at once as segments (equal
-  // width, .segmented); a longer list keeps the select with its visible
-  // label. Same values and URL keys either way.
-  if (sorts.length + 1 <= 5) {
-    return (
-      <div>
-        <span className="label" id={`${id}-label`}>
-          Sort
-        </span>
-        <div className="flex gap-2">
-          <div
-            role="group"
-            aria-labelledby={`${id}-label`}
-            className="segmented"
-          >
-            <button
-              type="button"
-              aria-pressed={sort === ""}
-              disabled={disabled}
-              onClick={() => onSort("")}
-            >
-              Provider default
-            </button>
-            {sorts.map((s) => (
-              <button
-                key={s}
-                type="button"
-                aria-pressed={sort === s}
-                disabled={disabled}
-                onClick={() => onSort(s)}
-              >
-                {SORT_LABELS[s]}
-              </button>
-            ))}
-          </div>
-          {sort !== "" && browseSortIsDirectional(type, sort as SortKey) && (
-            <button
-              type="button"
-              className="btn shrink-0"
-              aria-label={
-                direction === "asc" ? "Sort ascending" : "Sort descending"
-              }
-              title={direction === "asc" ? "Sort ascending" : "Sort descending"}
-              disabled={disabled}
-              onClick={() => onDirection(direction === "asc" ? "desc" : "asc")}
-            >
-              <Icon name={direction === "asc" ? "sort-asc" : "sort-desc"} />
-            </button>
-          )}
-        </div>
-      </div>
-    );
-  }
+  // The sort set changes with the type (All, Movies, Scenes), so segments
+  // made the toolbar change width and jump on every type switch. One
+  // fixed-width select keeps the row still; the direction button stays in
+  // place too and is disabled for an order that has no direction.
+  const directional =
+    sort !== "" && browseSortIsDirectional(type, sort as SortKey);
   return (
-    <div>
-      <label className="label" htmlFor={id}>
+    <div className="toolbar-group sort-group">
+      <label className="filter-group-name" htmlFor={id}>
         Sort
       </label>
-      <div className="flex gap-2">
+      <div className="flex flex-1 gap-1">
         <select
           id={id}
-          className="input"
+          className="input sort-select"
           value={sort}
           disabled={disabled}
           onChange={(e) => onSort(e.target.value)}
@@ -311,20 +265,24 @@ function SortSelect({
             </option>
           ))}
         </select>
-        {sort !== "" && browseSortIsDirectional(type, sort as SortKey) && (
-          <button
-            type="button"
-            className="btn shrink-0"
-            aria-label={
-              direction === "asc" ? "Sort ascending" : "Sort descending"
-            }
-            title={direction === "asc" ? "Sort ascending" : "Sort descending"}
-            disabled={disabled}
-            onClick={() => onDirection(direction === "asc" ? "desc" : "asc")}
-          >
-            <Icon name={direction === "asc" ? "sort-asc" : "sort-desc"} />
-          </button>
-        )}
+        <button
+          type="button"
+          className="btn shrink-0"
+          aria-label={
+            direction === "asc" ? "Sort ascending" : "Sort descending"
+          }
+          title={
+            directional
+              ? direction === "asc"
+                ? "Sort ascending"
+                : "Sort descending"
+              : "This order has no direction"
+          }
+          disabled={disabled || !directional}
+          onClick={() => onDirection(direction === "asc" ? "desc" : "asc")}
+        >
+          <Icon name={direction === "asc" ? "sort-asc" : "sort-desc"} />
+        </button>
       </div>
     </div>
   );
@@ -378,7 +336,9 @@ function SearchBox({
   }, [input, value, commit]);
   return (
     <div>
-      <label className="label" htmlFor={id}>
+      {/* The group title ("Title") names the field on screen; the label
+          stays for assistive tech. */}
+      <label className="sr-only" htmlFor={id}>
         {label}
       </label>
       <div className="input-lead">
@@ -394,92 +354,6 @@ function SearchBox({
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") commit(input);
-          }}
-        />
-      </div>
-    </div>
-  );
-}
-
-/** The server accepts nothing but a 4-digit year inside the catalog band;
- * the range boxes never commit junk past this predicate. */
-function isCatalogYear(v: string): boolean {
-  return (
-    /^\d{4}$/.test(v) &&
-    Number(v) >= CATALOG_YEAR_MIN &&
-    Number(v) <= CATALOG_YEAR_MAX
-  );
-}
-
-/** One commit writes both year bounds: `from` is the native `year` key, an
- * empty `to` means one year, and clearing `from` clears the whole range —
- * a `yearTo` without a `year` would 400. */
-function YearRange({
-  fromId,
-  toId,
-  year,
-  yearTo,
-  disabled,
-  onCommit,
-}: {
-  fromId: string;
-  toId: string;
-  year: string;
-  yearTo: string;
-  disabled?: boolean;
-  onCommit: (year: string, yearTo: string) => void;
-}) {
-  const from = useSyncedInput(year);
-  const to = useSyncedInput(yearTo);
-  const commit = (fromRaw: string, toRaw: string) => {
-    if (disabled) return;
-    const f = fromRaw.trim();
-    const t = f === "" ? "" : toRaw.trim();
-    if (f !== "" && !isCatalogYear(f)) return;
-    if (t !== "" && !isCatalogYear(t)) return;
-    from.mark(f);
-    to.mark(t);
-    onCommit(f, t);
-  };
-  return (
-    <div>
-      <span className="label" id={`${fromId}-label`}>
-        Year
-      </span>
-      <div className="flex items-center gap-2">
-        <input
-          id={fromId}
-          type="number"
-          inputMode="numeric"
-          min={CATALOG_YEAR_MIN}
-          max={CATALOG_YEAR_MAX}
-          placeholder="From"
-          aria-labelledby={`${fromId}-label`}
-          className="input"
-          value={from.input}
-          disabled={disabled}
-          onChange={(e) => from.setInput(e.target.value)}
-          onBlur={() => commit(from.input, to.input)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") commit(from.input, to.input);
-          }}
-        />
-        <span className="text-sm text-muted">to</span>
-        <input
-          id={toId}
-          type="number"
-          inputMode="numeric"
-          min={CATALOG_YEAR_MIN}
-          max={CATALOG_YEAR_MAX}
-          placeholder="To"
-          aria-label="Year to"
-          className="input"
-          value={to.input}
-          disabled={disabled}
-          onChange={(e) => to.setInput(e.target.value)}
-          onBlur={() => commit(from.input, to.input)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") commit(from.input, to.input);
           }}
         />
       </div>
@@ -542,70 +416,54 @@ function dateOpLabel(v: string): string {
   return DATE_OPS.find((o) => o.v === v)?.label ?? v;
 }
 
-/** TPDB movie only: `date` + `date_operation` commit as one pair —
- * either half alone is a 400. Setting a date clears `year` (the views wire
- * that in onCommit); StashDB has no date filter so this is never rendered
- * there. */
-function DateCutoff({
+/** The drawer's release-time filter: two native date inputs, from and to.
+ * The URL keeps its existing keys (see dateRangePatch): from-only and
+ * to-only are a `date` + `date_operation` pair, a full range adds the
+ * inclusive `dateTo`. A date from another surface with another operator
+ * (prose search) shows here as the bound it implies; editing rewrites it. */
+function DateRange({
   id,
   date,
   operation,
+  dateTo,
   disabled,
   onCommit,
 }: {
   id: string;
   date: string;
   operation: string;
+  dateTo: string;
   disabled?: boolean;
-  onCommit: (date: string | null, op: string | null) => void;
+  onCommit: (from: string, to: string) => void;
 }) {
-  // The comparison persists locally so choosing it before a date is not
-  // lost; nothing reaches the URL until a date completes the pair.
-  const [op, setOp] = useState(operation || ">=");
-  useEffect(() => {
-    if (date && operation) setOp(operation);
-  });
+  const from =
+    operation === ">=" || operation === ">" || operation === "=" ? date : "";
+  const to =
+    dateTo ||
+    (operation === "<=" || operation === "<" || operation === "=" ? date : "");
   return (
-    <div>
-      <label className="label" htmlFor={`${id}-date`} id={`${id}-date-label`}>
-        Release date
-      </label>
-      {/* Stacked: five comparison segments do not fit beside a date input
-          in the narrow drawer; the strip scrolls when it must. */}
-      <div className="grid gap-2">
-        <input
-          id={`${id}-date`}
-          type="date"
-          className="input"
-          value={date}
-          disabled={disabled}
-          onChange={(e) =>
-            onCommit(e.target.value || null, e.target.value ? op : null)
-          }
-        />
-        {/* Five exclusive comparisons: segments, not a dropdown (rule 39),
-            wrapped in rows. The row's visible label names the group. */}
-        <div
-          role="group"
-          aria-labelledby={`${id}-date-label`}
-          className="segmented segmented-wrap"
-        >
-          {DATE_OPS.map((o) => (
-            <button
-              key={o.v}
-              type="button"
-              aria-pressed={op === o.v}
-              disabled={disabled}
-              onClick={() => {
-                setOp(o.v);
-                if (date) onCommit(date, o.v);
-              }}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
-      </div>
+    <div className="flex items-center gap-2">
+      <input
+        id={`${id}-from`}
+        type="date"
+        className="input"
+        aria-label="Released from"
+        value={from}
+        max={to || undefined}
+        disabled={disabled}
+        onChange={(e) => onCommit(e.target.value, to)}
+      />
+      <span className="text-sm text-muted">to</span>
+      <input
+        id={`${id}-to`}
+        type="date"
+        className="input"
+        aria-label="Released to"
+        value={to}
+        min={from || undefined}
+        disabled={disabled}
+        onChange={(e) => onCommit(from, e.target.value)}
+      />
     </div>
   );
 }
@@ -707,6 +565,52 @@ function entityLabel(e: BrowseEntity, kind: "performer" | "studio"): string {
     .join(" + ");
 }
 
+/** Looks up the name of every picked performer or studio whose URL entry
+ * carries only ids (a jump from a detail page, a bookmark, a reload) and
+ * seeds it, so the chips show "Jewelz Blu", not "#27e0d48d…". The record's
+ * own title from its provider is the only source; a failed lookup leaves
+ * the id shown as an id. */
+function useEntityNames(
+  entries: BrowseEntity[],
+  kind: "performer" | "studio",
+): void {
+  const [, rerender] = useState(0);
+  const missing = entries.flatMap((e) =>
+    e.name
+      ? []
+      : (["tpdb", "stashdb"] as const).flatMap((p) => {
+          const id = e[p];
+          return id !== undefined && !hasName(p, kind, id)
+            ? [`${p}/${id}`]
+            : [];
+        }),
+  );
+  const sig = missing.join(",");
+  useEffect(() => {
+    if (sig === "") return;
+    let live = true;
+    void Promise.all(
+      sig.split(",").map(async (pair) => {
+        const [provider, id] = pair.split("/") as [string, string];
+        try {
+          const r = await api<{ detail: { title: string } }>(
+            `/api/catalog/${provider}/${kind}/${encodeURIComponent(id)}`,
+          );
+          seedName({ provider, kind, id }, r.detail.title);
+        } catch {
+          // Not resolvable (outage, removed record): the chip keeps the
+          // id shown as an id, which is the documented honest fallback.
+        }
+      }),
+    ).then(() => {
+      if (live) rerender((n) => n + 1);
+    });
+    return () => {
+      live = false;
+    };
+  }, [sig, kind]);
+}
+
 /** The picked entries of one entity filter, as removable chips — the same
  * chip the active-filter row uses, so a pick looks the same in the drawer
  * and on the page. */
@@ -792,7 +696,9 @@ function PerformerPicker({
   );
   return (
     <div>
-      <label className="label" htmlFor={id}>
+      {/* The group title ("Performers") names the field on screen; the
+          label stays for assistive tech. */}
+      <label className="sr-only" htmlFor={id}>
         Performer
       </label>
       {capped ? (
@@ -868,11 +774,6 @@ function PerformerPicker({
           </div>
         </div>
       )}
-      <p className="cat-note">
-        {starred
-          ? "Scenes featuring any performer you follow. Picking a performer replaces this; performers known only to TPDB cannot match."
-          : `Up to ${MAX_BROWSE_ENTITIES} performers, each pickable from either source; with 2 or more, choose All of them or Any of them. A TPDB performer opens movies through the filmography route; a StashDB performer filters scenes (StashDB caps results at about ten rows).`}
-      </p>
       {!capped &&
         (loading ? (
           <p className="cat-note" aria-live="polite">
@@ -951,7 +852,7 @@ function StudioPicker({
   );
   return (
     <div>
-      <label className="label" htmlFor={id}>
+      <label className="sr-only" htmlFor={id}>
         Studio
       </label>
       {capped ? (
@@ -974,9 +875,6 @@ function StudioPicker({
         </div>
       )}
       <EntityChips entries={entries} kind="studio" onRemove={onRemove} />
-      <p className="cat-note">
-        Up to {MAX_BROWSE_ENTITIES} studios; a title from any of them matches.
-      </p>
       {!capped &&
         (loading ? (
           <p className="cat-note" aria-live="polite">
@@ -1191,6 +1089,7 @@ function browsePath(f: {
   yearTo: string;
   date: string;
   dateOperation: string;
+  dateTo: string;
   sort: string;
   direction: string;
   perPage: number;
@@ -1215,6 +1114,8 @@ function browsePath(f: {
   if (f.date) {
     qs.set("date", f.date);
     qs.set("date_operation", f.dateOperation);
+    // The inclusive upper bound rides only beside a `>=` start date.
+    if (f.dateTo && f.dateOperation === ">=") qs.set("dateTo", f.dateTo);
   }
   if (f.sort) {
     qs.set("sort", f.sort);
@@ -1262,6 +1163,8 @@ export function TitlesView() {
   const exclude = parseTags(params.get("exclude"));
   const performers = parseEntities(params.get("performers"));
   const studios = parseEntities(params.get("studios"));
+  useEntityNames(performers, "performer");
+  useEntityNames(studios, "studio");
   // `all` is the default and never travels the URL.
   const performerMode = params.get("performerMode") === "any" ? "any" : "all";
   const performerStarred = params.get("performerStarred") === "1";
@@ -1274,6 +1177,7 @@ export function TitlesView() {
   const opRaw = params.get("date_operation") ?? "";
   const date = dateRaw !== "" && opRaw !== "" ? dateRaw : "";
   const dateOperation = date !== "" ? opRaw : "";
+  const dateTo = date !== "" ? (params.get("dateTo") ?? "") : "";
   // The stream plan is the client half of the server's planner: the same
   // seeds order the merge, and a source that pages 2+ merged upstream
   // lists (2+ TPDB studio lists, 2+ StashDB child-studio searches) only
@@ -1384,6 +1288,7 @@ export function TitlesView() {
         year,
         yearTo,
         date,
+        dateTo,
         dateOperation,
         sort,
         direction,
@@ -1402,6 +1307,7 @@ export function TitlesView() {
       year,
       yearTo,
       date,
+      dateTo,
       dateOperation,
       sort,
       direction,
@@ -1583,13 +1489,13 @@ export function TitlesView() {
     (y: string, yTo: string) => setP(yearRangePatch(y, yTo), { push: true }),
     [setP],
   );
-  // Both halves commit together — one without the other is a 400.
-  const onDate = useCallback(
-    (d: string | null, op: string | null) =>
-      setP(
-        { date: d, date_operation: op, year: null },
-        { push: date === "" || d === null },
-      ),
+  // Both bounds commit together through one patch (dateRangePatch): it
+  // also drops a year window, which the server refuses beside a date.
+  const onDateRange = useCallback(
+    (from: string, to: string) =>
+      setP(dateRangePatch(from, to), {
+        push: date === "" || (from === "" && to === ""),
+      }),
     [date, setP],
   );
   const onSort = useCallback(
@@ -1695,8 +1601,13 @@ export function TitlesView() {
       () => onYearRange("", ""),
     );
   if (date)
-    chip("Release", "date", `${dateOpLabel(dateOperation)} ${date}`, () =>
-      onDate(null, null),
+    chip(
+      "Release",
+      "date",
+      dateTo !== ""
+        ? `${date} – ${dateTo}`
+        : `${dateOpLabel(dateOperation)} ${date}`,
+      () => onDateRange("", ""),
     );
   performers.forEach((entry, i) =>
     chip("Performer", `performer:${i}`, entityLabel(entry, "performer"), () =>
@@ -1772,63 +1683,65 @@ export function TitlesView() {
             <h2 className="page-title">{heading}</h2>
             <p className="page-description">{typeSummary}</p>
           </div>
-          <div className="page-toolbar">
-            {hiddenCount > 0 && (
-              <button
-                type="button"
-                className="btn"
-                aria-label={`${hiddenCount} personal hidden tags active — manage in Preferences`}
-                data-prefs-opener="hidden-tags"
-                onClick={() =>
-                  window.dispatchEvent(new Event(OPEN_PREFERENCES))
-                }
-              >
-                <Icon name="tag" /> {hiddenCount} hidden
-              </button>
-            )}
-            {/* Rule 39: three exclusive types read at once as segments. */}
-            <div>
-              <span className="label" id="titles-type-label">
-                Type
-              </span>
-              <div
-                role="group"
-                aria-labelledby="titles-type-label"
-                className="segmented"
-              >
-                {(["all", "movie", "scene"] as const).map((t) => (
-                  <button
-                    key={t}
-                    type="button"
-                    aria-pressed={type === t}
-                    onClick={() => onType(t)}
-                  >
-                    {TYPE_LABELS[t]}
-                  </button>
-                ))}
-              </div>
+        </div>
+        {/* One toolbar row under the heading, every control the same 44px
+            group: describe, type, sort, filters. The describe search's notes
+            wrap onto their own line below the row. */}
+        <div className="page-toolbar titles-toolbar">
+          <ProseSearchField type={type} />
+          {hiddenCount > 0 && (
+            <button
+              type="button"
+              className="btn"
+              aria-label={`${hiddenCount} personal hidden tags active — manage in Preferences`}
+              data-prefs-opener="hidden-tags"
+              onClick={() => window.dispatchEvent(new Event(OPEN_PREFERENCES))}
+            >
+              <Icon name="tag" /> {hiddenCount} hidden
+            </button>
+          )}
+          {/* Rule 39: three exclusive types read at once as segments. Each
+                control sits in its own small panel with its name inside, the
+                same look as the active-filter groups below. */}
+          <div className="toolbar-group">
+            <span className="filter-group-name" id="titles-type-label">
+              Type
+            </span>
+            <div
+              role="group"
+              aria-labelledby="titles-type-label"
+              className="segmented"
+            >
+              {(["all", "movie", "scene"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  aria-pressed={type === t}
+                  onClick={() => onType(t)}
+                >
+                  {TYPE_LABELS[t]}
+                </button>
+              ))}
             </div>
-            {/* TPDB filmography refuses search and order only where the
+          </div>
+          {/* TPDB filmography refuses search and order only where the
                 TPDB side runs; the Scenes tab runs the StashDB side. A
                 merged source offers only recency and duration. */}
-            <SortSelect
-              id="titles-sort"
-              type={type}
-              sort={sort}
-              direction={direction}
-              disabled={filmography}
-              merged={merged}
-              onSort={onSort}
-              onDirection={onDirection}
-            />
-            <FiltersButton
-              count={filterCount}
-              onClick={() => setFiltersOpen(true)}
-            />
-          </div>
+          <SortSelect
+            id="titles-sort"
+            type={type}
+            sort={sort}
+            direction={direction}
+            disabled={filmography}
+            merged={merged}
+            onSort={onSort}
+            onDirection={onDirection}
+          />
+          <FiltersButton
+            count={filterCount}
+            onClick={() => setFiltersOpen(true)}
+          />
         </div>
-
-        <ProseSearchField type={type} />
 
         {chipGroupNames.length > 0 && (
           <div
@@ -1877,36 +1790,43 @@ export function TitlesView() {
             />
           ) : (
             <>
-              {acc.errors.map((e) =>
-                e.code === "scan_ceiling" ? (
-                  // The source answered every scanned page and hit the
-                  // documented limit: a partial answer, not an outage. No
-                  // retry — only narrower filters change the outcome.
-                  <ErrorPanel
-                    key={e.provider}
-                    title={`${providerLabel(e.provider)}: scan limit reached`}
-                    message={e.message}
-                  />
-                ) : (
-                  <ErrorPanel
-                    key={e.provider}
-                    title={`${providerLabel(e.provider)} unavailable`}
-                    message={e.message}
-                    onRetry={retry}
-                  />
-                ),
+              {/* Failures and notes stack with a gap of their own and
+                  clear space before the results (rule 26: the gap inside
+                  a group is smaller than the gap to the next group). */}
+              {(acc.errors.length > 0 || acc.notices.length > 0) && (
+                <div className="mb-5 grid gap-3">
+                  {acc.errors.map((e) =>
+                    e.code === "scan_ceiling" ? (
+                      // The source answered every scanned page and hit the
+                      // documented limit: a partial answer, not an outage.
+                      // No retry — only narrower filters change the outcome.
+                      <ErrorPanel
+                        key={e.provider}
+                        title={`${providerLabel(e.provider)}: scan limit reached`}
+                        message={e.message}
+                      />
+                    ) : (
+                      <ErrorPanel
+                        key={e.provider}
+                        title={`${providerLabel(e.provider)} unavailable`}
+                        message={e.message}
+                        onRetry={retry}
+                      />
+                    ),
+                  )}
+                  {/* Query-scoped muted notes: a source that skipped or
+                      narrowed the filter says so here — never an alert,
+                      never hiding the total or the grid. */}
+                  {acc.notices.map((n, i) => (
+                    <p
+                      key={`${n.provider}:${n.kind}:${n.code}:${i}`}
+                      className="cat-note m-0"
+                    >
+                      {noticeText(n)}
+                    </p>
+                  ))}
+                </div>
               )}
-              {/* Query-scoped muted notes: a source that skipped or
-                  narrowed the filter says so here — never an alert, never
-                  hiding the total or the grid. */}
-              {acc.notices.map((n, i) => (
-                <p
-                  key={`${n.provider}:${n.kind}:${n.code}:${i}`}
-                  className="cat-note"
-                >
-                  {noticeText(n)}
-                </p>
-              ))}
               {acc.items.length === 0 ? (
                 // Empty is only claimed when no source failed: the error
                 // panels above carry the failures.
@@ -1994,7 +1914,7 @@ export function TitlesView() {
           aria-labelledby="titles-g-search"
         >
           <h3 className="cat-group-title" id="titles-g-search">
-            Search
+            Title
           </h3>
           <SearchBox
             id="titles-q"
@@ -2009,9 +1929,23 @@ export function TitlesView() {
           role="group"
           aria-labelledby="titles-g-performers"
         >
-          <h3 className="cat-group-title" id="titles-g-performers">
-            Performers
-          </h3>
+          <div className="cat-group-head">
+            <h3 className="cat-group-title" id="titles-g-performers">
+              Performers
+            </h3>
+            <InfoTip id="titles-performer-info" label="Performers">
+              <p>
+                {performerStarred
+                  ? "Scenes featuring any performer you follow. Picking a performer replaces this; performers known only to TPDB cannot match."
+                  : `Up to ${MAX_BROWSE_ENTITIES} performers, each pickable from either source; with 2 or more, choose All of them or Any of them.`}
+              </p>
+              <p>
+                A TPDB performer opens movies through the filmography route; a
+                StashDB performer filters scenes (StashDB caps results at about
+                ten rows).
+              </p>
+            </InfoTip>
+          </div>
           <PerformerPicker
             id="titles-performer"
             entries={performers}
@@ -2037,9 +1971,17 @@ export function TitlesView() {
           role="group"
           aria-labelledby="titles-g-studios"
         >
-          <h3 className="cat-group-title" id="titles-g-studios">
-            Studios
-          </h3>
+          <div className="cat-group-head">
+            <h3 className="cat-group-title" id="titles-g-studios">
+              Studios
+            </h3>
+            <InfoTip id="titles-studio-info" label="Studios">
+              <p>
+                Up to {MAX_BROWSE_ENTITIES} studios; a title from any of them
+                matches.
+              </p>
+            </InfoTip>
+          </div>
           <StudioPicker
             id="titles-studio"
             entries={studios}
@@ -2106,6 +2048,7 @@ export function TitlesView() {
             allowFreeText
             allowGroups
             description="Titles need every tag here; tags joined by or form one group."
+            help="A tag picked from the list matches exactly. A typed term matches every tag whose name contains it (case and separators ignored): “anal” also matches Analingus and Anal Fisting."
           />
           <TagPicker
             id="titles-exclude"
@@ -2115,21 +2058,22 @@ export function TitlesView() {
             onChange={onExclude}
             allowFreeText
             description="Any tag here removes a title. Exclusions win."
-            help="Must have: a provider tag matches exactly, and a typed term keeps titles carrying any tag whose name contains it (case and separators ignored), unless it exactly names a tag both providers publish, which then matches exactly on both. Must not have: a tag also covers the ones that contain it as a word (Anal drops Anal Creampie, never Analingus)."
+            help="A typed term removes titles with any tag whose name contains it: “anal” also removes Analingus and Anal Fisting. A tag picked from the list also covers the ones that contain it as a word (Anal drops Anal Creampie, never Analingus)."
           />
+          {/* Hidden tags filter silently, so this line stays visible. */}
           <p className="cat-note">
             {hiddenCount > 0
-              ? `${hiddenCount} personal hidden tag${hiddenCount === 1 ? "" : "s"} appl${hiddenCount === 1 ? "ies" : "y"} on every browse — `
-              : "Personal hidden tags apply on every browse — "}
+              ? `${hiddenCount} hidden tag${hiddenCount === 1 ? "" : "s"} from `
+              : "Hidden tags from "}
             <button
               type="button"
               className="cat-inline-link"
               data-prefs-opener="drawer-note"
               onClick={() => window.dispatchEvent(new Event(OPEN_PREFERENCES))}
             >
-              manage them in Preferences
-            </button>
-            . Clear filters never removes them.
+              Preferences
+            </button>{" "}
+            always apply; Clear all keeps them.
           </p>
         </div>
         <div
@@ -2137,35 +2081,32 @@ export function TitlesView() {
           role="group"
           aria-labelledby="titles-g-release"
         >
-          <h3 className="cat-group-title" id="titles-g-release">
-            Release
-          </h3>
-          <YearRange
-            fromId="titles-year"
-            toId="titles-year-to"
-            year={year}
-            yearTo={yearTo}
-            onCommit={onYearRange}
-            disabled={filmography}
-          />
-          <DateCutoff
+          <div className="cat-group-head">
+            <h3 className="cat-group-title" id="titles-g-release">
+              Release date
+            </h3>
+            <InfoTip id="titles-date-info" label="Release date">
+              <p>
+                Applies to TPDB movies and StashDB scenes. Both bounds are
+                included. Leave one empty for an open range.
+              </p>
+            </InfoTip>
+          </div>
+          <DateRange
             id="titles-date"
             date={date}
             operation={dateOperation}
+            dateTo={dateTo}
             disabled={filmography}
-            onCommit={onDate}
+            onCommit={onDateRange}
           />
-          {/* The note names the sources a bound is checked on: the start
-              year is TPDB-native, every other bound runs locally, so those
-              totals are approximate — never silently ignored. */}
-          {(year !== "" || date !== "") && (
+          {/* A bound that is checked locally makes totals approximate:
+              said while it applies, never silently. */}
+          {(dateTo !== "" || year !== "") && (
             <p className="cat-note">
-              {year !== "" &&
-                (yearTo !== ""
-                  ? "The year range applies to TPDB movies and StashDB scenes; the start year is TPDB-native and the upper bound is checked locally, so TPDB movie totals are approximate, and StashDB scene totals are approximate too (the range is checked locally). "
-                  : "The year applies to TPDB movies and StashDB scenes; StashDB scene totals are approximate (the year is checked locally). ")}
-              {date !== "" &&
-                "The release date applies to TPDB movies and StashDB scenes."}
+              {dateTo !== ""
+                ? "Totals are approximate: the end date is checked after the results arrive."
+                : `A release year from an earlier link still applies (${yearTo !== "" ? `${year}–${yearTo}` : year}); setting a date replaces it.`}
             </p>
           )}
         </div>

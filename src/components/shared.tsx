@@ -10,6 +10,7 @@ import {
   type DependencyList,
   type RefObject,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
 import { isDeliverableMedia } from "../lib/contracts.ts";
@@ -720,6 +721,10 @@ const ICON_PATHS = {
   trash: "M3 6h18 M8 6V4h8v2 M19 6l-1 14H6L5 6 M10 11v6 M14 11v6",
   undo: "M9 14 4 9l5-5 M4 9h11a5 5 0 0 1 0 10h-3",
   minus: "M5 12h14",
+  info: "M21 12a9 9 0 1 1-18 0a9 9 0 1 1 18 0 M12 11v5 M12 8h.01",
+  // The natural-language search: a four-point spark plus a small one.
+  sparkle:
+    "M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z",
   // Gender marks: Venus, Mars, and the transgender symbol (both arrows and
   // the cross on one ring).
   "gender-female": "M17 9a5 5 0 1 1-10 0a5 5 0 1 1 10 0 M12 14v7 M9 18h6",
@@ -753,6 +758,38 @@ export function Icon({
     >
       <path d={ICON_PATHS[name]} />
     </svg>
+  );
+}
+
+/** A small "i" chip that opens a field's rule text in a native popover.
+ * A click or tap toggles it (no hover, so it works on touch); Escape or a
+ * click elsewhere closes it. Browsers with CSS anchor positioning place it
+ * under the chip, others center it. `id` must be unique on the page; the
+ * text's id (`${id}-text`) can describe the field (aria-describedby). */
+export function InfoTip({
+  id,
+  label,
+  children,
+}: {
+  id: string;
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <>
+      <button
+        type="button"
+        className="info-tip"
+        popoverTarget={id}
+        aria-label={`About ${label}`}
+        title={`About ${label}`}
+      >
+        <Icon name="info" />
+      </button>
+      <div id={id} popover="auto" className="info-pop">
+        <div id={`${id}-text`}>{children}</div>
+      </div>
+    </>
   );
 }
 

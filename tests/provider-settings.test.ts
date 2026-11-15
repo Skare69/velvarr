@@ -246,6 +246,8 @@ test("provider deep links name the metadata tab; every other hash keeps Connecti
   // Discover's key links target exactly these two headings.
   assert.equal(settingsSectionForHash("#provider-heading-tpdb"), "metadata");
   assert.equal(settingsSectionForHash("#provider-heading-stashdb"), "metadata");
+  // Browse's describe-search setup link targets the prose card there too.
+  assert.equal(settingsSectionForHash("#prose-heading"), "metadata");
   // The Jellyfin heading lives on the default tab, as does no hash at all.
   assert.equal(
     settingsSectionForHash("#jellyfin-settings-title"),

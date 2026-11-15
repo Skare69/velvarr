@@ -117,6 +117,9 @@ export type BrowseQuery = {
   yearTo?: number;
   date?: string;
   dateOperation?: ReleaseDateOperation;
+  /** Inclusive release-date upper bound (`YYYY-MM-DD`), valid only beside
+   * `date` + `>=`; checks locally on both providers, like `yearTo`. */
+  dateTo?: string;
   sort?: CatalogSortKey;
   direction?: CatalogSortDirection;
   page: number;
@@ -312,6 +315,10 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
   if (dateOperation !== undefined && date === "") {
     throw invalidQuery("date_operation requires date.");
   }
+  const dateTo = params.get("dateTo")?.trim() ?? "";
+  if (dateTo !== "" && !isIsoDate(dateTo)) {
+    throw invalidQuery("dateTo must be a real calendar date (YYYY-MM-DD).");
+  }
   const parseYear = (key: string): number | undefined => {
     const raw = params.get(key);
     if (raw === null || raw.trim() === "") return undefined;
@@ -339,6 +346,18 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
   }
   if (yearTo !== undefined && date !== "") {
     refuse("yearTo cannot be combined with a date filter.");
+  }
+  // `dateTo` completes a `date` + `>=` range; it never travels alone and
+  // never mixes with the year vocabulary.
+  if (dateTo !== "") {
+    if (date === "") refuse("dateTo requires a date filter.");
+    if (dateOperation !== ">=") {
+      refuse("dateTo requires date_operation=>=.");
+    }
+    if (dateTo < date) refuse("dateTo cannot be before date.");
+    if (year !== undefined || yearTo !== undefined) {
+      refuse("dateTo cannot be combined with a year filter.");
+    }
   }
   const pageRaw = params.get("page");
   const perPageRaw = params.get("perPage");
@@ -454,6 +473,7 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
     ...(date !== "" && dateOperation !== undefined
       ? { date, dateOperation }
       : {}),
+    ...(dateTo !== "" ? { dateTo } : {}),
     ...(sort !== undefined ? { sort } : {}),
     ...(direction !== undefined ? { direction } : {}),
     page,
@@ -495,13 +515,20 @@ function visiblePredicate(
   include: IncludeTerm[],
   years: { from?: number; to?: number } | undefined,
   creditsAllOf: string[],
+  dateTo?: string,
 ): (d: CatalogDetail) => boolean {
   // Exclusions win over includes: a hidden or excluded match blocks the item
   // regardless of any include criterion. Selections fold once here, per
-  // request; each item's tags fold once inside FoldedTags.
-  const blocked = [...hiddenTags, ...exclude].map((sel) =>
-    tagMatcher(sel, "family"),
-  );
+  // request; each item's tags fold once inside FoldedTags. A typed
+  // (free-text) exclude matches by "contains" like a typed include ("anal"
+  // removes "Analingus" too); a picked tag and personal hidden tags keep the
+  // word-family rule ("Anal" hides "Anal Creampie", never "Analingus").
+  const blocked = [
+    ...hiddenTags.map((sel) => tagMatcher(sel, "family")),
+    ...exclude.map((sel) =>
+      tagMatcher(sel, isFreeTextSelection(sel) ? "substring" : "family"),
+    ),
+  ];
   const required = include.map(includeTermMatcher);
   // TPDB all-mode filmography: the route only carries the first entry's
   // performer, so the visible predicate re-checks every other entry's id
@@ -528,6 +555,12 @@ function visiblePredicate(
       const year = Number(raw);
       if (years.from !== undefined && year < years.from) return false;
       if (years.to !== undefined && year > years.to) return false;
+    }
+    if (dateTo !== undefined) {
+      // ISO dates compare as strings; a missing release date can never
+      // prove the window, so it excludes — same rule as the year check.
+      const released = d.releaseDate?.slice(0, 10);
+      if (released === undefined || released > dateTo) return false;
     }
     return true;
   };
@@ -1561,7 +1594,8 @@ export async function browseTitles(
             hiddenTags.length > 0 ||
             query.exclude.length > 0 ||
             tpdbIncludes.localInclude.length > 0 ||
-            query.yearTo !== undefined,
+            query.yearTo !== undefined ||
+            query.dateTo !== undefined,
           localInclude: tpdbIncludes.localInclude,
           localFree: tpdbIncludes.localFree,
           // year stays native upstream; only the upper bound is local here.
@@ -1587,7 +1621,8 @@ export async function browseTitles(
           hiddenTags.length > 0 ||
           query.exclude.length > 0 ||
           tpdbIncludes.localInclude.length > 0 ||
-          query.yearTo !== undefined,
+          query.yearTo !== undefined ||
+          query.dateTo !== undefined,
         localInclude: tpdbIncludes.localInclude,
         localFree: tpdbIncludes.localFree,
         localYearRange:
@@ -1620,7 +1655,8 @@ export async function browseTitles(
         query.exclude.length > 0 ||
         stashIncludes.localInclude.length > 0 ||
         query.year !== undefined ||
-        query.yearTo !== undefined,
+        query.yearTo !== undefined ||
+        query.dateTo !== undefined,
       localInclude: stashIncludes.localInclude,
       localFree: stashIncludes.localFree,
       // Both year bounds check locally on StashDB; `yearTo` defaults the
@@ -1699,6 +1735,7 @@ export async function browseTitles(
       seedPlan.localInclude,
       seedPlan.localYearRange,
       seedPlan.creditsAllOf,
+      query.dateTo,
     );
     let visible = base;
     let localFiltered = seedPlan.localFiltered;

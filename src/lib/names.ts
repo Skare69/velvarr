@@ -79,3 +79,9 @@ export function seedFacetTile(item: {
 export function filterName(provider: string, kind: string, id: string): string {
   return filterNames.get(key(provider, kind, id)) ?? `#${id.slice(0, 8)}…`;
 }
+
+/** Whether a real name is known for the id (filterName would not fall
+ * back to the #fragment). */
+export function hasName(provider: string, kind: string, id: string): boolean {
+  return filterNames.has(key(provider, kind, id));
+}

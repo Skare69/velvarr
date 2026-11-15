@@ -43,12 +43,15 @@ export function connectionState(input: {
 
 /** Which Settings tab a deep link's hash targets. Discover's key links point
  * at provider card headings (`provider-heading-tpdb` /
- * `provider-heading-stashdb`), which live on the metadata tab; any other hash
- * (the Jellyfin heading, or none) stays on the default Connections tab. */
+ * `provider-heading-stashdb`) and Browse's describe-search link at
+ * `prose-heading`, all on the metadata tab; any other hash (the Jellyfin
+ * heading, or none) stays on the default Connections tab. */
 export function settingsSectionForHash(
   hash: string,
 ): "connections" | "metadata" {
-  return hash.startsWith("#provider-heading-") ? "metadata" : "connections";
+  return hash.startsWith("#provider-heading-") || hash === "#prose-heading"
+    ? "metadata"
+    : "connections";
 }
 
 export const CREDENTIAL_SAVED_NOTICE = "Credential saved.";

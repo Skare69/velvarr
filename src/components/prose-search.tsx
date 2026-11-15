@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { api, messageOf, useParamsSetter, useSession } from "./shared";
+import { api, Icon, messageOf, useParamsSetter, useSession } from "./shared";
 import { BROWSE_KEYS } from "../lib/browse-url";
 import { PROSE_TEXT_MAX } from "../lib/prose-draft";
 import type { ProseNote, ProseSearchResult } from "../lib/prose-map";
@@ -33,10 +34,26 @@ function patchedSearch(
   return next;
 }
 
-const STATUS_NOTES = {
-  not_configured: "An administrator must set this up in Settings.",
-  not_granted:
-    "An administrator must turn on natural-language search for your account.",
+/** Why the describe search is unavailable, in the same shape as Discover's
+ * missing-key line: a neutral state chip, what is missing, then the fix — a
+ * link for an administrator, who can make it, and a named person for
+ * everyone else. */
+const STATUS = {
+  not_configured: {
+    chip: "Not set up",
+    text: "Natural-language search has no AI service yet.",
+    fix: {
+      href: "/?view=settings#prose-heading",
+      label: "Set it up in Settings",
+    },
+    ask: "Ask an administrator to set it up.",
+  },
+  not_granted: {
+    chip: "Off",
+    text: "Natural-language search is off for your account.",
+    fix: { href: "/?view=admin", label: "Turn it on in Users" },
+    ask: "Ask an administrator to turn it on.",
+  },
 } as const;
 
 type Outcome = { notes: ProseNote[]; applied: boolean; snapshot: string };
@@ -49,7 +66,8 @@ export function ProseSearchField({
 }: {
   type: "all" | "movie" | "scene";
 }) {
-  const { proseSearchStatus } = useSession();
+  const { proseSearchStatus, account } = useSession();
+  const isAdmin = account.role === "admin";
   const params = useSearchParams();
   const setP = useParamsSetter();
   const inputId = useId();
@@ -77,7 +95,8 @@ export function ProseSearchField({
 
   const ready = proseSearchStatus === "ready";
   const trimmed = text.trim();
-  const statusNote = ready ? null : STATUS_NOTES[proseSearchStatus];
+  const status = ready ? null : STATUS[proseSearchStatus];
+  const statusNote = status !== null;
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -112,29 +131,36 @@ export function ProseSearchField({
   // they no longer describe what the page shows.
   const shown = outcome !== null && outcome.snapshot === browseSnapshot(params);
 
+  // The search is the toolbar's first group (same panel, caption and 32px
+  // controls as Type and Sort); its status and notes sit on their own full
+  // line under the toolbar row (.prose-search-status), so they never push
+  // the controls apart.
   return (
-    <form
-      role="search"
-      aria-label="Natural-language search"
-      className="prose-search"
-      onSubmit={(e) => void onSubmit(e)}
-    >
-      <label className="label" htmlFor={inputId}>
-        Describe what you want
-      </label>
-      <div className="prose-search-row">
-        <input
-          ref={inputRef}
-          id={inputId}
-          className="input"
-          type="text"
-          value={text}
-          maxLength={PROSE_TEXT_MAX}
-          placeholder="For example: Vixen scenes from 2019, newest first"
-          disabled={!ready || running}
-          aria-describedby={statusNote ? noteId : undefined}
-          onChange={(e) => setText(e.target.value)}
-        />
+    <>
+      <form
+        role="search"
+        aria-label="Natural-language search"
+        className="toolbar-group prose-group"
+        onSubmit={(e) => void onSubmit(e)}
+      >
+        <label className="filter-group-name" htmlFor={inputId}>
+          Describe
+        </label>
+        <div className="prose-field">
+          <Icon name="sparkle" />
+          <input
+            ref={inputRef}
+            id={inputId}
+            className="input"
+            type="text"
+            value={text}
+            maxLength={PROSE_TEXT_MAX}
+            placeholder="Vixen, 2019, newest first"
+            disabled={!ready || running}
+            aria-describedby={statusNote ? noteId : undefined}
+            onChange={(e) => setText(e.target.value)}
+          />
+        </div>
         <button
           type="submit"
           className="btn btn-accent"
@@ -142,34 +168,48 @@ export function ProseSearchField({
         >
           Search
         </button>
-      </div>
-      {statusNote && (
-        <p id={noteId} className="cat-note">
-          {statusNote}
-        </p>
-      )}
-      <div aria-live="polite">
-        {running && <p className="cat-note">Reading your search…</p>}
-        {shown && (
-          <>
-            {!outcome.applied && <p className="cat-note">Nothing applied.</p>}
-            {outcome.notes.length > 0 && (
-              <ul className="prose-search-notes">
-                {outcome.notes.map((n, i) => (
-                  <li key={`${n.code}:${i}`} className="cat-note">
-                    {n.message}
-                  </li>
-                ))}
-              </ul>
+      </form>
+      <div className="prose-search-status">
+        {status !== null && (
+          <p id={noteId} className="discovery-setup-line text-sm text-muted">
+            <span className="chip">{status.chip}</span> {status.text}{" "}
+            {isAdmin ? (
+              <Link
+                className="discovery-setup-link"
+                href={status.fix.href}
+                prefetch={false}
+              >
+                {status.fix.label}
+                <Icon name="arrow-right" />
+              </Link>
+            ) : (
+              status.ask
             )}
-          </>
+          </p>
+        )}
+        <div aria-live="polite">
+          {running && <p className="cat-note">Reading your search…</p>}
+          {shown && (
+            <>
+              {!outcome.applied && <p className="cat-note">Nothing applied.</p>}
+              {outcome.notes.length > 0 && (
+                <ul className="prose-search-notes">
+                  {outcome.notes.map((n, i) => (
+                    <li key={`${n.code}:${i}`} className="cat-note">
+                      {n.message}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+        </div>
+        {error !== null && (
+          <p className="cat-note" role="alert">
+            {error}
+          </p>
         )}
       </div>
-      {error !== null && (
-        <p className="cat-note" role="alert">
-          {error}
-        </p>
-      )}
-    </form>
+    </>
   );
 }

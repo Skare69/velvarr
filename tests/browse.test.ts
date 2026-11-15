@@ -2822,6 +2822,52 @@ test("a free-text include expands by folded substring, not family", async () => 
   );
 });
 
+test("a free-text exclude removes every title with a tag that contains the term", async () => {
+  // Typed "anal" in Must not have: contains, like a typed include — it
+  // removes "Analingus" and "Anal Fisting" alike. (Picked tags and
+  // personal hidden tags keep the word-family rule, pinned elsewhere.)
+  const ANALINGUS = { id: 11, uuid: uuid(101), name: "Analingus" };
+  const FISTING = { id: 12, uuid: uuid(102), name: "Anal Fisting" };
+  const SOLO = { id: 13, uuid: uuid(103), name: "Solo" };
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [ANALINGUS, FISTING, SOLO],
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(uuid(1), "Inside a word", "2024-03-01", [ANALINGUS]),
+            tpdbRow(uuid(2), "First word", "2024-02-01", [FISTING]),
+            tpdbRow(uuid(3), "Unrelated", "2024-01-01", [SOLO]),
+          ],
+          next: null,
+          total: 3,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "movie",
+          include: [],
+          exclude: [{ name: "anal" }],
+          studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      assert.deepEqual(
+        page.items.map((d) => d.reference.id),
+        [uuid(3)],
+      );
+    },
+  );
+});
+
 test("a free-text singleton joins the anchored tag in the native all-of criterion", async () => {
   const TAG_A = { id: 11, uuid: uuid(101), name: "Tag A" };
   const TAG_XYZ = { id: 12, uuid: uuid(102), name: "XYZ Special" };
@@ -4452,7 +4498,7 @@ test("family excludes need contiguous words; provider UUID still wins over label
   );
 });
 
-test("a free-text exclude carries no provider id and still hides by label family", async () => {
+test("a free-text exclude carries no provider id and hides by label contains", async () => {
   const PARENT = { id: 11, uuid: uuid(101), name: "Anal" };
   const OTHER = { id: 12, uuid: uuid(102), name: "Analingus" };
   await runBrowse(
@@ -4486,13 +4532,16 @@ test("a free-text exclude carries no provider id and still hides by label family
         [],
       );
       // The provider is never asked for a tag id it was never given; the
-      // local family matcher does the whole exclusion.
+      // local matcher does the whole exclusion. Contract move: a typed
+      // exclude now matches by "contains" like a typed include, so
+      // "Analingus" goes too (it used to survive under the word-family
+      // rule, which picked tags and hidden tags still use).
       assert.deepEqual(
         page.items.map((d) => d.title),
-        ["Letter Overlap"],
+        [],
       );
       assert.equal(page.totalCountKnown, true);
-      assert.equal(page.total, 1);
+      assert.equal(page.total, 0);
     },
   );
 });
@@ -5599,6 +5648,103 @@ test("parseBrowseQuery treats a year range as a pair with the old refusals and c
     parseBrowseQuery(new URLSearchParams("type=all&year=1990&yearTo=2000")),
   );
   assert.deepEqual(planned.sides, ["tpdb", "stashdb"]);
+});
+
+test("parseBrowseQuery validates dateTo as the inclusive tail of a date>= range", () => {
+  const cases: [string, string][] = [
+    ["dateTo=2021-12-31", "invalid_search"], // upper bound without the lower one
+    [
+      "date=2019-01-01&date_operation=%3C&dateTo=2021-12-31",
+      "invalid_search", // only >= composes a range
+    ],
+    [
+      "date=2019-01-01&date_operation=%3E%3D&dateTo=2018-12-31",
+      "invalid_search", // inverted range
+    ],
+    [
+      "year=2019&date=2019-01-01&date_operation=%3E%3D&dateTo=2021-12-31",
+      "invalid_search", // the year vocabulary never mixes
+    ],
+    [
+      "year=2019&yearTo=2021&date=2019-01-01&date_operation=%3E%3D&dateTo=2021-12-31",
+      "invalid_search",
+    ],
+    [
+      "date=2019-01-01&date_operation=%3E%3D&dateTo=notadate",
+      "invalid_query", // shape errors keep invalid_query
+    ],
+    [
+      "date=2019-01-01&date_operation=%3E%3D&dateTo=2019-02-30",
+      "invalid_query",
+    ],
+  ];
+  for (const [query, code] of cases) {
+    assert.throws(
+      () => parseBrowseQuery(new URLSearchParams(query)),
+      appError(400, code),
+      query,
+    );
+  }
+  // A valid range parses all three keys.
+  const range = parseBrowseQuery(
+    new URLSearchParams(
+      "date=2019-01-01&date_operation=%3E%3D&dateTo=2021-12-31",
+    ),
+  );
+  assert.equal(range.date, "2019-01-01");
+  assert.equal(range.dateOperation, ">=");
+  assert.equal(range.dateTo, "2021-12-31");
+});
+
+test("a date>= + dateTo range filters both providers locally past the native lower bound", async () => {
+  const movieUrls: string[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [
+        {
+          rows: [
+            tpdbRow(uuid(10), "Inside Movie", "2020-06-01"),
+            tpdbRow(uuid(11), "Late Movie", "2022-06-01"),
+            // A bogus date maps to no releaseDate, like a missing one.
+            tpdbRow(uuid(12), "Undated Movie", "garbage"),
+          ],
+          next: null,
+          total: 3,
+        },
+      ],
+      scenes: {
+        count: 2,
+        rows: [
+          stashRow(uuid(30), "Inside Scene", "2021-03-03"),
+          stashRow(uuid(31), "Late Scene", "2022-03-03"),
+        ],
+      },
+      onMovieRequest: (_page, qs) => movieUrls.push(qs.toString()),
+    }),
+    async () => {
+      const page = await browseTitles(
+        planQuery({
+          date: "2019-01-01",
+          dateOperation: ">=",
+          dateTo: "2021-12-31",
+        }),
+        [],
+      );
+      // The lower bound keeps its native ride on both providers; `dateTo`
+      // is the local inclusive upper bound, like `yearTo`.
+      assert.match(movieUrls[0]!, /date=2019-01-01/);
+      assert.match(movieUrls[0]!, /date_operation=%3E%3D/);
+      // Only in-range titles show: the late pair drops and the undated
+      // movie drops (a missing release date cannot prove the window).
+      assert.deepEqual(page.items.map((d) => d.title).sort(), [
+        "Inside Movie",
+        "Inside Scene",
+      ]);
+      assert.equal(page.totalCountKnown, true);
+      assert.equal(page.total, 2);
+    },
+  );
 });
 
 // --- or-groups and entities at the fixture level ---

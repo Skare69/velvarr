@@ -9,21 +9,13 @@
  * here — the caller's `description` carries that per-surface help.
  */
 
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
-  useEffect,
-  useReducer,
-  useRef,
-  useState,
-  type KeyboardEvent,
-} from "react";
-import {
-  exactBothProviderTag,
   normalizeFacetName,
   type BrowseTagsResponse,
   type CatalogTagSelection,
 } from "../lib/contracts.ts";
-import { initTagWait, reduceTagWait } from "../lib/tag-wait.ts";
-import { Icon, useApiGet } from "./shared.tsx";
+import { Icon, InfoTip, useApiGet } from "./shared.tsx";
 import "./catalog.css";
 
 /** The server caps one tag list at 25 — stop offering rather than let the
@@ -129,17 +121,14 @@ export function TagPicker(props: TagPickerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const t = term.trim();
   // The debounce commits the term; the route only ever sees settled input.
-  // `awaitingFree` is a just-picked free-text chip awaiting proof that the
-  // term is a real both-provider tag (VELV-46); the machine keeps it armed
-  // only while an answer for it can still arrive (VELV-50).
-  const [wait, waitTo] = useReducer(reduceTagWait, undefined, initTagWait);
-  const committed = wait.committed;
+  // Under two characters there is no query.
+  const [committed, setCommitted] = useState<string | null>(null);
   useEffect(() => {
     if (t.length < 2) {
-      waitTo({ type: "release" });
+      setCommitted(null);
       return;
     }
-    const timer = setTimeout(() => waitTo({ type: "commit", term: t }), 400);
+    const timer = setTimeout(() => setCommitted(t), 400);
     return () => clearTimeout(timer);
   }, [t]);
 
@@ -158,34 +147,6 @@ export function TagPicker(props: TagPickerProps) {
       : `/api/browse/tags?q=${encodeURIComponent(committed)}`,
     [committed],
   );
-
-  // The awaited answer landed: when it carries a tag both providers
-  // publish under the term's normalized name, the just-added free-text
-  // chip becomes that real tag; otherwise it stays free text. Consuming
-  // the wait also releases the query when the input cleared for the pick —
-  // the debounced `release` ran as a no-op while the wait was armed — so a
-  // failed search's alert cannot outlive the emptied input (VELV-75); with
-  // live input the debounce owns the query from here.
-  useEffect(() => {
-    const term = wait.awaitingFree;
-    if (term === null || loading) return;
-    waitTo({ type: "consumed", inputLength: t.length });
-    const both =
-      error === null && data !== null
-        ? exactBothProviderTag(data.tags, term)
-        : undefined;
-    if (both === undefined) return;
-    const label = normalizeFacetName(term);
-    emit(
-      rows.map((s) =>
-        !Array.isArray(s) &&
-        isFreeText(s) &&
-        normalizeFacetName(s.name) === label
-          ? both
-          : s,
-      ),
-    );
-  }, [data, error, loading]);
 
   // A tag already carried — alone or inside a group — is never offered
   // again.
@@ -252,20 +213,11 @@ export function TagPicker(props: TagPickerProps) {
 
   function pick(tag: CatalogTagSelection) {
     if (disabled || capped || picked.has(normalizeFacetName(tag.name))) return;
-    // A free-text commit that names a tag both providers publish is that
-    // real tag instead (VELV-46): exact native ids on both sides beat a
-    // label-only selection. When the rows are not settled yet, the chip
-    // goes in as free text and the search fires now; the settled answer
-    // promotes it in the effect above. A settled answer is final, so the
-    // machine arms no wait for one (VELV-50). ponytail: only the latest
-    // free-text pick is promoted — rapid consecutive free-text picks
-    // keep the earlier chips free text.
-    const swap = isFreeText(tag)
-      ? exactBothProviderTag(options, tag.name)
-      : undefined;
-    if (isFreeText(tag) && swap === undefined)
-      waitTo({ type: "pickFreeText", term: t, loading });
-    const chosen = swap ?? tag;
+    // A typed term commits as free text, never as the exact tag of the
+    // same name: free text means "contains" ("anal" also matches
+    // "Analingus" and "Anal Fisting"). Picking a listed row is the way to
+    // ask for one exact tag.
+    const chosen = tag;
     // An armed or-button means this pick extends that group: the group
     // stays a group, its member order stays put, and the arm always clears
     // after the pick. A target that no longer points at a group (removed
@@ -323,14 +275,19 @@ export function TagPicker(props: TagPickerProps) {
 
   return (
     <div>
-      <label className="label" htmlFor={id}>
-        {label}
-      </label>
-      {description !== undefined && (
-        <p id={`${id}-hint`} className="cat-note">
-          {description}
-        </p>
-      )}
+      {/* The rule text sits behind an info chip beside the label: the
+          drawer stays short, and a tap opens it on touch too. */}
+      <div className="label-row">
+        <label className="label" htmlFor={id}>
+          {label}
+        </label>
+        {(description !== undefined || help !== undefined) && (
+          <InfoTip id={`${id}-info`} label={label}>
+            {description !== undefined && <p>{description}</p>}
+            {help !== undefined && <p>{help}</p>}
+          </InfoTip>
+        )}
+      </div>
       <div className="input-lead">
         <Icon
           name={
@@ -344,7 +301,7 @@ export function TagPicker(props: TagPickerProps) {
           className="input"
           role="combobox"
           aria-describedby={
-            description === undefined ? undefined : `${id}-hint`
+            description === undefined ? undefined : `${id}-info-text`
           }
           aria-expanded={showList}
           aria-controls={showList ? `${id}-listbox` : undefined}
@@ -539,12 +496,6 @@ export function TagPicker(props: TagPickerProps) {
             .join(" or ")}{" "}
           or &hellip;&rdquo; — pick another tag.
         </p>
-      )}
-      {help !== undefined && (
-        <details className="cat-help">
-          <summary>How matching works</summary>
-          <p>{help}</p>
-        </details>
       )}
     </div>
   );

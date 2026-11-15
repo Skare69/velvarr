@@ -78,6 +78,18 @@
     grid-column: 3;
   }
 }
+/* Wide screens have room to spare: the facts panel grows so long values
+   (tattoos, piercings) wrap less. Same widths as the performer hero. */
+@media (min-width: 1280px) {
+  .cat-hero-inner {
+    grid-template-columns: 11.5rem minmax(0, 1fr) 24rem;
+  }
+}
+@media (min-width: 1536px) {
+  .cat-hero-inner {
+    grid-template-columns: 11.5rem minmax(0, 1fr) 28rem;
+  }
+}
 .cat-poster {
   position: relative;
   flex-shrink: 0;
@@ -473,23 +485,18 @@
   width: 100%;
 }
 
-/* Long matching rules, folded until asked for. */
-.cat-help {
-  margin-top: 0.4rem;
-  font-size: 0.8rem;
-  color: var(--color-muted);
+/* A group title or field label with its info chip beside it. */
+.cat-group-head,
+.label-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
 }
-.cat-help summary {
-  width: fit-content;
-  color: var(--color-accent-text);
-  font-weight: 600;
-  text-decoration: underline;
-  text-decoration-thickness: 1px;
-  text-underline-offset: 0.2em;
+.label-row {
+  margin-bottom: 0.4rem;
 }
-.cat-help p {
-  margin: 0.4rem 0 0;
-  max-width: 75ch;
+.label-row > .label {
+  margin-bottom: 0;
 }
 /* An action inside running text reads as a link, not a button block. */
 .cat-inline-link {
@@ -509,25 +516,123 @@
   height: 1rem;
 }
 
-/* Natural-language search between the page heading and the active filters:
-   field and button on one row that wraps on narrow screens. */
-.prose-search {
-  max-width: 48rem;
+/* Natural-language search: the first group of the Titles toolbar. It
+   starts at 20rem, so describe, type, sort and filters share one row on a
+   1440px screen, and grows into any spare width. A sparkle marks the
+   field as the "describe it" search; its notes wrap onto their own full
+   line under the row. */
+.prose-group {
+  flex: 1 1 20rem;
 }
-.prose-search-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-.prose-search-row > .input {
-  flex: 1 1 16rem;
-  width: auto;
+.prose-field {
+  position: relative;
+  flex: 1;
   min-width: 0;
+}
+.prose-field > .icon {
+  position: absolute;
+  top: 50%;
+  left: 0.6rem;
+  width: 1rem;
+  height: 1rem;
+  transform: translateY(-50%);
+  color: var(--color-muted);
+  pointer-events: none;
+}
+.toolbar-group .prose-field > .input {
+  width: 100%;
+  padding-left: 2rem;
+}
+.prose-search-status {
+  flex-basis: 100%;
+  order: 99;
+}
+.prose-search-status:empty,
+.prose-search-status:not(:has(p, li)) {
+  display: none;
 }
 .prose-search-notes {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+/* Browse toolbar: each control (Type, Sort) in its own small panel with
+   its name inside, the same look as an active-filter group. 5px inner
+   radius + 5px padding = the panel's 10px (nested radii). 44px tall, so
+   the plain buttons beside the groups match it. */
+.toolbar-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: 100%;
+  min-width: 0;
+  padding: 5px 5px 5px 12px;
+  border: 1px solid var(--color-edge);
+  border-radius: 10px;
+  background: var(--color-panel);
+}
+.toolbar-group > .filter-group-name {
+  margin: 0;
+  white-space: nowrap;
+}
+.toolbar-group .segmented button,
+.toolbar-group .btn,
+.toolbar-group .input {
+  min-height: 32px;
+  border-radius: 5px;
+}
+/* One line per group: the panel draws the edge, the controls inside are
+   told apart by their raised fill and the 4px gaps, not by a second
+   hairline 5px inside the first. The selected segment keeps its accent
+   edge (it is the selection cue), and a focused select its accent ring. */
+.toolbar-group .segmented button:not([aria-pressed="true"]),
+.toolbar-group .btn,
+.toolbar-group .input:not(:focus) {
+  border-color: transparent;
+}
+.toolbar-group .input {
+  background: var(--color-raised);
+}
+/* Block padding 0: min-height alone sets 32px, so a group is exactly
+   32 + 2 x 5 + 2 x 1 = 44px, the height of the buttons beside it. */
+.toolbar-group .segmented button {
+  padding: 0 0.8rem;
+}
+.toolbar-group .btn {
+  padding: 0 0.6rem;
+}
+.toolbar-group .input {
+  width: auto;
+  padding-block: 0;
+}
+/* One width for every type's sort list, so switching All / Movies /
+   Scenes never moves the row. The group is at least 375px; the select
+   takes the room the caption and direction button leave. */
+.toolbar-group .sort-select {
+  flex: 1;
+  min-width: 0;
+}
+@media (min-width: 1024px) {
+  .toolbar-group.sort-group {
+    min-width: 375px;
+  }
+  .toolbar-group .sort-select {
+    min-width: 15.5rem;
+  }
+}
+.page-toolbar:has(> .toolbar-group) > .btn {
+  min-height: 44px;
+}
+@media (pointer: coarse) {
+  .toolbar-group .segmented button,
+  .toolbar-group .btn,
+  .toolbar-group .input {
+    min-height: 44px;
+  }
+  .page-toolbar:has(> .toolbar-group) > .btn {
+    min-height: 56px;
+  }
 }
 
 /* Active filters above the results: one box per kind with its name shown
