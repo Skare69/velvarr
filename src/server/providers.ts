@@ -1,8 +1,10 @@
 // Metadata provider catalog reads: TPDB (movies, scenes, performers) and
 // StashDB (scenes, performers). Strictly read-only; returns validated
-// CatalogDetail records and paged search results. No provider payload or
-// image bytes are ever persisted — providers publish no caching/artwork
-// terms, so every fetch is pass-through for one authorized request.
+// CatalogDetail records and paged search results. Provider payloads are
+// never persisted, and providers publish no caching terms, so every fetch is
+// pass-through for one authorized request. Artwork originals stay
+// memory-only; resized derivative variants are stored on disk under the data
+// dir per operator approval (VELV-169, 2026-11-15).
 //
 // Upstream shapes verified live 2026-09-10:
 // - TPDB rows are flat objects (no JSON:API attributes wrapper). Release date
@@ -94,6 +96,20 @@ import {
 } from "./provider-rows.ts";
 
 export { isProviderImageUrl } from "./provider-rows.ts";
+
+// Resized artwork variants persist on disk, content-addressed by the sha256
+// of the source bytes; the store stays SQLite-free by never importing
+// storage.ts. (Operator approval: VELV-169, 2026-11-15.)
+import {
+  artworkVariantFor,
+  isArtworkWidth,
+  lookupArtworkVariant,
+  rememberArtworkVariant,
+} from "./artwork-store.ts";
+import type { ArtworkWidth } from "./artwork-store.ts";
+
+export { isArtworkWidth } from "./artwork-store.ts";
+export type { ArtworkWidth } from "./artwork-store.ts";
 
 // --- credentials and bases: stored admin UI credentials win, the environment
 // is the fallback; read at call time so a save or clear takes effect without
@@ -477,8 +493,10 @@ async function stashQuery(
   return value === undefined ? null : value;
 }
 
-// --- artwork: provider-hosted images only; memory-cached for a day, never
-// written to disk, never sends credentials, never follows redirects ---
+// --- artwork: provider-hosted images only; originals memory-cached for a
+// day, resized variants stored on disk under the data dir per operator
+// approval (VELV-169, 2026-11-15); never sends credentials, never follows
+// redirects ---
 
 const PROXYABLE_IMAGE_TYPES: Record<string, true> = {
   "image/jpeg": true,
@@ -497,18 +515,22 @@ const IMAGE_BYTE_CAP = 8 * 1024 * 1024;
 /** Fetch artwork bytes for a URL previously seen on a validated provider
  * record. Never sends provider credentials, never follows redirects (the
  * transport errors on 3xx). Successful image responses are cached in process
- * memory for a day (Seerr's default for hosts without max-age) and never
- * written to disk. `onMiss` runs synchronously when and only when an upstream
- * fetch is about to start — once per coalesced burst, never on a cache hit or
- * an in-flight join — so callers can bound their upstream fetches. */
+ * memory for a day (Seerr's default for hosts without max-age); originals
+ * are never written to disk — a `width` request instead returns a resized
+ * WebP variant from the on-disk store (artwork-store.ts) plus `hash`, the
+ * lowercase sha256 of the source bytes. `onMiss` runs synchronously when and
+ * only when an upstream fetch is about to start — once per coalesced burst,
+ * never on a cache hit or an in-flight join — so callers can bound their
+ * upstream fetches. */
 export async function fetchProviderArtwork(
   url: string,
   options: {
     timeoutMs?: number;
     sizeLimit?: number;
+    width?: ArtworkWidth;
     onMiss?: () => void;
   } = {},
-): Promise<{ bytes: Uint8Array; contentType: string }> {
+): Promise<{ bytes: Uint8Array; contentType: string; hash?: string }> {
   // Validation always runs, even on a cache hit: the cache key is only as
   // trustworthy as the gate that fed it.
   const check = isProviderImageUrl(url);
@@ -518,6 +540,23 @@ export async function fetchProviderArtwork(
       "invalid_artwork_url",
       `Rejected artwork URL: ${check.reason}.`,
     );
+  }
+  // An off-ladder width is a caller bug, not an upstream condition: reject
+  // before any fetch, exactly like the URL gate above.
+  const width = options.width;
+  if (width !== undefined && !isArtworkWidth(width)) {
+    throw new AppError(
+      400,
+      "invalid_artwork_width",
+      `Rejected artwork width: ${width}.`,
+    );
+  }
+  // Disk shortcut for width requests: a fresh url → hash index entry plus a
+  // fresh variant file serve a restart without an upstream fetch. sizeLimit
+  // callers bypass the caches deliberately for exactness, so they skip it.
+  if (width !== undefined && options.sizeLimit === undefined) {
+    const stored = lookupArtworkVariant(url, width);
+    if (stored) return stored;
   }
   // A custom sizeLimit narrows what this caller accepts; a cached entry
   // fetched at the default cap could exceed it, so such calls bypass the
@@ -562,18 +601,32 @@ export async function fetchProviderArtwork(
     return { bytes, contentType };
   };
 
-  if (options.sizeLimit !== undefined) return fetchOnce();
+  // Width requests derive a disk variant from the resolved source and, after
+  // every derivation — stored variant, passthrough or degrade — remember the
+  // url → hash index entry so a restart can skip the source fetch. The index
+  // is only an optimization, so remembering is best-effort by contract.
+  const derive = async (source: {
+    bytes: Uint8Array;
+    contentType: string;
+  }): Promise<{ bytes: Uint8Array; contentType: string; hash?: string }> => {
+    if (width === undefined) return source;
+    const variant = await artworkVariantFor(source, width);
+    rememberArtworkVariant(url, variant.hash);
+    return variant;
+  };
+
+  if (options.sizeLimit !== undefined) return derive(await fetchOnce());
 
   const hit = artworkCache.get(url);
   if (hit && Date.now() - hit.at < ARTWORK_CACHE_TTL_MS) {
-    return { bytes: hit.bytes, contentType: hit.contentType };
+    return derive(hit);
   }
   if (hit) {
     artworkCacheBytes -= hit.bytes.length;
     artworkCache.delete(url);
   }
   const inFlight = artworkInFlight.get(url);
-  if (inFlight) return inFlight;
+  if (inFlight) return derive(await inFlight);
   // Exactly one caller per coalesced burst reaches this synchronous window,
   // so onMiss charges once per upstream fetch; hits and joins never do.
   options.onMiss?.();
@@ -597,6 +650,11 @@ export async function fetchProviderArtwork(
     })
     .finally(() => artworkInFlight.delete(url));
   artworkInFlight.set(url, pending);
+  if (width !== undefined) {
+    // One upstream fetch feeds every width: joins share the source promise
+    // above, then each caller reads or generates its own disk variant.
+    return derive(await pending);
+  }
   return pending;
 }
 

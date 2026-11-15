@@ -5,10 +5,26 @@
 // artwork host/content-type/size enforcement, not-configured behavior, studio
 // and tag discovery, provider-genuine studio/tag filters, sort mapping,
 // cross-provider studio identity and tag counterpart pairing, and
-// the metadata read cache (TTL, stale-on-error, mutation exclusion).
+// the metadata read cache (TTL, stale-on-error, mutation exclusion), plus the
+// artwork width ladder and its on-disk content-hash variant store.
 
 import assert from "node:assert/strict";
 import { test, beforeEach, mock } from "node:test";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+} from "node:fs";
+import { join } from "node:path";
+import sharp from "sharp";
+import {
+  artworkStoreStateForTest,
+  setArtworkStoreBudgetForTest,
+} from "../src/server/artwork-store.ts";
 
 import {
   queryOf,
@@ -1811,6 +1827,346 @@ test("artwork fetch: an empty 200 image is refused and never cached", async () =
       // A cached entry would answer the second call without an upstream hit.
       assert.equal(upstreamCount, expected);
     }
+  } finally {
+    await fixture.close();
+  }
+});
+
+// --- artwork width ladder and on-disk variant store ---
+
+// Pinned store layout: <VELVARR_DATA_DIR>/artwork/<hash[0:2]>/<hash>-<w>.webp.
+// tests/setup.ts points VELVARR_DATA_DIR at a per-process throwaway dir, so
+// these assertions never touch real data.
+function artworkStorePath(hash: string, width: number): string {
+  return join(
+    process.env.VELVARR_DATA_DIR!,
+    "artwork",
+    hash.slice(0, 2),
+    `${hash}-${width}.webp`,
+  );
+}
+
+const POSTER_1000 = await sharp({
+  create: {
+    width: 1000,
+    height: 1400,
+    channels: 3,
+    background: { r: 120, g: 30, b: 60 },
+  },
+})
+  .png()
+  .toBuffer();
+const POSTER_185 = await sharp({
+  create: {
+    width: 185,
+    height: 257,
+    channels: 3,
+    background: { r: 30, g: 120, b: 60 },
+  },
+})
+  .png()
+  .toBuffer();
+const NOT_AN_IMAGE = Buffer.from("definitely not an image");
+
+test("artwork width ladder: w=400 returns a 400px webp variant stored under the content-hash name", async () => {
+  const sourceHash = createHash("sha256").update(POSTER_1000).digest("hex");
+  let upstreamCount = 0;
+  const fixture = await startFixture((req, res) => {
+    if (req.url === "/ladder.png") {
+      upstreamCount++;
+      sendBytes(res, 200, POSTER_1000, "image/png");
+      return;
+    }
+    sendBytes(res, 404, "nope", "text/plain");
+  });
+  try {
+    const url = `${fixture.origin}/ladder.png`;
+    const at400 = await fetchProviderArtwork(url, { width: 400 });
+    assert.equal(at400.contentType, "image/webp");
+    assert.equal(at400.hash, sourceHash);
+    const meta = await sharp(Buffer.from(at400.bytes)).metadata();
+    assert.equal(meta.width, 400);
+    assert.equal(meta.format, "webp");
+
+    // The stored file is the variant: same bytes, real content, pinned name.
+    const file = artworkStorePath(sourceHash, 400);
+    assert.ok(existsSync(file), "variant file missing from the store");
+    assert.deepEqual([...readFileSync(file)], [...at400.bytes]);
+    assert.ok(statSync(file).size > 0);
+
+    // One upstream fetch feeds every width: the 200px call resolves the
+    // source from the memory cache and stores its own variant.
+    const at200 = await fetchProviderArtwork(url, { width: 200 });
+    const meta200 = await sharp(Buffer.from(at200.bytes)).metadata();
+    assert.equal(meta200.width, 200);
+    assert.equal(meta200.format, "webp");
+    assert.equal(upstreamCount, 1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("artwork no-upscale: a 185px source at w=400 returns the exact source bytes", async () => {
+  const sourceHash = createHash("sha256").update(POSTER_185).digest("hex");
+  let upstreamCount = 0;
+  const fixture = await startFixture((req, res) => {
+    if (req.url === "/small.png") {
+      upstreamCount++;
+      sendBytes(res, 200, POSTER_185, "image/png");
+      return;
+    }
+    sendBytes(res, 404, "nope", "text/plain");
+  });
+  try {
+    const result = await fetchProviderArtwork(`${fixture.origin}/small.png`, {
+      width: 400,
+    });
+    assert.deepEqual([...result.bytes], [...POSTER_185]);
+    assert.equal(result.contentType, "image/png");
+    assert.equal(result.hash, sourceHash);
+    // Never upscale, never store: the source passes through untouched and
+    // no variant file may exist for it.
+    assert.equal(existsSync(artworkStorePath(sourceHash, 400)), false);
+    assert.equal(upstreamCount, 1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("artwork store: eviction removes the least recently used file when the budget is exceeded", async () => {
+  // mtime is the store's LRU clock (writes and disk hits touch it), so the
+  // test ages files explicitly with utimesSync and never sleeps. Variant
+  // sizes are precomputed with the store's own encode pipeline — sharp is
+  // deterministic, so the precomputed lengths equal the on-disk sizes and
+  // the budget arithmetic below is exact.
+  const artworkDir = join(process.env.VELVARR_DATA_DIR!, "artwork");
+  rmSync(artworkDir, { recursive: true, force: true });
+  mkdirSync(artworkDir, { recursive: true });
+  assert.equal(artworkStoreStateForTest().files, 0);
+
+  const encodeSource = async (background: {
+    r: number;
+    g: number;
+    b: number;
+  }) => {
+    const png = await sharp({
+      create: { width: 500, height: 700, channels: 3, background },
+    })
+      .png()
+      .toBuffer();
+    const variant = await sharp(png)
+      .resize({ width: 400, withoutEnlargement: true })
+      .webp({ quality: 80 })
+      .toBuffer();
+    return { png, variant };
+  };
+  const sourceA = await encodeSource({ r: 120, g: 30, b: 60 });
+  const sourceB = await encodeSource({ r: 30, g: 120, b: 60 });
+  const sourceC = await encodeSource({ r: 10, g: 10, b: 200 });
+  const sourceD = await encodeSource({ r: 200, g: 200, b: 10 });
+  const byPath: Record<string, Buffer> = {
+    "/e1.png": sourceA.png,
+    "/e2.png": sourceB.png,
+    "/e3.png": sourceC.png,
+    "/e4.png": sourceD.png,
+  };
+  const counts = new Map<string, number>();
+  const fixture = await startFixture((req, res) => {
+    const path = req.url ?? "";
+    const bytes = byPath[path];
+    if (bytes) {
+      counts.set(path, (counts.get(path) ?? 0) + 1);
+      sendBytes(res, 200, bytes, "image/png");
+      return;
+    }
+    sendBytes(res, 404, "nope", "text/plain");
+  });
+  try {
+    const origin = fixture.origin;
+    const hashOf = (bytes: Buffer) =>
+      createHash("sha256").update(bytes).digest("hex");
+    const fileA = artworkStorePath(hashOf(sourceA.png), 400);
+    const fileB = artworkStorePath(hashOf(sourceB.png), 400);
+    const fileC = artworkStorePath(hashOf(sourceC.png), 400);
+    const fileD = artworkStorePath(hashOf(sourceD.png), 400);
+    const sizeB = sourceB.variant.length;
+    const sizeC = sourceC.variant.length;
+    const sizeD = sourceD.variant.length;
+
+    await fetchProviderArtwork(`${origin}/e1.png`, { width: 400 });
+    await fetchProviderArtwork(`${origin}/e2.png`, { width: 400 });
+    // Index entries count toward the sweep budget, and every fetched URL
+    // owns one; B's entry measures the per-entry size (all entries store
+    // the same bare sha256 hex).
+    const indexEntryBytes = statSync(
+      join(
+        artworkDir,
+        "index",
+        createHash("sha256").update(`${origin}/e2.png`).digest("hex"),
+      ),
+    ).size;
+    const t = Date.now();
+    utimesSync(fileA, new Date(t - 10_000), new Date(t - 10_000));
+    utimesSync(fileB, new Date(t - 5_000), new Date(t - 5_000));
+
+    // The budget equals the expected post-write state: B and C's variants
+    // plus A, B and C's index entries. The sweep (which runs before C's
+    // index entry is written) sees one entry less, so its excess is exactly
+    // A's variant: one eviction, the oldest-use file. A's index entry
+    // survives as a dangling shortcut — the assert pins the variant file.
+    const budgetForBC = sizeB + sizeC + 3 * indexEntryBytes;
+    setArtworkStoreBudgetForTest(budgetForBC);
+    try {
+      await fetchProviderArtwork(`${origin}/e3.png`, { width: 400 });
+      assert.equal(
+        existsSync(fileA),
+        false,
+        "eviction must remove the oldest-used file first",
+      );
+      assert.equal(existsSync(fileB), true);
+      assert.equal(existsSync(fileC), true);
+      assert.ok(
+        artworkStoreStateForTest().bytes <= budgetForBC,
+        "store must fit the budget after eviction",
+      );
+
+      // Re-using B promotes it over C: the variant comes back byte-identical
+      // from the disk store through the URL index without touching upstream,
+      // and the hit touches the LRU clock.
+      resetMetaCache();
+      const bAgain = await fetchProviderArtwork(`${origin}/e2.png`, {
+        width: 400,
+      });
+      assert.equal(counts.get("/e2.png"), 1);
+      assert.deepEqual([...bAgain.bytes], [...sourceB.variant]);
+      assert.ok(
+        statSync(fileB).mtimeMs > t - 1_000,
+        "disk hit must touch the LRU clock",
+      );
+
+      // Pin the use order before the second eviction: C's mtime goes back to
+      // t-5s while B was just touched to now, so same-millisecond ties
+      // cannot flip the victim.
+      utimesSync(fileC, new Date(t - 5_000), new Date(t - 5_000));
+      // Same post-write arithmetic with D in C's place: the sweep (D's own
+      // index entry lands after it) sees an excess of exactly C's variant —
+      // aged to t-5s, older than the just-touched B files — so it must evict
+      // C's variant and stop before re-used B.
+      const budgetForBD = sizeB + sizeD + 4 * indexEntryBytes;
+      setArtworkStoreBudgetForTest(budgetForBD);
+      await fetchProviderArtwork(`${origin}/e4.png`, { width: 400 });
+      // Eviction follows last use, not write order: C was written after B
+      // but never re-used, so D's write must evict C and keep B.
+      assert.equal(
+        existsSync(fileC),
+        false,
+        "eviction must follow last use, not write order",
+      );
+      assert.equal(existsSync(fileB), true);
+      assert.equal(existsSync(fileD), true);
+      assert.ok(artworkStoreStateForTest().bytes <= budgetForBD);
+      // Each distinct source went upstream exactly once; every re-read
+      // resolves through the memory cache, the URL index and the disk store.
+      assert.equal(counts.get("/e1.png"), 1);
+      assert.equal(counts.get("/e3.png"), 1);
+      assert.equal(counts.get("/e4.png"), 1);
+    } finally {
+      setArtworkStoreBudgetForTest(null);
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("artwork store: a restart serves the variant from disk without an upstream fetch", async () => {
+  const sourceHash = createHash("sha256").update(POSTER_1000).digest("hex");
+  let upstreamCount = 0;
+  const fixture = await startFixture((req, res) => {
+    if (req.url === "/restart.png") {
+      upstreamCount++;
+      sendBytes(res, 200, POSTER_1000, "image/png");
+      return;
+    }
+    sendBytes(res, 404, "nope", "text/plain");
+  });
+  try {
+    const url = `${fixture.origin}/restart.png`;
+    const first = await fetchProviderArtwork(url, { width: 400 });
+    assert.equal(upstreamCount, 1);
+    const file = artworkStorePath(sourceHash, 400);
+    assert.ok(existsSync(file));
+    // Age the stored file so the next touch can only move mtime forward.
+    const before = statSync(file).mtimeMs;
+    utimesSync(file, new Date(before - 60_000), new Date(before - 60_000));
+
+    // resetMetaCache clears the memory source cache; the URL index and the
+    // variant file survive it, so the restart read never reaches upstream.
+    resetMetaCache();
+    const second = await fetchProviderArtwork(url, { width: 400 });
+    assert.equal(upstreamCount, 1);
+    assert.equal(second.contentType, "image/webp");
+    assert.deepEqual([...second.bytes], [...first.bytes]);
+    assert.ok(statSync(file).size > 0);
+    assert.ok(statSync(file).mtimeMs > before, "disk hit must touch the file");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("artwork store: a sharp failure degrades to the source bytes and writes nothing", async () => {
+  const sourceHash = createHash("sha256").update(NOT_AN_IMAGE).digest("hex");
+  let upstreamCount = 0;
+  const fixture = await startFixture((req, res) => {
+    if (req.url === "/corrupt.png") {
+      upstreamCount++;
+      sendBytes(res, 200, NOT_AN_IMAGE, "image/png");
+      return;
+    }
+    sendBytes(res, 404, "nope", "text/plain");
+  });
+  try {
+    // The corrupt bytes pass the content-type and byte-cap layers and then
+    // fail sharp; the named console.error line is expected, so quiet it.
+    const quiet = mock.method(console, "error", () => {});
+    try {
+      const result = await fetchProviderArtwork(
+        `${fixture.origin}/corrupt.png`,
+        { width: 400 },
+      );
+      assert.deepEqual([...result.bytes], [...NOT_AN_IMAGE]);
+      assert.equal(result.contentType, "image/png");
+      assert.equal(result.hash, sourceHash);
+      // Degrade serves the source untouched and must never fabricate image
+      // bytes or leave a zero-byte file behind.
+      assert.equal(existsSync(artworkStorePath(sourceHash, 400)), false);
+      assert.equal(upstreamCount, 1);
+    } finally {
+      quiet.mock.restore();
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("artwork width guard: only ladder widths are accepted", async () => {
+  let upstreamCount = 0;
+  const fixture = await startFixture((_req, res) => {
+    upstreamCount++;
+    sendBytes(res, 200, PNG_BYTES, "image/png");
+  });
+  try {
+    const badWidth: number = 333;
+    await assert.rejects(
+      fetchProviderArtwork(`${fixture.origin}/any.png`, {
+        width: badWidth as 200,
+      }),
+      (err: unknown) => {
+        assertProviderError(err, 400, "invalid_artwork_width");
+        return true;
+      },
+    );
+    // The guard fires before any network traffic.
+    assert.equal(upstreamCount, 0);
   } finally {
     await fixture.close();
   }
