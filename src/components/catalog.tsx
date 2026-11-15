@@ -1954,7 +1954,10 @@ export function TitlesView() {
                   )}
                   {!loading && error !== null && (
                     <div className="mt-6 flex items-center justify-center gap-3 text-sm text-muted">
-                      <span>Couldn&rsquo;t load more titles.</span>
+                      {/* The named error is the point (VELV-167): a bare
+                          "Retry" hid the server's diagnosis, e.g. the scan
+                          ceiling's "narrow the filters". */}
+                      <span>Couldn&rsquo;t load more titles: {error}</span>
                       <button
                         type="button"
                         className="btn"

@@ -29,7 +29,7 @@ import type {
   UpdateInfo,
 } from "../lib/contracts.ts";
 import { REQUESTS_CHANGED } from "../lib/approvals.ts";
-import { ApiGetCache } from "../lib/api-get.ts";
+import { ApiGetCache, logApiFailure } from "../lib/api-get.ts";
 import packageJson from "../../package.json" with { type: "json" };
 
 const { version } = packageJson;
@@ -69,13 +69,16 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     const err = (data as { error?: { code?: string; message?: string } } | null)
       ?.error;
+    const code = err?.code ?? "error";
+    const message = err?.message ?? `Request failed (${res.status}).`;
+    // 401 is the signed-out flow: the event below drives the redirect and
+    // /api/me answers it on every anonymous load, so it logs nothing. Every
+    // other rejection logs its diagnosis (VELV-167): request, status, code.
+    if (res.status !== 401)
+      logApiFailure(init?.method ?? "GET", path, res.status, code, message);
     if (res.status === 401)
       window.dispatchEvent(new Event("velvarr:unauthorized"));
-    throw new ApiError(
-      res.status,
-      err?.code ?? "error",
-      err?.message ?? `Request failed (${res.status}).`,
-    );
+    throw new ApiError(res.status, code, message);
   }
   return data as T;
 }

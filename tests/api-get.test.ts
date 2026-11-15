@@ -6,8 +6,8 @@
 // lands only while its request is still the current entry for the path.
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { ApiGetCache } from "../src/lib/api-get.ts";
+import { mock, test } from "node:test";
+import { ApiGetCache, logApiFailure } from "../src/lib/api-get.ts";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -108,4 +108,33 @@ test("a response that lands after clear() is never cached", async () => {
   d.resolve("previous account");
   assert.equal(await pending, "previous account");
   assert.equal(cache.peek("p"), undefined);
+});
+
+// VELV-167: a rejected request used to vanish — api() threw, the load-more
+// block rendered a fixed string, and the console said nothing, so a 422
+// whose message names the fix ("narrow the filters") was undiagnosable.
+// The logged line is the diagnosis: method, full path (its query string is
+// the exact filter parameters the user set), status, the server's error
+// code, and the server's message. This request is the card's own: an
+// anchored Married tag plus a label-only "anal" term at page 2.
+test("a failed filter request logs path, status, code, and message", () => {
+  const include = JSON.stringify([
+    { name: "Married", stashdb: "1bb6aca0-c820-4cca-b02a-6b8dfb927ed4" },
+    { name: "anal" },
+  ]);
+  const path = `/api/browse?include=${encodeURIComponent(include)}&perPage=27&page=2`;
+  const message =
+    "Browse reached its upstream page limit before filling this page; narrow the filters.";
+  const error = mock.method(console, "error");
+  try {
+    logApiFailure("GET", path, 422, "query_too_broad", message);
+    assert.equal(error.mock.callCount(), 1);
+    const line = error.mock.calls[0]?.arguments[0];
+    assert.equal(
+      line,
+      `[velvarr:api] GET ${path} → 422 query_too_broad: ${message}`,
+    );
+  } finally {
+    error.mock.restore();
+  }
 });
