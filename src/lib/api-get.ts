@@ -69,19 +69,24 @@ export class ApiGetCache {
 /** One console line per failed API response, so a rejected request is
  * diagnosable from the browser console (VELV-167): the full path carries
  * the query string — the exact filter parameters the user set — beside the
- * status, the server's error code, and the server's message. Always on,
- * not dev-gated: the person reporting a failure runs the production image,
- * and this is a single line on an actual failure. The 401 signed-out flow
- * is never routed here (see shared.tsx): /api/me answers it on every
- * anonymous load, and a log line per visit would cry wolf. */
+ * status, the server's error code, and the server's message. The body's
+ * `details`, when the server attached diagnostics (the browse scan ceiling
+ * names the provider, pages scanned, and the request's page facts),
+ * append verbatim as JSON. Always on, not dev-gated: the person reporting
+ * a failure runs the production image, and this is a single line on an
+ * actual failure. The 401 signed-out flow is never routed here (see
+ * shared.tsx): /api/me answers it on every anonymous load, and a log line
+ * per visit would cry wolf. */
 export function logApiFailure(
   method: string,
   path: string,
   status: number,
   code: string,
   message: string,
+  details?: unknown,
 ): void {
   console.error(
-    `[velvarr:api] ${method} ${path} → ${status} ${code}: ${message}`,
+    `[velvarr:api] ${method} ${path} → ${status} ${code}: ${message}` +
+      (details !== undefined ? ` ${JSON.stringify(details)}` : ""),
   );
 }

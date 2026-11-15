@@ -7804,6 +7804,57 @@ test("a bulk scan over endless sparse pages stops at the page ceiling with a nam
   assert.match(counters.error?.message ?? "", /page scan limit/);
 });
 
+test("a browse scan ceiling carries the query facts in the error details", async () => {
+  // The UNREADABLE filmography keeps a provider `next` link alive forever
+  // and serves only rows the mapper drops. A local include forces the
+  // stream past the native fast path, so the scan can never fill the page:
+  // it must stop at the ceiling, and the JSON payload must name the query
+  // that has to shrink (VELV-167).
+  resetMetaCache();
+  try {
+    const ceilingQuery =
+      `performers=${encodeURIComponent(JSON.stringify([{ name: "Unreadable", tpdb: TPDB_PERFORMER_UNREADABLE }]))}` +
+      `&include=${encodeURIComponent(JSON.stringify([{ name: "Fixture Tag A" }]))}` +
+      "&page=1&perPage=24";
+    const ceiling = await call(
+      "GET",
+      `/api/browse?type=movie&${ceilingQuery}`,
+      { cookie: member },
+    );
+    assert.equal(ceiling.status, 422);
+    const body = (await ceiling.json()) as {
+      error: {
+        code: string;
+        message: string;
+        details?: Record<string, unknown>;
+      };
+    };
+    assert.equal(body.error.code, "query_too_broad");
+    assert.deepEqual(body.error.details, {
+      provider: "tpdb",
+      upstreamPagesScanned: 40,
+      requestedPage: 1,
+      perPage: 24,
+      include: [{ name: "Fixture Tag A" }],
+    });
+    // The same browse against a performer the fixture can serve answers
+    // 200: the ceiling is the broad query's outcome, not the route's state.
+    const served = await call(
+      "GET",
+      `/api/browse?type=movie&performers=${encodeURIComponent(JSON.stringify([{ name: "Family", tpdb: TPDB_PERFORMER_FAMILY }]))}&page=1&perPage=24`,
+      { cookie: member },
+    );
+    assert.equal(served.status, 200);
+    const servedBody = (await served.json()) as { error?: unknown };
+    assert.equal(servedBody.error, undefined);
+  } finally {
+    // The ceiling run cached the endless filmography page for the full
+    // TTL; the bulk-ceiling phases after this one count their own upstream
+    // reads, so they must start cold.
+    resetMetaCache();
+  }
+});
+
 test("a bulk scan stops at a provider page with no readable titles", async () => {
   const path = `/performers/${TPDB_PERFORMER_UNREADABLE}/movies`;
   tpdbFx.pageReads.delete(path);

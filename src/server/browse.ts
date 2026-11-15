@@ -835,11 +835,18 @@ class Stream {
     if (this.fetches > MAX_SCAN_PAGES) {
       const ceiling = scanCeilingOutcome(this.softCeiling, this.base.provider);
       if (ceiling.hard) {
-        throw new AppError(
+        const err = new AppError(
           422,
           "query_too_broad",
           "Browse reached its upstream page limit before filling this page; narrow the filters.",
         );
+        // Which side burned and how far the scan got (VELV-167); the
+        // caller's page facts join in browseTitles via withCeilingDetails.
+        err.details = {
+          provider: this.base.provider,
+          upstreamPagesScanned: this.fetches - 1,
+        };
+        throw err;
       }
       // ponytail ceiling: a free-text AND the providers cannot express
       // natively degrades instead of 422ing — the native pre-filter kept
@@ -1730,13 +1737,33 @@ export async function browseTitles(
     );
   }
   streams.push(...unresolved);
-  return mergeStreams(
-    streams,
-    mergeOrder,
-    (query.page - 1) * query.perPage,
-    query.perPage,
-    notices,
-  );
+  try {
+    return await mergeStreams(
+      streams,
+      mergeOrder,
+      (query.page - 1) * query.perPage,
+      query.perPage,
+      notices,
+    );
+  } catch (e) {
+    throw withCeilingDetails(e, query);
+  }
+}
+
+/** The scan-ceiling error carries the request's own facts beside the
+ * stream's (provider, pages scanned): the page, the page size, and the
+ * filters in play, so the message's "narrow the filters" names the exact
+ * query (VELV-167). Any other error passes through untouched. */
+function withCeilingDetails(e: unknown, query: BrowseQuery): unknown {
+  if (e instanceof AppError && e.code === "query_too_broad") {
+    e.details = {
+      ...(e.details ?? {}),
+      requestedPage: query.page,
+      perPage: query.perPage,
+      include: query.include,
+    };
+  }
+  return e;
 }
 
 // --- provider-specific media search with hidden filtering ---

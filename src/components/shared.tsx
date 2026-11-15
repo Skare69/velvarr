@@ -67,15 +67,25 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const data: unknown =
     res.status === 204 ? null : await res.json().catch(() => null);
   if (!res.ok) {
-    const err = (data as { error?: { code?: string; message?: string } } | null)
-      ?.error;
+    const err = (
+      data as {
+        error?: { code?: string; message?: string; details?: unknown };
+      } | null
+    )?.error;
     const code = err?.code ?? "error";
     const message = err?.message ?? `Request failed (${res.status}).`;
     // 401 is the signed-out flow: the event below drives the redirect and
     // /api/me answers it on every anonymous load, so it logs nothing. Every
     // other rejection logs its diagnosis (VELV-167): request, status, code.
     if (res.status !== 401)
-      logApiFailure(init?.method ?? "GET", path, res.status, code, message);
+      logApiFailure(
+        init?.method ?? "GET",
+        path,
+        res.status,
+        code,
+        message,
+        err?.details,
+      );
     if (res.status === 401)
       window.dispatchEvent(new Event("velvarr:unauthorized"));
     throw new ApiError(res.status, code, message);

@@ -3473,8 +3473,9 @@ test("a filmography free-text include keeps the hard ceiling error", async () =>
       },
     }),
     async () => {
-      await assert.rejects(
-        browseTitles(
+      let err: unknown;
+      try {
+        await browseTitles(
           {
             type: "movie",
             include: [{ name: "rare" }],
@@ -3487,9 +3488,21 @@ test("a filmography free-text include keeps the hard ceiling error", async () =>
             perPage: 10,
           },
           [],
-        ),
-        appError(422, "query_too_broad"),
-      );
+        );
+      } catch (e) {
+        err = e;
+      }
+      assert.ok(err instanceof AppError, "the ceiling throws AppError");
+      assert.equal(err.code, "query_too_broad");
+      // The payload names the query that must shrink (VELV-167): the side
+      // that burned, how far it scanned, and the caller's own page facts.
+      assert.deepEqual(err.details, {
+        provider: "tpdb",
+        upstreamPagesScanned: 40,
+        requestedPage: 1,
+        perPage: 10,
+        include: [{ name: "rare" }],
+      });
       assert.equal(moviesCalled, 40);
     },
   );

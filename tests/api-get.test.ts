@@ -138,3 +138,37 @@ test("a failed filter request logs path, status, code, and message", () => {
     error.mock.restore();
   }
 });
+
+// When the server's error body carries diagnostic details (the browse
+// scan ceiling names the provider, the pages scanned, and the caller's
+// page facts), the console line appends them verbatim.
+test("a failure with server details appends them to the log line", () => {
+  const text =
+    "Browse reached its upstream page limit before filling this page; narrow the filters.";
+  const error = mock.method(console, "error");
+  try {
+    logApiFailure(
+      "GET",
+      "/api/browse?include=%5B%5D&page=2",
+      422,
+      "query_too_broad",
+      text,
+      {
+        provider: "stashdb",
+        upstreamPagesScanned: 40,
+        requestedPage: 2,
+        perPage: 27,
+        include: [{ name: "anal" }],
+      },
+    );
+    assert.equal(error.mock.callCount(), 1);
+    const line = error.mock.calls[0]?.arguments[0];
+    assert.equal(
+      line,
+      `[velvarr:api] GET /api/browse?include=%5B%5D&page=2 → 422 query_too_broad: ${text} ` +
+        `{"provider":"stashdb","upstreamPagesScanned":40,"requestedPage":2,"perPage":27,"include":[{"name":"anal"}]}`,
+    );
+  } finally {
+    error.mock.restore();
+  }
+});

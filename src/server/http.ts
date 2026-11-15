@@ -16,6 +16,11 @@ export class AppError extends Error {
   // timeouts, network failures, and locally detected bad responses leave it
   // undefined so callers can separate proven rejection from uncertainty.
   upstreamStatus?: number;
+  // Diagnostic facts a caller can act on (VELV-167): the browse scan
+  // ceiling names the provider that burned, the pages it scanned, and the
+  // page/perPage/include of the request that must shrink. Plain JSON only —
+  // this rides the wire beside code and message.
+  details?: Record<string, unknown>;
   constructor(
     status: number,
     code: string,

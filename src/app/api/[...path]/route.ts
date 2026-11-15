@@ -58,7 +58,18 @@ function errorResponse(
   if (err instanceof AppError) {
     const status =
       err.status === 401 && !SESSION_401_CODES[err.code] ? 502 : err.status;
-    return json({ error: { code: err.code, message: err.message } }, status);
+    return json(
+      {
+        error: {
+          code: err.code,
+          message: err.message,
+          // Diagnostic facts the client can log or show (VELV-167):
+          // present only where the throw site attached them.
+          ...(err.details !== undefined ? { details: err.details } : {}),
+        },
+      },
+      status,
+    );
   }
   // Unexpected faults (TypeError, SQLite constraint, decrypt bug) must leave a
   // trace: method + pathname only — never the query string, which can carry
