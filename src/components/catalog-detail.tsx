@@ -6,6 +6,7 @@ import "./catalog.css";
 import {
   api,
   ApiError,
+  artSrcSet,
   detailHref,
   detailParams,
   scrollYBeforeLastPush,
@@ -343,7 +344,9 @@ function DetailBody({
       : null;
   const posterClass =
     target.kind === "performer" ? "cat-poster cat-poster-square" : "cat-poster";
-  const backdrop = imgSrc(d.imageUrl);
+  // The hero backdrop sits under two gradient scrims and is not blurred, so
+  // it takes the nearest honest rung (400) instead of the blurred washes' 200.
+  const backdrop = imgSrc(d.imageUrl, 400);
   return (
     <>
       <header
@@ -357,6 +360,7 @@ function DetailBody({
             imageUrl={d.imageUrl}
             frameClass={`${posterClass} block p-0`}
             imgClass="cat-poster-img"
+            sizes="(max-width: 640px) 136px, 184px"
           />
           <div className="cat-hero-copy">
             {availability?.outcome === "available" && (
@@ -639,6 +643,8 @@ export function DetailSections({
                         <ItemImage
                           name={c.name}
                           src={imgSrc(c.imageUrl)}
+                          srcSet={artSrcSet(c.imageUrl)}
+                          sizes="150px"
                           className="cat-person-img"
                         />
                         <span className="cat-person-name">{c.name}</span>

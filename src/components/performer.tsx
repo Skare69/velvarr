@@ -1481,7 +1481,7 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
               {d.imageUrl && (
                 <ItemImage
                   name=""
-                  src={imgSrc(d.imageUrl)}
+                  src={imgSrc(d.imageUrl, 200)}
                   className="performer-backdrop"
                 />
               )}
@@ -1496,6 +1496,7 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
                   imageUrl={d.imageUrl}
                   frameClass="relative block aspect-[2/3] w-40 shrink-0 self-center justify-self-center overflow-hidden rounded-lg border border-edge bg-raised p-0 sm:w-48 sm:self-start"
                   imgClass="absolute inset-0 h-full w-full object-cover"
+                  sizes="(max-width: 639px) 160px, 192px"
                 />
                 <div className="min-w-0">
                   <h2 className="page-title performer-title">

@@ -10,6 +10,7 @@ import type { CatalogReference, PerformerFollow } from "../lib/contracts.ts";
 import {
   api,
   ApiError,
+  artSrcSet,
   detailHref,
   ErrorPanel,
   Icon,
@@ -155,6 +156,8 @@ export function FollowingView() {
                   <ItemImage
                     name={f.name}
                     src={imgSrc(f.imageUrl ?? undefined)}
+                    srcSet={artSrcSet(f.imageUrl ?? undefined)}
+                    sizes="(max-width: 640px) 160px, 200px"
                     className="h-full w-full object-cover"
                   />
                   {/* No provider chip: a follow covers both metadata

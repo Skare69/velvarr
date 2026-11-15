@@ -13,6 +13,7 @@ import "./catalog.css";
 import { isFreeText, TagPicker } from "./tag-picker.tsx";
 import {
   api,
+  artSrcSet,
   detailParams,
   ErrorPanel,
   GridSkeleton,
@@ -893,6 +894,8 @@ function PerformerPicker({
                   <ItemImage
                     name={detail.title}
                     src={imgSrc(detail.imageUrl)}
+                    srcSet={artSrcSet(detail.imageUrl)}
+                    sizes="32px"
                     className="cat-picker-img"
                   />
                   <span>{detail.title}</span>
@@ -1002,6 +1005,8 @@ function StudioPicker({
                   <ItemImage
                     name={detail.title}
                     src={imgSrc(detail.imageUrl)}
+                    srcSet={artSrcSet(detail.imageUrl)}
+                    sizes="32px"
                     className="cat-picker-img"
                   />
                   <span>{detail.title}</span>

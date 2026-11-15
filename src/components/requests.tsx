@@ -13,6 +13,7 @@ import Link from "next/link";
 import {
   ApiError,
   api,
+  artSrcSet,
   CardTypeBadge,
   detailHref,
   ErrorPanel,
@@ -166,7 +167,9 @@ function RequestCard({
   const meta = [r.media.provider, r.media.kind, summary?.studio]
     .filter(Boolean)
     .join(" · ");
-  const art = summary ? imgSrc(summary.imageUrl) : undefined;
+  const artUrl = summary?.imageUrl;
+  // The wash is blurred past recognition; the smallest variant carries it.
+  const art = artUrl ? imgSrc(artUrl, 200) : undefined;
   // The confirm dialog names the request; with no resolved summary the
   // provider reference stands in — never a guessed title.
   const requestTitle =
@@ -195,7 +198,9 @@ function RequestCard({
         >
           <ItemImage
             name={summary?.title ?? "·"}
-            src={art}
+            src={artUrl ? imgSrc(artUrl) : undefined}
+            srcSet={artSrcSet(artUrl)}
+            sizes="62px"
             className="h-full w-full object-cover"
           />
           <CardTypeBadge kind={r.media.kind} />

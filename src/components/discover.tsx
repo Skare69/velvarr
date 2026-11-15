@@ -26,6 +26,7 @@ import type {
   SourceError,
 } from "../lib/contracts";
 import {
+  artSrcSet,
   CardStatusBadge,
   type CardStatusKind,
   CardTypeBadge,
@@ -307,6 +308,8 @@ function FacetTile({ item }: { item: FacetItem }) {
         {art && (
           <ItemImage
             src={imgSrc(art)}
+            srcSet={artSrcSet(art)}
+            sizes="(max-width: 640px) 200px, 250px"
             name=""
             className={studio ? "discovery-studio-logo" : "discovery-facet-art"}
           />
@@ -379,6 +382,8 @@ function MoreCell({ preview }: { preview: ShelfMorePreview }) {
       src={
         preview.imageUrl !== undefined ? imgSrc(preview.imageUrl) : undefined
       }
+      srcSet={artSrcSet(preview.imageUrl)}
+      sizes="(max-width: 640px) 99px, 124px"
       className="discovery-more-art"
     />
   );
@@ -392,6 +397,8 @@ function RequestPreviewArt({ media }: { media: MediaReference }) {
     <ItemImage
       name={art?.title ?? ""}
       src={art?.imageUrl !== undefined ? imgSrc(art.imageUrl) : undefined}
+      srcSet={artSrcSet(art?.imageUrl)}
+      sizes="164px"
       className="discovery-more-art"
     />
   );
@@ -463,7 +470,7 @@ function RequestTile({
           <span
             aria-hidden="true"
             className="discovery-request-backdrop"
-            style={{ backgroundImage: `url(${imgSrc(art.imageUrl)})` }}
+            style={{ backgroundImage: `url(${imgSrc(art.imageUrl, 200)})` }}
           />
         )}
         <span className="discovery-request-info">
@@ -489,6 +496,8 @@ function RequestTile({
         <ItemImage
           name={art?.title ?? "·"}
           src={art ? imgSrc(art.imageUrl) : undefined}
+          srcSet={artSrcSet(art?.imageUrl)}
+          sizes="118px"
           className="discovery-request-poster"
         />
       </a>

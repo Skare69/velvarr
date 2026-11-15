@@ -612,10 +612,14 @@ export function useSession(): SessionInfo {
 export function ItemImage({
   name,
   src,
+  srcSet,
+  sizes,
   className,
 }: {
   name: string;
   src?: string;
+  srcSet?: string;
+  sizes?: string;
   className?: string;
 }) {
   const [failed, setFailed] = useState(false);
@@ -629,6 +633,8 @@ export function ItemImage({
   return (
     <img
       src={src}
+      srcSet={srcSet}
+      sizes={sizes}
       alt=""
       loading="lazy"
       decoding="async"
@@ -894,14 +900,31 @@ export function CardStatusBadge({
 
 /* ---------- Shared catalog presentation ---------- */
 
+/** The width ladder the image proxy generates (VELV-172); the server never
+ * upscales, so a narrower source serves its original bytes unchanged. */
+const ARTWORK_WIDTHS = [200, 400, 600] as const;
+
+type ArtworkWidth = (typeof ARTWORK_WIDTHS)[number];
+
 /** Provider artwork may only reach the DOM through the same-origin proxy.
  * Root-relative paths (Jellyfin's /api/images) are already same-origin, so
- * they pass through unwrapped — the proxy only takes provider hosts. */
-export function imgSrc(url: string | undefined): string | undefined {
+ * they pass through unwrapped — the proxy only takes provider hosts, and
+ * they have no width variants. */
+export function imgSrc(
+  url: string | undefined,
+  w?: ArtworkWidth,
+): string | undefined {
   if (!url) return undefined;
-  return url.startsWith("/")
-    ? url
-    : `/api/catalog/image?url=${encodeURIComponent(url)}`;
+  if (url.startsWith("/")) return url;
+  const width = w !== undefined ? `&w=${w}` : "";
+  return `/api/catalog/image?url=${encodeURIComponent(url)}${width}`;
+}
+
+/** srcset over the proxy's width ladder for one provider URL. Undefined for
+ * root-relative paths, which have no proxy variants to pick from. */
+export function artSrcSet(url: string | undefined): string | undefined {
+  if (!url || url.startsWith("/")) return undefined;
+  return ARTWORK_WIDTHS.map((w) => `${imgSrc(url, w)} ${w}w`).join(", ");
 }
 
 /**
@@ -917,15 +940,25 @@ export function EnlargeableImage({
   imageUrl,
   frameClass,
   imgClass,
+  sizes,
 }: {
   name: string;
   imageUrl?: string;
   frameClass: string;
   imgClass: string;
+  sizes?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const src = imgSrc(imageUrl);
-  const img = <ItemImage name={name} src={src} className={imgClass} />;
+  const img = (
+    <ItemImage
+      name={name}
+      src={src}
+      srcSet={artSrcSet(imageUrl)}
+      sizes={sizes}
+      className={imgClass}
+    />
+  );
   if (!src) return <div className={frameClass}>{img}</div>;
   return (
     <>
@@ -1215,6 +1248,8 @@ function RequestableCard({
           <ItemImage
             name={item.title}
             src={imgSrc(item.imageUrl)}
+            srcSet={artSrcSet(item.imageUrl)}
+            sizes="(max-width: 640px) 160px, 200px"
             className="h-full w-full object-cover"
           />
           <CardTypeBadge kind={media.kind} />
@@ -1350,6 +1385,8 @@ export function PerformerCard({
         <ItemImage
           name={item.title}
           src={imgSrc(item.imageUrl)}
+          srcSet={artSrcSet(item.imageUrl)}
+          sizes="(max-width: 640px) 160px, 200px"
           className="h-full w-full object-cover"
         />
         <span className="media-name-overlay">
