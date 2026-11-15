@@ -9,6 +9,7 @@
         "next": "16.4.2",
         "react": "19.3.0",
         "react-dom": "19.3.0",
+        "sharp": "0.35.5",
       },
       "devDependencies": {
         "@stryker-mutator/core": "^10.0.0",

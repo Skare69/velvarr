@@ -96,6 +96,16 @@ jobs:
           fi
       - name: Assert non-root runtime
         run: docker exec velvarr-smoke node -e "if (process.getuid() === 0) { console.error('container must not run as root'); process.exit(1) }"
+      # sharp is a native addon: the image must carry a prebuilt binary that
+      # loads on this base image. Render a real WebP, not only require(), so
+      # a missing libvips fails here instead of on the first artwork request.
+      - name: Assert sharp loads and renders in the image
+        run: |
+          docker exec velvarr-smoke node -e "
+            require('sharp')({ create: { width: 4, height: 4, channels: 3, background: '#808080' } })
+              .webp().toBuffer({ resolveWithObject: true })
+              .then(({ info }) => { if (info.format !== 'webp' || info.width !== 4) throw new Error('unexpected sharp output: ' + JSON.stringify(info)); console.log('sharp ok', require('sharp').versions) })
+              .catch((e) => { console.error('sharp failed in the image:', e); process.exit(1) })"
       # One exec inside the container gathers every piece of evidence: the exec
       # identity, the deep find scan with its stderr inline, and write probes
       # on every directory the Dockerfile creates and on the code files. A
