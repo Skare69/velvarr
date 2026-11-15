@@ -344,9 +344,7 @@ function DetailBody({
       : null;
   const posterClass =
     target.kind === "performer" ? "cat-poster cat-poster-square" : "cat-poster";
-  // The hero backdrop sits under two gradient scrims and is not blurred, so
-  // it takes the nearest honest rung (400) instead of the blurred washes' 200.
-  const backdrop = imgSrc(d.imageUrl, 400);
+  const backdrop = imgSrc(d.imageUrl);
   return (
     <>
       <header
