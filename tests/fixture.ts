@@ -138,6 +138,7 @@ export function account(libraryIds: string[]): Account {
     libraryIds,
     isOwner: false,
     autoApprove: false,
+    proseSearch: false,
     joinedAt: 0,
   };
 }

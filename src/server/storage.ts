@@ -47,7 +47,11 @@ import type {
   SessionGrant,
 } from "../lib/contracts.ts";
 import { AppError } from "./http.ts";
-import { isJudgmentProvider, isOllamaModel } from "../lib/contracts.ts";
+import {
+  isJudgmentProvider,
+  isOllamaModel,
+  isProseChatModel,
+} from "../lib/contracts.ts";
 import { DISCOVER_SHELVES, normalizeFacetName } from "../lib/contracts.ts";
 import type {
   RequestSort,
@@ -57,7 +61,7 @@ import type {
 
 // Schema identity: application_id spells 'VLVR', user_version is the schema version.
 const APP_ID = 0x564c5652;
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 // ponytail: fixed 7-day session TTL; make it an env knob only if an operator asks.
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const BUSY_TIMEOUT_MS = 5000;
@@ -95,6 +99,7 @@ type AccountRow = {
   library_ids: string;
   is_owner: number;
   auto_approve: number;
+  prose_search: number;
   hidden_tags: string;
   discover_order: string;
   created_at: number;
@@ -457,6 +462,12 @@ const MIGRATIONS: Record<number, string> = {
       ON requests (account_id, MAX(created_at, COALESCE(decided_at, 0)), id);
     CREATE INDEX requests_pending ON requests (account_id) WHERE decision = 'pending';
   `,
+  15: `
+    -- Additive: the natural-language search grant. Existing accounts start
+    -- without it; administrators use the search without a grant.
+    ALTER TABLE accounts ADD COLUMN prose_search INTEGER NOT NULL DEFAULT 0
+      CHECK (prose_search IN (0, 1));
+  `,
 };
 
 let db: DatabaseSync | null = null;
@@ -596,7 +607,7 @@ function S(): Statements {
       ),
       updateAccountName: d.prepare("UPDATE accounts SET name = ? WHERE id = ?"),
       updateAccountGrants: d.prepare(
-        "UPDATE accounts SET enabled = ?, role = ?, library_ids = ?, auto_approve = ? WHERE id = ?",
+        "UPDATE accounts SET enabled = ?, role = ?, library_ids = ?, auto_approve = ?, prose_search = ? WHERE id = ?",
       ),
       getAccount: d.prepare("SELECT * FROM accounts WHERE id = ?"),
       listAccounts: d.prepare(
@@ -900,6 +911,7 @@ function rowToAccount(row: AccountRow): Account {
     libraryIds: JSON.parse(row.library_ids) as string[],
     isOwner: row.is_owner === 1,
     autoApprove: row.auto_approve === 1,
+    proseSearch: row.prose_search === 1,
     joinedAt: row.created_at,
   };
 }
@@ -1092,7 +1104,15 @@ function assertConfigShape(config: IntegrationConfig): void {
         (typeof p.ollamaUrl !== "string" ||
           !p.ollamaUrl ||
           p.ollamaUrl.length > 2048)) ||
-      (p.ollamaModel !== undefined && !isOllamaModel(p.ollamaModel))
+      (p.ollamaModel !== undefined && !isOllamaModel(p.ollamaModel)) ||
+      (p.proseChatEnabled !== undefined &&
+        typeof p.proseChatEnabled !== "boolean") ||
+      (p.proseChatUrl !== undefined &&
+        (typeof p.proseChatUrl !== "string" ||
+          !p.proseChatUrl ||
+          p.proseChatUrl.length > 2048)) ||
+      (p.proseChatModel !== undefined && !isProseChatModel(p.proseChatModel)) ||
+      !credentialOk(p.proseChatApiKey, 512)
     ) {
       throw new AppError(
         400,
@@ -1304,6 +1324,7 @@ export function bootstrap(
       libraryIds: [...resolved.jellyfin.libraryIds],
       isOwner: true,
       autoApprove: false,
+      proseSearch: false,
       joinedAt: Date.now(),
     };
     S().insertAccount.run(
@@ -1403,6 +1424,7 @@ export function updateAccount(
     role: Role;
     libraryIds: string[];
     autoApprove?: boolean;
+    proseSearch?: boolean;
   },
 ): Account {
   if (
@@ -1410,7 +1432,9 @@ export function updateAccount(
     !ROLES.includes(changes.role) ||
     !Array.isArray(changes.libraryIds) ||
     (changes.autoApprove !== undefined &&
-      typeof changes.autoApprove !== "boolean")
+      typeof changes.autoApprove !== "boolean") ||
+    (changes.proseSearch !== undefined &&
+      typeof changes.proseSearch !== "boolean")
   ) {
     throw new AppError(
       400,
@@ -1446,8 +1470,10 @@ export function updateAccount(
       "library grants must be a subset of configured libraries",
     );
   }
-  // Preserve-on-omission PATCH: an absent autoApprove keeps the stored grant.
+  // Preserve-on-omission PATCH: an absent autoApprove or proseSearch keeps
+  // the stored grant.
   const autoApprove = changes.autoApprove ?? existing.autoApprove;
+  const proseSearch = changes.proseSearch ?? existing.proseSearch;
   const d = open();
   inTransaction(d, () => {
     S().updateAccountGrants.run(
@@ -1455,12 +1481,14 @@ export function updateAccount(
       changes.role,
       JSON.stringify(changes.libraryIds),
       autoApprove ? 1 : 0,
+      proseSearch ? 1 : 0,
       id,
     );
     const changed =
       existing.enabled !== changes.enabled ||
       existing.role !== changes.role ||
       existing.autoApprove !== autoApprove ||
+      existing.proseSearch !== proseSearch ||
       existing.libraryIds.length !== changes.libraryIds.length ||
       existing.libraryIds.some((l, i) => l !== changes.libraryIds[i]);
     if (changed) S().deleteAccountSessions.run(id);

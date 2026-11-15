@@ -13,6 +13,7 @@ import { useSearchParams } from "next/navigation";
 import type {
   Account,
   Library,
+  ProseSearchStatus,
   ProviderStatus,
   RequestListResponse,
 } from "../lib/contracts.ts";
@@ -121,6 +122,8 @@ export default function VelvarrApp() {
   const [phase, setPhase] = useState<Phase>("boot");
   const [account, setAccount] = useState<Account | null>(null);
   const [providers, setProviders] = useState<ProviderStatus | null>(null);
+  const [proseSearchStatus, setProseSearchStatus] =
+    useState<ProseSearchStatus>("not_configured");
   const [bootError, setBootError] = useState<string | null>(null);
   const [signOutError, setSignOutError] = useState(false);
   useTapReveal();
@@ -129,11 +132,14 @@ export default function VelvarrApp() {
   // a provider key, so provider chips and not-configured claims update
   // without a full reload.
   const refreshSession = useCallback(async () => {
-    const me = await api<{ account: Account; providers: ProviderStatus }>(
-      "/api/me",
-    );
+    const me = await api<{
+      account: Account;
+      providers: ProviderStatus;
+      proseSearchStatus?: ProseSearchStatus;
+    }>("/api/me");
     setAccount(me.account);
     setProviders(me.providers);
+    setProseSearchStatus(me.proseSearchStatus ?? "not_configured");
   }, []);
 
   const enterApp = useCallback(async () => {
@@ -182,6 +188,7 @@ export default function VelvarrApp() {
     clearApiCache();
     setAccount(null);
     setProviders(null);
+    setProseSearchStatus("not_configured");
   };
 
   useEffect(() => {
@@ -250,7 +257,13 @@ export default function VelvarrApp() {
   if (phase !== "app" || !account) return <BootSkeleton />;
   return (
     <SessionCtx.Provider
-      value={{ account, providers, signOut, refreshSession }}
+      value={{
+        account,
+        providers,
+        proseSearchStatus,
+        signOut,
+        refreshSession,
+      }}
     >
       <Shell />
       {/* A failed sign-out keeps the session: the banner must live outside

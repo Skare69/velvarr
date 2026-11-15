@@ -90,6 +90,7 @@ function accountFixture(): Account {
     libraryIds: [],
     isOwner: true,
     autoApprove: false,
+    proseSearch: false,
     joinedAt: 0,
   };
 }
@@ -128,6 +129,9 @@ const MIGRATION_14_INDEXES = [
 const DROP_MIGRATION_14 = MIGRATION_14_INDEXES.map(
   (name) => `DROP INDEX IF EXISTS ${name};`,
 ).join("\n");
+// A rewind below version 15 must shed migration 15's column, or replaying its
+// ADD COLUMN fails as a duplicate.
+const DROP_MIGRATION_15 = "ALTER TABLE accounts DROP COLUMN prose_search;";
 
 test("import is lazy: no data dir or sqlite file is created", () => {
   const dir = freshDir();
@@ -406,6 +410,37 @@ test("malformed whisparr block is rejected and never persisted; valid one round-
   const saved = storage.getConfig()?.whisparr;
   assert.equal(saved?.url, "http://127.0.0.1:7000");
   assert.equal(saved?.apiKey, "new-key");
+});
+
+test("natural-language search settings are validated; a valid set round-trips", () => {
+  freshDir();
+  storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  const prose = {
+    proseChatEnabled: true,
+    proseChatUrl: "http://127.0.0.1:11434/v1",
+    proseChatModel: "llama3.1:8b",
+    proseChatApiKey: "chat-key",
+  };
+  storage.saveConfig({ ...testConfig(), providers: prose });
+  assert.deepEqual(storage.getConfig()?.providers, prose);
+
+  const rejects = (providers: Record<string, unknown>) =>
+    assert.throws(
+      () =>
+        storage.saveConfig({
+          ...testConfig(),
+          providers: { ...prose, ...providers },
+        } as IntegrationConfig),
+      (e: AppError) => e.status === 400 && e.code === "invalid_config",
+    );
+  rejects({ proseChatModel: "bad\u0007" });
+  rejects({ proseChatEnabled: "yes" });
+  rejects({ proseChatUrl: "" });
+  rejects({ proseChatUrl: `http://127.0.0.1/${"a".repeat(2048)}` });
+  rejects({ proseChatApiKey: "has space" });
+  rejects({ proseChatApiKey: "k".repeat(513) });
+  // Rejected settings never replace the stored ones.
+  assert.deepEqual(storage.getConfig()?.providers, prose);
 });
 
 test("missing encryption key blocks storage operations but not lazy status", () => {
@@ -1141,8 +1176,9 @@ test("v1 database migrates in place preserving config, accounts, sessions, and g
     raw.prepare("PRAGMA user_version").get() as { user_version: number }
   ).user_version;
   raw.close();
-  // Schema 14 adds the request paging indexes.
-  assert.equal(version, 14, "v1 database must migrate to the current schema");
+  // Schema 15 adds the natural-language search grant.
+  assert.equal(version, 15, "v1 database must migrate to the current schema");
+  assert.equal(owner.proseSearch, false, "migrated accounts start ungranted");
   // A v1 database never contained the removal tables (current migration 5
   // creates none), so nothing here can assert about them; the schema-10 test
   // below owns the claim that migration 11 drops them. Migration 12 is a
@@ -1332,6 +1368,7 @@ test("a schema-10 database migrates to 11: every removal object is dropped, rows
   // database but never existed at version 10, and replaying them must succeed.
   raw.exec("DROP TABLE IF EXISTS discover_cache;");
   raw.exec(DROP_MIGRATION_14);
+  raw.exec(DROP_MIGRATION_15);
   raw.exec("PRAGMA user_version = 10");
   raw.close();
   storage.closeStorage();
@@ -1365,7 +1402,7 @@ test("a schema-10 database migrates to 11: every removal object is dropped, rows
   );
   assert.equal(
     versionRow.user_version,
-    14,
+    15,
     "schema 10 database must migrate to the current schema",
   );
   assert.ok(
@@ -1729,6 +1766,59 @@ test("autoApprove is an explicit grant: omitted means preserved, changes revoke 
     libraryIds: ["11111111111111111111111111111111"],
   });
   assert.equal(storage.getAccount(acct.id)?.autoApprove, true);
+});
+
+test("proseSearch is an explicit grant: omitted means preserved, changes revoke sessions", () => {
+  freshDir();
+  storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  const acct = storage.importAccounts([otherUser()])[0];
+  assert.ok(acct);
+  admit(acct.id);
+  assert.equal(storage.getAccount(acct.id)?.proseSearch, false);
+  const first = storage.createSession(acct.id, "jf-token");
+
+  // Granting revokes the session immediately.
+  const updated = storage.updateAccount(acct.id, {
+    enabled: true,
+    role: "requester",
+    libraryIds: [],
+    proseSearch: true,
+  });
+  assert.equal(updated.proseSearch, true);
+  assert.equal(updated.autoApprove, false, "the grants are independent");
+  assert.equal(storage.getSession(first.token), null);
+
+  // Later omission keeps the grant and the new session.
+  const second = storage.createSession(acct.id, "jf-token");
+  storage.updateAccount(acct.id, {
+    enabled: true,
+    role: "requester",
+    libraryIds: [],
+  });
+  assert.equal(storage.getAccount(acct.id)?.proseSearch, true);
+  assert.ok(storage.getSession(second.token), "unchanged grants keep sessions");
+
+  // Revoking also revokes the session.
+  storage.updateAccount(acct.id, {
+    enabled: true,
+    role: "requester",
+    libraryIds: [],
+    proseSearch: false,
+  });
+  assert.equal(storage.getAccount(acct.id)?.proseSearch, false);
+  assert.equal(storage.getSession(second.token), null);
+
+  assert.throws(
+    () =>
+      storage.updateAccount(acct.id, {
+        enabled: true,
+        role: "requester",
+        libraryIds: [],
+        proseSearch: "yes" as unknown as boolean,
+      }),
+    (e: AppError) => e.status === 400 && e.code === "invalid_account_update",
+  );
+  assert.equal(storage.getAccount(acct.id)?.proseSearch, false);
 });
 
 test("the autoApprove grant approves only the granted user's own request", () => {
@@ -2759,7 +2849,7 @@ test("migration 13 admits failed_permanent and preserves acquisition rows", () =
     const versionRow = raw.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(versionRow.user_version, 14);
+    assert.equal(versionRow.user_version, 15);
     // The fabricated row survives the rebuild intact.
     const row = raw
       .prepare(
@@ -4145,6 +4235,7 @@ test("migration 14 adds the request indexes to a schema 13 database and keeps ev
   const file = join(currentDir, "velvarr.sqlite");
   const v13 = new DatabaseSync(file);
   for (const name of indexes) v13.exec(`DROP INDEX ${name}`);
+  v13.exec(DROP_MIGRATION_15);
   v13.exec("PRAGMA user_version = 13");
   const before = v13.prepare("SELECT * FROM requests ORDER BY id").all();
   v13.close();
@@ -4156,7 +4247,7 @@ test("migration 14 adds the request indexes to a schema 13 database and keeps ev
     const version = raw.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 14);
+    assert.equal(version.user_version, 15);
     const present = (
       raw
         .prepare(
@@ -4174,4 +4265,60 @@ test("migration 14 adds the request indexes to a schema 13 database and keeps ev
   } finally {
     raw.close();
   }
+});
+
+test("migration 15 adds the natural-language search grant to a schema 14 database, off for every account", () => {
+  const dir = freshDir();
+  storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  const [other] = storage.importAccounts([otherUser()]);
+  assert.ok(other);
+  storage.closeStorage();
+
+  // Schema 14 is schema 15 without the accounts.prose_search column.
+  const file = join(dir, "velvarr.sqlite");
+  const v14 = new DatabaseSync(file);
+  v14.exec(DROP_MIGRATION_15);
+  v14.exec("PRAGMA user_version = 14");
+  v14.close();
+
+  const owner = storage.getAccount(ownerUser().id);
+  assert.ok(owner, "the owner row survives the upgrade");
+  assert.equal(owner.proseSearch, false);
+  assert.equal(owner.isOwner, true);
+  assert.equal(storage.getAccount(other.id)?.proseSearch, false);
+
+  const raw = new DatabaseSync(file);
+  try {
+    const version = raw.prepare("PRAGMA user_version").get() as {
+      user_version: number;
+    };
+    assert.equal(version.user_version, 15);
+    const column = (
+      raw.prepare("PRAGMA table_info(accounts)").all() as {
+        name: string;
+        notnull: number;
+        dflt_value: string | null;
+      }[]
+    ).find((c) => c.name === "prose_search");
+    assert.ok(column, "migration 15 adds accounts.prose_search");
+    assert.equal(column.notnull, 1);
+    assert.equal(column.dflt_value, "0");
+    // The CHECK admits only 0 and 1.
+    assert.throws(() =>
+      raw
+        .prepare("UPDATE accounts SET prose_search = 2 WHERE id = ?")
+        .run(other.id),
+    );
+  } finally {
+    raw.close();
+  }
+
+  // The migrated row takes a grant like any other.
+  const granted = storage.updateAccount(other.id, {
+    enabled: other.enabled,
+    role: other.role,
+    libraryIds: other.libraryIds,
+    proseSearch: true,
+  });
+  assert.equal(granted.proseSearch, true);
 });

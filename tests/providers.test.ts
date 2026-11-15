@@ -1975,6 +1975,54 @@ test("stashdb performer search reports its real count but no continuation (provi
   }
 });
 
+test("stashdb performer search drops deleted rows and keeps aliases", async () => {
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  const liveId = "00000000-0000-4000-8000-000000000001";
+  const deletedId = "00000000-0000-4000-8000-000000000002";
+  const fixture = await startFixture((_req, res) => {
+    sendJson(res, 200, {
+      data: {
+        searchPerformers: {
+          count: 2,
+          performers: [
+            {
+              id: liveId,
+              name: "Riley Reid",
+              deleted: false,
+              aliases: ["Paige Riley"],
+              images: [],
+            },
+            {
+              id: deletedId,
+              name: "Riley Reid",
+              deleted: true,
+              aliases: [],
+              images: [],
+            },
+          ],
+        },
+      },
+    });
+  });
+  try {
+    process.env.STASHDB_BASE_URL = fixture.origin;
+    const page = await searchCatalog({
+      provider: "stashdb",
+      kind: "performer",
+      query: "riley reid",
+    });
+    assert.match(stashBody(fixture, 0).query, /performers \{[^}]*\baliases\b/);
+    assert.deepEqual(
+      page.items.map((d) => d.reference.id),
+      [liveId],
+    );
+    assert.deepEqual(page.items[0]?.aliases, ["Paige Riley"]);
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
 // --- status / verification / not-configured ---
 
 test("provider status verifies one cheap authenticated call; missing keys are not-configured", async () => {

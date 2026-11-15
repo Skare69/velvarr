@@ -638,6 +638,24 @@ export function isOllamaModel(value: unknown): boolean {
   );
 }
 
+/** Natural-language search model names travel only inside a JSON request
+ * body: 1 to 128 characters, no control characters, and no surrounding
+ * white space. One guard for storage, the admin PATCH, and the effective
+ * configuration. */
+export function isProseChatModel(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    value === value.trim() &&
+    !/[\u0000-\u001f\u007f]/.test(value)
+  );
+}
+
+/** GET /api/me: whether this account can run a natural-language search.
+ * not_configured wins over not_granted. */
+export type ProseSearchStatus = "ready" | "not_configured" | "not_granted";
+
 export type IntegrationConfig = {
   jellyfin: {
     url: string;
@@ -668,6 +686,13 @@ export type IntegrationConfig = {
     judgmentProvider?: JudgmentProvider;
     ollamaUrl?: string;
     ollamaModel?: string;
+    /** Natural-language search: an OpenAI-compatible chat server. Stored
+     * settings only, no environment fallback. Off keeps the other values
+     * for later use; the key is optional and bound to the URL's origin. */
+    proseChatEnabled?: boolean;
+    proseChatUrl?: string;
+    proseChatModel?: string;
+    proseChatApiKey?: string;
   };
 };
 
@@ -680,6 +705,8 @@ export type Account = {
   isOwner: boolean;
   /** Explicit auto-approve grant for requests; independent of library grants. */
   autoApprove: boolean;
+  /** Explicit natural-language search grant; admins can always search. */
+  proseSearch: boolean;
   /** Unix milliseconds the account row was created (Jellyfin import time). */
   joinedAt: number;
 };

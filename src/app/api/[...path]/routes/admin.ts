@@ -20,6 +20,7 @@ import type {
 import {
   isJudgmentProvider,
   isOllamaModel,
+  isProseChatModel,
 } from "../../../../lib/contracts.ts";
 import {
   countRequestsByAccount,
@@ -48,6 +49,10 @@ import {
   judgmentConfiguration,
   checkJudgmentConnection,
 } from "../../../../server/judgment.ts";
+import {
+  checkProseChat,
+  proseChatConfiguration,
+} from "../../../../server/prose-chat.ts";
 import { getWhisparrStatus } from "../../../../server/whisparr.ts";
 
 export function integrationsShape(config: IntegrationConfig) {
@@ -68,6 +73,7 @@ export function integrationsShape(config: IntegrationConfig) {
         }
       : null,
     judgment: judgmentConfiguration(config.providers),
+    proseChat: proseChatConfiguration(config.providers),
     providers: {
       tpdb: providerShape(config.providers?.tpdbApiToken, "TPDB_API_TOKEN"),
       stashdb: providerShape(
@@ -150,6 +156,7 @@ export async function adminUpdateUser(
   const role = fieldRole(body, "role");
   const libraryIds = fieldIds(body, "libraryIds");
   const autoApprove = optionalBool(body, "autoApprove");
+  const proseSearch = optionalBool(body, "proseSearch");
   const configured = new Set(ctx.config.jellyfin.libraryIds);
   if (libraryIds.some((libraryId) => !configured.has(libraryId))) {
     throw new AppError(400, "invalid_field", "Unknown library selected.");
@@ -166,6 +173,7 @@ export async function adminUpdateUser(
     role,
     libraryIds,
     ...(autoApprove !== undefined ? { autoApprove } : {}),
+    ...(proseSearch !== undefined ? { proseSearch } : {}),
   });
   return json({ account });
 }
@@ -196,16 +204,28 @@ export function nextProviderCredentials(
   if (ollamaModel && !isOllamaModel(ollamaModel)) {
     throw new AppError(400, "invalid_field", "Invalid Ollama model name.");
   }
+  const touchesProse = PROSE_CHAT_FIELDS.some((key) => body[key] !== undefined);
   if (
     tpdbApiToken === undefined &&
     stashdbApiKey === undefined &&
     typesafeApiKey === undefined &&
     judgmentProvider === undefined &&
     ollamaUrl === undefined &&
-    ollamaModel === undefined
+    ollamaModel === undefined &&
+    !touchesProse
   ) {
     return existing;
   }
+  // A save that does not touch the prose card carries its values over as
+  // stored, without re-validating them.
+  const prose: ProseChatFields = touchesProse
+    ? nextProseChat(existing, body)
+    : {
+        proseChatEnabled: existing?.proseChatEnabled,
+        proseChatUrl: existing?.proseChatUrl,
+        proseChatModel: existing?.proseChatModel,
+        proseChatApiKey: existing?.proseChatApiKey,
+      };
   const providers: NonNullable<IntegrationConfig["providers"]> = {
     judgmentProvider:
       judgmentProvider === undefined
@@ -243,6 +263,7 @@ export function nextProviderCredentials(
         : typesafeApiKey === ""
           ? undefined
           : typesafeApiKey.trim(),
+    ...prose,
   };
   if (
     providers.tpdbApiToken === undefined &&
@@ -250,11 +271,101 @@ export function nextProviderCredentials(
     providers.typesafeApiKey === undefined &&
     providers.judgmentProvider === undefined &&
     providers.ollamaUrl === undefined &&
-    providers.ollamaModel === undefined
+    providers.ollamaModel === undefined &&
+    providers.proseChatEnabled === undefined &&
+    providers.proseChatUrl === undefined &&
+    providers.proseChatModel === undefined &&
+    providers.proseChatApiKey === undefined
   ) {
     return undefined;
   }
   return providers;
+}
+
+const PROSE_CHAT_FIELDS = [
+  "proseChatEnabled",
+  "proseChatUrl",
+  "proseChatModel",
+  "proseChatApiKey",
+] as const;
+
+type ProseChatFields = Pick<
+  NonNullable<IntegrationConfig["providers"]>,
+  (typeof PROSE_CHAT_FIELDS)[number]
+>;
+
+/** Natural-language search settings: omitted = unchanged; "" clears the key,
+ * and a blank URL or model is refused while On and keeps the stored value
+ * while Off. On is stored as true, Off as an omitted field. */
+function nextProseChat(
+  existing: IntegrationConfig["providers"],
+  body: Record<string, unknown>,
+): ProseChatFields {
+  const enabled =
+    optionalBool(body, "proseChatEnabled") ??
+    existing?.proseChatEnabled ??
+    false;
+  const rawUrl = optionalText(body, "proseChatUrl", 2048)?.trim();
+  const rawModel = optionalText(body, "proseChatModel", 128)?.trim();
+  const rawKey = optionalText(body, "proseChatApiKey", 512);
+  const missingUrl = () =>
+    new AppError(
+      400,
+      "invalid_url",
+      "A valid integration base URL is required.",
+    );
+  const missingModel = () =>
+    new AppError(400, "invalid_field", "Enter the chat model name.");
+  if (rawUrl === "" && enabled) throw missingUrl();
+  const url =
+    rawUrl === undefined || rawUrl === ""
+      ? existing?.proseChatUrl
+      : validateBaseUrl(rawUrl);
+  if (rawModel === "" && enabled) throw missingModel();
+  if (rawModel && !isProseChatModel(rawModel)) {
+    throw new AppError(
+      400,
+      "invalid_field",
+      "The model name must have 1 to 128 characters and no control characters.",
+    );
+  }
+  const model = rawModel ? rawModel : existing?.proseChatModel;
+  let apiKey = existing?.proseChatApiKey;
+  if (rawKey === "") {
+    apiKey = undefined;
+  } else if (rawKey !== undefined) {
+    apiKey = rawKey.trim();
+    if (!/^[\x21-\x7E]{1,512}$/.test(apiKey)) {
+      throw new AppError(
+        400,
+        "invalid_field",
+        "The API key must be printable ASCII without spaces.",
+      );
+    }
+  } else if (
+    apiKey &&
+    existing?.proseChatUrl &&
+    url &&
+    url !== existing.proseChatUrl
+  ) {
+    // The stored key never follows its URL to another origin.
+    const moved =
+      "The server address moved to another origin. Enter the API key again.";
+    apiKey = savedKeyForUrl({
+      url,
+      saved: { url: existing.proseChatUrl, apiKey },
+      supplied: undefined,
+      messages: { missing: moved, moved },
+    });
+  }
+  if (enabled && !url) throw missingUrl();
+  if (enabled && !model) throw missingModel();
+  return {
+    ...(enabled ? { proseChatEnabled: true } : {}),
+    proseChatUrl: url,
+    proseChatModel: model,
+    proseChatApiKey: apiKey,
+  };
 }
 
 /** The stored key follows its URL only within one origin: a cross-origin
@@ -461,6 +572,7 @@ const PROVIDER_SAVE_FIELDS = [
   "judgmentProvider",
   "ollamaUrl",
   "ollamaModel",
+  ...PROSE_CHAT_FIELDS,
   "tpdbApiTokenExpect",
   "stashdbApiKeyExpect",
 ];
@@ -837,6 +949,20 @@ export const routes: RouteDef[] = [
     auth: "admin",
     run: async (ctx) =>
       json(await checkJudgmentConnection(ctx.config.providers)),
+  },
+  {
+    method: "POST",
+    segments: ["admin", "prose", "check"],
+    auth: "admin",
+    run: async (ctx) => {
+      if (!proseChatConfiguration(ctx.config.providers).configured)
+        throw new AppError(
+          503,
+          "prose_search_not_configured",
+          "Natural-language search is off or not set up.",
+        );
+      return json(await checkProseChat(ctx.config.providers));
+    },
   },
   {
     method: "POST",

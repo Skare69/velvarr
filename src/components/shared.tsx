@@ -23,6 +23,7 @@ import type {
   LibraryItem,
   MediaReference,
   PlaybackAccess,
+  ProseSearchStatus,
   ProviderStatus,
   RequestRecord,
   UpdateInfo,
@@ -582,6 +583,7 @@ export function useAvailability(
 interface SessionInfo {
   account: Account;
   providers: ProviderStatus | null;
+  proseSearchStatus: ProseSearchStatus;
   signOut: () => void;
   refreshSession: () => Promise<void>;
 }

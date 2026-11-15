@@ -18,7 +18,7 @@ import { Buffer } from "node:buffer";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resetMetaCache } from "../src/server/providers.ts";
 import { normalizeFacetName } from "../src/lib/contracts.ts";
-import type { ProviderCheck } from "../src/lib/contracts.ts";
+import type { IntegrationConfig, ProviderCheck } from "../src/lib/contracts.ts";
 import {
   DISCOVER_CACHE_TTL_MS,
   releasesCacheKey,
@@ -29,6 +29,7 @@ import {
   getConfig,
   OPEN_REQUEST_CAP,
   putDiscoverCache,
+  saveConfig,
 } from "../src/server/storage.ts";
 import { resetSweepCache } from "../src/server/jellyfin.ts";
 import { resetUpdateCache } from "../src/server/update.ts";
@@ -11424,4 +11425,558 @@ test("rate budget: a cold discover and detail page load answers without 429", as
   // No lane tripped: dispatch, preloads and artwork all finished — the
   // page-load 429 storm the card reports stays gone.
   await status("/api/me", "dispatch survives the whole session");
+});
+
+// --- natural-language search: POST /api/browse/prose and its settings ---
+//
+// A loopback stand-in for the admin-configured OpenAI-compatible chat server
+// (plain HTTP to 127.0.0.1 needs no VELVARR_ALLOW_HTTP). The tests share it
+// in file order; every test arms the state it needs itself, and the last one
+// restores the stored settings, the grant and the fixtures.
+
+// The draft for the prose "summer": title words only, so the map needs no
+// provider lookup and the final Browse check sees a plain search.
+const PROSE_SUMMER_DRAFT = {
+  type: null,
+  titleWords: { value: "summer", source: "summer" },
+  include: [],
+  exclude: [],
+  performers: { mode: "all", names: [] },
+  studios: { names: [], withChildren: null },
+  followedPerformers: null,
+  year: null,
+  date: null,
+  sort: null,
+  skipped: [],
+};
+const PROSE_KEY = "sk-test-key-123";
+const PROSE_MODEL = "test-model";
+const PROSE_CHECK_TEXT = "Vixen scenes from 2019 with Riley Reid, newest first";
+
+type ProseChatHit = {
+  method: string;
+  path: string;
+  headers: IncomingMessage["headers"];
+  body: Record<string, unknown>;
+};
+type ProseChatFixture = {
+  server: Server;
+  url: string;
+  reply: "draft" | "refusal" | "bad_json" | "redirect" | "hold";
+  hits: ProseChatHit[];
+  /** Resolved when a request arrives; armed by the test that waits. */
+  arrived?: PromiseWithResolvers<void>;
+  /** A "hold" reply answers only after the test resolves this. */
+  release?: PromiseWithResolvers<void>;
+};
+type ProseAccount = {
+  id: string;
+  enabled: boolean;
+  role: string;
+  libraryIds: string[];
+  autoApprove: boolean;
+  proseSearch: boolean;
+};
+type ProseStoredFields = Pick<
+  NonNullable<IntegrationConfig["providers"]>,
+  "proseChatEnabled" | "proseChatUrl" | "proseChatModel" | "proseChatApiKey"
+>;
+
+async function startProseChat(): Promise<ProseChatFixture> {
+  const state: Omit<ProseChatFixture, "server" | "url"> = {
+    reply: "draft",
+    hits: [],
+  };
+  const { server, url } = await listen(async (req, res) => {
+    const body = await readBody(req);
+    state.hits.push({
+      method: req.method ?? "",
+      path: req.url ?? "",
+      headers: req.headers,
+      body,
+    });
+    state.arrived?.resolve();
+    if (state.reply === "redirect") {
+      res.writeHead(302, { location: "/elsewhere" }).end();
+      return;
+    }
+    if (state.reply === "hold") await state.release?.promise;
+    const message =
+      state.reply === "refusal"
+        ? {
+            role: "assistant",
+            content: null,
+            refusal: "I can't help with that.",
+          }
+        : {
+            role: "assistant",
+            content:
+              state.reply === "bad_json"
+                ? "not json"
+                : JSON.stringify(PROSE_SUMMER_DRAFT),
+            refusal: null,
+          };
+    json(res, 200, {
+      id: "chatcmpl-fixture",
+      object: "chat.completion",
+      choices: [{ index: 0, message, finish_reason: "stop" }],
+    });
+  });
+  return Object.assign(state, { server, url });
+}
+
+let proseChat: ProseChatFixture | undefined;
+let proseChatOther: ProseChatFixture | undefined;
+// What the block found before it changed anything: the stored chat fields
+// and the nogrants account's grant. The last test puts both back.
+let proseRestore: { stored: ProseStoredFields; grant: boolean } | undefined;
+
+async function proseAccount(admin: string, id: string): Promise<ProseAccount> {
+  const listed = await call("GET", "/api/admin/users", { cookie: admin });
+  assert.equal(listed.status, 200, await listed.clone().text());
+  const { accounts } = (await listed.json()) as { accounts: ProseAccount[] };
+  const account = accounts.find((a) => a.id === id);
+  assert.ok(account, `account ${id} is listed`);
+  return account;
+}
+
+async function proseSetup(): Promise<{
+  admin: string;
+  chat: ProseChatFixture;
+  other: ProseChatFixture;
+}> {
+  await boot();
+  const admin = await loginAs("owner");
+  if (!proseRestore) {
+    const stored: NonNullable<IntegrationConfig["providers"]> =
+      getConfig()?.providers ?? {};
+    proseRestore = {
+      stored: {
+        proseChatEnabled: stored.proseChatEnabled,
+        proseChatUrl: stored.proseChatUrl,
+        proseChatModel: stored.proseChatModel,
+        proseChatApiKey: stored.proseChatApiKey,
+      },
+      grant: (await proseAccount(admin, NOGRANT_ID)).proseSearch,
+    };
+  }
+  proseChat ??= await startProseChat();
+  proseChatOther ??= await startProseChat();
+  proseChat.reply = "draft";
+  proseChatOther.reply = "draft";
+  return { admin, chat: proseChat, other: proseChatOther };
+}
+
+/** Turns the card On against `chat` with the test key; answers the shape. */
+async function proseOn(
+  admin: string,
+  chat: ProseChatFixture,
+): Promise<{ proseChat: Record<string, unknown> }> {
+  const saved = await call("PATCH", "/api/admin/integrations", {
+    cookie: admin,
+    body: {
+      proseChatEnabled: true,
+      proseChatUrl: chat.url,
+      proseChatModel: PROSE_MODEL,
+      proseChatApiKey: PROSE_KEY,
+    },
+  });
+  assert.equal(saved.status, 200, await saved.clone().text());
+  return (await saved.json()) as { proseChat: Record<string, unknown> };
+}
+
+/** Sets the nogrants account's prose grant, keeping its other fields. A real
+ * change revokes that account's sessions, so the shared cookie is renewed. */
+async function setNograntsProseGrant(
+  admin: string,
+  proseSearch: boolean,
+): Promise<ProseAccount> {
+  const current = await proseAccount(admin, NOGRANT_ID);
+  const res = await call("PATCH", `/api/admin/users/${NOGRANT_ID}`, {
+    cookie: admin,
+    body: {
+      enabled: current.enabled,
+      role: current.role,
+      libraryIds: current.libraryIds,
+      autoApprove: current.autoApprove,
+      proseSearch,
+    },
+  });
+  assert.equal(res.status, 200, await res.clone().text());
+  const { account } = (await res.json()) as { account: ProseAccount };
+  nogrants = await loginAs("nogrants");
+  return account;
+}
+
+function proseSearchCall(
+  cookie: string,
+  text: string,
+  type = "all",
+): Promise<Response> {
+  return call("POST", "/api/browse/prose", { cookie, body: { text, type } });
+}
+
+async function proseStatusOf(cookie: string): Promise<unknown> {
+  const me = await call("GET", "/api/me", { cookie });
+  assert.equal(me.status, 200, await me.clone().text());
+  const body = (await me.json()) as { proseSearchStatus?: unknown };
+  return body.proseSearchStatus;
+}
+
+async function proseSummerApplied(res: Response): Promise<void> {
+  assert.equal(res.status, 200, await res.clone().text());
+  const body = (await res.json()) as {
+    params: Record<string, string | null> | null;
+    notes: unknown[];
+  };
+  assert.equal(body.params?.q, "summer");
+  assert.ok(Array.isArray(body.notes));
+}
+
+test("prose search: the browse route and the admin check answer 503 while the card is Off", async () => {
+  const { admin, chat } = await proseSetup();
+  const off = await call("PATCH", "/api/admin/integrations", {
+    cookie: admin,
+    body: { proseChatEnabled: false },
+  });
+  assert.equal(off.status, 200, await off.clone().text());
+  const offShape = (await off.json()) as {
+    proseChat: { configured: boolean };
+  };
+  assert.equal(offShape.proseChat.configured, false);
+  const hits = chat.hits.length;
+  assert.equal(await proseStatusOf(admin), "not_configured");
+
+  const search = await proseSearchCall(admin, "summer");
+  assert.equal(search.status, 503);
+  assert.equal(
+    (await errorShape(search, 503)).code,
+    "prose_search_not_configured",
+  );
+  // The configuration answer comes before the grant check.
+  const requester = await proseSearchCall(await loginAs("nogrants"), "summer");
+  assert.equal(requester.status, 503);
+  assert.equal(
+    (await errorShape(requester, 503)).code,
+    "prose_search_not_configured",
+  );
+  const check = await call("POST", "/api/admin/prose/check", {
+    cookie: admin,
+    body: {},
+  });
+  assert.equal(check.status, 503);
+  assert.equal(
+    (await errorShape(check, 503)).code,
+    "prose_search_not_configured",
+  );
+  assert.equal(chat.hits.length, hits, "an Off card sends nothing");
+});
+
+test("prose search: an admin saves the chat settings and the key never leaves the server", async () => {
+  const { admin, chat } = await proseSetup();
+  const shape = await proseOn(admin, chat);
+  assert.equal(shape.proseChat.enabled, true);
+  assert.equal(shape.proseChat.configured, true);
+  assert.equal(shape.proseChat.keyStored, true);
+  assert.equal(shape.proseChat.model, PROSE_MODEL);
+  assert.ok(String(shape.proseChat.url).startsWith(chat.url));
+  assert.equal(JSON.stringify(shape).includes(PROSE_KEY), false);
+
+  const read = await call("GET", "/api/admin/integrations", { cookie: admin });
+  assert.equal(read.status, 200);
+  const text = await read.text();
+  assert.equal(text.includes(PROSE_KEY), false, "the key never goes out");
+  const readShape = JSON.parse(text) as {
+    proseChat: { configured: boolean; keyStored: boolean };
+  };
+  assert.equal(readShape.proseChat.configured, true);
+  assert.equal(readShape.proseChat.keyStored, true);
+});
+
+test("prose search: GET /api/me reports ready for an admin and not_granted for a requester without the grant", async () => {
+  const { admin, chat } = await proseSetup();
+  await proseOn(admin, chat);
+  await setNograntsProseGrant(admin, false);
+  assert.equal(
+    (await proseAccount(admin, OWNER_ID)).proseSearch,
+    false,
+    "the owner holds no explicit grant",
+  );
+  assert.equal(await proseStatusOf(admin), "ready");
+  assert.equal(await proseStatusOf(nogrants), "not_granted");
+});
+
+test("prose search: 403 forbidden for a requester without the grant, 200 for the admin owner without one", async () => {
+  const { admin, chat } = await proseSetup();
+  await proseOn(admin, chat);
+  await setNograntsProseGrant(admin, false);
+  const hits = chat.hits.length;
+  const denied = await proseSearchCall(nogrants, "summer");
+  assert.equal(denied.status, 403);
+  assert.equal((await errorShape(denied, 403)).code, "forbidden");
+  // The grant check comes before input validation.
+  const deniedEmpty = await proseSearchCall(nogrants, "");
+  assert.equal(deniedEmpty.status, 403);
+  assert.equal((await errorShape(deniedEmpty, 403)).code, "forbidden");
+  assert.equal(chat.hits.length, hits, "a refused caller sends nothing");
+
+  await proseSummerApplied(await proseSearchCall(admin, "summer"));
+});
+
+test("prose search: PATCH /api/admin/users/:id stores the grant and the requester can search", async () => {
+  const { admin, chat } = await proseSetup();
+  await proseOn(admin, chat);
+  await setNograntsProseGrant(admin, false);
+  const stale = nogrants;
+  const account = await setNograntsProseGrant(admin, true);
+  assert.equal(account.proseSearch, true);
+  assert.equal(
+    (await call("GET", "/api/me", { cookie: stale })).status,
+    401,
+    "a grant change revokes the account's sessions",
+  );
+  assert.equal(await proseStatusOf(nogrants), "ready");
+  await proseSummerApplied(await proseSearchCall(nogrants, "summer"));
+});
+
+test("prose search: 400 invalid_query for empty, too short and over-long text or a bad tab", async () => {
+  const { admin, chat } = await proseSetup();
+  await proseOn(admin, chat);
+  const hits = chat.hits.length;
+  for (const [text, type] of [
+    ["", "all"],
+    ["  x  ", "all"],
+    ["a".repeat(301), "all"],
+    ["summer", "tv"],
+  ] as const) {
+    const res = await proseSearchCall(admin, text, type);
+    assert.equal(res.status, 400, `${text.length} chars, type ${type}`);
+    assert.equal((await errorShape(res)).code, "invalid_query");
+  }
+  assert.equal(chat.hits.length, hits, "a refused query sends nothing");
+  // 300 characters is still a valid query.
+  const longest = `summer ${"x".repeat(293)}`;
+  assert.equal(longest.length, 300);
+  await proseSummerApplied(await proseSearchCall(admin, longest, "scene"));
+});
+
+test("prose search: the chat request carries the prose and today's date, never account data", async () => {
+  const { admin, chat } = await proseSetup();
+  await proseOn(admin, chat);
+  await setNograntsProseGrant(admin, true);
+  const prefs = await call("GET", "/api/me/preferences", { cookie: nogrants });
+  assert.equal(prefs.status, 200);
+  const { hiddenTags: hiddenBefore } = (await prefs.json()) as {
+    hiddenTags: unknown[];
+  };
+  const hidden = await call("PATCH", "/api/me/preferences", {
+    cookie: nogrants,
+    body: { hiddenTags: [{ name: "Fixture Tag A", tpdb: TAG_A }] },
+  });
+  assert.equal(hidden.status, 200, await hidden.clone().text());
+  try {
+    const hits = chat.hits.length;
+    await proseSummerApplied(await proseSearchCall(nogrants, "summer"));
+    assert.equal(chat.hits.length, hits + 1, "one attempt, no retry");
+    const hit = chat.hits.at(-1) as ProseChatHit;
+    assert.equal(hit.method, "POST");
+    assert.equal(hit.path, "/chat/completions");
+    const body = hit.body as {
+      model?: unknown;
+      messages?: { role: string; content: string }[];
+      response_format?: { type?: unknown };
+    };
+    assert.equal(body.model, PROSE_MODEL);
+    assert.equal(body.response_format?.type, "json_schema");
+    assert.equal(body.messages?.length, 2);
+    const [system, user] = body.messages ?? [];
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    assert.equal(system?.role, "system");
+    assert.ok(system?.content.includes(today), "the system message has today");
+    assert.deepEqual(user, { role: "user", content: "summer" });
+    const wire = JSON.stringify(hit.body);
+    for (const secret of ["nogrants", NOGRANT_ID, "Fixture Tag A"]) {
+      assert.equal(wire.includes(secret), false, `${secret} stays local`);
+    }
+  } finally {
+    const restored = await call("PATCH", "/api/me/preferences", {
+      cookie: nogrants,
+      body: { hiddenTags: hiddenBefore },
+    });
+    assert.equal(restored.status, 200);
+  }
+});
+
+test("prose search: a stored key goes out as a Bearer header and stops after clearing", async () => {
+  const { admin, chat } = await proseSetup();
+  await proseOn(admin, chat);
+  await proseSummerApplied(await proseSearchCall(admin, "summer"));
+  assert.equal(chat.hits.at(-1)?.headers.authorization, `Bearer ${PROSE_KEY}`);
+
+  const cleared = await call("PATCH", "/api/admin/integrations", {
+    cookie: admin,
+    body: { proseChatApiKey: "" },
+  });
+  assert.equal(cleared.status, 200, await cleared.clone().text());
+  const shape = (await cleared.json()) as {
+    proseChat: { configured: boolean; keyStored: boolean };
+  };
+  assert.equal(shape.proseChat.keyStored, false);
+  assert.equal(shape.proseChat.configured, true, "the key is optional");
+  const hits = chat.hits.length;
+  await proseSummerApplied(await proseSearchCall(admin, "summer"));
+  assert.equal(chat.hits.length, hits + 1);
+  assert.equal(chat.hits.at(-1)?.headers.authorization, undefined);
+});
+
+test("prose search: 429 prose_search_busy while the same account has a search running", async () => {
+  const { admin, chat } = await proseSetup();
+  await proseOn(admin, chat);
+  await setNograntsProseGrant(admin, true);
+  chat.reply = "hold";
+  chat.arrived = Promise.withResolvers<void>();
+  chat.release = Promise.withResolvers<void>();
+  try {
+    const first = proseSearchCall(nogrants, "summer");
+    await chat.arrived.promise;
+    const hits = chat.hits.length;
+    const second = await proseSearchCall(nogrants, "summer");
+    assert.equal(second.status, 429);
+    assert.equal((await errorShape(second, 429)).code, "prose_search_busy");
+    assert.equal(chat.hits.length, hits, "the busy answer sends nothing");
+    chat.release.resolve();
+    await proseSummerApplied(await first);
+  } finally {
+    chat.release?.resolve();
+    chat.reply = "draft";
+    chat.arrived = undefined;
+    chat.release = undefined;
+  }
+  // The finished search frees the account's slot.
+  await proseSummerApplied(await proseSearchCall(nogrants, "summer"));
+});
+
+test("prose search: chat server failures answer 502 with named codes", async () => {
+  const { admin, chat } = await proseSetup();
+  await proseOn(admin, chat);
+  const cases = [
+    ["redirect", "prose_search_failed"],
+    ["refusal", "prose_search_refused"],
+    ["bad_json", "prose_search_bad_reply"],
+  ] as const;
+  try {
+    for (const [reply, code] of cases) {
+      chat.reply = reply;
+      const res = await proseSearchCall(admin, "summer");
+      assert.equal(res.status, 502, reply);
+      const error = await errorShape(res, 502);
+      assert.equal(error.code, code, reply);
+      assert.equal(error.message.includes(PROSE_KEY), false);
+      assert.equal(error.message.includes("summer"), false);
+    }
+  } finally {
+    chat.reply = "draft";
+  }
+});
+
+test("prose search: a URL move to another origin without the key is refused and the new host sees nothing", async () => {
+  const { admin, chat, other } = await proseSetup();
+  await proseOn(admin, chat);
+  const otherHits = other.hits.length;
+  const moved = await call("PATCH", "/api/admin/integrations", {
+    cookie: admin,
+    body: { proseChatUrl: other.url },
+  });
+  assert.equal(moved.status, 400);
+  assert.equal((await errorShape(moved)).code, "invalid_field");
+
+  const read = await call("GET", "/api/admin/integrations", { cookie: admin });
+  const shape = (await read.json()) as {
+    proseChat: { url: string; keyStored: boolean };
+  };
+  assert.ok(shape.proseChat.url.startsWith(chat.url), "nothing was saved");
+  assert.equal(shape.proseChat.keyStored, true);
+  const check = await call("POST", "/api/admin/prose/check", {
+    cookie: admin,
+    body: {},
+  });
+  assert.equal(check.status, 200, await check.clone().text());
+  await proseSummerApplied(await proseSearchCall(admin, "summer"));
+  assert.equal(other.hits.length, otherHits, "the stored key never moved");
+});
+
+test("prose search: the admin connection check answers connected for a valid draft reply", async () => {
+  const { admin, chat } = await proseSetup();
+  await proseOn(admin, chat);
+  await setNograntsProseGrant(admin, true);
+  const denied = await call("POST", "/api/admin/prose/check", {
+    cookie: nogrants,
+    body: {},
+  });
+  assert.equal(denied.status, 403);
+
+  const hits = chat.hits.length;
+  const check = await call("POST", "/api/admin/prose/check", {
+    cookie: admin,
+    body: {},
+  });
+  assert.equal(check.status, 200, await check.clone().text());
+  assert.deepEqual(await check.json(), { connected: true });
+  assert.equal(chat.hits.length, hits + 1);
+  const messages = (chat.hits.at(-1)?.body.messages ?? []) as {
+    role: string;
+    content: string;
+  }[];
+  assert.deepEqual(messages.at(-1), {
+    role: "user",
+    content: PROSE_CHECK_TEXT,
+  });
+});
+
+test("prose search: the block restores the chat settings, the grant and the fixtures", async () => {
+  const restore = proseRestore;
+  try {
+    if (!restore) return;
+    const admin = await loginAs("owner");
+    const off = await call("PATCH", "/api/admin/integrations", {
+      cookie: admin,
+      body: { proseChatEnabled: false, proseChatApiKey: "" },
+    });
+    assert.equal(off.status, 200, await off.clone().text());
+    // An Off card keeps its URL and model through the API by design, so
+    // the stored fields go back to what the block found directly.
+    const current = getConfig();
+    assert.ok(current);
+    const providers: NonNullable<IntegrationConfig["providers"]> = {
+      ...current.providers,
+    };
+    delete providers.proseChatEnabled;
+    delete providers.proseChatUrl;
+    delete providers.proseChatModel;
+    delete providers.proseChatApiKey;
+    for (const [field, value] of Object.entries(restore.stored)) {
+      if (value !== undefined) Object.assign(providers, { [field]: value });
+    }
+    saveConfig({
+      ...current,
+      providers: Object.keys(providers).length > 0 ? providers : undefined,
+    });
+    const stored = getConfig()?.providers;
+    assert.equal(stored?.proseChatEnabled, restore.stored.proseChatEnabled);
+    assert.equal(stored?.proseChatUrl, restore.stored.proseChatUrl);
+    assert.equal(stored?.proseChatModel, restore.stored.proseChatModel);
+    assert.equal(stored?.proseChatApiKey, restore.stored.proseChatApiKey);
+    const account = await setNograntsProseGrant(admin, restore.grant);
+    assert.equal(account.proseSearch, restore.grant);
+  } finally {
+    for (const fixture of [proseChat, proseChatOther]) {
+      fixture?.release?.resolve();
+      fixture?.server.closeAllConnections?.();
+      fixture?.server.close();
+    }
+    proseChat = undefined;
+    proseChatOther = undefined;
+    proseRestore = undefined;
+  }
 });

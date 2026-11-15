@@ -51,6 +51,7 @@ import { filterName, seedName, seedPerformerPick } from "../lib/names";
 // wording everywhere: a missing credential, never an outage).
 import { NotConfiguredLine } from "./discover";
 import { CatalogDetailView, detailTarget } from "./catalog-detail.tsx";
+import { ProseSearchField } from "./prose-search";
 // Endless scroll appends pages through this dedupe-append (lib stays
 // React-free so node --test can exercise it directly).
 import { mergePageItems } from "../lib/browse-items.ts";
@@ -1821,6 +1822,8 @@ export function TitlesView() {
             />
           </div>
         </div>
+
+        <ProseSearchField type={type} />
 
         {chipGroupNames.length > 0 && (
           <div

@@ -44,6 +44,7 @@ import {
   listUsers,
 } from "../../../../server/jellyfin.ts";
 import { providerConfigured } from "../../../../server/providers.ts";
+import { proseSearchStatus } from "../../../../server/prose-chat.ts";
 import { availableUpdate } from "../../../../server/update.ts";
 
 export function setupReady(): boolean {
@@ -341,6 +342,7 @@ export async function me(ctx: AuthContext): Promise<Response> {
         ? "not_verified"
         : "not_configured",
     } satisfies ProviderStatus,
+    proseSearchStatus: proseSearchStatus(ctx.account, ctx.config.providers),
   });
 }
 

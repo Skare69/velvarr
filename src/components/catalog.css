@@ -509,6 +509,27 @@
   height: 1rem;
 }
 
+/* Natural-language search between the page heading and the active filters:
+   field and button on one row that wraps on narrow screens. */
+.prose-search {
+  max-width: 48rem;
+}
+.prose-search-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.prose-search-row > .input {
+  flex: 1 1 16rem;
+  width: auto;
+  min-width: 0;
+}
+.prose-search-notes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
 /* Active filters above the results: one box per kind with its name shown
    once, value chips inside, each chip one remove button. */
 .filter-chips {

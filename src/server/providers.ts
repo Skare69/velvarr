@@ -1271,7 +1271,7 @@ export async function searchCatalog(
       );
     }
     const res = (await stashQuery(
-      "query($t: String!) { searchPerformers(term: $t) { count performers { id name deleted images { url } } } }",
+      "query($t: String!) { searchPerformers(term: $t) { count performers { id name deleted aliases images { url } } } }",
       { t: q },
       "searchPerformers",
     )) as { count?: unknown; performers?: unknown } | null;
@@ -1285,6 +1285,11 @@ export async function searchCatalog(
     const items = dedupeBy(
       (Array.isArray(res.performers) ? res.performers : [])
         .slice(0, 50)
+        // Deleted performers are authoritatively gone (findPerformer's rule).
+        .filter(
+          (row: unknown) =>
+            (row as { deleted?: unknown } | null)?.deleted !== true,
+        )
         .map(stashPerformerDetail)
         .filter((d): d is CatalogDetail => d !== undefined),
       (d) => d.reference.id,

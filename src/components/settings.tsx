@@ -1410,9 +1410,19 @@ type JudgmentConfig = {
   stored: boolean;
   error?: string;
 };
+// Natural-language search chat server; the key itself never leaves the server.
+type ProseChatConfig = {
+  enabled: boolean;
+  url: string;
+  model: string;
+  keyStored: boolean;
+  configured: boolean;
+  error?: string;
+};
 type ProviderSettingsInfo = {
   providers: Record<CredentialProvider | "typesafe", ProviderConfigRow>;
   judgment: JudgmentConfig;
+  proseChat: ProseChatConfig;
 };
 type ProviderSettingsPatch = Partial<
   Omit<NonNullable<IntegrationConfig["providers"]>, "judgmentProvider"> & {
@@ -1573,6 +1583,12 @@ function MetadataSettings() {
       <JudgmentCard
         config={info?.judgment}
         keyConfig={info?.providers.typesafe}
+        saving={saving}
+        runOperation={runOperation}
+        onSave={save}
+      />
+      <ProseSearchCard
+        config={info?.proseChat}
         saving={saving}
         runOperation={runOperation}
         onSave={save}
@@ -2253,6 +2269,11 @@ function JudgmentCard({
         ) : (
           details
         ))}
+      <p className="mt-3 text-sm text-muted">
+        {
+          "Natural-language search has its own card. 'Standard matching (no AI)' does not turn it off."
+        }
+      </p>
       {!editing && (
         <div className="settings-service-buttons settings-card-actions">
           <button
@@ -2552,6 +2573,432 @@ function JudgmentCard({
       {forbidden && (
         <p className="mt-3 text-sm text-muted">
           An administrator account is required to configure the model.
+        </p>
+      )}
+    </section>
+  );
+}
+
+type ProseCheck =
+  | { state: "checking" }
+  | { state: "connected" }
+  | { state: "failed"; message: string };
+
+/** Natural-language search on Browse: the admin points it at an
+ * OpenAI-compatible chat server. A separate switch from AI-assisted
+ * matching; the key is write-only and shows only as Stored/Not configured. */
+function ProseSearchCard({
+  config,
+  saving,
+  onSave,
+  runOperation,
+}: {
+  config?: ProseChatConfig;
+  saving: boolean;
+  onSave: SaveProviderSettings;
+  runOperation: RunProviderOperation;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [enabled, setEnabled] = useState(false);
+  const [url, setUrl] = useState("");
+  const [model, setModel] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [forbidden, setForbidden] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [check, setCheck] = useState<ProseCheck | null>(null);
+  const selectRef = useRef<HTMLButtonElement>(null);
+  const { editRef, noticeRef } = useEditorFocusReturn(editing);
+  const clearKeyRef = useRef<HTMLDialogElement>(null);
+  const clearKeyTitleId = useId();
+  const checking = check?.state === "checking";
+  const busy = saving || checking || forbidden;
+  useEffect(() => {
+    if (editing) selectRef.current?.focus();
+  }, [editing]);
+  const unsaved =
+    editing &&
+    Boolean(config) &&
+    (enabled !== config?.enabled ||
+      url.trim() !== config?.url ||
+      model.trim() !== config?.model ||
+      apiKey.trim() !== "");
+  // On needs both values; Off keeps whatever is stored for a later switch-on.
+  const complete = !enabled || (url.trim() !== "" && model.trim() !== "");
+  const checkDisabledReason = !config
+    ? "Loading saved configuration."
+    : unsaved
+      ? "Save the changes, then check the connection."
+      : !config.enabled
+        ? "Natural-language search is off. Turn it on and save to check the connection."
+        : config.error
+          ? "Fix the configuration error below, then check again."
+          : !config.configured
+            ? "Enter the server URL and model, then save to check the connection."
+            : undefined;
+
+  function begin() {
+    if (!config) return;
+    setEnabled(config.enabled);
+    setUrl(config.url);
+    setModel(config.model);
+    setApiKey("");
+    setSaveError(null);
+    setEditing(true);
+  }
+
+  function cancel() {
+    setApiKey("");
+    setSaveError(null);
+    setEditing(false);
+  }
+
+  async function runCheck() {
+    setCheck({ state: "checking" });
+    try {
+      const result = await runOperation(() =>
+        api<{ connected: boolean; error?: string }>("/api/admin/prose/check", {
+          method: "POST",
+          body: "{}",
+        }),
+      );
+      setCheck(
+        result.connected
+          ? { state: "connected" }
+          : { state: "failed", message: result.error ?? "Connection failed." },
+      );
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 403) setForbidden(true);
+      setCheck({ state: "failed", message: messageOf(error) });
+    }
+  }
+
+  async function apply(body: ProviderSettingsPatch, success: string) {
+    setSaveError(null);
+    try {
+      const data = await onSave(body);
+      setApiKey("");
+      setCheck(null);
+      setNotice(success);
+      setEditing(false);
+      // Probe only after persistence succeeds: the endpoint reads saved settings.
+      // A failed probe must not turn a successful save into an error.
+      return data;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 403) setForbidden(true);
+      else setSaveError(messageOf(error));
+      return null;
+    }
+  }
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    if (busy || !config || !complete) return;
+    const key = apiKey.trim();
+    const data = await apply(
+      {
+        proseChatEnabled: enabled,
+        proseChatUrl: url.trim(),
+        proseChatModel: model.trim(),
+        ...(key ? { proseChatApiKey: key } : {}),
+      },
+      enabled ? "Settings saved." : "Natural-language search is off.",
+    );
+    if (data?.proseChat.configured) await runCheck();
+  }
+
+  const connectionState: ConnectionStateLabel = (() => {
+    if (checking) return "Checking…";
+    if (unsaved) return "Unsaved changes";
+    if (config?.error) return "Configuration error";
+    if (check?.state === "failed") return "Connection failed";
+    if (check?.state === "connected") return "Connected";
+    return config?.configured ? "Not checked" : "Not configured";
+  })();
+  const status = (
+    <div className="settings-service-status" aria-live="polite">
+      {config && (config.enabled || unsaved) && (
+        <ConnectionState state={connectionState} />
+      )}
+      {!editing && (
+        <span className={config?.enabled ? "text-muted" : "chip"}>
+          {config ? (config.enabled ? "On" : "Off") : "Loading configuration…"}
+        </span>
+      )}
+    </div>
+  );
+
+  const checkButton = (
+    <button
+      type="button"
+      className="btn"
+      disabled={busy || Boolean(checkDisabledReason)}
+      aria-describedby={checkDisabledReason ? "prose-check-help" : undefined}
+      onClick={() => void runCheck()}
+    >
+      <Icon name="refresh" />
+      {checking ? "Checking…" : "Check connection"}
+    </button>
+  );
+
+  return (
+    <section className="panel p-5" aria-labelledby="prose-heading">
+      <div className="settings-service-summary">
+        <div className="settings-service-heading">
+          <div className="settings-title-row">
+            <h2 id="prose-heading">Natural-language search</h2>
+            {status}
+          </div>
+        </div>
+      </div>
+      <p className="mt-3 text-sm text-muted">
+        Members describe what they want in plain words on Browse, and this
+        OpenAI-compatible chat server turns the text into filters.
+      </p>
+      <p className="mt-2 text-sm text-muted">
+        Member search text goes to this server. This switch is separate from
+        AI-assisted matching.
+      </p>
+      {!editing && config && (
+        <p className="mt-3 text-sm text-muted">
+          {"Server URL: " +
+            (config.url || "Not set") +
+            " · Model: " +
+            (config.model || "Not set") +
+            " · API key: " +
+            (config.keyStored ? "Stored" : "Not configured")}
+        </p>
+      )}
+      {checkDisabledReason && (
+        <p id="prose-check-help" className="mt-3 text-sm text-muted">
+          {checkDisabledReason}
+        </p>
+      )}
+      {config?.error && !unsaved && (
+        <div className="mt-3">
+          <ErrorPanel
+            title="Natural-language search configuration error"
+            message={config.error}
+          />
+        </div>
+      )}
+      {!editing && (
+        <div className="settings-service-buttons settings-card-actions">
+          <button
+            type="button"
+            ref={editRef}
+            className="btn"
+            disabled={busy || !config}
+            onClick={begin}
+          >
+            <Icon name="edit" />
+            Edit
+          </button>
+          {checkButton}
+        </div>
+      )}
+      {editing && (
+        <form
+          id="prose-editor"
+          className="settings-service-editor"
+          onSubmit={(event) => void save(event)}
+        >
+          <div className="space-y-3">
+            <span className="label" id="prose-enabled-label">
+              Natural-language search
+            </span>
+            <div
+              role="group"
+              aria-labelledby="prose-enabled-label"
+              className="segmented"
+            >
+              {(
+                [
+                  [false, "Off"],
+                  [true, "On"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={label}
+                  type="button"
+                  ref={enabled === value ? selectRef : undefined}
+                  aria-pressed={enabled === value}
+                  disabled={busy}
+                  onClick={() => {
+                    setEnabled(value);
+                    setSaveError(null);
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <label className="label" htmlFor="prose-chat-url">
+              Server URL
+            </label>
+            <input
+              id="prose-chat-url"
+              className="input"
+              type="url"
+              required={enabled}
+              maxLength={2048}
+              disabled={busy}
+              value={url}
+              placeholder="http://localhost:11434/v1"
+              onChange={(event) => setUrl(event.target.value)}
+            />
+            <p className="text-sm text-muted">
+              The base URL of an OpenAI-compatible API, for example
+              https://api.openai.com/v1 or http://localhost:11434/v1 for a local
+              Ollama server.
+            </p>
+            <label className="label" htmlFor="prose-chat-model">
+              Model
+            </label>
+            <input
+              id="prose-chat-model"
+              className="input"
+              required={enabled}
+              maxLength={128}
+              disabled={busy}
+              value={model}
+              onChange={(event) => setModel(event.target.value)}
+            />
+            <label className="label" htmlFor="prose-chat-key">
+              API key (optional)
+            </label>
+            <input
+              id="prose-chat-key"
+              className="input"
+              type="password"
+              autoComplete="off"
+              maxLength={512}
+              disabled={busy}
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+              placeholder={
+                config?.keyStored
+                  ? "Leave blank to keep the current credential"
+                  : "Enter an API key if the server needs one"
+              }
+            />
+            <p className="text-sm text-muted">
+              Optional. Hosted models can refuse adult text; a local model
+              avoids this.
+            </p>
+            <div className="settings-service-buttons settings-card-actions">
+              <button
+                type="submit"
+                className="btn btn-accent"
+                disabled={busy || !config || !complete}
+              >
+                <Icon name="check" />
+                Save
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={busy}
+                onClick={cancel}
+              >
+                <Icon name="close" />
+                Cancel
+              </button>
+              {checkButton}
+            </div>
+          </div>
+        </form>
+      )}
+      {editing && config?.keyStored && (
+        <>
+          {/* Clearing deletes a stored secret, so it lives in its own row
+              below the form and asks first. */}
+          <div className="settings-destructive-row">
+            <button
+              type="button"
+              className="btn btn-danger"
+              disabled={busy}
+              onClick={() => clearKeyRef.current?.showModal()}
+            >
+              <Icon name="trash" />
+              Clear stored credential
+            </button>
+          </div>
+          <dialog
+            ref={clearKeyRef}
+            className="bulk-dialog"
+            aria-labelledby={clearKeyTitleId}
+          >
+            <div className="p-5">
+              <h3 id={clearKeyTitleId} className="font-semibold">
+                Clear the stored natural-language search credential?
+              </h3>
+              <p className="mt-2 text-sm text-muted">
+                The stored key is deleted from storage. Requests to the chat
+                server then go without a key.
+              </p>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => clearKeyRef.current?.close()}
+                >
+                  Keep credential
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  disabled={busy}
+                  onClick={() => {
+                    clearKeyRef.current?.close();
+                    void apply(
+                      { proseChatApiKey: "" },
+                      "Stored natural-language search credential cleared.",
+                    );
+                  }}
+                >
+                  Clear credential
+                </button>
+              </div>
+            </div>
+          </dialog>
+        </>
+      )}
+      {notice && !unsaved && (
+        <p
+          ref={noticeRef}
+          className="mt-3 text-sm text-muted"
+          role="status"
+          tabIndex={-1}
+        >
+          {notice}
+        </p>
+      )}
+      {check && !unsaved && (
+        <p
+          className="judgment-check mt-2"
+          data-state={check.state}
+          role="status"
+        >
+          {check.state === "checking"
+            ? "Checking the saved connection…"
+            : check.state === "connected"
+              ? "Connected: the chat server answered with a valid filter draft."
+              : "Connection failed: " + check.message}
+        </p>
+      )}
+      {saveError && (
+        <div className="mt-3">
+          <ErrorPanel
+            title="Saving natural-language search settings failed"
+            message={saveError}
+          />
+        </div>
+      )}
+      {forbidden && (
+        <p className="mt-3 text-sm text-muted">
+          An administrator account is required to configure natural-language
+          search.
         </p>
       )}
     </section>

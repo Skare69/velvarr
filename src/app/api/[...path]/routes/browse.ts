@@ -1,5 +1,5 @@
 import { type AuthContext, json } from "../admission.ts";
-import { parseMediaReference } from "../parse.ts";
+import { parseMediaReference, readJson } from "../parse.ts";
 import type {
   CatalogDetail,
   CatalogKind,
@@ -20,6 +20,10 @@ import {
   type CatalogSearchPage,
 } from "../../../../server/providers.ts";
 import { searchVisibleCatalog } from "../../../../server/browse.ts";
+import { proseSearchStatus } from "../../../../server/prose-chat.ts";
+import { runProseSearch } from "../../../../server/prose-search.ts";
+import { PROSE_TEXT_MAX } from "../../../../lib/prose-draft.ts";
+import type { BrowseTab } from "../../../../lib/browse-entities.ts";
 
 // Year and performer reach the same-work judgment only through a title
 // hint: candidatesMayMatch returns before any ask without one, and
@@ -234,6 +238,61 @@ export async function globalSearch(
   });
 }
 
+// One natural-language search in flight per account: each one costs a chat
+// call plus provider lookups, so a second submit is refused until it ends.
+const proseInFlight = new Set<string>();
+
+export async function proseSearchRoute(
+  request: Request,
+  ctx: AuthContext,
+): Promise<Response> {
+  const status = proseSearchStatus(ctx.account, ctx.config.providers);
+  if (status === "not_configured") {
+    throw new AppError(
+      503,
+      "prose_search_not_configured",
+      "Natural-language search is not set up.",
+    );
+  }
+  if (status === "not_granted") {
+    throw new AppError(
+      403,
+      "forbidden",
+      "Natural-language search is not turned on for this account.",
+    );
+  }
+  const body = await readJson(request);
+  const text = typeof body.text === "string" ? body.text.trim() : "";
+  if (text.length < 2 || text.length > PROSE_TEXT_MAX) {
+    throw new AppError(400, "invalid_query", "Enter 2 to 300 characters.");
+  }
+  const type = body.type;
+  if (type !== "all" && type !== "movie" && type !== "scene") {
+    throw new AppError(
+      400,
+      "invalid_query",
+      "type must be all, movie, or scene.",
+    );
+  }
+  const accountId = ctx.account.id;
+  if (proseInFlight.has(accountId)) {
+    throw new AppError(
+      429,
+      "prose_search_busy",
+      "A search for this account is still running.",
+    );
+  }
+  proseInFlight.add(accountId);
+  try {
+    const tab: BrowseTab = type;
+    return json(
+      await runProseSearch({ text, tab, providers: ctx.config.providers }),
+    );
+  } finally {
+    proseInFlight.delete(accountId);
+  }
+}
+
 /** A matched route: what to run, and the admission it needs. The auth level
  * is part of the shape, so a new branch cannot ship without declaring one;
  * the previous table enforced "remember requireSession here" by discipline. */
@@ -267,6 +326,12 @@ export const routes: RouteDef[] = [
     lane: "preload",
     run: async (ctx, _request, p) =>
       availability(ctx, p.provider!, p.kind!, p.id!),
+  },
+  {
+    method: "POST",
+    segments: ["browse", "prose"],
+    auth: "session",
+    run: async (ctx, request) => proseSearchRoute(request, ctx),
   },
   {
     method: "GET",

@@ -206,6 +206,12 @@ summary:focus-visible,
 .input::placeholder {
   color: color-mix(in oklab, var(--color-muted) 78%, var(--color-panel));
 }
+/* A disabled field reads as disabled, like a disabled button; a typed value
+   stays legible at this opacity. */
+.input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
 /* Inputs show focus once: the edge itself turns accent and thickens to 2px
    (inset ring, no layout shift). The global offset outline would draw a
    second ring around the same field, so inputs drop it. Accent on the panel

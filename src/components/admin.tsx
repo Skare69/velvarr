@@ -227,6 +227,7 @@ function AccountDialog({
   const [enabled, setEnabled] = useState(initial.enabled);
   const [role, setRole] = useState<Role>(initial.role);
   const [autoApprove, setAutoApprove] = useState(initial.autoApprove);
+  const [proseSearch, setProseSearch] = useState(initial.proseSearch);
   const [libIds, setLibIds] = useState<string[]>(initial.libraryIds);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -235,6 +236,7 @@ function AccountDialog({
     (!owner && enabled !== initial.enabled) ||
     (!owner && role !== initial.role) ||
     (!owner && autoApprove !== initial.autoApprove) ||
+    (!owner && proseSearch !== initial.proseSearch) ||
     libIds.length !== initial.libraryIds.length ||
     !libIds.every((x) => initial.libraryIds.includes(x));
 
@@ -261,6 +263,7 @@ function AccountDialog({
             enabled: owner ? initial.enabled : enabled,
             role: owner ? initial.role : role,
             autoApprove: owner ? initial.autoApprove : autoApprove,
+            proseSearch: owner ? initial.proseSearch : proseSearch,
             libraryIds: libIds,
           }),
         },
@@ -361,6 +364,33 @@ function AccountDialog({
             {initial.role === "admin"
               ? "Admin requests are approved the moment they are made."
               : "Lets this user approve their own requests without a moderator."}
+          </p>
+        </div>
+
+        <div>
+          <span className="label">Natural-language search</span>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="check"
+              checked={
+                initial.role === "admin"
+                  ? true
+                  : owner
+                    ? initial.proseSearch
+                    : proseSearch
+              }
+              disabled={owner || initial.role === "admin" || pending}
+              onChange={(e) => setProseSearch(e.target.checked)}
+            />
+            {initial.role === "admin"
+              ? "Always (admin)"
+              : "Can describe searches in plain words"}
+          </label>
+          <p className="mt-1 text-xs text-muted">
+            {initial.role === "admin"
+              ? "Admins can always use natural-language search."
+              : "Lets this user search Browse in plain words. The text goes to the chat server set in Settings."}
           </p>
         </div>
 
