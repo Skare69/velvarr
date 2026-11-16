@@ -280,13 +280,13 @@ h1 em { font-style: normal; color: var(--accent-text); }
             <button class="copy" type="button" id="copy">Copy</button>
           </div>
 <pre role="tabpanel" id="p-unix" aria-labelledby="t-unix"><code>mkdir velvarr &amp;&amp; cd velvarr
-curl -fsSLO https://raw.githubusercontent.com/Skare69/velvarr/main/compose.yaml
+curl -fsSLO https://github.com/Skare69/velvarr/releases/latest/download/compose.yaml
 touch .env.local &amp;&amp; chmod 600 .env.local   <span class="c"># owner-only: the file holds the database key</span>
 printf 'VELVARR_SECRET_KEY=%s\nVELVARR_SETUP_SECRET=%s\n' \
   "$(openssl rand -hex 32)" "$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')" &gt; .env.local
 docker compose up -d</code></pre>
 <pre role="tabpanel" id="p-win" aria-labelledby="t-win" hidden><code>mkdir velvarr; cd velvarr
-Invoke-WebRequest https://raw.githubusercontent.com/Skare69/velvarr/main/compose.yaml -OutFile compose.yaml -UseBasicParsing
+Invoke-WebRequest https://github.com/Skare69/velvarr/releases/latest/download/compose.yaml -OutFile compose.yaml -UseBasicParsing
 $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
 $k = [byte[]]::new(32); $s = [byte[]]::new(32); $rng.GetBytes($k); $rng.GetBytes($s)
 $key = -join ($k | ForEach-Object { $_.ToString('x2') })

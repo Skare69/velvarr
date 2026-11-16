@@ -12,7 +12,7 @@ Docker is the recommended way to run Velvarr. It uses [`compose.yaml`](../compos
 
 ```sh
 mkdir velvarr && cd velvarr
-curl -fsSLO https://raw.githubusercontent.com/Skare69/velvarr/main/compose.yaml
+curl -fsSLO https://github.com/Skare69/velvarr/releases/latest/download/compose.yaml
 touch .env.local && chmod 600 .env.local   # owner-only: the file holds the database key
 printf 'VELVARR_SECRET_KEY=%s\nVELVARR_SETUP_SECRET=%s\n' \
   "$(openssl rand -hex 32)" "$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')" > .env.local
@@ -23,7 +23,7 @@ docker compose up -d
 
 ```powershell
 mkdir velvarr; cd velvarr
-Invoke-WebRequest https://raw.githubusercontent.com/Skare69/velvarr/main/compose.yaml -OutFile compose.yaml -UseBasicParsing
+Invoke-WebRequest https://github.com/Skare69/velvarr/releases/latest/download/compose.yaml -OutFile compose.yaml -UseBasicParsing
 $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
 $k = [byte[]]::new(32); $s = [byte[]]::new(32); $rng.GetBytes($k); $rng.GetBytes($s)
 $key = -join ($k | ForEach-Object { $_.ToString('x2') })
