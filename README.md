@@ -15,6 +15,10 @@
   <a href="https://github.com/Skare69/velvarr/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/skare69/velvarr/actions/workflows/ci.yml/badge.svg"/></a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/ottr-ai/ottr"><img src="https://raw.githubusercontent.com/ottr-ai/ottr/main/.github/assets/built-with-ottr.png" alt="Built with Ottr"></a>
+</p>
+
 ---
 
 **Velvarr** is a free and open source discovery and request app for adult media. Browse movies, scenes, performers, and studios from [TPDB](https://theporndb.net) and [StashDB](https://stashdb.org), request them into **[Whisparr](https://whisparr.com)** (Eros) with administrator approval, and watch in **[Jellyfin](https://jellyfin.org)** through a credential-free link.
@@ -63,16 +67,12 @@ The full feature list: [docs/features.md](docs/features.md).
 - [Features](docs/features.md): the full feature list.
 - [AI matching and natural-language search](docs/ai.md): Ollama decision models and searches in plain words.
 - [Backup and recovery](docs/backup.md): consistent snapshots, restore, and file permissions.
-- [Development](docs/development.md): the development setup, the checks, and the repository layout.
+- [Development](docs/development.md): the development setup and the checks.
 - [How Velvarr works](docs/how-it-works.md): the architecture, the request-to-playback flow, and the acquisition life cycle.
 
 ## Contribute
 
-Build and change Velvarr from source. The setup, the checks, and the repository layout are in [docs/development.md](docs/development.md).
-
-<p align="center">
-  <a href="https://github.com/ottr-ai/ottr"><img src="https://raw.githubusercontent.com/ottr-ai/ottr/main/.github/assets/built-with-ottr.png" alt="Built with Ottr"></a>
-</p>
+Build and change Velvarr from source. The setup and the checks are in [docs/development.md](docs/development.md).
 
 ## License
 
