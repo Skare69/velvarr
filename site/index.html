@@ -67,71 +67,12 @@ code { font-family: var(--mono); font-size: 0.9em; }
 .top .btn { min-height: 36px; padding: 0 14px; font-size: 14px; }
 .btn svg { width: 18px; height: 18px; flex: none; }
 
-/* Hero */
-.hero { position: relative; isolation: isolate; overflow: clip; padding: 96px 0 80px; }
-.hero-art { position: absolute; inset: 0 0 0 auto; width: 56%; z-index: -1; -webkit-mask-image: linear-gradient(90deg, transparent 15%, #000 60%); mask-image: linear-gradient(90deg, transparent 15%, #000 60%); }
-.hero-art::after { content: ""; position: absolute; inset: 0; background: linear-gradient(0deg, var(--canvas), transparent 40%); }
-.hero-art img { width: 100%; height: 100%; object-fit: cover; object-position: 100% 40%; opacity: 0.7; }
-.hero .wrap { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); gap: 56px; align-items: center; }
-.eyebrow { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 22px; padding: 5px 12px 5px 6px; border: 1px solid var(--edge); border-radius: 999px; background: color-mix(in srgb, var(--panel) 80%, transparent); font-size: 13px; font-weight: 600; color: var(--muted); text-decoration: none; }
-.eyebrow b { padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
-.eyebrow:hover { border-color: var(--accent); color: var(--ink); }
-h1 { font-size: clamp(40px, 6.2vw, 76px); line-height: 1.02; letter-spacing: -0.035em; font-weight: 700; max-width: 12ch; }
-.lede { margin: 24px 0 0; max-width: 34em; font-size: clamp(17px, 1.6vw, 19px); color: var(--muted); }
-.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin-top: 36px; }
-.facts { display: flex; flex-wrap: wrap; gap: 8px; margin: 28px 0 0; padding: 0; list-style: none; }
-.facts li { padding: 4px 10px; border: 1px solid var(--edge); border-radius: 5px; background: color-mix(in srgb, var(--panel) 70%, transparent); font-size: 13px; font-weight: 600; color: var(--muted); }
-
-/* Request card: the hero picture */
-.req { position: relative; padding: 22px; border: 1px solid var(--edge); border-radius: 10px; background: color-mix(in srgb, var(--panel) 88%, transparent); backdrop-filter: blur(8px); box-shadow: 0 30px 60px -30px rgb(0 0 0 / 0.7); }
-.req-head { display: flex; gap: 16px; }
-.poster { flex: none; width: 92px; aspect-ratio: 2 / 3; border-radius: 7px; background: url(banner.jpg) 86% 30% / 620% auto; filter: blur(2px) saturate(1.1); outline: 1px solid var(--edge); }
-.req-kind { margin: 2px 0 6px; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
-.req-title { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
-.req-meta { margin: 6px 0 0; font-size: 14px; color: var(--muted); }
-.track { margin: 22px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
-.track li { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 7px; font-size: 14px; color: var(--muted); }
-.track li::before { content: ""; width: 10px; height: 10px; margin-inline: auto; border-radius: 50%; border: 2px solid var(--edge); }
-.track li.done::before { background: var(--ok); border-color: var(--ok); }
-.track li.now { background: var(--raised); color: var(--ink); }
-.track li.now::before { border-color: var(--info); background: var(--info); box-shadow: 0 0 0 4px color-mix(in srgb, var(--info) 25%, transparent); }
-.track li.last.done { background: color-mix(in srgb, var(--ok) 12%, var(--panel)); color: var(--ink); }
-.track .who { font-size: 12px; color: var(--muted); }
-.chip { display: inline-block; padding: 2px 9px; border-radius: 5px; font-size: 12px; font-weight: 600; }
-.chip-pending { background: color-mix(in srgb, var(--warn) 18%, var(--raised)); color: var(--warn); }
-.chip-approved { background: color-mix(in srgb, var(--info) 18%, var(--raised)); color: var(--info); }
-.chip-processing { background: color-mix(in srgb, var(--info) 18%, var(--raised)); color: var(--info); }
-.chip-library { background: color-mix(in srgb, var(--ok) 18%, var(--raised)); color: var(--ok); }
-.req-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--edge); font-size: 13px; color: var(--muted); }
-.watch { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 14px; border-radius: 7px; background: var(--accent); color: var(--accent-ink); font-weight: 600; font-size: 14px; opacity: 0.35; transition: opacity 400ms var(--ease); }
-.req.is-done .watch { opacity: 1; }
-.watch svg { width: 14px; height: 14px; }
-.caption { margin: 12px 4px 0; font-size: 13px; color: var(--muted); }
-
 /* Sections */
 section { padding: 96px 0; }
 section + section { border-top: 1px solid color-mix(in srgb, var(--edge) 45%, transparent); }
 h2 { font-size: clamp(30px, 3.6vw, 44px); line-height: 1.08; letter-spacing: -0.025em; font-weight: 700; }
 .sub { margin: 16px 0 0; max-width: 40em; color: var(--muted); font-size: 17px; }
-.steps { counter-reset: step; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin: 48px 0 0; padding: 0; list-style: none; }
-.steps li { position: relative; padding: 24px 22px 26px; border: 1px solid var(--edge); border-radius: 10px; background: var(--panel); }
-.steps li::before { counter-increment: step; content: counter(step, decimal-leading-zero); display: block; margin-bottom: 28px; font: 600 13px/1 var(--mono); color: var(--accent-text); }
-.steps h3 { font-size: 19px; letter-spacing: -0.01em; }
-.steps p { margin: 8px 0 0; color: var(--muted); font-size: 15px; }
-.steps .sys { display: block; margin-top: 18px; font-size: 13px; font-weight: 600; color: var(--ink); }
-
 .split { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 64px; align-items: start; }
-.rules { margin: 0; padding: 0; list-style: none; display: grid; gap: 0; }
-.rules li { padding: 22px 0; border-top: 1px solid var(--edge); }
-.rules li:last-child { border-bottom: 1px solid var(--edge); }
-.rules b { display: block; font-size: 17px; letter-spacing: -0.01em; }
-.rules span { display: block; margin-top: 6px; color: var(--muted); font-size: 15px; max-width: 46em; }
-
-.features { columns: 2 320px; column-gap: 48px; margin: 40px 0 0; padding: 0; list-style: none; }
-.features li { break-inside: avoid; padding: 0 0 22px; color: var(--muted); font-size: 15px; }
-.features b { color: var(--ink); font-weight: 600; }
-.opt { margin-top: 8px; padding: 18px 20px; border: 1px dashed var(--edge); border-radius: 10px; color: var(--muted); font-size: 15px; }
-.opt b { color: var(--ink); }
 
 /* Install */
 .needs { margin: 28px 0 0; padding: 0; list-style: none; display: grid; gap: 10px; }
@@ -158,33 +99,69 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px 32px; align-items: cent
 footer nav { display: flex; flex-wrap: wrap; gap: 8px 22px; }
 footer .age { flex-basis: 100%; margin: 0; font-size: 13px; }
 
-/* Entrance */
-@media (prefers-reduced-motion: no-preference) {
-  .rise { opacity: 0; transform: translateY(16px); animation: rise 700ms var(--ease) forwards; }
-  .rise:nth-child(2) { animation-delay: 80ms; } .rise:nth-child(3) { animation-delay: 160ms; }
-  .rise:nth-child(4) { animation-delay: 240ms; } .rise:nth-child(5) { animation-delay: 320ms; }
-  .req { animation-delay: 200ms; }
-  .track li { transition: background-color 400ms var(--ease), color 400ms var(--ease); }
-  @keyframes rise { to { opacity: 1; transform: none; } }
-}
+/* Hero */
+.hero { position: relative; isolation: isolate; overflow: clip; padding: 88px 0 0; }
+.hero-art { position: absolute; inset: 0 0 auto auto; width: min(52%, 720px); height: 760px; z-index: -1;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 45%), linear-gradient(180deg, #000 55%, transparent);
+  -webkit-mask-composite: source-in; mask-image: linear-gradient(90deg, transparent, #000 45%), linear-gradient(180deg, #000 55%, transparent); mask-composite: intersect; }
+.hero-art img { width: 100%; height: 100%; object-fit: cover; object-position: 50% 20%; opacity: 0.75; }
+.eyebrow { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 22px; padding: 5px 12px 5px 6px; border: 1px solid var(--edge); border-radius: 999px; background: color-mix(in srgb, var(--panel) 80%, transparent); font-size: 13px; font-weight: 600; color: var(--muted); text-decoration: none; }
+.eyebrow b { padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
+.eyebrow:hover { border-color: var(--accent); color: var(--ink); }
+h1 { font-size: clamp(42px, 6.4vw, 80px); line-height: 1.0; letter-spacing: -0.035em; font-weight: 700; max-width: 11ch; }
+h1 em { font-style: normal; color: var(--accent-text); }
+.lede { margin: 24px 0 0; max-width: 33em; font-size: clamp(17px, 1.6vw, 19px); color: var(--muted); }
+.lede b { color: var(--ink); font-weight: 600; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin-top: 34px; }
+
+/* Screenshots */
+.shot { margin: 0; border: 1px solid var(--edge); border-radius: 14px; overflow: hidden; background: var(--panel);
+  box-shadow: 0 40px 100px -30px rgb(0 0 0 / 0.75), 0 0 0 1px rgb(255 255 255 / 0.03); }
+.shot img { display: block; width: 100%; height: auto; }
+.stage { position: relative; margin-top: 64px; }
+.stage .phone { position: absolute; right: -12px; bottom: -40px; width: 21%; border-radius: 26px; border-width: 6px; border-color: oklch(25% 0.03 325); }
+.note { margin: 64px 0 0; font-size: 13px; color: var(--muted); text-align: center; }
+
+/* Tour */
+#tour { padding-top: 80px; }
+.feat { display: grid; grid-template-columns: minmax(0, 0.72fr) minmax(0, 1.6fr); gap: 56px; align-items: center; }
+.feat + .feat { margin-top: 112px; }
+.feat:nth-child(even) { grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.72fr); }
+.feat:nth-child(even) .say { order: 2; }
+.feat .tall { justify-self: center; width: min(100%, 560px); }
+.feat .kicker { font: 600 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-text); }
+.feat h2 { margin-top: 14px; font-size: clamp(26px, 2.8vw, 36px); }
+.feat p { margin: 14px 0 0; color: var(--muted); font-size: 16px; }
+
+/* Works with */
+.stack { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 40px 0 0; padding: 0; list-style: none; }
+.stack li { padding: 20px; border: 1px solid var(--edge); border-radius: 10px; background: var(--panel); color: var(--muted); font-size: 14px; }
+.stack b { display: block; margin-bottom: 6px; color: var(--ink); font-size: 17px; }
+.stack .opt { grid-column: 1 / -1; background: none; border-style: dashed; }
 
 @media (max-width: 960px) {
-  .hero { padding: 56px 0 72px; }
-  .hero .wrap, .split { grid-template-columns: minmax(0, 1fr); gap: 48px; }
-  .hero-art { inset: 0; width: auto; height: 520px; -webkit-mask-image: linear-gradient(180deg, #000 10%, transparent); mask-image: linear-gradient(180deg, #000 10%, transparent); }
-  .hero-art img { object-position: 100% 0; opacity: 0.35; }
-  .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hero { padding-top: 48px; }
+  .hero-art { width: 100%; height: 520px; opacity: 0.5; -webkit-mask-image: linear-gradient(180deg, #000 10%, transparent); mask-image: linear-gradient(180deg, #000 10%, transparent); }
+  .split, .feat, .feat:nth-child(even) { grid-template-columns: minmax(0, 1fr); gap: 28px; }
+  .feat:nth-child(even) .say { order: 0; }
+  .feat + .feat { margin-top: 72px; }
+  .stage .phone { display: none; }
+  .stack { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   section { padding: 72px 0; }
 }
 @media (max-width: 640px) {
   .top nav a:not(.btn) { display: none; }
-  .steps { grid-template-columns: 1fr; }
-  .steps li::before { margin-bottom: 14px; }
   .actions .btn { flex: 1 1 100%; justify-content: center; }
-  .req { padding: 16px; }
-  .poster { width: 72px; }
-  .req-foot { flex-direction: column; align-items: stretch; }
-  .watch { justify-content: center; }
+  .stack { grid-template-columns: minmax(0, 1fr); }
+  .shot { border-radius: 10px; }
+  .stage > .shot:first-child { display: none; }
+  .stage .phone { display: block; position: static; width: 74%; margin: 0 auto; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rise { opacity: 0; transform: translateY(16px); animation: rise 700ms var(--ease) forwards; }
+  .rise:nth-child(2) { animation-delay: 80ms; } .rise:nth-child(3) { animation-delay: 160ms; } .rise:nth-child(4) { animation-delay: 240ms; }
+  .stage { animation-delay: 300ms; }
+  @keyframes rise { to { opacity: 1; transform: none; } }
 }
 </style>
 </head>
@@ -195,8 +172,7 @@ footer .age { flex-basis: 100%; margin: 0; font-size: 13px; }
   <div class="wrap">
     <a class="brand" href="#top" aria-label="Velvarr home"><img src="logo.png" alt="" width="30" height="30">Velvarr</a>
     <nav aria-label="Main">
-      <a href="#how">How it works</a>
-      <a href="#honest">Status</a>
+      <a href="#tour">Tour</a>
       <a href="#install">Install</a>
       <a href="https://github.com/Skare69/velvarr/tree/main/docs">Docs</a>
       <a class="btn btn-quiet" href="https://github.com/Skare69/velvarr">
@@ -209,89 +185,78 @@ footer .age { flex-basis: 100%; margin: 0; font-size: 13px; }
 
 <main id="main">
   <div class="hero" id="top">
-    <div class="hero-art" aria-hidden="true"><img src="banner.jpg" alt="" fetchpriority="high"></div>
+    <div class="hero-art" aria-hidden="true"><img src="velvet.webp" alt="" fetchpriority="high"></div>
     <div class="wrap">
-      <div>
-        <a class="eyebrow rise" id="release" href="https://github.com/Skare69/velvarr/releases"><b>Releases</b><span>See the changelog on GitHub</span></a>
-        <h1 class="rise">A request app for adult media</h1>
-        <p class="lede rise">Your household browses TPDB and StashDB and asks for a title. You approve it once. Whisparr gets it, and Jellyfin plays it.</p>
-        <div class="actions rise">
-          <a class="btn btn-accent" href="#install">Install with Docker</a>
-          <a href="https://github.com/Skare69/velvarr">Read the source on GitHub</a>
-        </div>
-        <ul class="facts rise" aria-label="Facts">
-          <li>Self-hosted</li><li>MIT license</li><li>One container</li><li>Desktop and phone</li>
-        </ul>
+      <a class="eyebrow rise" id="release" href="https://github.com/Skare69/velvarr/releases"><b>Releases</b><span>See the changelog on GitHub</span></a>
+      <h1 class="rise">Discover it. Request it. <em>Watch it.</em></h1>
+      <p class="lede rise">Velvarr is a self-hosted discovery and request app for adult media. Browse <b>TPDB</b> and <b>StashDB</b>, approve requests into <b>Whisparr</b>, and watch in <b>Jellyfin</b>.</p>
+      <div class="actions rise">
+        <a class="btn btn-accent" href="#install">Install with Docker</a>
+        <a href="https://github.com/Skare69/velvarr">View the source on GitHub</a>
       </div>
-
-      <figure class="rise" style="margin:0">
-        <div class="req" id="req">
-          <div class="req-head">
-            <div class="poster" role="img" aria-label="Poster, blurred on this page"></div>
-            <div>
-              <p class="req-kind">Scene · StashDB</p>
-              <div class="req-title">Example request</div>
-              <p class="req-meta">Requested by a household member</p>
-            </div>
-          </div>
-          <ol class="track" aria-label="Request status">
-            <li data-step="0"><span>Pending</span><span class="who">waits for a decision</span></li>
-            <li data-step="1"><span>Approved</span><span class="who">administrator or moderator</span></li>
-            <li data-step="2"><span>Processing</span><span class="who">Whisparr downloads it</span></li>
-            <li data-step="3" class="last"><span>In library</span><span class="who">Jellyfin has the file</span></li>
-          </ol>
-          <div class="req-foot">
-            <span id="req-state" aria-live="polite">Status: <span class="chip chip-library">In library</span></span>
-            <span class="watch"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2.5v11l9-5.5z"/></svg>Watch in Jellyfin</span>
-          </div>
-        </div>
-        <figcaption class="caption">The statuses that a request shows in Velvarr. Artwork is blurred on this page.</figcaption>
-      </figure>
+      <div class="stage rise">
+        <figure class="shot"><img src="shots/discover.webp" alt="Velvarr Discover page with shelves of new scenes, trending movies and titles recently added to Jellyfin" width="2000" height="1250" decoding="async"></figure>
+        <figure class="shot phone"><img src="shots/discover-mobile.webp" alt="Velvarr Discover page on a phone, with the bottom navigation bar" width="780" height="1688" loading="lazy" decoding="async"></figure>
+      </div>
+      <p class="note">Screenshots show the real app with invented titles and names. AI generated the pictures.</p>
     </div>
   </div>
 
-  <section id="how">
+  <section id="tour" aria-label="Tour">
     <div class="wrap">
-      <h2>One request, from browse to play</h2>
-      <p class="sub">Velvarr joins four tools that you already run or use. Each step names the system that does the work.</p>
-      <ol class="steps">
-        <li><h3>Browse</h3><p>Movies, scenes, performers, and studios in one grid, with filters that the URL keeps.</p><span class="sys">TPDB and StashDB</span></li>
-        <li><h3>Request</h3><p>A member sends one request. Each account can hold up to 500 requests that wait for a decision.</p><span class="sys">Velvarr</span></li>
-        <li><h3>Approve</h3><p>An administrator or moderator decides. An account with the auto-approve grant skips the wait.</p><span class="sys">Velvarr, then Whisparr V3</span></li>
-        <li><h3>Watch</h3><p>When the file is in the library, each user gets a watch link that needs no Jellyfin sign-in.</p><span class="sys">Jellyfin</span></li>
-      </ol>
-    </div>
-  </section>
-
-  <section id="honest">
-    <div class="wrap split">
-      <div>
-        <h2>Every status is the real status</h2>
-        <p class="sub">A plain true status beats a pretty guess. These rules hold everywhere in the app.</p>
+    <article class="feat">
+      <div class="say">
+        <span class="kicker">Browse</span>
+        <h2>Filters that go deeper than a genre list</h2>
+        <p>Mix provider tags with free-text terms, group tags with “or”, exclude what you never want, and match any or all of several performers. Add studios and release dates. The URL holds every filter, so a search is a link you can share.</p>
       </div>
-      <ul class="rules">
-        <li><b>No name matching</b><span>A TPDB record and a StashDB record count as one title only when the providers publish the link between them.</span></li>
-        <li><b>No lost or double adds</b><span>Velvarr records each attempt before it calls Whisparr, so a restart never loses or duplicates an add.</span></li>
-        <li><b>Failures have names</b><span>When a source fails, the page says which one and why. A partial result never reads as complete.</span></li>
-        <li><b>AI never decides availability</b><span>Optional AI matching only flags a near match for an administrator to review.</span></li>
-      </ul>
+      <figure class="shot tall"><img src="shots/browse-filters.webp" alt="Velvarr Browse view with the filter drawer open: two performers matched by any, a Lingerie or Velvet tag group, a free-text tag, and a release-date filter" width="1555" height="1800" loading="lazy" decoding="async"></figure>
+    </article>
+    <article class="feat">
+      <div class="say">
+        <span class="kicker">AI search, optional</span>
+        <h2>Describe it, get the filters</h2>
+        <p>Type what you want in plain words. A model that you host drafts the filters, Velvarr checks each tag, performer and studio against the providers, and lists every part that it did not apply.</p>
+      </div>
+      <figure class="shot"><img src="shots/prose.webp" alt="Velvarr natural-language search: a sentence turned into scene type, tag, performer and date filters, with notes for the parts it did not apply" width="1800" height="957" loading="lazy" decoding="async"></figure>
+    </article>
+    <article class="feat">
+      <div class="say">
+        <span class="kicker">Performers</span>
+        <h2>One page per performer, from both sources</h2>
+        <p>Bio facts, aliases and links in the header, then her most frequent tags and every movie and scene. When TPDB and StashDB publish a link between two records, Velvarr shows them as one person. Follow her to get new releases on Discover.</p>
+      </div>
+      <figure class="shot"><img src="shots/performer.webp" alt="Velvarr performer page with portrait, facts, follow button, counted tags and a movie grid" width="1800" height="1010" loading="lazy" decoding="async"></figure>
+    </article>
+    <article class="feat">
+      <div class="say">
+        <span class="kicker">Requests</span>
+        <h2>Ask once, approve once</h2>
+        <p>A household member sends a request. An administrator or moderator approves it, and Velvarr hands it to Whisparr. Each row shows the real state: pending, approved, downloading with its progress, or in the library.</p>
+      </div>
+      <figure class="shot"><img src="shots/requests.webp" alt="Velvarr Requests view with two pending requests that have Approve and Decline buttons, and an approved request that downloads at 62 percent" width="1800" height="1226" loading="lazy" decoding="async"></figure>
+    </article>
+    <article class="feat">
+      <div class="say">
+        <span class="kicker">Watch</span>
+        <h2>Play it in Jellyfin</h2>
+        <p>When the file is in the library, the title page shows the file facts and a Play button. Each member signs in with their own Jellyfin account and sees only their own libraries.</p>
+      </div>
+      <figure class="shot"><img src="shots/detail-movie.webp" alt="Velvarr movie page marked Available, with file facts and a Play on Jellyfin button" width="1800" height="1010" loading="lazy" decoding="async"></figure>
+    </article>
     </div>
   </section>
 
-  <section id="features">
+  <section id="stack">
     <div class="wrap">
-      <h2>What you get</h2>
-      <ul class="features">
-        <li><b>Catalogs.</b> Movies from TPDB, scenes from TPDB and StashDB, performers, and studios, with each provider’s filters and sort orders.</li>
-        <li><b>Browse.</b> Search, tag include and exclude, up to five performers and five studios, and date ranges. A filter that a source cannot apply says so beside the grid.</li>
-        <li><b>Requests and approvals.</b> Administrator or moderator approval, with an optional auto-approve grant for each account.</li>
-        <li><b>Jellyfin sign-in and playback.</b> Members sign in with their Jellyfin accounts and see availability for their own libraries.</li>
-        <li><b>Performer follows.</b> Follow performers across both providers, with a Following view and a Discover rail.</li>
-        <li><b>Preferences.</b> Hidden tags and Discover shelf order for each account.</li>
-        <li><b>Similar titles.</b> Similar movies and scenes, and “Often appears with” for performers.</li>
-        <li><b>Update notice.</b> The app tells you when a newer GitHub release is out.</li>
+      <h2>Works with what you already run</h2>
+      <ul class="stack">
+        <li><b>TPDB</b>Movies, scenes, performers and studios.</li>
+        <li><b>StashDB</b>Scenes, performers and studios.</li>
+        <li><b>Whisparr V3</b>Downloads the titles you approve.</li>
+        <li><b>Jellyfin</b>Sign-in, libraries and playback.</li>
+        <li class="opt"><b>Optional</b>Discord notifications, AI title matching through an Ollama model or TypeSafe, and natural-language search through an OpenAI-compatible server that you set up.</li>
       </ul>
-      <p class="opt"><b>Optional:</b> Discord notifications, AI-assisted title matching through TypeSafe or an Ollama model, and natural-language search through an OpenAI-compatible server that you set up. Velvarr checks each tag, performer, and studio before it applies a drafted filter.</p>
     </div>
   </section>
 
@@ -394,20 +359,6 @@ copy.addEventListener("click", async () => {
   setTimeout(() => (copy.textContent = "Copy"), 1800);
 });
 
-// The request card walks through its statuses once. The final state is in the markup, so no JS or reduced motion shows "In library".
-const card = document.getElementById("req");
-const steps = [...card.querySelectorAll(".track li")];
-const state = document.getElementById("req-state");
-const chips = [["Pending", "pending"], ["Approved", "approved"], ["Processing", "processing"], ["In library", "library"]];
-function show(n) {
-  steps.forEach((li, i) => { li.classList.toggle("done", i < n || (i === 3 && n === 3)); li.classList.toggle("now", i === n && n < 3); });
-  state.innerHTML = 'Status: <span class="chip chip-' + chips[n][1] + '">' + chips[n][0] + "</span>";
-  card.classList.toggle("is-done", n === 3);
-}
-if (matchMedia("(prefers-reduced-motion: no-preference)").matches) {
-  show(0);
-  [1, 2, 3].forEach(n => setTimeout(() => show(n), 900 + n * 1100));
-} else show(3);
 </script>
 </body>
 </html>
