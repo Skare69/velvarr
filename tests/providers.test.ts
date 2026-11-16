@@ -2096,8 +2096,8 @@ test("artwork store: a restart serves the variant from disk without an upstream 
     const file = artworkStorePath(sourceHash, 400);
     assert.ok(existsSync(file));
     // Age the stored file so the next touch can only move mtime forward.
-    const before = statSync(file).mtimeMs;
-    utimesSync(file, new Date(before - 60_000), new Date(before - 60_000));
+    const aged = statSync(file).mtimeMs - 60_000;
+    utimesSync(file, new Date(aged), new Date(aged));
 
     // resetMetaCache clears the memory source cache; the URL index and the
     // variant file survive it, so the restart read never reaches upstream.
@@ -2107,7 +2107,7 @@ test("artwork store: a restart serves the variant from disk without an upstream 
     assert.equal(second.contentType, "image/webp");
     assert.deepEqual([...second.bytes], [...first.bytes]);
     assert.ok(statSync(file).size > 0);
-    assert.ok(statSync(file).mtimeMs > before, "disk hit must touch the file");
+    assert.ok(statSync(file).mtimeMs > aged, "disk hit must touch the file");
   } finally {
     await fixture.close();
   }
