@@ -7,6 +7,12 @@
 # Local-only project documentation.
 /docs/*
 !/docs/how-it-works.md
+!/docs/install.md
+!/docs/configuration.md
+!/docs/features.md
+!/docs/ai.md
+!/docs/backup.md
+!/docs/development.md
 
 # Generated files.
 /node_modules/

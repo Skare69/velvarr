@@ -1671,7 +1671,7 @@ test("update chip: cache windows — one hour after success, one minute after fa
   let seenAccept = "";
   let stub: () => Response = () => Response.json({});
   try {
-    // README promises github is asked "at most once an hour after a
+    // docs/configuration.md promises github is asked "at most once an hour after a
     // success" and at most once a minute while it fails. The windows are
     // hardcoded here, not imported, so swapping FRESH_MS or
     // FAILURE_BACKOFF_MS in src/server/update.ts fails this test.

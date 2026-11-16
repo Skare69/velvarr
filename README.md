@@ -5,31 +5,25 @@
 <h1 align="center">Velvarr – The discovery and request app for adult media</h1>
 
 <p align="center">
-  <a href="https://github.com/Skare69/velvarr/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/skare69/velvarr/actions/workflows/ci.yml/badge.svg"/></a>
-  <a href="https://bun.sh"><img alt="Package manager: Bun" src="https://img.shields.io/badge/package%20manager-Bun-000000?logo=bun&logoColor=white"/></a>
-  <a href="https://nodejs.org"><img alt="Runtime: Node.js 24" src="https://img.shields.io/badge/runtime-Node.js%2024-339933?logo=node.js&logoColor=white"/></a>
-  <a href="https://nextjs.org"><img alt="Next.js version" src="https://img.shields.io/github/package-json/dependency-version/Skare69/velvarr/next?label=Next.js&logo=nextdotjs&logoColor=white&color=000000"/></a>
-  <a href="https://react.dev"><img alt="React version" src="https://img.shields.io/github/package-json/dependency-version/Skare69/velvarr/react?label=React&logo=react&logoColor=white&color=61dafb"/></a>
-  <a href="https://www.typescriptlang.org"><img alt="TypeScript version" src="https://img.shields.io/github/package-json/dependency-version/Skare69/velvarr/dev/typescript?label=TypeScript&logo=typescript&logoColor=white&color=3178c6"/></a>
-  <a href="https://github.com/Skare69/velvarr/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/Skare69/velvarr?logo=github"/></a>
+  <a href="#install">Install</a> &ensp;·&ensp;
+  <a href="#quick-start">Quick start</a> &ensp;·&ensp;
+  <a href="docs/how-it-works.md">Documentation</a> &ensp;·&ensp;
+  <a href="https://github.com/Skare69/velvarr/releases">Releases</a>
 </p>
+
 <p align="center">
-  <a href="https://github.com/ottr-ai/ottr"><img src="https://raw.githubusercontent.com/ottr-ai/ottr/main/.github/assets/built-with-ottr.png" alt="Built with Ottr"></a>
+  <a href="https://github.com/Skare69/velvarr/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/skare69/velvarr/actions/workflows/ci.yml/badge.svg"/></a>
 </p>
 
 ---
 
 **Velvarr** is a free and open source discovery and request app for adult media. Browse movies, scenes, performers, and studios from [TPDB](https://theporndb.net) and [StashDB](https://stashdb.org), request them into **[Whisparr](https://whisparr.com)** (Eros) with administrator approval, and watch in **[Jellyfin](https://jellyfin.org)** through a credential-free link.
 
-## Getting started
+A household member finds a title and sends one request. An administrator or moderator approves it, and Velvarr delivers it to Whisparr. When the file is in the library, each Jellyfin user gets a watch link that needs no Jellyfin sign-in.
+
+## Install
 
 Docker is the recommended way to run Velvarr. It uses [`compose.yaml`](compose.yaml) and the image `ghcr.io/skare69/velvarr`.
-
-1. Get the compose file.
-2. Create `.env.local` with the operator secrets. Without it, you cannot create the owner account.
-3. Start the container and open http://127.0.0.1:6699.
-
-**Linux and macOS:**
 
 ```sh
 mkdir velvarr && cd velvarr
@@ -40,177 +34,45 @@ printf 'VELVARR_SECRET_KEY=%s\nVELVARR_SETUP_SECRET=%s\n' \
 docker compose up -d
 ```
 
-**Windows (PowerShell):**
-
-```powershell
-mkdir velvarr; cd velvarr
-Invoke-WebRequest https://raw.githubusercontent.com/Skare69/velvarr/main/compose.yaml -OutFile compose.yaml -UseBasicParsing
-$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
-$k = [byte[]]::new(32); $s = [byte[]]::new(32); $rng.GetBytes($k); $rng.GetBytes($s)
-$key = -join ($k | ForEach-Object { $_.ToString('x2') })
-$setup = [Convert]::ToBase64String($s).TrimEnd('=').Replace('+', '-').Replace('/', '_')
-Set-Content .env.local "VELVARR_SECRET_KEY=$key`nVELVARR_SETUP_SECRET=$setup" -Encoding ascii
-docker compose up -d
-```
-
 > [!IMPORTANT]
 > Back up `VELVARR_SECRET_KEY`. If you lose it, you cannot read the database or any backup.
 
-On the first visit, enter `VELVARR_SETUP_SECRET` as the setup secret to create the owner account.
+The Windows commands, upgrades, health checks, and phone access: [docs/install.md](docs/install.md). Every variable is in [docs/configuration.md](docs/configuration.md).
 
-**Upgrade:** set the new image tag in `compose.yaml`, then run `docker compose pull && docker compose up -d`.
+## Quick start
 
-**Health:** the container health check reads `/api/status`. If the container is `unhealthy`, `/api/status` failed: Velvarr cannot open `/data`, or the database file is not a Velvarr database or was written by a newer version. Run `docker compose logs velvarr` to see the cause.
-
-## Development
-
-Requires Node 24.21+ and Bun 1.3.14+. The commands are the same on Linux, macOS, and Windows.
-
-```sh
-git clone https://github.com/Skare69/velvarr.git && cd velvarr
-bun install
-bun run setup   # writes .env.local with fresh secrets; never overwrites it
-bun run dev     # http://127.0.0.1:6699
-```
-
-Checks before a commit:
-
-```sh
-bun run format && bun run check && bun run test && bun run build
-```
-
-[`docs/how-it-works.md`](docs/how-it-works.md) explains how the code is
-put together: the architecture map, the request-to-playback flow, and
-the acquisition life cycle, each tied to its source paths.
+1. Open http://127.0.0.1:6699.
+2. Enter `VELVARR_SETUP_SECRET` as the setup secret to create the owner account.
+3. Save your TPDB token and StashDB key in Settings.
+4. Browse, and request a title into Whisparr. An administrator or moderator approves it, or the account holds the auto-approve grant.
+5. Open the approved title and watch it in Jellyfin through the credential-free link.
 
 ## Features
 
-- **Catalogs:** movies (TPDB), scenes (TPDB and StashDB), performers, and studios, with the filters and sort orders that each provider supports.
-- **Browse:** one grid for TPDB movies and StashDB scenes, with search, tag include and exclude ("or" groups included), up to five performers with an all-or-any choice, up to five studios, a year range, and date filters. A filter an entry cannot ride on one source says so in a note beside the grid. The URL holds every filter.
-- **Search, Studios, and Genres** across both providers. Velvarr never merges results across providers. Cross-provider identity comes only from links that the providers publish.
-- **Requests** with administrator or moderator approval, and an optional auto-approve grant for each account. Each account can have a maximum of 500 requests that wait for a decision.
-- **Crash-safe acquisition into Whisparr:** Velvarr records each attempt before the network call, so a restart never loses or duplicates an add.
-- **Jellyfin availability** for each user, and watch links without credentials.
-- **Performer follows** across both providers, with a Following view and a Discover rail.
-- **Preferences:** hidden tags and Discover shelf order for each account.
-- **Similar titles** for movies and scenes, and **Often appears with** for performers.
-- **Update notice** when a newer GitHub release is available.
-- **Optional:** Discord notifications, and AI-assisted title matching through [TypeSafe](https://typesafe.ai) or an [Ollama](#ai-matching-with-ollama) decision model. AI only flags a near match for administrator review. It never marks a title as available.
-- **Optional natural-language search** on Browse: a member describes a search in plain words, and an [OpenAI-compatible chat server](#natural-language-search) that you set up writes a draft of the filters. Velvarr checks each tag, performer, and studio against the providers before it applies a filter, and lists each part that it did not apply.
+- Catalogs and one Browse grid across TPDB and StashDB: movies, scenes, performers, and studios, with filters that the URL holds.
+- Requests with administrator or moderator approval, crash-safe acquisition into Whisparr, and per-user Jellyfin watch links.
+- Performer follows, per-account preferences, similar titles, and an update notice for new releases.
+- Optional: Discord notifications, AI-assisted title matching, and natural-language search.
 
-## Configuration
+The full feature list: [docs/features.md](docs/features.md).
 
-Put the variables in `.env.local`.
+## Learn more
 
-| Variable                      | Required        | Meaning |
-| ----------------------------- | --------------- | ------- |
-| `VELVARR_SECRET_KEY`          | yes             | 64 hex characters. Decrypts the credentials in the database. A restore needs the key from the time of the backup. |
-| `VELVARR_SETUP_SECRET`        | until bootstrap | 32 characters or more. Gates the one-time owner setup. |
-| `VELVARR_ORIGIN`              | no              | The public origin, for example behind a reverse proxy. Velvarr refuses changes from other origins. An `https:` origin marks the session cookie `Secure`. |
-| `VELVARR_DATA_DIR`            | no              | Data directory. Default `./data`, and `/data` in the container. |
-| `VELVARR_ALLOW_HTTP`          | no              | `1` allows plain HTTP to private and Docker-network addresses. |
-| `VELVARR_DISCORD_WEBHOOK_URL` | no              | Private Discord webhook (https only). |
-| `VELVARR_DISCORD_DETAIL`      | no              | `1` adds titles to notifications. By default, messages contain only identities. |
-| `VELVARR_WHISPARR_LIBRARY_LIMIT_MIB` | no      | Maximum size in MiB of the Whisparr library list (`/api/v3/movie`), as decoded JSON. A whole number from 2 to 256. Default 32, about 5,000 titles. Increase it for a larger library. An invalid value stops the Whisparr path lookups with `bad_whisparr_config`. |
-| `TPDB_API_TOKEN`              | no              | TPDB token for calls made without a token saved in Settings. A saved token wins. |
-| `STASHDB_API_KEY`             | no              | StashDB key for calls made without a key saved in Settings. A saved key wins. |
-| `TPDB_BASE_URL`               | no              | TPDB API root override. Default `https://api.theporndb.net`. |
-| `STASHDB_BASE_URL`            | no              | StashDB API root override. Default `https://stashdb.org`. |
-| `TYPESAFE_BASE_URL`           | no              | TypeSafe cloud API root override. Unset uses the TypeSafe default. |
-| `TYPESAFE_DEFAULT_MODEL`      | no              | TypeSafe decision model override. Unset uses the TypeSafe default. |
-| `TYPESAFE_API_KEY`            | no              | TypeSafe key for AI-assisted matching. A key saved in Settings wins. Tag suggestions need a key saved in Settings. |
-| `VELVARR_JUDGMENT_PROVIDER`   | no              | `typesafe` (default), `ollama`, or `none` to disable AI. A choice saved in Settings wins. Tag suggestions need a choice saved in Settings. |
-| `OLLAMA_BASE_URL`             | no              | Ollama API root. Default `http://localhost:11434`. |
-| `OLLAMA_MODEL`                | no              | Ollama decision model. Default `nimble`. |
-| `VELVARR_UPDATE_CHECK`        | no              | `0` disables the release check. Otherwise, the server asks `api.github.com` at most once an hour after a success and at most once a minute while it fails (a 403/429 `retry-after` or `x-ratelimit-reset` extends the wait); while a check fails, the last known answer stays up. |
+- [Install](docs/install.md): every install variant, upgrades, health checks, and phone access.
+- [Configuration](docs/configuration.md): every environment variable, origins and cookies, and sign-in limits.
+- [Features](docs/features.md): the full feature list.
+- [AI matching and natural-language search](docs/ai.md): Ollama decision models and searches in plain words.
+- [Backup and recovery](docs/backup.md): consistent snapshots, restore, and file permissions.
+- [Development](docs/development.md): the development setup, the checks, and the repository layout.
+- [How Velvarr works](docs/how-it-works.md): the architecture, the request-to-playback flow, and the acquisition life cycle.
 
-Unless `VELVARR_ORIGIN` is `https:`, the cookie is `Secure` only when the proxy sends `X-Forwarded-Proto: https` or the request URL is https. On each change request, a supplied `Sec-Fetch-Site` header must say `same-origin`, and a request that sends a body or a `Content-Type` header must send `application/json`.
+## Contribute
 
-When `VELVARR_ORIGIN` is not set and a change request has no `Sec-Fetch-Site` header, the request must send an `Origin` header that names the host that receives the request (`Host` or `X-Forwarded-Host`). A request with neither header fails with `origin_missing`, as it does when `VELVARR_ORIGIN` is set. Browsers on plain-HTTP LAN addresses send no `Sec-Fetch-Site` header, but current browsers send `Origin` on each change request. This rule stops other apps on the same host from changing data, for example to sign you out. If a plain-HTTP proxy changes the `Host` header and changes fail with `origin_mismatch`, set `VELVARR_ORIGIN`.
+Build and change Velvarr from source. The setup, the checks, and the repository layout are in [docs/development.md](docs/development.md).
 
-Browsers send a cookie to all ports of a host. Thus another app on the same host can set a second `velvarr_session` cookie. When a request has more than one `velvarr_session` cookie, Velvarr uses none of them and asks you to sign in. If Velvarr asks you to sign in again after each sign-in, clear the cookies for the host in your browser.
-
-Each failed sign-in writes one log line: `[auth] failed sign-in attempt: account="<name>" ip="<address>"`. The log never contains the password. The address is the first `X-Forwarded-For` entry, or `unknown`. A client can set this header. Trust the address only when your proxy replaces the header.
-
-After 5 wrong passwords for one name in 5 minutes, Velvarr refuses new sign-ins for that name until the 5 minutes end. A browser that signed in correctly before has a known-device cookie (`velvarr_device`, valid for 30 days, sent only to `/api/login`). That browser has its own limit of 5 wrong passwords, so wrong passwords from other clients do not block it. Open sessions continue to work.
-
-## Phone access
-
-Velvarr is an installable app, but the install prompt needs HTTPS. [Tailscale](https://tailscale.com) gives you HTTPS with little work:
-
-1. In the Tailscale admin console, enable MagicDNS and HTTPS certificates.
-2. On the Velvarr machine, run `tailscale serve --bg 6699`.
-3. On the phone, open `https://<machine>.<tailnet>.ts.net` and select **Add to home screen**.
-
-- If `VELVARR_ORIGIN` holds a different address, phone sign-in fails with `origin_mismatch`. Set it to the ts.net address or remove it. Only one origin can be set.
-- The service worker caches only build assets, never `/api` or live data. It registers only on HTTPS or loopback, and never in development builds.
-
-## AI matching with Ollama
-
-Use Ollama 0.35 or later with a decision model such as `nimble` or `tev1`. Chat models do not support the `/v1/systemone` endpoint.
-
-```sh
-ollama pull nimble
-```
-
-1. Open **Settings → Metadata providers → AI-assisted matching**, click **Edit**, and select **Ollama**.
-2. Enter a reachable Ollama URL and the model name from `ollama list`, then **Save**. Saving checks the connection and shows **Connected** or **Connection failed** with details.
-3. Use **Check connection** to test again.
-
-Ollama can run on the same machine or a hosted server reachable from Velvarr. Example URLs:
-
-- Velvarr runs natively on the same machine: `http://localhost:11434`.
-- Velvarr runs in Docker Desktop: `http://host.docker.internal:11434`, and set `VELVARR_ALLOW_HTTP=1`.
-- Ollama runs on a different host: use its private address. See the [Ollama network guide](https://docs.ollama.com/faq#how-do-i-configure-ollama-server).
-
-Ollama never falls back to the paid TypeSafe service. If the connection fails, matching stays exact. You can also use the `VELVARR_JUDGMENT_PROVIDER`, `OLLAMA_BASE_URL`, and `OLLAMA_MODEL` variables. **Use environment settings** clears the stored provider selection, URL, and model. Environment-only Ollama supports title review and related-title ranking; tag suggestions send member search terms, so they start only after the Ollama choice is saved in Settings. Test some real title variants before you select a model.
-
-Select **Standard matching (no AI)** and **Save** to disable AI calls even when TypeSafe credentials or Ollama settings are present. The settings are preserved for later reuse. TypeSafe configuration also checks its connection after saving.
-
-**Rollback:** The stored `none` choice requires a build that supports it. Before rolling back to v0.40.0 or earlier, select **Use environment settings**, confirm `VELVARR_JUDGMENT_PROVIDER` is `typesafe` or `ollama` (or unset), and back up the configuration. Older builds do not recognize `none`; do not assume AI stays disabled after a rollback.
-
-## Natural-language search
-
-Members can describe a search in plain words on Browse, for example "Vixen scenes from 2019, newest first". Velvarr sends the text to an OpenAI-compatible chat server, and the server writes a draft of the filters. Velvarr checks each tag, performer, and studio against TPDB and StashDB, applies the filters that match, and lists each part that it did not apply, with the reason. The search replaces the current filters. The browser **Back** button restores them.
-
-1. Open **Settings → Metadata providers → Natural-language search**, click **Edit**, and select **On**.
-2. Enter the server URL, the model name, and an API key if the server needs one, then click **Save**. Saving checks the connection and shows **Connected** or **Connection failed** with the cause.
-3. Use **Check connection** to test again.
-
-The server must support the Chat Completions API with a `json_schema` response format. Example URLs:
-
-- OpenAI: `https://api.openai.com/v1`.
-- Ollama on the same machine: `http://localhost:11434/v1`.
-- LM Studio on the same machine: `http://localhost:1234/v1`.
-
-Plain HTTP works for loopback addresses. For a private address or `host.docker.internal`, set `VELVARR_ALLOW_HTTP=1`.
-
-Administrators can always use natural-language search. Other accounts need the grant: open **Users**, edit the account, and under **Natural-language search**, select **Can describe searches in plain words**. A grant change signs that account out.
-
-- Member search text goes to the server that you set. A hosted server can be a third party.
-- Hosted models can refuse adult text. The search then fails with a message that says so. A local model, for example in Ollama or LM Studio, has no hosted content filter.
-- This switch is separate from AI-assisted matching. **Standard matching (no AI)** does not turn off natural-language search.
-- The stored API key stays bound to the origin of the server URL. When you move the URL to a different origin, enter the key again.
-- Velvarr never shows the stored API key. When the server repeats the key in an error message, the connection check shows `[redacted]` in its place. This also applies to each part of the key with 8 or more characters. A search reply that repeats the key fails with an error.
-- **Off** keeps the URL, the model, and the key for later use.
-
-## Backup and recovery
-
-```sh
-bun run backup /backups/velvarr.sqlite   # consistent online snapshot; refuses to overwrite
-```
-
-To restore, copy the snapshot as `velvarr.sqlite` into a new, empty data directory. Start Velvarr with the same `VELVARR_SECRET_KEY` as at backup time. The backup does not contain the key.
-
-Velvarr creates the database, its WAL files, and each backup owner-only (mode `600`), because they hold the encrypted credentials and sessions. At startup, Velvarr also sets mode `600` on an existing database that other accounts can read. On Windows, these modes do not apply. Keep the backup folder private too.
-
-## Repository layout
-
-| Branch / remote         | Contents |
-| ----------------------- | -------- |
-| `main`                  | The standalone product, without Seerr application code |
-| `legacy/seerr-whisparr` | Seerr integration snapshot, for reference only |
-| `upstream`              | [seerr-team/seerr](https://github.com/seerr-team/seerr), not a merge source |
+<p align="center">
+  <a href="https://github.com/ottr-ai/ottr"><img src="https://raw.githubusercontent.com/ottr-ai/ottr/main/.github/assets/built-with-ottr.png" alt="Built with Ottr"></a>
+</p>
 
 ## License
 

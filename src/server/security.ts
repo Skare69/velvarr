@@ -94,7 +94,7 @@ function enforceOriginConfig(): URL {
   }
   // Loopback plain HTTP is always fine. The flag unlocks private/Docker
   // addresses (isPrivateHost) — never a public HTTP origin, which is what
-  // README.md, scripts/setup.mjs and compose.yaml all promise.
+  // docs/configuration.md, scripts/setup.mjs and compose.yaml all promise.
   if (url.protocol !== "https:" && !isLoopbackHost(url.hostname)) {
     if (
       !isPrivateHost(url.hostname) ||
