@@ -1,4 +1,4 @@
-# Credentials and runtime data, including leftovers from the Seerr checkout.
+# Credentials and runtime data.
 .env*
 /config/
 /data/
