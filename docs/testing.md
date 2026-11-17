@@ -64,10 +64,12 @@ providers uses its credential and AI modules.
 
 [`src/components/settings-service.tsx`](../src/components/settings-service.tsx)
 supplies both tabs with the same heading/actions layout, status indicator,
-editor focus return, configuration loading/saving, save feedback, check buttons,
-confirmation dialogs, and the settings-wide save/check queue. Both tabs also use
-the same card, status, editor, and dropdown styles in `src/app/globals.css`.
-The browser suites exercise these shared components through each tab.
+editor focus return, configuration reads and saves, save feedback, check buttons,
+confirmation dialogs, and the queue for saves and the checks after a save.
+Checks on load and manual checks bypass that queue and do not disable other cards.
+Both tabs use the same card, status, editor, and dropdown styles in
+`src/app/globals.css`. The browser suites exercise these shared components through
+each tab.
 
 The UI composition follows the same structure for each tab:
 
@@ -97,7 +99,7 @@ Ollama fields. The operator guides for [Connections](connections.md) and
 | `tests/connection-card.test.ts` | Connections card lifecycle | Edit/Cancel, unchanged and invalid saves, persistence/probe ordering, failed saves and checks, permission failures, busy guards, and confirmed removal |
 | `tests/api.test.ts` | Both tabs and other application APIs | Server authorization, validation, persistence, and preservation of unrelated settings |
 | `tests/provider-settings.test.ts` | Metadata settings rules | Credential save/check/clear decisions and status handling |
-| `tests/settings-service.test.ts` | Shared settings rules | Common status labels, same-tick save/probe ordering, and recovery after failures |
+| `tests/settings-service.test.ts` | Shared settings rules | Common status labels, same-tick saves and checks after a save, and recovery after failures |
 | `tests/provider-card.test.ts` | Metadata credential card lifecycle | TPDB/StashDB editor state, save flow, credential clearing, failed and forbidden saves, and editor markup |
 | `tests/judgment-editor.test.ts`, `tests/ollama.test.ts`, `tests/integrations.test.ts` | Metadata providers and integrations | AI editor behavior, Ollama, upstream error classification, and integration requests |
 
@@ -121,7 +123,8 @@ actual rendered cards, focus, controls, and layout for both tabs.
 | Shared headings, button/status placement, unique IDs, live regions, sibling forms, one primary connection Save, deep-link focus, and editor focus entry/return | `tests/ui/connections.spec.mjs`, `tests/ui/metadata-providers.spec.mjs` |
 | Save failures retain drafts; feedback stays beside Save/Cancel; successful saves remain distinct from failed probes | `tests/connection-card.test.ts`, `tests/provider-card.test.ts`, `tests/judgment-editor.test.ts`; both browser suites |
 | Status cards remain mounted during loading, failure, retry, and saves | `tests/ui/connections.spec.mjs`, `tests/ui/metadata-providers.spec.mjs` |
-| Settings-wide save/probe ordering, drafts surviving tab switches, and recovery after failure | `tests/settings-service.test.ts`; both settings browser suites |
+| Saves and the checks after a save use one queue, drafts survive tab switches, and failures release the queue | `tests/settings-service.test.ts`; both settings browser suites |
+| All four probes on load start in parallel, and a pending Jellyfin probe leaves TPDB Edit available | `tests/ui/connections.spec.mjs` |
 | Existing provider error classification, AI normalization, and saved probe results survive the shared-component refactor | `tests/integrations.test.ts`, `tests/judgment-editor.test.ts`, `tests/provider-card.test.ts`; settings browser suite |
 | First-time/manual Whisparr delivery settings, stale saved choices, path-mapping limits, and removal confirmation | Pure/API regressions; `tests/ui/connections.spec.mjs` |
 | Both picker arrows retain their inset and text padding; editors fit mobile widths | `tests/ui/connections.spec.mjs`, `tests/ui/metadata-providers.spec.mjs` |

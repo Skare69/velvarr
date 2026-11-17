@@ -494,11 +494,52 @@ scenario(
         r.path === "/api/admin/whisparr" ||
         r.path.startsWith("/api/admin/providers/"),
     );
-    for (let i = 1; i < operations.length; i++)
+    // On-load probes run in parallel now (VELV-181); saves and the probes
+    // that verify them still serialize. The pin covers the save phase:
+    // everything from the first PATCH on.
+    const firstSave = operations.findIndex((r) => r.method === "PATCH");
+    const queued = operations.slice(firstSave);
+    for (let i = 1; i < queued.length; i++)
       assert.ok(
-        operations[i].started >= operations[i - 1].finished,
+        queued[i].started >= queued[i - 1].finished,
         "overlapping settings operations",
       );
+  },
+);
+scenario(
+  "Saved-settings probes run in parallel and leave peer cards editable",
+  async ({ page, jf, w, provider, control, edit, badge }) => {
+    // Jellyfin's probe stays pending while the other three settle: a serial
+    // queue would leave them unstarted and the peer Edit buttons disabled
+    // until it finished (VELV-181).
+    await control({ reset: true, holdProbe: "/api/admin/jellyfin" });
+    await page.goto("/?view=settings");
+    await expect(badge(w)).toHaveText("Connected");
+    await expect(badge(provider)).toHaveText("Connected");
+    await expect(
+      page.locator(
+        'section[aria-labelledby="provider-heading-stashdb"] .connection-state',
+      ),
+    ).toHaveText("Connected");
+    await expect(badge(jf)).toHaveText("Checking…");
+    const state = await control({});
+    const probePaths = [
+      "/api/admin/jellyfin",
+      "/api/admin/whisparr",
+      "/api/admin/providers/tpdb",
+      "/api/admin/providers/stashdb",
+    ];
+    for (const path of probePaths)
+      assert.ok(
+        state.requests.some((request) => request.path === path),
+        "the load probe never started: " + path,
+      );
+    await page
+      .getByRole("button", { name: "Metadata providers", exact: true })
+      .click();
+    await expect(edit(provider)).toBeEnabled();
+    await control({ holdProbe: false });
+    await expect(badge(jf)).toHaveText("Connected");
   },
 );
 scenario(
@@ -939,7 +980,8 @@ scenario(
       w.getByRole("button", { name: "Checking…", exact: true }),
     ).toBeDisabled();
     await expect(edit(w)).toBeDisabled();
-    await expect(edit(jf)).toBeDisabled();
+    // A probe holds only its own card (VELV-181); Jellyfin stays editable.
+    await expect(edit(jf)).toBeEnabled();
     await expect(check(jf)).toHaveCount(0);
     expect(
       await w.locator(".settings-service-status .text-muted").count(),
@@ -969,7 +1011,9 @@ for (const service of ["jellyfin", "whisparr"]) {
       await check(own).click();
       await expect(check(own)).toBeDisabled();
       await expect(cancel(own)).toBeDisabled();
-      await expect(edit(peer)).toBeDisabled();
+      // A draft test holds only its own card (VELV-181); the peer's editor
+      // stays available.
+      await expect(edit(peer)).toBeEnabled();
       await expect(badge(own)).toHaveText("Unsaved changes");
       await control({ holdProbe: false, [service + "DraftFail"]: true });
       await expect(own.getByRole("alert")).toContainText(

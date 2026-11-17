@@ -242,7 +242,7 @@ scenario(
 );
 
 scenario(
-  "Metadata probe progress blocks peer controls and announces the final result",
+  "Metadata probe progress announces the result and leaves peers editable",
   async (h) => {
     const { page, edit, check, badge, control } = h;
     await openMetadata(h, { stashdbFail: true, tpdbFail: true });
@@ -255,8 +255,10 @@ scenario(
     await expect(
       stash.getByRole("button", { name: "Checking…", exact: true }),
     ).toBeVisible();
-    await expect(check(tpdb)).toBeDisabled();
-    await expect(edit(tpdb)).toBeDisabled();
+    // A probe holds only its own card (VELV-181): the peer stays editable
+    // and re-checkable while this check waits.
+    await expect(check(tpdb)).toBeEnabled();
+    await expect(edit(tpdb)).toBeEnabled();
     await expect(
       stash.locator(".settings-service-status .text-muted"),
     ).toHaveCount(0);

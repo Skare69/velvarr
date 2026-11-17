@@ -9,7 +9,7 @@ import {
   useState,
   type FormEvent,
 } from "react";
-import { checkConnectionAction } from "../lib/settings-service.ts";
+import { checkConnectionAction, runProbe } from "../lib/settings-service.ts";
 import {
   connectionDraftChanged,
   connectionFieldErrors,
@@ -147,18 +147,20 @@ function ConnectionCard({
   const failure = checkError ?? status?.error?.message;
 
   const verify = useCallback(
-    () =>
+    (queued: boolean) =>
       checkConnection({
         dispatch,
         performCheck: () =>
-          runOperation(() => api<ConnectionStatus>("/api/admin/" + service)),
+          (queued ? runOperation : runProbe)(() =>
+            api<ConnectionStatus>("/api/admin/" + service),
+          ),
         failureOf: settingsFailureOf,
         onForbidden,
       }),
     [service, runOperation, onForbidden],
   );
   useEffect(() => {
-    void verify();
+    void verify(false);
   }, [verify]);
   useEffect(() => {
     if (editing) inputRef.current?.focus();
@@ -221,7 +223,7 @@ function ConnectionCard({
       failureOf: settingsFailureOf,
       onForbidden,
       performTest: () =>
-        runOperation(() =>
+        runProbe(() =>
           api<ConnectionStatus>("/api/admin/" + service + "/test", {
             method: "POST",
             body: JSON.stringify({
@@ -240,7 +242,9 @@ function ConnectionCard({
       <SettingsCheckButton
         checking={checking || draftChecking}
         disabled={busy || (checkMode === "draft" && configurationUnavailable)}
-        onCheck={() => void (checkMode === "draft" ? testDraft() : verify())}
+        onCheck={() =>
+          void (checkMode === "draft" ? testDraft() : verify(false))
+        }
       />
     );
   const testFailure = draftCheckError ?? draftStatus?.error?.message;

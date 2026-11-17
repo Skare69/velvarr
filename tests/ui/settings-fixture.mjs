@@ -85,6 +85,11 @@ const release = (pending) => {
   pending.clear();
 };
 const hold = (pending) => new Promise((resolve) => pending.add(resolve));
+// holdProbe: true holds every probe; a path substring holds only the
+// matching probes, so one card can stay pending while its peers settle.
+const probeHeld = (path) =>
+  mode.holdProbe === true ||
+  (typeof mode.holdProbe === "string" && path.includes(mode.holdProbe));
 const json = (res, code, body) => {
   res.writeHead(code, {
     "content-type": "application/json",
@@ -266,7 +271,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (/^\/api\/admin\/(jellyfin|whisparr)\/test$/.test(path)) {
       const service = path.split("/")[3];
-      if (mode.holdProbe) await hold(heldProbe);
+      if (probeHeld(path)) await hold(heldProbe);
       if (requestGeneration !== generation)
         return error(res, 409, "Obsolete test request.");
       if (mode[service + "403"]) return error(res, 403, "Administrators only.");
@@ -294,7 +299,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (path === "/api/admin/jellyfin" || path === "/api/admin/whisparr") {
       const service = path.split("/").at(-1);
-      if (mode.holdProbe) await hold(heldProbe);
+      if (probeHeld(path)) await hold(heldProbe);
       if (requestGeneration !== generation)
         return error(res, 409, "Obsolete test request.");
       if (mode[service + "403"]) return error(res, 403, "Administrators only.");
@@ -337,7 +342,7 @@ const server = http.createServer(async (req, res) => {
     if (path.startsWith("/api/admin/providers/")) {
       const provider = path.split("/")[4];
       const draftTest = path.endsWith("/test");
-      if (mode.holdProbe) await hold(heldProbe);
+      if (probeHeld(path)) await hold(heldProbe);
       if (requestGeneration !== generation)
         return error(res, 409, "Obsolete test request.");
       if (mode[provider + "403"])
@@ -401,7 +406,7 @@ const server = http.createServer(async (req, res) => {
       );
     }
     if (path === "/api/admin/prose/check") {
-      if (mode.holdProbe) await hold(heldProbe);
+      if (probeHeld(path)) await hold(heldProbe);
       if (requestGeneration !== generation)
         return error(res, 409, "Obsolete test request.");
       if (mode.prose403) return error(res, 403, "Administrators only.");
@@ -413,7 +418,7 @@ const server = http.createServer(async (req, res) => {
       });
     }
     if (path === "/api/admin/judgment/check") {
-      if (mode.holdProbe) await hold(heldProbe);
+      if (probeHeld(path)) await hold(heldProbe);
       if (requestGeneration !== generation)
         return error(res, 409, "Obsolete test request.");
       if (mode.judgment403) return error(res, 403, "Administrators only.");

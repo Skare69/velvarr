@@ -74,9 +74,11 @@ export type SettingsOperations = {
   runOperation: RunSettingsOperation;
 };
 
-/** All settings writes and probes share a queue, including across hidden tabs.
- * A probe sees the saved settings; concurrent PATCH snapshots cannot undo one
- * another. A rejected operation releases the queue for the next request. */
+/** Settings writes and the probes that verify a save share a queue, including
+ * across hidden tabs. Concurrent PATCH snapshots cannot undo one another, and
+ * a rejected operation releases the queue for the next request. On-load and
+ * button-triggered probes run through runProbe instead: they only read, so
+ * they never hold other cards' controls disabled while they wait. */
 export function useSettingsOperations(): SettingsOperations {
   const [saving, setSaving] = useState(false);
   const [runQueued] = useState(createSettingsOperationQueue);

@@ -22,8 +22,9 @@ export type SettingsFailureOf = (error: unknown) => {
   message: string;
 };
 
-/** Saves and live probes share persisted configuration. Queue both kinds of
- * operation, including same-tick calls, and recover after a failed request. */
+/** Saves and the probes that verify a save share persisted configuration.
+ * Queue both kinds of operation, including same-tick calls, and recover
+ * after a failed request. */
 export function createSettingsOperationQueue() {
   let tail = Promise.resolve();
   return function run<T>(operation: () => Promise<T>): Promise<T> {
@@ -34,6 +35,14 @@ export function createSettingsOperationQueue() {
     );
     return result;
   };
+}
+
+/** On-load and button-triggered probes of saved or drafted settings run at
+ * once: they only read, so they neither queue behind saves nor hold other
+ * cards' controls disabled while they wait (VELV-181). Only the probe that
+ * verifies a save stays on the shared queue with the save it verifies. */
+export function runProbe<T>(operation: () => Promise<T>): Promise<T> {
+  return operation();
 }
 
 /** Which Check connection a service card shows, decided before render so the

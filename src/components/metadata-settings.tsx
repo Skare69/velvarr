@@ -46,6 +46,7 @@ import {
 import {
   CONNECTION_STATE_LABEL,
   checkConnectionAction,
+  runProbe,
 } from "../lib/settings-service.ts";
 import {
   canClearCredential,
@@ -206,21 +207,24 @@ function ProviderCredentialCard({
     if (editor.editing) inputRef.current?.focus();
   }, [editor.editing]);
 
-  const verify = useCallback(async () => {
-    dispatch({ type: "checking" });
-    try {
-      dispatch({
-        type: "checked",
-        check: await runOperation(() =>
-          api<ProviderCheck>("/api/admin/providers/" + id),
-        ),
-      });
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 403)
-        dispatch({ type: "forbidden" });
-      else dispatch({ type: "checkFailed", message: messageOf(error) });
-    }
-  }, [id, runOperation]);
+  const verify = useCallback(
+    async (queued: boolean) => {
+      dispatch({ type: "checking" });
+      try {
+        dispatch({
+          type: "checked",
+          check: await (queued ? runOperation : runProbe)(() =>
+            api<ProviderCheck>("/api/admin/providers/" + id),
+          ),
+        });
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 403)
+          dispatch({ type: "forbidden" });
+        else dispatch({ type: "checkFailed", message: messageOf(error) });
+      }
+    },
+    [id, runOperation],
+  );
 
   // The editor's test: POSTs the values on screen (blank key = saved
   // credential), stores nothing. Its result lands in draftCheck, which the
@@ -231,7 +235,7 @@ function ProviderCredentialCard({
       const key = editor.draft.trim();
       dispatch({
         type: "draftChecked",
-        check: await runOperation(() =>
+        check: await runProbe(() =>
           api<ProviderCheck>("/api/admin/providers/" + id + "/test", {
             method: "POST",
             body: JSON.stringify(key === "" ? {} : { key }),
@@ -245,7 +249,7 @@ function ProviderCredentialCard({
     }
   }, [id, runOperation, editor.draft]);
   useEffect(() => {
-    void verify();
+    void verify(false);
   }, [verify]);
 
   function cancel() {
@@ -267,7 +271,7 @@ function ProviderCredentialCard({
       dispatch,
       failureOf,
     });
-    if (saved) await verify();
+    if (saved) await verify(true);
   }
 
   // A stored credential the provider just rejected deletes itself at once —
@@ -325,7 +329,7 @@ function ProviderCredentialCard({
           dispatch,
           failureOf,
         });
-        if (saved) await verify();
+        if (saved) await verify(true);
       } finally {
         clearing.current = false;
       }
@@ -368,7 +372,9 @@ function ProviderCredentialCard({
       <SettingsCheckButton
         checking={editor.draftChecking || editor.checking}
         disabled={busy || (checkMode === "draft" && configurationUnavailable)}
-        onCheck={() => void (checkMode === "draft" ? testDraft() : verify())}
+        onCheck={() =>
+          void (checkMode === "draft" ? testDraft() : verify(false))
+        }
       />
     );
   // The draft test's verdict, under the editor's action row. It dies with
@@ -645,7 +651,7 @@ function JudgmentCard({
       setEditing(false);
       // Probe only after persistence succeeds: the endpoint reads saved settings,
       // not the draft. A failed probe must not turn a successful save into an error.
-      if (verify && data.judgment.configured) await check();
+      if (verify && data.judgment.configured) await check(true);
     } catch (error) {
       if (error instanceof ApiError && error.status === 403) setForbidden(true);
       else setSaveError(messageOf(error));
@@ -675,10 +681,10 @@ function JudgmentCard({
     );
   }
 
-  async function check() {
+  async function check(queued: boolean) {
     dispatch({ type: "checking" });
     try {
-      const result = await runOperation(() =>
+      const result = await (queued ? runOperation : runProbe)(() =>
         api<{
           provider: JudgmentProvider;
           connected: boolean;
@@ -768,7 +774,7 @@ function JudgmentCard({
       checking={checking}
       disabled={busy || Boolean(checkDisabledReason)}
       helpId={checkDisabledReason ? "judgment-check-help" : undefined}
-      onCheck={() => void check()}
+      onCheck={() => void check(false)}
     />
   );
 
@@ -1118,10 +1124,10 @@ function ProseSearchCard({
     setEditing(false);
   }
 
-  async function runCheck() {
+  async function runCheck(queued: boolean) {
     setCheck({ state: "checking" });
     try {
-      const result = await runOperation(() =>
+      const result = await (queued ? runOperation : runProbe)(() =>
         api<{ connected: boolean; error?: string }>("/api/admin/prose/check", {
           method: "POST",
           body: "{}",
@@ -1150,7 +1156,7 @@ function ProseSearchCard({
       setEditing(false);
       // Probe only after persistence succeeds: the endpoint reads saved settings.
       // A failed probe must not turn a successful save into an error.
-      if (data.proseChat.configured) await runCheck();
+      if (data.proseChat.configured) await runCheck(true);
       return data;
     } catch (error) {
       if (error instanceof ApiError && error.status === 403) setForbidden(true);
@@ -1208,7 +1214,7 @@ function ProseSearchCard({
       checking={checking}
       disabled={busy || Boolean(checkDisabledReason)}
       helpId={checkDisabledReason ? "prose-check-help" : undefined}
-      onCheck={() => void runCheck()}
+      onCheck={() => void runCheck(false)}
     />
   );
 

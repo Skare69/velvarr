@@ -163,7 +163,9 @@ type ConnectionFailure = {
 };
 
 /** Expected probe failures report a diagnosis without rejecting a successful
- * save. The caller supplies the same shared queue used by the other cards. */
+ * save. The caller picks the runner through `queued`: a probe that verifies a
+ * save rides the shared queue with it, an on-load or retry probe runs at
+ * once. */
 export async function checkConnection(
   input: ConnectionFailure & {
     performCheck: () => Promise<ConnectionStatus>;
@@ -192,7 +194,7 @@ export async function applyConnectionSave(
     configurationUnavailable: boolean;
     remove: boolean;
     performSave: (body: ConnectionPatch) => Promise<ConnectionsInfo>;
-    verify: () => Promise<void>;
+    verify: (queued: boolean) => Promise<void>;
   },
 ): Promise<{ saved: boolean }> {
   const { service, info, state } = input;
@@ -230,7 +232,7 @@ export async function applyConnectionSave(
         : (service === "jellyfin" ? "Jellyfin" : "Whisparr") +
           " settings saved.",
     });
-    await input.verify();
+    await input.verify(true);
     return { saved: true };
   } catch (error) {
     const failure = input.failureOf(error);
