@@ -44,7 +44,8 @@ process.on("exit", () =>
 );
 const mutationTestParent = join(mutationRunParent, "tests");
 mkdirSync(mutationTestParent);
-process.env.TMPDIR = mutationTestParent;
+// os.tmpdir() reads TMPDIR on POSIX but TEMP/TMP on Windows.
+process.env.TMPDIR = process.env.TEMP = process.env.TMP = mutationTestParent;
 process.env.VELVARR_DATA_DIR = mutationTestParent;
 
 /**
