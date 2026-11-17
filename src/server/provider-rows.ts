@@ -183,6 +183,7 @@ interface TpdbPerson {
   image?: unknown;
   thumbnail?: unknown;
   face?: unknown;
+  posters?: unknown;
   parent?: TpdbPerson | null;
 }
 
@@ -190,6 +191,27 @@ export interface CatalogCreditAcc {
   reference: CatalogReference;
   name: string;
   imageUrl?: string;
+}
+
+/** Largest servable poster by finite positive byte size. Equal sizes keep
+ * the first array entry, regardless of `order`. No usable entry preserves
+ * each caller's image fallback. */
+function tpdbPerformerPoster(posters: unknown): string | undefined {
+  if (!Array.isArray(posters)) return undefined;
+  let best: string | undefined;
+  let bestSize = 0;
+  for (const entry of posters) {
+    const media = entry as { url?: unknown; size?: unknown } | null;
+    const size = media?.size;
+    if (typeof size !== "number" || !Number.isFinite(size) || size <= bestSize)
+      continue;
+    const url = servableImage(media?.url);
+    if (url !== undefined) {
+      best = url;
+      bestSize = size;
+    }
+  }
+  return best;
 }
 
 /** Credits resolve canonical identity through performers[].parent.id (the
@@ -211,7 +233,9 @@ function tpdbCredits(rows: unknown): CatalogCreditAcc[] {
       cleanString(canonical.name, MAX.name);
     if (id === undefined || name === undefined) continue;
     const imageUrl =
-      servableImage(canonical.image) ?? servableImage(person.image);
+      tpdbPerformerPoster(person.posters) ??
+      servableImage(canonical.image) ??
+      servableImage(person.image);
     mapped.push({
       reference: { provider: "tpdb", kind: "performer", id },
       name,
@@ -348,6 +372,7 @@ export function tpdbPerformerDetail(row: unknown): CatalogDetail | undefined {
     }
   }
   const imageUrl =
+    tpdbPerformerPoster(r.posters) ??
     servableImage(r.image) ??
     servableImage(r.thumbnail) ??
     servableImage(r.face);

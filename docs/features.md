@@ -20,3 +20,21 @@ A year range includes both years. A release-date range includes both dates.
 Newest first sends the upper bound to the provider. Oldest first sends the lower bound.
 With release-date order, Browse stops after the opposite bound.
 Other local filters can still reach the scan limit.
+
+## TPDB performer artwork
+
+Performer pages, search results, and title credits prefer artwork from the
+performer row's `posters[]` array. Velvarr selects the allowed URL with the
+largest finite numeric `size` greater than zero. Equal sizes keep the first
+array entry, regardless of `order`. Missing, zero, negative, non-finite, and
+non-numeric sizes do not qualify.
+
+Every candidate must pass the existing artwork URL check. This change does
+not permit new hosts or URL variants. Byte size ranks the published candidates,
+but it does not prove pixel dimensions or image quality.
+
+If no poster qualifies, performer pages and search results retain the
+`image`, `thumbnail`, then `face` fallback. Credits retain the canonical
+parent's `image`, then the credit row's `image`. The URL check still applies
+to each fallback. Credits use a valid canonical parent UUID, or the credit
+row UUID. They keep the credited name and one entry per UUID.
