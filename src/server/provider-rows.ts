@@ -487,17 +487,33 @@ interface StashScenePerformer {
     id?: unknown;
     name?: unknown;
     deleted?: unknown;
-    images?: { url?: unknown }[] | null;
+    images?: { url?: unknown; width?: unknown; height?: unknown }[] | null;
   } | null;
 }
 
 function stashImageUrl(images: unknown): string | undefined {
   if (!Array.isArray(images)) return undefined;
-  for (const img of images.slice(0, 5)) {
-    const url = servableImage((img as { url?: unknown } | null)?.url);
-    if (url !== undefined) return url;
+  let fallback: string | undefined;
+  let largest: string | undefined;
+  let largestArea = 0;
+  for (const img of images) {
+    const image = img as {
+      url?: unknown;
+      width?: unknown;
+      height?: unknown;
+    } | null;
+    const url = servableImage(image?.url);
+    if (url === undefined) continue;
+    fallback ??= url;
+    const width = cleanInt(image?.width, 1, Number.MAX_SAFE_INTEGER);
+    const height = cleanInt(image?.height, 1, Number.MAX_SAFE_INTEGER);
+    if (width === undefined || height === undefined) continue;
+    const area = width * height;
+    if (!Number.isSafeInteger(area) || area <= largestArea) continue;
+    largest = url;
+    largestArea = area;
   }
-  return undefined;
+  return largest ?? fallback;
 }
 
 function stashLinks(rows: unknown): { url: string; label?: string }[] {

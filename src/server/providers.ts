@@ -1338,7 +1338,7 @@ export async function searchCatalog(
       );
     }
     const res = (await stashQuery(
-      "query($t: String!) { searchPerformers(term: $t) { count performers { id name deleted aliases images { url } } } }",
+      "query($t: String!) { searchPerformers(term: $t) { count performers { id name deleted aliases images { url width height } } } }",
       { t: q },
       "searchPerformers",
     )) as { count?: unknown; performers?: unknown } | null;
@@ -1395,7 +1395,7 @@ export async function searchCatalog(
       );
     }
     const res = await stashQuery(
-      "query($t: String!) { searchStudio(term: $t, limit: 25) { id name deleted parent { id name } images { url } urls { url type } } }",
+      "query($t: String!) { searchStudio(term: $t, limit: 25) { id name deleted parent { id name } images { url width height } urls { url type } } }",
       { t: q },
       "searchStudio",
     );
@@ -1666,7 +1666,7 @@ export async function searchCatalog(
     );
   }
   const res = (await stashQuery(
-    "query($f: SceneQueryInput!) { queryScenes(input: $f) { count scenes { id title code details date duration images { url } urls { url type } studio { id name } tags { id name } performers { as performer { id name deleted images { url } } } } } }",
+    "query($f: SceneQueryInput!) { queryScenes(input: $f) { count scenes { id title code details date duration images { url width height } urls { url type } studio { id name } tags { id name } performers { as performer { id name deleted images { url width height } } } } } }",
     { f: input },
     "queryScenes",
   )) as { count?: unknown; scenes?: unknown } | null;
@@ -1770,7 +1770,7 @@ export async function getCatalogDetail(
 
   if (kind === "scene") {
     const row = await stashQuery(
-      "query($id: ID!) { findScene(id: $id) { id title code details date duration images { url } urls { url type } studio { id name } tags { id name } performers { as performer { id name deleted aliases images { url } urls { url type } } } } }",
+      "query($id: ID!) { findScene(id: $id) { id title code details date duration images { url width height } urls { url type } studio { id name } tags { id name } performers { as performer { id name deleted aliases images { url width height } urls { url type } } } } }",
       { id },
       "findScene",
     );
@@ -1789,7 +1789,7 @@ export async function getCatalogDetail(
     // death_date (a plain "YYYY[-MM[-DD]]" string) exists on stashdb.org;
     // verified with a read-only query on 2026-11-13.
     const row = await stashQuery(
-      "query($id: ID!) { findPerformer(id: $id) { id name deleted aliases urls { url type } images { url } gender birthdate { date accuracy } death_date ethnicity country eye_color hair_color height cup_size band_size waist_size hip_size breast_type career_start_year career_end_year tattoos { location description } piercings { location description } } }",
+      "query($id: ID!) { findPerformer(id: $id) { id name deleted aliases urls { url type } images { url width height } gender birthdate { date accuracy } death_date ethnicity country eye_color hair_color height cup_size band_size waist_size hip_size breast_type career_start_year career_end_year tattoos { location description } piercings { location description } } }",
       { id },
       "findPerformer",
     );
@@ -1809,7 +1809,7 @@ export async function getCatalogDetail(
   }
   if (kind === "studio") {
     const row = await stashQuery(
-      "query($id: ID!) { findStudio(id: $id) { id name deleted urls { url type } images { url } parent { id name } child_studios { id } } }",
+      "query($id: ID!) { findStudio(id: $id) { id name deleted urls { url type } images { url width height } parent { id name } child_studios { id } } }",
       { id },
       "findStudio",
     );

@@ -74,6 +74,9 @@ import {
   isIsoDate,
   stashFuzzyDate,
   type ImageUrlCheck,
+  stashSceneDetail as mapStashSceneDetail,
+  stashPerformerDetail as mapStashPerformerDetail,
+  stashStudioDetail as mapStashStudioDetail,
 } from "../src/server/provider-rows.ts";
 import fc from "fast-check";
 
@@ -385,6 +388,401 @@ test("stashdb scene detail maps performers, clamps duration, drops absurd values
     restore();
   }
 });
+
+// --- StashDB artwork selection through public row mappers ---
+
+function mappedStashArtwork(
+  images: unknown,
+): Record<string, string | undefined> {
+  const scene = mapStashSceneDetail({
+    id: STASH_SCENE_ID,
+    title: "Artwork scene",
+    images,
+    performers: [
+      {
+        performer: {
+          id: STASH_PERFORMER_ID,
+          name: "Artwork credit",
+          images,
+        },
+      },
+    ],
+  });
+  const performer = mapStashPerformerDetail({
+    id: STASH_PERFORMER_ID,
+    name: "Artwork performer",
+    images,
+  });
+  const studio = mapStashStudioDetail({
+    id: STASH_STUDIO_ID,
+    name: "Artwork studio",
+    images,
+  });
+  assert.ok(scene !== undefined);
+  assert.ok(performer !== undefined);
+  assert.ok(studio !== undefined);
+  assert.equal(scene.credits.length, 1);
+  return {
+    scene: scene.imageUrl,
+    credit: scene.credits[0]?.imageUrl,
+    performer: performer.imageUrl,
+    studio: studio.imageUrl,
+    studioLogo: studio.logoUrl,
+  };
+}
+
+const STASH_SMALL_ART = "https://stashdb.org/images/artwork-small";
+const STASH_LARGE_ART = "https://stashdb.org/images/artwork-large";
+const STASH_TIE_ART = "https://stashdb.org/images/artwork-tie";
+
+const stashArtworkCases: {
+  name: string;
+  images: unknown;
+  expected: string | undefined;
+}[] = [
+  {
+    name: "largest area wins rather than largest width",
+    images: [
+      { url: STASH_SMALL_ART, width: 2000, height: 100 },
+      { url: STASH_LARGE_ART, width: 1000, height: 1000 },
+    ],
+    expected: STASH_LARGE_ART,
+  },
+  {
+    name: "largest image after position five wins",
+    images: [
+      { url: STASH_SMALL_ART, width: 100, height: 100 },
+      null,
+      { url: "https://forbidden.example/image.jpg", width: 5000, height: 5000 },
+      {},
+      { url: STASH_TIE_ART, width: 200, height: 100 },
+      { url: STASH_LARGE_ART, width: 1000, height: 1000 },
+    ],
+    expected: STASH_LARGE_ART,
+  },
+  {
+    name: "equal areas keep the first image",
+    images: [
+      { url: STASH_LARGE_ART, width: 800, height: 600 },
+      { url: STASH_TIE_ART, width: 1200, height: 400 },
+    ],
+    expected: STASH_LARGE_ART,
+  },
+  {
+    name: "missing dimensions keep the first servable image",
+    images: [{ url: STASH_SMALL_ART }, { url: STASH_LARGE_ART }],
+    expected: STASH_SMALL_ART,
+  },
+  {
+    name: "malformed dimensions keep the first servable image across the full list",
+    images: [
+      null,
+      17,
+      { url: "https://stashdb.org/graphql" },
+      { url: "http://stashdb.org/images/insecure" },
+      { url: `${STASH_LARGE_ART}?size=1280` },
+      { url: STASH_SMALL_ART, width: "1000", height: 1000 },
+      { url: STASH_LARGE_ART, width: 1000, height: null },
+    ],
+    expected: STASH_SMALL_ART,
+  },
+  {
+    name: "valid dimensions beat earlier dimensionless artwork",
+    images: [
+      { url: STASH_SMALL_ART },
+      { url: STASH_LARGE_ART, width: 1, height: 1 },
+    ],
+    expected: STASH_LARGE_ART,
+  },
+  {
+    name: "an unusable image list emits no artwork",
+    images: [null, {}, 17, { url: false }, { url: "not a URL" }],
+    expected: undefined,
+  },
+  ...[undefined, null, {}, "not an image list", []].map((images) => ({
+    name: `absent or malformed image list ${JSON.stringify(images)}`,
+    images,
+    expected: undefined,
+  })),
+];
+
+for (const { name, images, expected } of stashArtworkCases) {
+  test(`stashdb artwork: ${name}`, () => {
+    for (const [consumer, actual] of Object.entries(
+      mappedStashArtwork(images),
+    )) {
+      assert.equal(actual, expected, consumer);
+    }
+  });
+}
+
+for (const dimension of [
+  undefined,
+  null,
+  "10000",
+  true,
+  0,
+  -1,
+  1.5,
+  NaN,
+  Infinity,
+  Number.MAX_SAFE_INTEGER + 1,
+]) {
+  for (const axis of ["width", "height"] as const) {
+    test(`stashdb artwork rejects ${axis} ${String(dimension)} as a dimension`, () => {
+      const images = [
+        {
+          url: STASH_SMALL_ART,
+          width: 10000,
+          height: 10000,
+          [axis]: dimension,
+        },
+        { url: STASH_LARGE_ART, width: 100, height: 100 },
+      ];
+      for (const [consumer, actual] of Object.entries(
+        mappedStashArtwork(images),
+      )) {
+        assert.equal(actual, STASH_LARGE_ART, consumer);
+      }
+    });
+  }
+}
+
+test("stashdb artwork rejects unsafe areas even when both dimensions are safe integers", () => {
+  const images = [
+    { url: STASH_SMALL_ART, width: Number.MAX_SAFE_INTEGER, height: 2 },
+    { url: STASH_LARGE_ART, width: 100, height: 100 },
+  ];
+  for (const [consumer, actual] of Object.entries(mappedStashArtwork(images))) {
+    assert.equal(actual, STASH_LARGE_ART, consumer);
+  }
+});
+
+for (const url of [
+  `${STASH_LARGE_ART}?size=1280`,
+  "http://stashdb.org/images/insecure",
+  "https://forbidden.example/image.jpg",
+  "https://stashdb.org/graphql",
+  "https://stashdb.org/not-images/image.jpg",
+]) {
+  test(`stashdb artwork rejects a larger unservable candidate: ${url}`, () => {
+    const rejected = { url, width: 10000, height: 10000 };
+    for (const images of [
+      [rejected, { url: STASH_SMALL_ART, width: 10, height: 10 }],
+      [rejected],
+    ]) {
+      const expected = images.length === 1 ? undefined : STASH_SMALL_ART;
+      for (const [consumer, actual] of Object.entries(
+        mappedStashArtwork(images),
+      )) {
+        assert.equal(actual, expected, consumer);
+      }
+    }
+  });
+}
+
+test("property: stashdb artwork chooses the first servable image with maximal safe area", () => {
+  const urlKinds = [
+    { prefix: "https://stashdb.org/images/", suffix: "", servable: true },
+    { prefix: "https://cdn.theporndb.net/", suffix: "", servable: true },
+    {
+      prefix: "https://stashdb.org/images/",
+      suffix: "?size=1280",
+      servable: false,
+    },
+    { prefix: "http://stashdb.org/images/", suffix: "", servable: false },
+    { prefix: "https://forbidden.example/", suffix: "", servable: false },
+    { prefix: "https://stashdb.org/scenes/", suffix: "", servable: false },
+  ] as const;
+  const dimension = fc.oneof(
+    fc.integer({ min: 1, max: 20 }),
+    fc.constantFrom<unknown>(
+      undefined,
+      null,
+      "100",
+      true,
+      0,
+      -1,
+      1.5,
+      NaN,
+      Infinity,
+      Number.MAX_SAFE_INTEGER,
+      Number.MAX_SAFE_INTEGER + 1,
+    ),
+  );
+  // BigInt products and a ranked list form an oracle independent of the mapper.
+  const oracleArea = (width: unknown, height: unknown): bigint | undefined => {
+    if (
+      typeof width !== "number" ||
+      typeof height !== "number" ||
+      !Number.isSafeInteger(width) ||
+      !Number.isSafeInteger(height) ||
+      width <= 0 ||
+      height <= 0
+    )
+      return undefined;
+    const area = BigInt(width) * BigInt(height);
+    return area <= BigInt(Number.MAX_SAFE_INTEGER) ? area : undefined;
+  };
+  fc.assert(
+    fc.property(
+      fc.array(
+        fc.record({
+          kind: fc.integer({ min: 0, max: urlKinds.length - 1 }),
+          width: dimension,
+          height: dimension,
+        }),
+        { maxLength: 20 },
+      ),
+      (entries) => {
+        const candidates = entries.map(({ kind, width, height }, index) => {
+          const choice = urlKinds[kind]!;
+          return {
+            url: `${choice.prefix}candidate-${index}${choice.suffix}`,
+            width,
+            height,
+            servable: choice.servable,
+            area: oracleArea(width, height),
+            index,
+          };
+        });
+        const servable = candidates.filter((candidate) => candidate.servable);
+        const ranked = servable
+          .filter((candidate) => candidate.area !== undefined)
+          .sort((a, b) =>
+            a.area === b.area ? a.index - b.index : a.area! > b.area! ? -1 : 1,
+          );
+        const expected = (ranked[0] ?? servable[0])?.url;
+        const images = candidates.map(({ url, width, height }) => ({
+          url,
+          width,
+          height,
+        }));
+        for (const [consumer, actual] of Object.entries(
+          mappedStashArtwork(images),
+        )) {
+          assert.equal(actual, expected, consumer);
+          if (actual !== undefined) {
+            assert.ok(
+              servable.some((candidate) => candidate.url === actual),
+              consumer,
+            );
+          }
+        }
+      },
+    ),
+  );
+});
+
+for (const kind of ["scene", "performer", "studio"] as const) {
+  for (const mode of ["search", "detail"] as const) {
+    test(`stashdb ${kind} ${mode} requests image dimensions and returns the largest artwork`, async () => {
+      const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+      const id =
+        kind === "scene"
+          ? STASH_SCENE_ID
+          : kind === "performer"
+            ? STASH_PERFORMER_ID
+            : STASH_STUDIO_ID;
+      const operation =
+        mode === "search"
+          ? {
+              scene: "queryScenes",
+              performer: "searchPerformers",
+              studio: "searchStudio",
+            }[kind]
+          : {
+              scene: "findScene",
+              performer: "findPerformer",
+              studio: "findStudio",
+            }[kind];
+      const images = [
+        { url: STASH_SMALL_ART, width: 2000, height: 100 },
+        { url: STASH_LARGE_ART, width: 1000, height: 1000 },
+      ];
+      const row = {
+        id,
+        title: "Artwork fixture",
+        name: "Artwork fixture",
+        deleted: false,
+        images,
+        performers: [
+          {
+            performer: {
+              id: STASH_PERFORMER_ID,
+              name: "Artwork credit",
+              deleted: false,
+              images: [
+                { url: STASH_SMALL_ART, width: 20, height: 10 },
+                { url: STASH_TIE_ART, width: 100, height: 100 },
+              ],
+            },
+          },
+        ],
+      };
+      const fixture = await startFixture((req, res, body) => {
+        assert.equal(req.method, "POST");
+        assert.equal(req.url, "/graphql");
+        assert.equal(req.headers.apikey, STASH_TOKEN);
+        const request = JSON.parse(body) as {
+          query: string;
+          variables: Record<string, unknown>;
+        };
+        assert.match(request.query, new RegExp(`\\b${operation}\\s*\\(`));
+        assert.deepEqual(
+          request.variables,
+          mode === "detail"
+            ? { id }
+            : kind === "scene"
+              ? { f: { page: 1, per_page: 1, text: "artwork" } }
+              : { t: "artwork" },
+        );
+        const selections = [
+          ...request.query.matchAll(/\bimages\s*\{([^{}]*)\}/g),
+        ];
+        assert.equal(selections.length, kind === "scene" ? 2 : 1);
+        for (const selection of selections) {
+          for (const field of ["url", "width", "height"]) {
+            assert.match(selection[1]!, new RegExp(`\\b${field}\\b`));
+          }
+        }
+        const result =
+          mode === "detail"
+            ? row
+            : kind === "scene"
+              ? { count: 1, scenes: [row] }
+              : kind === "performer"
+                ? { count: 1, performers: [row] }
+                : [row];
+        sendJson(res, 200, { data: { [operation]: result } });
+      });
+      try {
+        process.env.STASHDB_BASE_URL = fixture.origin;
+        const detail =
+          mode === "detail"
+            ? await getCatalogDetail({ provider: "stashdb", kind, id })
+            : (
+                await searchCatalog({
+                  provider: "stashdb",
+                  kind,
+                  query: "artwork",
+                  perPage: 1,
+                })
+              ).items[0];
+        assert.ok(detail !== null && detail !== undefined);
+        assert.equal(detail.imageUrl, STASH_LARGE_ART);
+        if (kind === "scene") {
+          assert.equal(detail.credits[0]?.imageUrl, STASH_TIE_ART);
+        }
+        if (kind === "studio") assert.equal(detail.logoUrl, STASH_LARGE_ART);
+        assert.equal(fixture.log.length, 1);
+      } finally {
+        await fixture.close();
+        restore();
+      }
+    });
+  }
+}
 
 // --- StashDB performer detail biography mapping ---
 

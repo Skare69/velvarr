@@ -1,6 +1,7 @@
 # Features
 
 - **Catalogs:** movies (TPDB), scenes (TPDB and StashDB), performers, and studios, with the filters and sort orders that each provider supports.
+- **Artwork:** StashDB uses the servable image with the largest valid pixel area. If no servable image has valid dimensions, it uses the first servable image.
 - **Browse:** one grid for TPDB movies and StashDB scenes, with search, tag include and exclude ("or" groups included), up to five performers with an all-or-any choice, up to five studios, a year range, and date filters. A filter an entry cannot ride on one source says so in a note beside the grid. The URL holds every filter.
 - **Search, Studios, and Genres** across both providers. Velvarr never merges results across providers. Cross-provider identity comes only from links that the providers publish.
 - **Requests** with administrator or moderator approval, and an optional auto-approve grant for each account. Each account can have a maximum of 500 requests that wait for a decision.
