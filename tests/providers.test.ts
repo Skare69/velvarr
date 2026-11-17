@@ -17,6 +17,7 @@ import {
   readFileSync,
   statSync,
   utimesSync,
+  writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import sharp from "sharp";
@@ -1847,6 +1848,15 @@ function artworkStorePath(hash: string, width: number): string {
   );
 }
 
+function artworkIndexPath(url: string): string {
+  return join(
+    process.env.VELVARR_DATA_DIR!,
+    "artwork",
+    "index",
+    createHash("sha256").update(url).digest("hex"),
+  );
+}
+
 const POSTER_1000 = await sharp({
   create: {
     width: 1000,
@@ -1992,6 +2002,170 @@ test("artwork no-upscale: a rotated source is compared on its oriented width", a
     "a no-upscale pass-through must not write a variant file",
   );
 });
+
+for (const [label, source] of [
+  ["small image", POSTER_185],
+  ["unreadable image", NOT_AN_IMAGE],
+] as const) {
+  test(`artwork store: cached ${label} passthrough preserves the fresh index without an expiry sweep`, async (t) => {
+    const savedDataDir = process.env.VELVARR_DATA_DIR!;
+    const savedOrigin = process.env.VELVARR_TEST_ARTWORK_ORIGIN;
+    const dataDir = mkdtempSync(join(savedDataDir, "artwork-cached-index-"));
+    const sourceHash = createHash("sha256").update(source).digest("hex");
+    let upstreamCount = 0;
+    let missCount = 0;
+    const fixture = await startFixture((_req, res) => {
+      upstreamCount++;
+      sendBytes(res, 200, source, "image/png");
+    });
+    const quiet =
+      source === NOT_AN_IMAGE
+        ? mock.method(console, "error", () => {})
+        : undefined;
+    try {
+      process.env.VELVARR_DATA_DIR = dataDir;
+      const url = `${fixture.origin}/scene/d1/0b/6b/poster.png`;
+      const options = {
+        width: 600 as const,
+        onMiss: () => {
+          missCount++;
+        },
+      };
+      const first = await fetchProviderArtwork(url, options);
+      assert.deepEqual([...first.bytes], [...source]);
+      assert.equal(first.contentType, "image/png");
+      assert.equal(first.hash, sourceHash);
+      assert.equal(first.isVariant, false);
+      const index = artworkIndexPath(url);
+      assert.equal(readFileSync(index, "utf8"), sourceHash);
+
+      const expiredUrl = `${fixture.origin}/scene/d1/0b/6b/expired.png`;
+      rememberArtworkVariant(expiredUrl, sourceHash);
+      const expiredIndex = artworkIndexPath(expiredUrl);
+      const expired = new Date(Date.now() - 25 * 60 * 60_000);
+      utimesSync(expiredIndex, expired, expired);
+      const aged = new Date(Date.now() - 60_000);
+      utimesSync(index, aged, aged);
+      const before = statSync(index);
+      const originalIndex = readFileSync(index, "utf8");
+
+      // No derivative exists, so each memory hit must derive the passthrough again.
+      for (let i = 0; i < 3; i++) {
+        const repeated = await fetchProviderArtwork(url, options);
+        assert.deepEqual([...repeated.bytes], [...source]);
+        assert.equal(repeated.contentType, "image/png");
+        assert.equal(repeated.hash, sourceHash);
+        assert.equal(repeated.isVariant, false);
+        assert.equal(existsSync(artworkStorePath(sourceHash, 600)), false);
+        assert.equal(readFileSync(index, "utf8"), originalIndex);
+        assert.equal(upstreamCount, 1);
+        assert.equal(missCount, 1);
+      }
+      await t.test("preserves the fresh index mtime", () => {
+        assert.equal(
+          statSync(index).mtimeMs,
+          before.mtimeMs,
+          "a cached passthrough must not rewrite or extend the index TTL",
+        );
+      });
+      await t.test("does not sweep unrelated expired entries", () => {
+        assert.equal(
+          existsSync(expiredIndex),
+          true,
+          "a cached passthrough must not sweep unrelated expired entries",
+        );
+      });
+    } finally {
+      quiet?.mock.restore();
+      process.env.VELVARR_DATA_DIR = savedDataDir;
+      if (savedOrigin === undefined)
+        delete process.env.VELVARR_TEST_ARTWORK_ORIGIN;
+      else process.env.VELVARR_TEST_ARTWORK_ORIGIN = savedOrigin;
+      await fixture.close();
+    }
+  });
+}
+
+for (const state of [
+  "missing",
+  "expired same-hash",
+  "fresh different-hash",
+  "malformed",
+  "empty",
+] as const) {
+  test(`artwork store: a cached passthrough repairs a ${state} index and sweeps expired entries`, async () => {
+    const savedDataDir = process.env.VELVARR_DATA_DIR!;
+    const savedOrigin = process.env.VELVARR_TEST_ARTWORK_ORIGIN;
+    const dataDir = mkdtempSync(join(savedDataDir, "artwork-index-repair-"));
+    const sourceHash = createHash("sha256").update(POSTER_185).digest("hex");
+    const otherHash = createHash("sha256").update(POSTER_1000).digest("hex");
+    let upstreamCount = 0;
+    let missCount = 0;
+    const fixture = await startFixture((_req, res) => {
+      upstreamCount++;
+      sendBytes(res, 200, POSTER_185, "image/png");
+    });
+    try {
+      process.env.VELVARR_DATA_DIR = dataDir;
+      const url = `${fixture.origin}/scene/d1/0b/6b/poster.png`;
+      const onMiss = () => {
+        missCount++;
+      };
+      // A source-only warm leaves the missing case without an index.
+      await fetchProviderArtwork(url, {
+        ...(state === "missing" ? {} : { width: 600 as const }),
+        onMiss,
+      });
+      const index = artworkIndexPath(url);
+      assert.equal(existsSync(index), state !== "missing");
+
+      const expiredUrl = `${fixture.origin}/scene/d1/0b/6b/expired.png`;
+      rememberArtworkVariant(expiredUrl, otherHash);
+      const expiredIndex = artworkIndexPath(expiredUrl);
+      const expired = new Date(Date.now() - 25 * 60 * 60_000);
+      utimesSync(expiredIndex, expired, expired);
+      let previousMtime: number | undefined;
+      if (state !== "missing") {
+        if (state === "fresh different-hash") writeFileSync(index, otherHash);
+        if (state === "malformed") writeFileSync(index, "not-a-sha256");
+        if (state === "empty") writeFileSync(index, "");
+        const aged =
+          state === "expired same-hash"
+            ? expired
+            : new Date(Date.now() - 60_000);
+        utimesSync(index, aged, aged);
+        previousMtime = statSync(index).mtimeMs;
+      }
+
+      const result = await fetchProviderArtwork(url, { width: 600, onMiss });
+      assert.deepEqual([...result.bytes], [...POSTER_185]);
+      assert.equal(result.contentType, "image/png");
+      assert.equal(result.hash, sourceHash);
+      assert.equal(result.isVariant, false);
+      assert.equal(existsSync(artworkStorePath(sourceHash, 600)), false);
+      assert.equal(readFileSync(index, "utf8"), sourceHash);
+      if (previousMtime !== undefined) {
+        assert.ok(
+          statSync(index).mtimeMs > previousMtime,
+          "an invalid or changed index must receive a fresh write",
+        );
+      }
+      assert.equal(
+        existsSync(expiredIndex),
+        false,
+        "an actual index write must still sweep expired entries",
+      );
+      assert.equal(upstreamCount, 1);
+      assert.equal(missCount, 1);
+    } finally {
+      process.env.VELVARR_DATA_DIR = savedDataDir;
+      if (savedOrigin === undefined)
+        delete process.env.VELVARR_TEST_ARTWORK_ORIGIN;
+      else process.env.VELVARR_TEST_ARTWORK_ORIGIN = savedOrigin;
+      await fixture.close();
+    }
+  });
+}
 
 for (const [label, source, isVariant] of [
   ["passthrough", POSTER_185, false],

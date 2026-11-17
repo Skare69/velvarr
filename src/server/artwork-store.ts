@@ -274,10 +274,13 @@ export function lookupArtworkVariant(
  * refetch on the next width request. */
 export function rememberArtworkVariant(url: string, hash: string): void {
   if (hash.length === 0) return;
+  // Passthroughs return here on every memory hit. An unchanged fresh index
+  // needs neither a rewrite nor an uncharged full-tree sweep.
+  if (readIndexHash(url) === hash) return;
   try {
     const file = indexFilePath(url);
     writeFileAtomic(file, Buffer.from(hash, "utf8"));
-    // Index-only writes need this sweep; fresh variants incur a second sweep.
+    // New or refreshed entries still need budget and expiry enforcement.
     sweepArtworkStore(file);
   } catch (err) {
     console.error(

@@ -96,10 +96,13 @@ Artwork originals stay in memory, while resized variants persist under the
 data directory. After URL validation, the source cache, in-flight requests,
 and disk index share the canonical `origin + pathname` identity. The disk
 budget counts allocated space, with a 4096-byte minimum per non-empty file,
-including each URL index entry. Each write runs a synchronous full-tree sweep
-for expiry and budget eviction. The newest file stays protected, so it can
-exceed the budget alone. Large cache trees can delay a request during this
-sweep.
+including each URL index entry.
+
+A fresh index entry with the same source hash causes no rewrite or sweep.
+This leaves its expiry time unchanged. Each actual write runs a synchronous
+full-tree sweep for expiry and budget eviction. The newest file stays
+protected, so it can exceed the budget alone. Large cache trees can delay a
+request during this sweep.
 
 ## From request to playback
 

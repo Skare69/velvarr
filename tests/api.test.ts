@@ -8,8 +8,15 @@ import {
   type ServerResponse,
   type Server,
 } from "node:http";
-import { mkdtempSync, readdirSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  utimesSync,
+} from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -4771,6 +4778,96 @@ test("catalog artwork width: ladder validation, variant headers, no-upscale pass
   });
   assert.equal(plain.status, 200);
   assert.equal(plain.headers.get("etag"), passthrough.headers.get("etag"));
+});
+
+test("catalog artwork width: cached passthrough preserves its index and skips expiry sweeps", async () => {
+  resetRateBuckets();
+  resetMetaCache();
+  const indexDir = join(apiDataDir, "artwork", "index");
+  const imageUrl = (name: string) => `${tpdbUrl}/artwork-warm-${name}.png`;
+  const requestPath = (url: string) =>
+    `/api/catalog/image?url=${encodeURIComponent(url)}&w=600`;
+  const indexPath = (url: string) =>
+    join(indexDir, createHash("sha256").update(url).digest("hex"));
+
+  // Both entries come from authenticated width requests to the local fixture.
+  const unrelatedUrl = imageUrl("expired");
+  const unrelated = await call("GET", requestPath(unrelatedUrl), {
+    cookie: member,
+  });
+  assert.equal(unrelated.status, 200);
+  const unrelatedIndex = indexPath(unrelatedUrl);
+  assert.ok(existsSync(unrelatedIndex));
+
+  const sourceUrl = imageUrl("tiny");
+  const callsBefore = tpdbFx.calls;
+  const initial = await call("GET", requestPath(sourceUrl), { cookie: member });
+  assert.equal(initial.status, 200);
+  assert.equal(initial.headers.get("content-type"), "image/png");
+  assert.deepEqual(new Uint8Array(await initial.arrayBuffer()), PNG_1PX);
+  const etag = initial.headers.get("etag");
+  assert.match(etag ?? "", /^"[A-Za-z0-9_-]{43}"$/);
+  const sourceIndex = indexPath(sourceUrl);
+  const indexContent = readFileSync(sourceIndex, "utf8");
+  assert.equal(
+    etag,
+    `"${Buffer.from(indexContent, "hex").toString("base64url")}"`,
+  );
+  assert.equal(
+    existsSync(
+      join(
+        apiDataDir,
+        "artwork",
+        indexContent.slice(0, 2),
+        `${indexContent}-600.webp`,
+      ),
+    ),
+    false,
+    "a tiny source must not create a variant",
+  );
+
+  const fresh = new Date(Date.now() - 60 * 60_000);
+  utimesSync(sourceIndex, fresh, fresh);
+  const freshMtime = statSync(sourceIndex).mtimeMs;
+  const expired = new Date(Date.now() - 25 * 60 * 60_000);
+  utimesSync(unrelatedIndex, expired, expired);
+
+  for (let i = 0; i < 3; i += 1) {
+    const cached = await call("GET", requestPath(sourceUrl), {
+      cookie: member,
+    });
+    assert.equal(cached.status, 200);
+    assert.equal(cached.headers.get("content-type"), "image/png");
+    assert.deepEqual(new Uint8Array(await cached.arrayBuffer()), PNG_1PX);
+    assert.equal(cached.headers.get("etag"), etag);
+    assert.equal(
+      tpdbFx.calls - callsBefore,
+      1,
+      "the source cache avoids fetches",
+    );
+    assert.equal(readFileSync(sourceIndex, "utf8"), indexContent);
+    assert.equal(
+      statSync(sourceIndex).mtimeMs,
+      freshMtime,
+      "cached passthrough must not rewrite or refresh the index",
+    );
+    assert.ok(
+      existsSync(unrelatedIndex),
+      "cached passthrough must not sweep unrelated expired entries",
+    );
+  }
+
+  // A new URL needs a real index write, which must still sweep expired entries.
+  const newUrl = imageUrl("new");
+  const written = await call("GET", requestPath(newUrl), { cookie: member });
+  assert.equal(written.status, 200);
+  assert.deepEqual(new Uint8Array(await written.arrayBuffer()), PNG_1PX);
+  assert.ok(existsSync(indexPath(newUrl)));
+  assert.equal(
+    existsSync(unrelatedIndex),
+    false,
+    "an actual index write must sweep unrelated expired entries",
+  );
 });
 
 test("catalog artwork width: an evicted variant regenerates over HTTP", async () => {
