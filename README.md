@@ -2,7 +2,7 @@
   <img alt="Velvarr banner" src=".github/assets/banner.jpg" width="100%"/>
 </p>
 
-<h1 align="center">Velvarr – The discovery and request app for adult media</h1>
+<h1 align="center">Velvarr, the discovery and request app for adult media</h1>
 
 <p align="center">
   <a href="#install">Install</a> &ensp;·&ensp;
@@ -21,7 +21,7 @@
 
 ---
 
-**Velvarr** is a free and open source discovery and request app for adult media. Browse movies, scenes, performers, and studios from [TPDB](https://theporndb.net) and [StashDB](https://stashdb.org), request them into **[Whisparr](https://whisparr.com)** (Eros) with administrator approval, and watch in **[Jellyfin](https://jellyfin.org)** through a credential-free link.
+Velvarr is an open source discovery and request app for adult media. Browse movies, scenes, performers, and studios from [TPDB](https://theporndb.net) and [StashDB](https://stashdb.org), request them into [Whisparr](https://whisparr.com) (Eros) with administrator approval, and watch in [Jellyfin](https://jellyfin.org) through a credential-free link.
 
 A household member finds a title and sends one request. An administrator or moderator approves it, and Velvarr delivers it to Whisparr. When the file is in the library, each Jellyfin user gets a watch link that needs no Jellyfin sign-in.
 
@@ -41,7 +41,7 @@ docker compose up -d
 > [!IMPORTANT]
 > Back up `VELVARR_SECRET_KEY`. If you lose it, you cannot read the database or any backup.
 
-The Windows commands, upgrades, health checks, and phone access: [docs/install.md](docs/install.md). Every variable is in [docs/configuration.md](docs/configuration.md).
+[docs/install.md](docs/install.md) has the Windows commands, upgrades, health checks, and phone access. [docs/configuration.md](docs/configuration.md) lists every variable.
 
 ## Quick start
 
@@ -57,8 +57,6 @@ The Windows commands, upgrades, health checks, and phone access: [docs/install.m
 - Requests with administrator or moderator approval, crash-safe acquisition into Whisparr, and per-user Jellyfin watch links.
 - Performer follows, per-account preferences, similar titles, and an update notice for new releases.
 - Optional: Discord notifications, AI-assisted title matching, and natural-language search.
-
-The full feature list: [docs/features.md](docs/features.md).
 
 ## Learn more
 
