@@ -23,6 +23,7 @@ import { join } from "node:path";
 import sharp from "sharp";
 import {
   artworkStoreStateForTest,
+  artworkVariantFor,
   setArtworkStoreBudgetForTest,
 } from "../src/server/artwork-store.ts";
 
@@ -1868,6 +1869,23 @@ const POSTER_185 = await sharp({
   .toBuffer();
 const NOT_AN_IMAGE = Buffer.from("definitely not an image");
 
+// A 1000×500 landscape JPEG carrying EXIF orientation 6: every orientation-
+// aware viewer displays it as a 500×1000 portrait. withMetadata writes the
+// tag without rotating the pixels, so the stored data stays landscape.
+const ORIENTED_6_JPEG = await sharp({
+  create: {
+    width: 1000,
+    height: 500,
+    channels: 3,
+    background: { r: 200, g: 90, b: 20 },
+  },
+})
+  .jpeg()
+  .toBuffer()
+  .then((landscape) =>
+    sharp(landscape).withMetadata({ orientation: 6 }).jpeg().toBuffer(),
+  );
+
 test("artwork width ladder: w=400 returns a 400px webp variant stored under the content-hash name", async () => {
   const sourceHash = createHash("sha256").update(POSTER_1000).digest("hex");
   let upstreamCount = 0;
@@ -1931,6 +1949,48 @@ test("artwork no-upscale: a 185px source at w=400 returns the exact source bytes
   } finally {
     await fixture.close();
   }
+});
+
+test("artwork variant: an EXIF-rotated source comes out upright, not sideways", async () => {
+  // WebP output drops the EXIF orientation tag, so the variant pixels must
+  // be pre-rotated: orientation 6 shows the 1000×500 landscape as a
+  // 500×1000 portrait, and the w=400 variant must be portrait too.
+  const variant = await artworkVariantFor(
+    { bytes: new Uint8Array(ORIENTED_6_JPEG), contentType: "image/jpeg" },
+    400,
+  );
+  assert.equal(variant.contentType, "image/webp");
+  assert.equal(variant.isVariant, true);
+  const meta = await sharp(Buffer.from(variant.bytes)).metadata();
+  assert.equal(meta.format, "webp");
+  assert.ok(
+    (meta.height ?? 0) > (meta.width ?? 0),
+    `expected an upright portrait variant, got ${meta.width}x${meta.height}`,
+  );
+  assert.equal(meta.orientation, undefined);
+});
+
+test("artwork no-upscale: a rotated source is compared on its oriented width", async () => {
+  // Stored 1000×500 with orientation 6 is 500 wide upright, so a w=600 rung
+  // must pass the source through instead of "upscaling" the upright image
+  // from the stored landscape axis.
+  const variant = await artworkVariantFor(
+    { bytes: new Uint8Array(ORIENTED_6_JPEG), contentType: "image/jpeg" },
+    600,
+  );
+  assert.equal(variant.isVariant, false);
+  assert.equal(variant.contentType, "image/jpeg");
+  assert.deepEqual([...variant.bytes], [...ORIENTED_6_JPEG]);
+  assert.equal(
+    existsSync(
+      artworkStorePath(
+        createHash("sha256").update(ORIENTED_6_JPEG).digest("hex"),
+        600,
+      ),
+    ),
+    false,
+    "a no-upscale pass-through must not write a variant file",
+  );
 });
 
 test("artwork store: eviction removes the least recently used file when the budget is exceeded", async () => {

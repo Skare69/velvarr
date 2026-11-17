@@ -280,8 +280,10 @@ export function rememberArtworkVariant(url: string, hash: string): void {
 
 /** Return the WebP variant of `source` at `width`, reading it from the disk
  * store when present, generating and storing it otherwise. Sources too small
- * to downscale and sources sharp cannot read come back unchanged (no file,
- * source contentType); a stored variant always comes back as image/webp. */
+ * to downscale (measured on the EXIF-oriented axis) and sources sharp cannot
+ * read come back unchanged (no file, source contentType); a stored variant
+ * always comes back as image/webp and upright: WebP output drops the EXIF
+ * orientation tag, so the pixels are pre-rotated at generation time. */
 export async function artworkVariantFor(
   source: { bytes: Uint8Array; contentType: string },
   width: ArtworkWidth,
@@ -300,7 +302,10 @@ export async function artworkVariantFor(
     return passthroughDegrade(source, hash, width, err);
   }
   // Never upscale: at or below the ladder rung the source is the answer.
-  if (meta.width !== undefined && meta.width <= width) {
+  // Rotated sources count on the oriented axis (EXIF 6 stores an upright
+  // portrait as landscape pixels), else the upright image gets upscaled.
+  const orientedWidth = meta.autoOrient?.width ?? meta.width;
+  if (orientedWidth !== undefined && orientedWidth <= width) {
     return {
       bytes: source.bytes,
       contentType: source.contentType,
@@ -312,6 +317,7 @@ export async function artworkVariantFor(
   let variant: Buffer;
   try {
     variant = await sharp(source.bytes)
+      .autoOrient()
       .resize({ width, withoutEnlargement: true })
       .webp({ quality: 80 })
       .toBuffer();
