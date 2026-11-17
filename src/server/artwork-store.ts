@@ -165,7 +165,8 @@ function sweepArtworkStore(justWritten: string): void {
     if (!st.isFile()) continue;
     // Index entries are shortcuts living by the index TTL; the variants
     // themselves live by the store TTL. Both count toward the budget.
-    const ttl = rel.startsWith("index/")
+    // readdirSync returns native separators: "index\<hash>" on Windows.
+    const ttl = rel.startsWith(`index${path.sep}`)
       ? ARTWORK_INDEX_TTL_MS
       : ARTWORK_STORE_TTL_MS;
     if (st.size === 0 || now - st.mtimeMs >= ttl) {
