@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Velvarr – the request app for adult media</title>
+<title>Velvarr, the request app for adult media</title>
 <meta name="description" content="Self-hosted discovery and request app for adult media. Browse TPDB and StashDB, approve requests into Whisparr, and watch in Jellyfin. MIT licensed.">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#21151f">
 <meta name="rating" content="adult">
 <meta property="og:type" content="website">
-<meta property="og:title" content="Velvarr – the request app for adult media">
+<meta property="og:title" content="Velvarr, the request app for adult media">
 <meta property="og:description" content="Browse TPDB and StashDB, approve requests into Whisparr, and watch in Jellyfin. Self-hosted, MIT licensed.">
 <meta name="twitter:card" content="summary_large_image">
 <meta property="og:image" content="https://velvarr.dev/banner.jpg">
@@ -78,7 +78,6 @@ h2 { font-size: clamp(30px, 3.6vw, 44px); line-height: 1.08; letter-spacing: -0.
 .needs { margin: 28px 0 0; padding: 0; list-style: none; display: grid; gap: 10px; }
 .needs li { display: flex; gap: 10px; font-size: 15px; color: var(--muted); }
 .needs li::before { content: ""; flex: none; width: 6px; height: 6px; margin-top: 9px; border-radius: 50%; background: var(--accent); }
-.needs b { color: var(--ink); font-weight: 600; }
 .term { border: 1px solid var(--edge); border-radius: 10px; background: oklch(14% 0.018 325); overflow: hidden; }
 .term-bar { display: flex; align-items: center; gap: 4px; padding: 6px 6px 6px 8px; border-bottom: 1px solid var(--edge); background: var(--panel); }
 .tab { min-height: 36px; padding: 0 12px; border: 0; border-radius: 5px; background: none; color: var(--muted); font: 600 13px/1 var(--font); cursor: pointer; }
@@ -89,7 +88,6 @@ pre { margin: 0; padding: 20px; overflow-x: auto; font: 13.5px/1.7 var(--mono); 
 pre .c { color: var(--muted); }
 .then { margin: 20px 0 0; padding: 0 0 0 20px; color: var(--muted); font-size: 15px; }
 .then li { padding: 3px 0; }
-.then b { color: var(--ink); }
 .warn { margin: 20px 0 0; padding: 14px 16px; border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--edge)); border-radius: 7px; background: color-mix(in srgb, var(--warn) 8%, var(--panel)); font-size: 14px; color: var(--ink); }
 .more { margin: 18px 0 0; font-size: 15px; color: var(--muted); }
 
@@ -111,7 +109,6 @@ footer .age { flex-basis: 100%; margin: 0; font-size: 13px; }
 h1 { font-size: clamp(42px, 6.4vw, 80px); line-height: 1.0; letter-spacing: -0.035em; font-weight: 700; max-width: 11ch; }
 h1 em { font-style: normal; color: var(--accent-text); }
 .lede { margin: 24px 0 0; max-width: 33em; font-size: clamp(17px, 1.6vw, 19px); color: var(--muted); }
-.lede b { color: var(--ink); font-weight: 600; }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin-top: 34px; }
 
 /* Screenshots */
@@ -189,7 +186,7 @@ h1 em { font-style: normal; color: var(--accent-text); }
     <div class="wrap">
       <a class="eyebrow rise" id="release" href="https://github.com/Skare69/velvarr/releases"><b>Releases</b><span>See the changelog on GitHub</span></a>
       <h1 class="rise">Discover it. Request it. <em>Watch it.</em></h1>
-      <p class="lede rise">Velvarr is a self-hosted discovery and request app for adult media. Browse <b>TPDB</b> and <b>StashDB</b>, approve requests into <b>Whisparr</b>, and watch in <b>Jellyfin</b>.</p>
+      <p class="lede rise">Velvarr is a self-hosted discovery and request app for adult media. Browse TPDB and StashDB, approve requests into Whisparr, and watch in Jellyfin.</p>
       <div class="actions rise">
         <a class="btn btn-accent" href="#install">Install with Docker</a>
         <a href="https://github.com/Skare69/velvarr">View the source on GitHub</a>
@@ -207,8 +204,8 @@ h1 em { font-style: normal; color: var(--accent-text); }
     <article class="feat">
       <div class="say">
         <span class="kicker">Browse</span>
-        <h2>Filters that go deeper than a genre list</h2>
-        <p>Mix provider tags with free-text terms, group tags with “or”, exclude what you never want, and match any or all of several performers. Add studios and release dates. The URL holds every filter, so a search is a link you can share.</p>
+        <h2>Filter by tags, terms, performers and dates</h2>
+        <p>Mix provider tags with free-text terms, group tags with "or", exclude what you never want, and match any or all of several performers. Add studios and release dates. The URL holds every filter, so you can share a search as a link.</p>
       </div>
       <figure class="shot tall"><img src="shots/browse-filters.webp" alt="Velvarr Browse view with the filter drawer open: two performers matched by any, a Lingerie or Velvet tag group, a free-text tag, and a release-date filter" width="1555" height="1800" loading="lazy" decoding="async"></figure>
     </article>
@@ -216,7 +213,7 @@ h1 em { font-style: normal; color: var(--accent-text); }
       <div class="say">
         <span class="kicker">AI search, optional</span>
         <h2>Describe it, get the filters</h2>
-        <p>Type what you want in plain words. A model that you host drafts the filters, Velvarr checks each tag, performer and studio against the providers, and lists every part that it did not apply.</p>
+        <p>Type what you want in plain words. A model that you host drafts the filters. Velvarr checks each tag, performer and studio against the providers and lists every part that it did not apply.</p>
       </div>
       <figure class="shot"><img src="shots/prose.webp" alt="Velvarr natural-language search: a sentence turned into scene type, tag, performer and date filters, with notes for the parts it did not apply" width="1800" height="957" loading="lazy" decoding="async"></figure>
     </article>
@@ -224,14 +221,14 @@ h1 em { font-style: normal; color: var(--accent-text); }
       <div class="say">
         <span class="kicker">Performers</span>
         <h2>One page per performer, from both sources</h2>
-        <p>Bio facts, aliases and links in the header, then her most frequent tags and every movie and scene. When TPDB and StashDB publish a link between two records, Velvarr shows them as one person. Follow her to get new releases on Discover.</p>
+        <p>The header shows bio facts, aliases and links. Below it are the performer's most frequent tags and every movie and scene. When TPDB and StashDB publish a link between two records, Velvarr shows them as one person. Follow a performer to see new releases on Discover.</p>
       </div>
       <figure class="shot"><img src="shots/performer.webp" alt="Velvarr performer page with portrait, facts, follow button, counted tags and a movie grid" width="1800" height="1010" loading="lazy" decoding="async"></figure>
     </article>
     <article class="feat">
       <div class="say">
         <span class="kicker">Requests</span>
-        <h2>Ask once, approve once</h2>
+        <h2>Members request, you approve</h2>
         <p>A household member sends a request. An administrator or moderator approves it, and Velvarr hands it to Whisparr. Each row shows the real state: pending, approved, downloading with its progress, or in the library.</p>
       </div>
       <figure class="shot"><img src="shots/requests.webp" alt="Velvarr Requests view with two pending requests that have Approve and Decline buttons, and an approved request that downloads at 62 percent" width="1800" height="1226" loading="lazy" decoding="async"></figure>
@@ -249,7 +246,7 @@ h1 em { font-style: normal; color: var(--accent-text); }
 
   <section id="stack">
     <div class="wrap">
-      <h2>Works with what you already run</h2>
+      <h2>The services Velvarr connects to</h2>
       <ul class="stack">
         <li><b>TPDB</b>Movies, scenes, performers and studios.</li>
         <li><b>StashDB</b>Scenes, performers and studios.</li>
@@ -266,10 +263,10 @@ h1 em { font-style: normal; color: var(--accent-text); }
         <h2>Install with Docker</h2>
         <p class="sub">Velvarr runs as one container from <code>ghcr.io/skare69/velvarr</code>.</p>
         <ul class="needs" aria-label="Requirements">
-          <li><span><b>Docker</b> with Compose</span></li>
-          <li><span><b>Jellyfin</b> for sign-in, libraries, and playback</span></li>
-          <li><span><b>Whisparr V3</b> (Eros) to download approved titles</span></li>
-          <li><span>A <b>TPDB</b> token, a <b>StashDB</b> key, or both</span></li>
+          <li><span>Docker with Compose</span></li>
+          <li><span>Jellyfin for sign-in, libraries, and playback</span></li>
+          <li><span>Whisparr V3 (Eros) to download approved titles</span></li>
+          <li><span>A TPDB token, a StashDB key, or both</span></li>
         </ul>
       </div>
       <div>
@@ -295,12 +292,12 @@ Set-Content .env.local "VELVARR_SECRET_KEY=$key`nVELVARR_SETUP_SECRET=$setup" -E
 docker compose up -d</code></pre>
         </div>
         <ol class="then">
-          <li>Open <b>http://127.0.0.1:6699</b>.</li>
+          <li>Open <code>http://127.0.0.1:6699</code>.</li>
           <li>Enter <code>VELVARR_SETUP_SECRET</code> from <code>.env.local</code> to create the owner account.</li>
           <li>Save your TPDB token and StashDB key in Settings, then connect Whisparr.</li>
         </ol>
         <p class="warn"><b>Back up <code>VELVARR_SECRET_KEY</code>.</b> If you lose it, you cannot read the database or any backup.</p>
-        <p class="more">Upgrades, health checks, and phone access: <a href="https://github.com/Skare69/velvarr/blob/main/docs/install.md">install guide</a>. Every variable: <a href="https://github.com/Skare69/velvarr/blob/main/docs/configuration.md">configuration</a>.</p>
+        <p class="more">The <a href="https://github.com/Skare69/velvarr/blob/main/docs/install.md">install guide</a> covers upgrades, health checks, and phone access. The <a href="https://github.com/Skare69/velvarr/blob/main/docs/configuration.md">configuration page</a> lists every variable.</p>
       </div>
     </div>
   </section>
