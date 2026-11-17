@@ -3424,6 +3424,43 @@ test("login admission: outsider denied, logout revokes immediately", async () =>
   assert.equal((await call("GET", "/api/me", { cookie: member })).status, 401);
 });
 
+test("logout with a planted duplicate cookie revokes the real session", async () => {
+  // boot() arms the fixture integrations so a --test-name-pattern run that
+  // filters to only this test still has a bootstrapped instance to sign
+  // into. Its provider env is restored after, so later tests see the
+  // environment they saw before this one — the requests tests assert
+  // StashDB unconfigured.
+  const prevTpdb = process.env.TPDB_API_TOKEN;
+  const prevTpdbBase = process.env.TPDB_BASE_URL;
+  const prevStash = process.env.STASHDB_API_KEY;
+  const prevStashBase = process.env.STASHDB_BASE_URL;
+  try {
+    await boot();
+    // A same-host sibling origin can plant a narrower-Path velvarr_session;
+    // the browser sends it first (RFC 6265 §5.4). Sign out must revoke every
+    // copy in the header: the planted one is dead anyway, but the real
+    // session behind it must not survive a 200 {ok:true}.
+    const real = await loginAs("member");
+    const dup = await call("POST", "/api/logout", {
+      body: {},
+      cookie: `velvarr_session=planted; ${real}`,
+    });
+    assert.equal(dup.status, 200);
+    assert.deepEqual(await dup.json(), { ok: true });
+    // What the browser still sends afterwards is only the real Path=/ copy.
+    assert.equal((await call("GET", "/api/me", { cookie: real })).status, 401);
+  } finally {
+    if (prevTpdb === undefined) delete process.env.TPDB_API_TOKEN;
+    else process.env.TPDB_API_TOKEN = prevTpdb;
+    if (prevTpdbBase === undefined) delete process.env.TPDB_BASE_URL;
+    else process.env.TPDB_BASE_URL = prevTpdbBase;
+    if (prevStash === undefined) delete process.env.STASHDB_API_KEY;
+    else process.env.STASHDB_API_KEY = prevStash;
+    if (prevStashBase === undefined) delete process.env.STASHDB_BASE_URL;
+    else process.env.STASHDB_BASE_URL = prevStashBase;
+  }
+});
+
 // --- M2 phase 3: catalog, requests, availability ---
 test("catalog search: auth, filter combos, honest totals, outage honesty", async () => {
   const anon = await call(

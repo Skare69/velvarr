@@ -31,7 +31,7 @@ import {
   recordLoginFailure,
   readKnownDevice,
   reserveLoginAttempt,
-  readSessionToken,
+  readSessionTokens,
   sessionCookie,
   isSecureRequest,
   verifySetupSecret,
@@ -319,8 +319,11 @@ export async function login(request: Request): Promise<Response> {
 
 export async function logout(request: Request): Promise<Response> {
   await readJson(request);
-  const raw = readSessionToken(request);
-  if (raw) revokeSession(raw);
+  // Revoke every copy: a planted duplicate must not leave the real session
+  // live behind a 200 {ok:true}. readSessionToken reads an ambiguous header
+  // as absent on purpose; the admission path keeps that strict rule, so
+  // logout gathers all values itself.
+  for (const raw of readSessionTokens(request)) revokeSession(raw);
   return json({ ok: true }, 200, {
     "set-cookie": sessionCookie(undefined, isSecureRequest(request)),
   });

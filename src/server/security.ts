@@ -394,6 +394,26 @@ export function readSessionToken(request: Request): string | null {
   return readCookie(request, COOKIE_NAME);
 }
 
+// Every session cookie value the header carries, in arrival order,
+// duplicates included. Logout is the only consumer: revoking cannot grant
+// access, so the ambiguous-header rule above does not apply — a sibling
+// origin's planted narrower-Path copy (RFC 6265 §5.4) must not shield the
+// real session from Sign out, or a 200 {ok:true} leaves it live for its
+// full TTL.
+export function readSessionTokens(request: Request): string[] {
+  const header = request.headers.get("cookie");
+  if (!header) return [];
+  const values: string[] = [];
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq > 0 && part.slice(0, eq).trim() === COOKIE_NAME) {
+      const value = part.slice(eq + 1).trim();
+      if (value) values.push(value);
+    }
+  }
+  return values;
+}
+
 // A name sent more than once reads as absent. Cookies do not isolate by
 // port, so a sibling origin on the same host can plant a same-named cookie
 // with a narrower Path, and the browser sends it first (RFC 6265 §5.4).
