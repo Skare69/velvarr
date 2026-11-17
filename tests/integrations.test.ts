@@ -13,6 +13,7 @@ import {
   isPrivateHost,
   requestBytes,
   requestJson,
+  upstreamCheckError,
   validateBaseUrl,
 } from "../src/server/http.ts";
 import {
@@ -27,7 +28,12 @@ import {
   normalizeItemId,
   validateUser,
 } from "../src/server/jellyfin.ts";
-import { providerCheckFailure } from "../src/app/api/[...path]/routes/admin.ts";
+import {
+  adminJellyfin,
+  adminWhisparr,
+  providerCheckFailure,
+} from "../src/app/api/[...path]/routes/admin.ts";
+import type { AuthContext } from "../src/app/api/[...path]/admission.ts";
 import { getWhisparrStatus } from "../src/server/whisparr.ts";
 import type { IntegrationConfig, LibraryItem } from "../src/lib/contracts.ts";
 import {
@@ -4335,3 +4341,85 @@ test("provider checks preserve storage, decryption, configuration and unexpected
     );
   }
 });
+
+test("all service checks preserve local and unexpected errors instead of reporting credential failures", () => {
+  for (const error of [
+    new AppError(500, "secret_key_mismatch", "Cannot decrypt configuration"),
+    new AppError(400, "invalid_config", "Invalid settings"),
+    new AppError(400, "invalid_url", "Invalid service URL"),
+    new AppError(500, "invalid_secret_key", "Invalid encryption key"),
+    new Error("Unexpected storage fault"),
+  ])
+    assert.throws(
+      () => upstreamCheckError(error),
+      (thrown) => thrown === error,
+    );
+});
+
+for (const service of ["jellyfin", "whisparr"] as const) {
+  const endpoint = service === "jellyfin" ? adminJellyfin : adminWhisparr;
+  const context = (config: IntegrationConfig): AuthContext => ({
+    config,
+    account: account([]),
+    token: TOKEN,
+    rawSessionToken: "synthetic-session",
+  });
+  for (const [httpStatus, expectedCode] of [
+    [401, "upstream_auth"],
+    [403, "upstream_forbidden"],
+    [404, "upstream_not_found"],
+    [429, "upstream_unavailable"],
+    [500, "upstream_unavailable"],
+  ] as const) {
+    test(`${service} status endpoint converts upstream HTTP ${httpStatus} to status data without signing out the administrator`, async () => {
+      await withFixture(
+        (_req, res) => sendJson(res, httpStatus, {}),
+        async (fx) => {
+          const config = {
+            ...jellyfinConfig(fx.origin, []),
+            whisparr: whisparrConfig(fx.origin).whisparr,
+          };
+          const response = await endpoint(context(config));
+          assert.equal(response.status, 200);
+          const status = await response.json();
+          assert.equal(status.configured, true);
+          assert.equal(status.error.code, expectedCode);
+          assert.deepEqual(Object.keys(status).sort(), ["configured", "error"]);
+        },
+      );
+    });
+  }
+  test(`${service} status endpoint converts a malformed upstream response to status data`, async () => {
+    await withFixture(
+      (_req, res) => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end("invalid-json");
+      },
+      async (fx) => {
+        const config = {
+          ...jellyfinConfig(fx.origin, []),
+          whisparr: whisparrConfig(fx.origin).whisparr,
+        };
+        const response = await endpoint(context(config));
+        assert.equal(response.status, 200);
+        const status = await response.json();
+        assert.equal(status.configured, true);
+        assert.equal(status.error.code, "upstream_bad_response");
+      },
+    );
+  });
+  test(`${service} status endpoint propagates local URL validation errors`, async () => {
+    const config = {
+      ...jellyfinConfig("https://jellyfin.example.test", []),
+      whisparr: whisparrConfig("https://whisparr.example.test").whisparr,
+    };
+    config[service]!.url = "not-a-url";
+    await assert.rejects(
+      endpoint(context(config)),
+      (error) =>
+        error instanceof AppError &&
+        error.status === 400 &&
+        error.code === "invalid_url",
+    );
+  });
+}

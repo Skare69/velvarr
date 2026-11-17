@@ -67,6 +67,8 @@ The full feature list: [docs/features.md](docs/features.md).
 - [Features](docs/features.md): the full feature list.
 - [AI matching and natural-language search](docs/ai.md): Ollama decision models and searches in plain words.
 - [Backup and recovery](docs/backup.md): consistent snapshots, restore, and file permissions.
+- [Connection settings](docs/connections.md) and [metadata provider settings](docs/metadata-providers.md).
+- [Testing](docs/testing.md): unit, API, and settings browser checks.
 - [Development](docs/development.md): the development setup and the checks.
 - [How Velvarr works](docs/how-it-works.md): the architecture, the request-to-playback flow, and the acquisition life cycle.
 

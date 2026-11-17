@@ -2897,6 +2897,165 @@ test("session validation is cached: one /Users/Me per token per TTL window", asy
   resetSessionCache();
 });
 
+test("Whisparr-only card saves retain session, administrator, origin and field validation guards", async () => {
+  const original = getConfig();
+  assert.ok(original);
+  const body = { whisparrUrl, whisparrApiKey: whisparrKey };
+  try {
+    await errorShape(
+      await call("PATCH", "/api/admin/integrations", { body }),
+      401,
+    );
+    await errorShape(
+      await call("PATCH", "/api/admin/integrations", { cookie: member, body }),
+      403,
+    );
+    await errorShape(
+      await call("PATCH", "/api/admin/integrations", {
+        cookie: owner,
+        origin: "https://foreign.example.test",
+        body,
+      }),
+      403,
+    );
+    for (const invalid of [{}, { ...body, unknownField: true }]) {
+      await errorShape(
+        await call("PATCH", "/api/admin/integrations", {
+          cookie: owner,
+          body: invalid,
+        }),
+      );
+    }
+    assert.deepEqual(
+      getConfig(),
+      original,
+      "rejected requests must preserve all saved services",
+    );
+  } finally {
+    saveConfig(original);
+  }
+});
+
+test("first-time Whisparr card save persists standalone mappings without delivery", async () => {
+  const original = getConfig();
+  assert.ok(original);
+  try {
+    saveConfig({
+      jellyfin: original.jellyfin,
+      ...(original.providers ? { providers: original.providers } : {}),
+    });
+    assert.equal(getConfig()!.whisparr, undefined);
+    fx.fail.info = 503;
+    const pathMappings = [
+      { whisparrPrefix: "/new-downloads", jellyfinPrefix: "/new-media" },
+    ];
+    const response = await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: { whisparrUrl, whisparrApiKey: whisparrKey, pathMappings },
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.whisparr.delivery, null);
+    assert.deepEqual(body.whisparr.pathMappings, pathMappings);
+    assert.equal(getConfig()!.whisparr!.url, whisparrUrl);
+    assert.equal(getConfig()!.whisparr!.delivery, undefined);
+    assert.deepEqual(getConfig()!.whisparr!.pathMappings, pathMappings);
+    assert.deepEqual(getConfig()!.jellyfin, original.jellyfin);
+    assert.deepEqual(getConfig()!.providers, original.providers);
+    const read = await call("GET", "/api/admin/integrations", {
+      cookie: owner,
+    });
+    assert.equal(read.status, 200);
+    const saved = await read.json();
+    assert.equal(saved.whisparr.delivery, null);
+    assert.deepEqual(saved.whisparr.pathMappings, pathMappings);
+    assert.equal((await call("GET", "/api/me", { cookie: owner })).status, 200);
+  } finally {
+    fx.fail.info = 0;
+    saveConfig(original);
+  }
+});
+
+test("connection cards save and remove Whisparr without rewriting Jellyfin or providers", async () => {
+  const original = getConfig();
+  assert.ok(original);
+  try {
+    // Session admission can still validate /Users/Me, but the Jellyfin
+    // configuration probe is unavailable. Whisparr edits must not need it.
+    fx.fail.info = 503;
+    fx.journal = [];
+    fx.journalOn = true;
+    const delivery = {
+      enabled: false,
+      rootFolderPath: "/independent",
+      qualityProfileId: 4,
+      searchOnAdd: false,
+    };
+    const pathMappings = [
+      { whisparrPrefix: "/independent", jellyfinPrefix: "/playback" },
+    ];
+    const response = await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: {
+        whisparrUrl,
+        whisparrApiKey: whisparrKey,
+        delivery,
+        pathMappings,
+      },
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(JSON.stringify(body).includes(whisparrKey), false);
+    assert.deepEqual(getConfig()!.jellyfin, original.jellyfin);
+    assert.deepEqual(getConfig()!.providers, original.providers);
+    assert.deepEqual(getConfig()!.whisparr!.delivery, delivery);
+    assert.deepEqual(getConfig()!.whisparr!.pathMappings, pathMappings);
+    assert.equal(
+      fx.journal.some(
+        (request) =>
+          request.path === "/System/Info/Public" || request.path === "/Users",
+      ),
+      false,
+    );
+
+    const beforeInvalid = getConfig();
+    await errorShape(
+      await call("PATCH", "/api/admin/integrations", {
+        cookie: owner,
+        body: { delivery: { ...delivery, qualityProfileId: 0 } },
+      }),
+    );
+    assert.deepEqual(
+      getConfig(),
+      beforeInvalid,
+      "failed validation must preserve both services",
+    );
+
+    fx.fail.info = 0;
+    const jellyfinSave = await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: { jellyfinUrl, jellyfinExternalUrl: jellyfinUrl + "/independent" },
+    });
+    assert.equal(jellyfinSave.status, 200);
+    assert.deepEqual(getConfig()!.whisparr, beforeInvalid!.whisparr);
+    assert.deepEqual(getConfig()!.providers, original.providers);
+
+    const savedJellyfin = getConfig()!.jellyfin;
+    const removed = await call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: { whisparrUrl: "" },
+    });
+    assert.equal(removed.status, 200);
+    assert.equal(getConfig()!.whisparr, undefined);
+    assert.deepEqual(getConfig()!.jellyfin, savedJellyfin);
+    assert.deepEqual(getConfig()!.providers, original.providers);
+  } finally {
+    fx.fail.info = 0;
+    fx.journalOn = false;
+    saveConfig(original);
+  }
+});
+
 test("integration rotation: no re-auth, pinned server, whisparr add/remove", async () => {
   // Same server, new external URL: allowed, grants preserved.
   const external = `${jellyfinUrl}/media`;

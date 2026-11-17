@@ -18,3 +18,5 @@ bun run format && bun run check && bun run test && bun run build
 [`docs/how-it-works.md`](how-it-works.md) explains how the code is
 put together: the architecture map, the request-to-playback flow, and
 the acquisition life cycle, each tied to its source paths.
+
+[Testing](testing.md) covers the unit/API suite and production-build settings browser regressions.
