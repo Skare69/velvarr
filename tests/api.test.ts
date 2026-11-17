@@ -8,7 +8,7 @@ import {
   type ServerResponse,
   type Server,
 } from "node:http";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,7 +16,10 @@ import { DatabaseSync } from "node:sqlite";
 import { rmTempDir } from "./setup.ts";
 import { Buffer } from "node:buffer";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { resetMetaCache } from "../src/server/providers.ts";
+import {
+  fetchProviderArtwork,
+  resetMetaCache,
+} from "../src/server/providers.ts";
 import sharp from "sharp";
 import {
   artworkStoreStateForTest,
@@ -4826,6 +4829,199 @@ test("catalog artwork width: an evicted variant regenerates over HTTP", async ()
   } finally {
     setArtworkStoreBudgetForTest(null);
   }
+});
+
+test("catalog artwork proxy: URL spellings share one upstream fetch and index entry", async () => {
+  resetRateBuckets();
+  resetMetaCache();
+  const indexDir = join(apiDataDir, "artwork", "index");
+  const indexBefore = readdirSync(indexDir).length;
+  const callsBefore = tpdbFx.calls;
+  const dotted = await call(
+    "GET",
+    `/api/catalog/image?url=${encodeURIComponent(`${tpdbUrl}/a/./b.jpg`)}&w=400`,
+    { cookie: member },
+  );
+  const plain = await call(
+    "GET",
+    `/api/catalog/image?url=${encodeURIComponent(`${tpdbUrl}/a/b.jpg`)}&w=400`,
+    { cookie: member },
+  );
+  for (const response of [dotted, plain]) {
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "image/png");
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), PNG_1PX);
+  }
+  assert.equal(dotted.headers.get("etag"), plain.headers.get("etag"));
+  assert.equal(tpdbFx.calls - callsBefore, 1);
+  assert.equal(readdirSync(indexDir).length - indexBefore, 1);
+
+  // Without a width, only the source memory cache can avoid another fetch.
+  const memory = await call(
+    "GET",
+    `/api/catalog/image?url=${encodeURIComponent(`${tpdbUrl}/a/step/../b.jpg`)}`,
+    { cookie: member },
+  );
+  assert.equal(memory.status, 200);
+  assert.deepEqual(new Uint8Array(await memory.arrayBuffer()), PNG_1PX);
+  assert.equal(memory.headers.get("etag"), plain.headers.get("etag"));
+  assert.equal(tpdbFx.calls - callsBefore, 1);
+});
+
+test("catalog artwork proxy: each index entry costs at least 4096 bytes", async () => {
+  resetRateBuckets();
+  const indexDir = join(apiDataDir, "artwork", "index");
+  const indexBefore = readdirSync(indexDir).length;
+  const storeBefore = artworkStoreStateForTest();
+  const response = await call(
+    "GET",
+    `/api/catalog/image?url=${encodeURIComponent(`${tpdbUrl}/artwork-allocation.jpg`)}&w=400`,
+    { cookie: member },
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), PNG_1PX);
+  assert.equal(readdirSync(indexDir).length - indexBefore, 1);
+  const store = artworkStoreStateForTest();
+  assert.equal(store.files - storeBefore.files, 1);
+  const counted = store.bytes - storeBefore.bytes;
+  assert.ok(
+    counted >= 4096,
+    `index file counted at ${counted} bytes, below one 4 KiB block`,
+  );
+});
+
+test("catalog artwork proxy: concurrent URL spellings share one miss charge", async () => {
+  resetRateBuckets();
+  resetMetaCache();
+  const indexDir = join(apiDataDir, "artwork", "index");
+  const indexBefore = readdirSync(indexDir).length;
+  const callsBefore = tpdbFx.calls;
+  let charges = 0;
+  const onMiss = () => {
+    charges += 1;
+    chargeRateBudget(MEMBER_ID, "artwork");
+  };
+  // Direct calls enter the source cache before either network read resolves.
+  const [dotted, plain] = await Promise.all([
+    fetchProviderArtwork(`${tpdbUrl}/concurrent/a/./b.jpg`, {
+      width: 400,
+      onMiss,
+    }),
+    fetchProviderArtwork(`${tpdbUrl}/concurrent/a/b.jpg`, {
+      width: 400,
+      onMiss,
+    }),
+  ]);
+  assert.equal(charges, 1);
+  assert.equal(tpdbFx.calls - callsBefore, 1);
+  assert.equal(readdirSync(indexDir).length - indexBefore, 1);
+  for (const result of [dotted, plain]) {
+    assert.equal(result.contentType, "image/png");
+    assert.deepEqual(result.bytes, PNG_1PX);
+  }
+  const memory = await fetchProviderArtwork(
+    `${tpdbUrl}/concurrent/a/step/../b.jpg`,
+    { onMiss },
+  );
+  assert.deepEqual(memory.bytes, PNG_1PX);
+  assert.equal(charges, 1);
+  assert.equal(tpdbFx.calls - callsBefore, 1);
+});
+
+test("catalog artwork proxy: another URL spelling reads the disk variant after a memory reset", async () => {
+  resetRateBuckets();
+  resetMetaCache();
+  artworkSources.set(
+    "/artwork-disk/a/b.jpg",
+    await sharp({
+      create: {
+        width: 810,
+        height: 1210,
+        channels: 3,
+        background: { r: 43, g: 91, b: 177 },
+      },
+    })
+      .png()
+      .toBuffer(),
+  );
+  const indexDir = join(apiDataDir, "artwork", "index");
+  const indexBefore = readdirSync(indexDir).length;
+  const callsBefore = tpdbFx.calls;
+  const first = await call(
+    "GET",
+    `/api/catalog/image?url=${encodeURIComponent(`${tpdbUrl}/artwork-disk/a/./b.jpg`)}&w=400`,
+    { cookie: member },
+  );
+  assert.equal(first.status, 200);
+  assert.equal(first.headers.get("content-type"), "image/webp");
+  const bytes = Buffer.from(await first.arrayBuffer());
+  assert.equal((await sharp(bytes).metadata()).width, 400);
+  assert.equal(tpdbFx.calls - callsBefore, 1);
+  resetMetaCache();
+  const stored = await call(
+    "GET",
+    `/api/catalog/image?url=${encodeURIComponent(`${tpdbUrl}/artwork-disk/a/step/../b.jpg?#`)}&w=400`,
+    { cookie: member },
+  );
+  assert.equal(stored.status, 200);
+  assert.equal(stored.headers.get("content-type"), "image/webp");
+  assert.equal(stored.headers.get("etag"), first.headers.get("etag"));
+  assert.equal(
+    stored.headers.get("cache-control"),
+    "private, max-age=31536000, immutable",
+  );
+  assert.deepEqual(Buffer.from(await stored.arrayBuffer()), bytes);
+  assert.equal(tpdbFx.calls - callsBefore, 1);
+  assert.equal(readdirSync(indexDir).length - indexBefore, 1);
+});
+
+test("catalog artwork proxy: generated equivalent URL spellings share source and index identity", async () => {
+  let sample = 0;
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(fc.constantFrom("./", "step/../", "./step/../"), {
+        minLength: 1,
+        maxLength: 8,
+      }),
+      fc.constantFrom("", "?", "#", "?#"),
+      async (segments, suffix) => {
+        resetRateBuckets();
+        resetMetaCache();
+        // A fresh path also keeps replay and shrink attempts independent.
+        const base = `${tpdbUrl}/artwork-property-${sample++}/a/`;
+        const canonical = `${base}b.jpg`;
+        const alternate = `${base}${segments.join("")}b.jpg${suffix}`;
+        const indexDir = join(apiDataDir, "artwork", "index");
+        const indexBefore = readdirSync(indexDir).length;
+        const storeBefore = artworkStoreStateForTest();
+        const callsBefore = tpdbFx.calls;
+        for (const url of [alternate, canonical]) {
+          const response = await call(
+            "GET",
+            `/api/catalog/image?url=${encodeURIComponent(url)}&w=400`,
+            { cookie: member },
+          );
+          assert.equal(response.status, 200);
+          assert.equal(response.headers.get("content-type"), "image/png");
+          assert.deepEqual(
+            new Uint8Array(await response.arrayBuffer()),
+            PNG_1PX,
+          );
+        }
+        const memory = await call(
+          "GET",
+          `/api/catalog/image?url=${encodeURIComponent(`${base}./b.jpg#`)}`,
+          { cookie: member },
+        );
+        assert.equal(memory.status, 200);
+        assert.deepEqual(new Uint8Array(await memory.arrayBuffer()), PNG_1PX);
+        assert.equal(tpdbFx.calls - callsBefore, 1);
+        assert.equal(readdirSync(indexDir).length - indexBefore, 1);
+        assert.ok(artworkStoreStateForTest().bytes - storeBefore.bytes >= 4096);
+      },
+    ),
+    { examples: [[["./"], ""]] },
+  );
 });
 
 test("requests: lifecycle, autoApprove, privacy, roles, origin", async () => {

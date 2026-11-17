@@ -67,8 +67,8 @@ flowchart LR
   `requests.ts`, `follows.ts`, `catalog.ts`, `browse.ts`, `library.ts`,
   `admin.ts`, `discover.ts`); each exports `RouteDef[]`.
 - **Metadata adapters** — `src/server/providers.ts` (TPDB REST, StashDB
-  GraphQL) and `src/server/browse.ts` (grid filters); strictly read-only,
-  pass-through, nothing persisted.
+  GraphQL) and `src/server/browse.ts` (grid filters); read-only provider
+  access, with metadata in memory and resized artwork on disk.
 - **Store (SQLite)** — `src/server/storage.ts`; migrations and prepared
   statements. Tables: `config`, `accounts`, `sessions`,
   `catalog_identities`, `requests`, `acquisitions`,
@@ -91,6 +91,15 @@ flowchart LR
 - **Whisparr (Eros)** — the acquisition manager at the operator's host.
 - **Jellyfin** — the media server; also the identity provider (sign-in
   validates each user against Jellyfin).
+
+Artwork originals stay in memory, while resized variants persist under the
+data directory. After URL validation, the source cache, in-flight requests,
+and disk index share the canonical `origin + pathname` identity. The disk
+budget counts allocated space, with a 4096-byte minimum per non-empty file,
+including each URL index entry. Each write runs a synchronous full-tree sweep
+for expiry and budget eviction. The newest file stays protected, so it can
+exceed the budget alone. Large cache trees can delay a request during this
+sweep.
 
 ## From request to playback
 

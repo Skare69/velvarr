@@ -13,9 +13,8 @@ import { test, beforeEach, mock } from "node:test";
 import { createHash } from "node:crypto";
 import {
   existsSync,
-  mkdirSync,
+  mkdtempSync,
   readFileSync,
-  rmSync,
   statSync,
   utimesSync,
 } from "node:fs";
@@ -24,6 +23,7 @@ import sharp from "sharp";
 import {
   artworkStoreStateForTest,
   artworkVariantFor,
+  rememberArtworkVariant,
   setArtworkStoreBudgetForTest,
 } from "../src/server/artwork-store.ts";
 
@@ -1993,42 +1993,114 @@ test("artwork no-upscale: a rotated source is compared on its oriented width", a
   );
 });
 
-test("artwork store: eviction removes the least recently used file when the budget is exceeded", async () => {
-  // mtime is the store's LRU clock (writes and disk hits touch it), so the
-  // test ages files explicitly with utimesSync and never sleeps. Variant
-  // sizes are precomputed with the store's own encode pipeline — sharp is
-  // deterministic, so the precomputed lengths equal the on-disk sizes and
-  // the budget arithmetic below is exact.
-  const artworkDir = join(process.env.VELVARR_DATA_DIR!, "artwork");
-  rmSync(artworkDir, { recursive: true, force: true });
-  mkdirSync(artworkDir, { recursive: true });
-  assert.equal(artworkStoreStateForTest().files, 0);
+for (const [label, source, isVariant] of [
+  ["passthrough", POSTER_185, false],
+  ["stored variant", POSTER_1000, true],
+] as const) {
+  test(`artwork store: index-only ${label} writes stay within the allocation budget`, async () => {
+    const savedDataDir = process.env.VELVARR_DATA_DIR!;
+    const dataDir = mkdtempSync(join(savedDataDir, "artwork-index-budget-"));
+    let upstreamCount = 0;
+    const fixture = await startFixture((_req, res) => {
+      upstreamCount++;
+      sendBytes(res, 200, source, "image/png");
+    });
+    try {
+      process.env.VELVARR_DATA_DIR = dataDir;
+      const firstUrl = `${fixture.origin}/index-0.png`;
+      const first = await fetchProviderArtwork(firstUrl, { width: 400 });
+      assert.equal(first.isVariant, isVariant);
+      const initial = artworkStoreStateForTest();
+      assert.equal(initial.files, isVariant ? 2 : 1);
+      const budget = initial.bytes * 3;
+      setArtworkStoreBudgetForTest(budget);
+      const hash = createHash("sha256").update(source).digest("hex");
+      for (let i = 0; i < 40; i++) {
+        const url = `${fixture.origin}/index-${i}.png`;
+        if (i > 0) {
+          const result = await fetchProviderArtwork(url, { width: 400 });
+          assert.equal(result.isVariant, isVariant);
+          assert.deepEqual(result.bytes, first.bytes);
+        }
+        const index = join(
+          dataDir,
+          "artwork",
+          "index",
+          createHash("sha256").update(url).digest("hex"),
+        );
+        assert.equal(statSync(index).size, 64);
+        // Keep indexes older than the shared variant, without clock ties.
+        const aged = new Date(Date.now() - 60_000 + i);
+        utimesSync(index, aged, aged);
+        const state = artworkStoreStateForTest();
+        assert.ok(state.bytes <= budget, `${label} write ${i} exceeds budget`);
+        assert.ok(state.files <= initial.files * 3);
+        assert.equal(existsSync(artworkStorePath(hash, 400)), isVariant);
+      }
+      assert.equal(upstreamCount, 40);
+      assert.ok(initial.bytes >= initial.files * 4096);
+    } finally {
+      setArtworkStoreBudgetForTest(null);
+      process.env.VELVARR_DATA_DIR = savedDataDir;
+      await fixture.close();
+    }
+  });
 
-  const encodeSource = async (background: {
-    r: number;
-    g: number;
-    b: number;
-  }) => {
-    const png = await sharp({
+  test(`artwork store: an index-only ${label} write removes expired index entries`, async () => {
+    const savedDataDir = process.env.VELVARR_DATA_DIR!;
+    const dataDir = mkdtempSync(join(savedDataDir, "artwork-index-expiry-"));
+    let upstreamCount = 0;
+    const fixture = await startFixture((_req, res) => {
+      upstreamCount++;
+      sendBytes(res, 200, source, "image/png");
+    });
+    try {
+      process.env.VELVARR_DATA_DIR = dataDir;
+      const oldUrl = `${fixture.origin}/expired.png`;
+      const first = await fetchProviderArtwork(oldUrl, { width: 400 });
+      assert.equal(first.isVariant, isVariant);
+      const oldIndex = join(
+        dataDir,
+        "artwork",
+        "index",
+        createHash("sha256").update(oldUrl).digest("hex"),
+      );
+      const expired = new Date(Date.now() - 25 * 60 * 60_000);
+      utimesSync(oldIndex, expired, expired);
+      const next = await fetchProviderArtwork(`${fixture.origin}/fresh.png`, {
+        width: 400,
+      });
+      assert.equal(next.isVariant, isVariant);
+      assert.deepEqual(next.bytes, first.bytes);
+      assert.equal(existsSync(oldIndex), false);
+      assert.equal(artworkStoreStateForTest().files, isVariant ? 2 : 1);
+      assert.equal(upstreamCount, 2);
+    } finally {
+      setArtworkStoreBudgetForTest(null);
+      process.env.VELVARR_DATA_DIR = savedDataDir;
+      await fixture.close();
+    }
+  });
+}
+
+test("artwork store: eviction removes the least recently used file when the budget is exceeded", async () => {
+  const savedDataDir = process.env.VELVARR_DATA_DIR!;
+  const dataDir = mkdtempSync(join(savedDataDir, "artwork-lru-"));
+  const encodeSource = (background: { r: number; g: number; b: number }) =>
+    sharp({
       create: { width: 500, height: 700, channels: 3, background },
     })
       .png()
       .toBuffer();
-    const variant = await sharp(png)
-      .resize({ width: 400, withoutEnlargement: true })
-      .webp({ quality: 80 })
-      .toBuffer();
-    return { png, variant };
-  };
   const sourceA = await encodeSource({ r: 120, g: 30, b: 60 });
   const sourceB = await encodeSource({ r: 30, g: 120, b: 60 });
   const sourceC = await encodeSource({ r: 10, g: 10, b: 200 });
   const sourceD = await encodeSource({ r: 200, g: 200, b: 10 });
   const byPath: Record<string, Buffer> = {
-    "/e1.png": sourceA.png,
-    "/e2.png": sourceB.png,
-    "/e3.png": sourceC.png,
-    "/e4.png": sourceD.png,
+    "/e1.png": sourceA,
+    "/e2.png": sourceB,
+    "/e3.png": sourceC,
+    "/e4.png": sourceD,
   };
   const counts = new Map<string, number>();
   const fixture = await startFixture((req, res) => {
@@ -2042,98 +2114,85 @@ test("artwork store: eviction removes the least recently used file when the budg
     sendBytes(res, 404, "nope", "text/plain");
   });
   try {
+    // Measure actual fixture allocation in a separate store.
+    process.env.VELVARR_DATA_DIR = join(dataDir, "measurements");
+    const measureVariant = async (bytes: Buffer) => {
+      const before = artworkStoreStateForTest().bytes;
+      await artworkVariantFor({ bytes, contentType: "image/png" }, 400);
+      return artworkStoreStateForTest().bytes - before;
+    };
+    const sizeA = await measureVariant(sourceA);
+    const sizeC = await measureVariant(sourceC);
+    const sizeD = await measureVariant(sourceD);
+    assert.ok(sizeA > 0 && sizeC > 0 && sizeD > 0);
+    process.env.VELVARR_DATA_DIR = join(dataDir, "store");
+
     const origin = fixture.origin;
     const hashOf = (bytes: Buffer) =>
       createHash("sha256").update(bytes).digest("hex");
-    const fileA = artworkStorePath(hashOf(sourceA.png), 400);
-    const fileB = artworkStorePath(hashOf(sourceB.png), 400);
-    const fileC = artworkStorePath(hashOf(sourceC.png), 400);
-    const fileD = artworkStorePath(hashOf(sourceD.png), 400);
-    const sizeB = sourceB.variant.length;
-    const sizeC = sourceC.variant.length;
-    const sizeD = sourceD.variant.length;
-
+    const fileA = artworkStorePath(hashOf(sourceA), 400);
+    const fileB = artworkStorePath(hashOf(sourceB), 400);
+    const fileC = artworkStorePath(hashOf(sourceC), 400);
+    const fileD = artworkStorePath(hashOf(sourceD), 400);
     await fetchProviderArtwork(`${origin}/e1.png`, { width: 400 });
-    await fetchProviderArtwork(`${origin}/e2.png`, { width: 400 });
-    // Index entries count toward the sweep budget, and every fetched URL
-    // owns one; B's entry measures the per-entry size (all entries store
-    // the same bare sha256 hex).
-    const indexEntryBytes = statSync(
-      join(
-        artworkDir,
-        "index",
-        createHash("sha256").update(`${origin}/e2.png`).digest("hex"),
-      ),
-    ).size;
+    const firstB = await fetchProviderArtwork(`${origin}/e2.png`, {
+      width: 400,
+    });
+
+    // Include only this round's index before the variant write.
+    rememberArtworkVariant(`${origin}/e3.png`, hashOf(sourceC));
+    const budgetForBC = artworkStoreStateForTest().bytes + sizeC - sizeA;
     const t = Date.now();
     utimesSync(fileA, new Date(t - 10_000), new Date(t - 10_000));
     utimesSync(fileB, new Date(t - 5_000), new Date(t - 5_000));
-
-    // The budget equals the expected post-write state: B and C's variants
-    // plus A, B and C's index entries. The sweep (which runs before C's
-    // index entry is written) sees one entry less, so its excess is exactly
-    // A's variant: one eviction, the oldest-use file. A's index entry
-    // survives as a dangling shortcut — the assert pins the variant file.
-    const budgetForBC = sizeB + sizeC + 3 * indexEntryBytes;
     setArtworkStoreBudgetForTest(budgetForBC);
-    try {
-      await fetchProviderArtwork(`${origin}/e3.png`, { width: 400 });
-      assert.equal(
-        existsSync(fileA),
-        false,
-        "eviction must remove the oldest-used file first",
-      );
-      assert.equal(existsSync(fileB), true);
-      assert.equal(existsSync(fileC), true);
-      assert.ok(
-        artworkStoreStateForTest().bytes <= budgetForBC,
-        "store must fit the budget after eviction",
-      );
+    await fetchProviderArtwork(`${origin}/e3.png`, { width: 400 });
+    assert.equal(
+      existsSync(fileA),
+      false,
+      "eviction must remove the oldest-used file first",
+    );
+    assert.equal(existsSync(fileB), true);
+    assert.equal(existsSync(fileC), true);
+    assert.ok(
+      artworkStoreStateForTest().bytes <= budgetForBC,
+      "store must fit the budget after eviction",
+    );
 
-      // Re-using B promotes it over C: the variant comes back byte-identical
-      // from the disk store through the URL index without touching upstream,
-      // and the hit touches the LRU clock.
-      resetMetaCache();
-      const bAgain = await fetchProviderArtwork(`${origin}/e2.png`, {
-        width: 400,
-      });
-      assert.equal(counts.get("/e2.png"), 1);
-      assert.deepEqual([...bAgain.bytes], [...sourceB.variant]);
-      assert.ok(
-        statSync(fileB).mtimeMs > t - 1_000,
-        "disk hit must touch the LRU clock",
-      );
+    // A disk hit must preserve B's bytes and promote its last-use time.
+    resetMetaCache();
+    const bAgain = await fetchProviderArtwork(`${origin}/e2.png`, {
+      width: 400,
+    });
+    assert.equal(counts.get("/e2.png"), 1);
+    assert.deepEqual([...bAgain.bytes], [...firstB.bytes]);
+    assert.ok(
+      statSync(fileB).mtimeMs > t - 1_000,
+      "disk hit must touch the LRU clock",
+    );
 
-      // Pin the use order before the second eviction: C's mtime goes back to
-      // t-5s while B was just touched to now, so same-millisecond ties
-      // cannot flip the victim.
-      utimesSync(fileC, new Date(t - 5_000), new Date(t - 5_000));
-      // Same post-write arithmetic with D in C's place: the sweep (D's own
-      // index entry lands after it) sees an excess of exactly C's variant —
-      // aged to t-5s, older than the just-touched B files — so it must evict
-      // C's variant and stop before re-used B.
-      const budgetForBD = sizeB + sizeD + 4 * indexEntryBytes;
-      setArtworkStoreBudgetForTest(budgetForBD);
-      await fetchProviderArtwork(`${origin}/e4.png`, { width: 400 });
-      // Eviction follows last use, not write order: C was written after B
-      // but never re-used, so D's write must evict C and keep B.
-      assert.equal(
-        existsSync(fileC),
-        false,
-        "eviction must follow last use, not write order",
-      );
-      assert.equal(existsSync(fileB), true);
-      assert.equal(existsSync(fileD), true);
-      assert.ok(artworkStoreStateForTest().bytes <= budgetForBD);
-      // Each distinct source went upstream exactly once; every re-read
-      // resolves through the memory cache, the URL index and the disk store.
-      assert.equal(counts.get("/e1.png"), 1);
-      assert.equal(counts.get("/e3.png"), 1);
-      assert.equal(counts.get("/e4.png"), 1);
-    } finally {
-      setArtworkStoreBudgetForTest(null);
-    }
+    setArtworkStoreBudgetForTest(null);
+    rememberArtworkVariant(`${origin}/e4.png`, hashOf(sourceD));
+    const budgetForBD = artworkStoreStateForTest().bytes + sizeD - sizeC;
+    // C is newer than B by creation, but older by last use.
+    utimesSync(fileC, new Date(t - 5_000), new Date(t - 5_000));
+    setArtworkStoreBudgetForTest(budgetForBD);
+    await fetchProviderArtwork(`${origin}/e4.png`, { width: 400 });
+    assert.equal(
+      existsSync(fileC),
+      false,
+      "eviction must follow last use, not write order",
+    );
+    assert.equal(existsSync(fileB), true);
+    assert.equal(existsSync(fileD), true);
+    assert.ok(artworkStoreStateForTest().bytes <= budgetForBD);
+    assert.equal(counts.get("/e1.png"), 1);
+    assert.equal(counts.get("/e2.png"), 1);
+    assert.equal(counts.get("/e3.png"), 1);
+    assert.equal(counts.get("/e4.png"), 1);
   } finally {
+    setArtworkStoreBudgetForTest(null);
+    process.env.VELVARR_DATA_DIR = savedDataDir;
     await fixture.close();
   }
 });

@@ -48,6 +48,13 @@ const ARTWORK_STORE_TTL_MS = 30 * 24 * 60 * 60_000;
 // memory cache would.
 const ARTWORK_INDEX_TTL_MS = 24 * 60 * 60_000;
 
+// Count allocation with a 4 KiB floor, including small URL index entries.
+const MIN_FILE_DISK_BYTES = 4096;
+
+function countedFileBytes(st: { size: number; blocks: number }): number {
+  return Math.max(MIN_FILE_DISK_BYTES, st.size, st.blocks * 512);
+}
+
 // Set (and un-set with null) by tests only; it survives for the process
 // lifetime because a restart keeps the disk and the store has no other
 // module state to clear.
@@ -127,9 +134,8 @@ function writeFileAtomic(file: string, bytes: Buffer): void {
   }
 }
 
-/** One sweep per write: drop expired and zero-byte entries, then evict by
- * oldest mtime until the total fits the budget. The file just written is
- * never an eviction candidate. */
+/** Drop expired and empty files after each write, then evict by oldest mtime.
+ * Keep the newest file even when it alone exceeds the budget. */
 function sweepArtworkStore(justWritten: string): void {
   const root = artworkRootDir();
   let walked: string[];
@@ -170,8 +176,9 @@ function sweepArtworkStore(justWritten: string): void {
       }
       continue;
     }
-    total += st.size;
-    kept.push({ file, mtimeMs: st.mtimeMs, size: st.size });
+    const diskBytes = countedFileBytes(st);
+    total += diskBytes;
+    kept.push({ file, mtimeMs: st.mtimeMs, size: diskBytes });
   }
   // Oldest first: budget pressure always evicts the least recently used.
   kept.sort((a, b) => a.mtimeMs - b.mtimeMs);
@@ -268,7 +275,10 @@ export function lookupArtworkVariant(
 export function rememberArtworkVariant(url: string, hash: string): void {
   if (hash.length === 0) return;
   try {
-    writeFileAtomic(indexFilePath(url), Buffer.from(hash, "utf8"));
+    const file = indexFilePath(url);
+    writeFileAtomic(file, Buffer.from(hash, "utf8"));
+    // Index-only writes need this sweep; fresh variants incur a second sweep.
+    sweepArtworkStore(file);
   } catch (err) {
     console.error(
       `artwork-store: could not write artwork index entry: ${
@@ -363,7 +373,7 @@ export function artworkStoreStateForTest(): {
     }
     if (!st.isFile()) continue;
     files += 1;
-    bytes += st.size;
+    bytes += countedFileBytes(st);
   }
   return {
     files,

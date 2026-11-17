@@ -548,6 +548,8 @@ export async function fetchProviderArtwork(
       `Rejected artwork URL: ${check.reason}.`,
     );
   }
+  const u = new URL(url);
+  const key = u.origin + u.pathname;
   // An off-ladder width is a caller bug, not an upstream condition: reject
   // before any fetch, exactly like the URL gate above.
   const width = options.width;
@@ -562,7 +564,7 @@ export async function fetchProviderArtwork(
   // fresh variant file serve a restart without an upstream fetch. sizeLimit
   // callers bypass the caches deliberately for exactness, so they skip it.
   if (width !== undefined && options.sizeLimit === undefined) {
-    const stored = lookupArtworkVariant(url, width);
+    const stored = lookupArtworkVariant(key, width);
     if (stored) return stored;
   }
   // A custom sizeLimit narrows what this caller accepts; a cached entry
@@ -572,10 +574,6 @@ export async function fetchProviderArtwork(
     bytes: Uint8Array;
     contentType: string;
   }> => {
-    const u = new URL(url);
-    // The gate rejects query strings and fragments, so origin+pathname is
-    // the whole URL: the raw-URL cache key can never diverge from what is
-    // fetched here.
     const { bytes, contentType } = await requestBytes(
       u.origin,
       u.pathname,
@@ -623,33 +621,32 @@ export async function fetchProviderArtwork(
   }> => {
     if (width === undefined) return source;
     const variant = await artworkVariantFor(source, width);
-    rememberArtworkVariant(url, variant.hash);
+    rememberArtworkVariant(key, variant.hash);
     return variant;
   };
 
   if (options.sizeLimit !== undefined) return derive(await fetchOnce());
 
-  const hit = artworkCache.get(url);
+  const hit = artworkCache.get(key);
   if (hit && Date.now() - hit.at < ARTWORK_CACHE_TTL_MS) {
     return derive(hit);
   }
   if (hit) {
     artworkCacheBytes -= hit.bytes.length;
-    artworkCache.delete(url);
+    artworkCache.delete(key);
   }
-  const inFlight = artworkInFlight.get(url);
+  const inFlight = artworkInFlight.get(key);
   if (inFlight) return derive(await inFlight);
   // Exactly one caller per coalesced burst reaches this synchronous window,
   // so onMiss charges once per upstream fetch; hits and joins never do.
   options.onMiss?.();
   const pending = fetchOnce()
     .then((entry) => {
-      artworkCache.set(url, { at: Date.now(), ...entry });
+      artworkCache.set(key, { at: Date.now(), ...entry });
       artworkCacheBytes += entry.bytes.length;
       // ponytail: fixed TTL (Seerr's no-max-age default) and FIFO eviction of
       // oldest entries until the new one fits; honor upstream max-age if
-      // images go stale. Cache is memory-only and resets on restart — a disk
-      // cache (Seerr's config/cache/images) is the upgrade if restarts hurt.
+      // images go stale. Originals stay memory-only and reset on restart.
       while (
         artworkCacheBytes > ARTWORK_CACHE_MAX_BYTES &&
         artworkCache.size > 1
@@ -660,8 +657,8 @@ export async function fetchProviderArtwork(
       }
       return entry;
     })
-    .finally(() => artworkInFlight.delete(url));
-  artworkInFlight.set(url, pending);
+    .finally(() => artworkInFlight.delete(key));
+  artworkInFlight.set(key, pending);
   if (width !== undefined) {
     // One upstream fetch feeds every width: joins share the source promise
     // above, then each caller reads or generates its own disk variant.

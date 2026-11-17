@@ -109,7 +109,7 @@ export function dedupeBy<T>(
   return out;
 }
 
-// --- artwork gate: provider-hosted images only, pass-through, never persisted ---
+// --- artwork gate: provider-hosted images only ---
 
 // Allowlist derived from live records 2026-09-10: every provider-normalized
 // artwork URL observed (TPDB posters/background/image/thumbnail/face, StashDB
@@ -148,9 +148,8 @@ export function isProviderImageUrl(url: string): ImageUrlCheck {
   if (u.username || u.password || u.hash) {
     return { ok: false, reason: "artwork URLs must not carry credentials" };
   }
-  // The artwork cache keys on the raw URL while the fetch requests
-  // origin+pathname only, so a query string would multiply cache entries for
-  // one upstream path: ?n=1, ?n=2, ... each refetch (VELV-23 flood).
+  // Query strings do not belong to the upstream origin+pathname identity.
+  // Reject them instead of silently dropping provider parameters.
   if (u.search !== "") {
     return { ok: false, reason: "artwork URLs must not carry a query string" };
   }
