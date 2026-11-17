@@ -282,69 +282,179 @@ test("tpdb movie detail maps validated fields and canonical credit parents", asy
   }
 });
 
-// VELV-202: credits read the embedded performer's posters[] array and serve
-// the largest servable entry; the canonical parent identity and the
-// no-usable-poster fallback (parent.image) stay pinned by the test above.
-test("tpdb credits prefer the performer's largest servable poster", async () => {
-  const restore = setEnv({
-    TPDB_API_TOKEN: TPDB_TOKEN,
-    TPDB_BASE_URL: "",
-  });
-  const fixture = await startFixture((req, res) => {
-    assert.equal(req.method, "GET");
-    assert.equal(req.url, `/movies/${MOVIE_ID}`);
-    assert.equal(req.headers.authorization, `Bearer ${TPDB_TOKEN}`);
-    const row = tpdbMovieRow();
-    const performer = (row.performers as Record<string, unknown>[])[0];
-    assert.ok(performer !== undefined);
-    performer.image = "https://images02-openlife.gammacdn.com/credit-raw.jpg";
-    performer.posters = [
-      { url: "https://thumb.theporndb.net/credit-small.jpg", size: 1024 },
-      // Largest claimed size on a gate-rejected host must not win.
-      {
-        url: "https://images02-openlife.gammacdn.com/credit-huge.jpg",
-        size: 9_999_999,
-      },
-      { url: "https://thumb.theporndb.net/credit-big.jpg", size: 4_096_000 },
-    ];
-    row.performers = [
-      performer,
-      {
-        ...performer,
+// Canonical posters take precedence over alias posters, regardless of size.
+// An unusable canonical list permits the alias poster fallback.
+for (const parentPosters of [
+  undefined,
+  [
+    {
+      url: "https://images02-openlife.gammacdn.com/parent-huge.jpg",
+      size: 9_999_999,
+    },
+    { url: "https://cdn.theporndb.net/parent-zero.jpg", size: 0 },
+  ],
+] as const) {
+  test(`tpdb credits prefer the row's largest servable poster when parent posters are ${parentPosters === undefined ? "absent" : "unusable"}`, async () => {
+    const restore = setEnv({
+      TPDB_API_TOKEN: TPDB_TOKEN,
+      TPDB_BASE_URL: "",
+    });
+    const fixture = await startFixture((req, res) => {
+      assert.equal(req.method, "GET");
+      assert.equal(req.url, `/movies/${MOVIE_ID}`);
+      assert.equal(req.headers.authorization, `Bearer ${TPDB_TOKEN}`);
+      const row = tpdbMovieRow();
+      const performer = (row.performers as Record<string, unknown>[])[0];
+      assert.ok(performer !== undefined);
+      performer.image = "https://images02-openlife.gammacdn.com/credit-raw.jpg";
+      performer.parent = {
+        ...(performer.parent as Record<string, unknown>),
+        posters: parentPosters,
+      };
+      performer.posters = [
+        { url: "https://thumb.theporndb.net/credit-small.jpg", size: 1024 },
+        // Largest claimed size on a gate-rejected host must not win.
+        {
+          url: "https://images02-openlife.gammacdn.com/credit-huge.jpg",
+          size: 9_999_999,
+        },
+        { url: "https://thumb.theporndb.net/credit-big.jpg", size: 4_096_000 },
+      ];
+      row.performers = [
+        performer,
+        {
+          ...performer,
+          id: CANON_PERFORMER_ID,
+          name: "Duplicate Credit",
+          posters: [
+            {
+              url: "https://thumb.theporndb.net/duplicate.jpg",
+              size: 8_000_000,
+            },
+          ],
+        },
+      ];
+      sendJson(res, 200, { data: row });
+    });
+    try {
+      process.env.TPDB_BASE_URL = fixture.origin;
+      const detail = await getCatalogDetail({
+        provider: "tpdb",
+        kind: "movie",
+        id: MOVIE_ID,
+      });
+      assert.ok(detail !== null);
+      assert.equal(detail.credits.length, 1);
+      assert.equal(detail.credits[0]?.name, "Credited Name");
+      assert.deepEqual(detail.credits[0]?.reference, {
+        provider: "tpdb",
+        kind: "performer",
         id: CANON_PERFORMER_ID,
-        name: "Duplicate Credit",
-        posters: [
-          { url: "https://thumb.theporndb.net/duplicate.jpg", size: 8_000_000 },
-        ],
-      },
-    ];
-    sendJson(res, 200, { data: row });
+      });
+      assert.equal(
+        detail.credits[0]?.imageUrl,
+        "https://thumb.theporndb.net/credit-big.jpg",
+      );
+      assert.equal(JSON.stringify(detail).includes("gammacdn"), false);
+    } finally {
+      await fixture.close();
+      restore();
+    }
   });
-  try {
-    process.env.TPDB_BASE_URL = fixture.origin;
-    const detail = await getCatalogDetail({
-      provider: "tpdb",
-      kind: "movie",
-      id: MOVIE_ID,
-    });
-    assert.ok(detail !== null);
-    assert.equal(detail.credits.length, 1);
-    assert.equal(detail.credits[0]?.name, "Credited Name");
-    assert.deepEqual(detail.credits[0]?.reference, {
-      provider: "tpdb",
-      kind: "performer",
+}
+
+for (const aliasHasPosters of [true, false]) {
+  test(`tpdb credits and canonical performer detail share the largest canonical poster ${aliasHasPosters ? "despite larger alias posters" : "without alias posters"}`, async () => {
+    const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
+    const canonical = {
       id: CANON_PERFORMER_ID,
+      name: "Canonical Name",
+      image: "https://cdn.theporndb.net/performer/canonical-fallback.jpg",
+      posters: [
+        { url: "https://thumb.theporndb.net/canonical-small.jpg", size: 1024 },
+        {
+          url: "https://cdn.theporndb.net/canonical-largest.jpg",
+          size: 4_096_000,
+          order: 99,
+        },
+        {
+          url: "https://images02-openlife.gammacdn.com/canonical-huge.jpg",
+          size: 99_999_999,
+          order: 0,
+        },
+        {
+          url: "https://cdn.theporndb.net/canonical-tied.jpg",
+          size: 4_096_000,
+          order: 0,
+        },
+        { url: "https://thumb.theporndb.net/canonical-last.jpg", size: 2048 },
+      ],
+    };
+    const fixture = await startFixture((req, res) => {
+      assert.equal(req.method, "GET");
+      assert.equal(req.headers.authorization, `Bearer ${TPDB_TOKEN}`);
+      if (req.url === `/performers/${CANON_PERFORMER_ID}`) {
+        sendJson(res, 200, { data: canonical });
+        return;
+      }
+      assert.equal(req.url, `/movies/${MOVIE_ID}`);
+      const row = tpdbMovieRow();
+      const performer = (row.performers as Record<string, unknown>[])[0];
+      assert.ok(performer !== undefined);
+      performer.parent = canonical;
+      if (aliasHasPosters) {
+        performer.posters = [
+          {
+            url: "https://thumb.theporndb.net/alias-larger.jpg",
+            size: 8_000_000,
+          },
+        ];
+      }
+      row.performers = [
+        performer,
+        { ...performer, id: CANON_PERFORMER_ID, name: "Duplicate Credit" },
+      ];
+      sendJson(res, 200, { data: row });
     });
-    assert.equal(
-      detail.credits[0]?.imageUrl,
-      "https://thumb.theporndb.net/credit-big.jpg",
-    );
-    assert.equal(JSON.stringify(detail).includes("gammacdn"), false);
-  } finally {
-    await fixture.close();
-    restore();
-  }
-});
+    try {
+      process.env.TPDB_BASE_URL = fixture.origin;
+      const detail = await getCatalogDetail({
+        provider: "tpdb",
+        kind: "movie",
+        id: MOVIE_ID,
+      });
+      const performerDetail = await getCatalogDetail({
+        provider: "tpdb",
+        kind: "performer",
+        id: CANON_PERFORMER_ID,
+      });
+      assert.ok(detail !== null);
+      assert.ok(performerDetail !== null);
+      assert.equal(
+        performerDetail.imageUrl,
+        "https://cdn.theporndb.net/canonical-largest.jpg",
+      );
+      assert.deepEqual(detail.credits, [
+        {
+          reference: {
+            provider: "tpdb",
+            kind: "performer",
+            id: CANON_PERFORMER_ID,
+          },
+          name: "Credited Name",
+          imageUrl: "https://cdn.theporndb.net/canonical-largest.jpg",
+        },
+      ]);
+      assert.deepEqual(detail.credits[0]?.reference, performerDetail.reference);
+      assert.equal(detail.credits[0]?.imageUrl, performerDetail.imageUrl);
+      assert.equal(JSON.stringify(detail).includes("gammacdn"), false);
+      assert.equal(JSON.stringify(performerDetail).includes("gammacdn"), false);
+    } finally {
+      await fixture.close();
+      restore();
+    }
+  });
+}
 
 test("tpdb performer detail and search emit the largest eligible poster", async () => {
   const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
@@ -412,51 +522,72 @@ test("tpdb performer detail and search emit the largest eligible poster", async 
   }
 });
 
-test("tpdb credits fall back to the row image when canonical artwork is rejected", async () => {
-  const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
-  const fixture = await startFixture((req, res) => {
-    assert.equal(req.method, "GET");
-    assert.equal(req.url, `/movies/${MOVIE_ID}`);
-    const row = tpdbMovieRow();
-    const performer = (row.performers as Record<string, unknown>[])[0];
-    assert.ok(performer !== undefined);
-    performer.image = "https://cdn.theporndb.net/performer/row.jpg";
-    performer.posters = [
-      { url: "https://thumb.theporndb.net/credit-zero.jpg", size: 0 },
-    ];
-    performer.parent = {
-      ...(performer.parent as Record<string, unknown>),
-      image: "https://images02-openlife.gammacdn.com/canonical.jpg",
-      posters: [
-        { url: "https://cdn.theporndb.net/parent-poster.jpg", size: 9_999_999 },
-      ],
-    };
-    sendJson(res, 200, { data: row });
-  });
-  try {
-    process.env.TPDB_BASE_URL = fixture.origin;
-    const detail = await getCatalogDetail({
-      provider: "tpdb",
-      kind: "movie",
-      id: MOVIE_ID,
-    });
-    assert.ok(detail !== null);
-    assert.deepEqual(detail.credits, [
+// A usable parent poster is not a row-image fallback case.
+for (const scenario of [
+  {
+    name: "use the parent poster when canonical image is rejected",
+    parentPosters: [
+      { url: "https://cdn.theporndb.net/parent-poster.jpg", size: 9_999_999 },
+    ],
+    expected: "https://cdn.theporndb.net/parent-poster.jpg",
+  },
+  {
+    name: "fall back to the row image when neither poster list nor canonical image is usable",
+    parentPosters: [
       {
-        reference: {
-          provider: "tpdb",
-          kind: "performer",
-          id: CANON_PERFORMER_ID,
-        },
-        name: "Credited Name",
-        imageUrl: "https://cdn.theporndb.net/performer/row.jpg",
+        url: "https://images02-openlife.gammacdn.com/parent-rejected.jpg",
+        size: 9_999_999,
       },
-    ]);
-  } finally {
-    await fixture.close();
-    restore();
-  }
-});
+      { url: "https://cdn.theporndb.net/parent-zero.jpg", size: 0 },
+    ],
+    expected: "https://cdn.theporndb.net/performer/row.jpg",
+  },
+] as const) {
+  test(`tpdb credits ${scenario.name}`, async () => {
+    const restore = setEnv({ TPDB_API_TOKEN: TPDB_TOKEN });
+    const fixture = await startFixture((req, res) => {
+      assert.equal(req.method, "GET");
+      assert.equal(req.url, `/movies/${MOVIE_ID}`);
+      const row = tpdbMovieRow();
+      const performer = (row.performers as Record<string, unknown>[])[0];
+      assert.ok(performer !== undefined);
+      performer.image = "https://cdn.theporndb.net/performer/row.jpg";
+      performer.posters = [
+        { url: "https://thumb.theporndb.net/credit-zero.jpg", size: 0 },
+      ];
+      performer.parent = {
+        ...(performer.parent as Record<string, unknown>),
+        image: "https://images02-openlife.gammacdn.com/canonical.jpg",
+        posters: scenario.parentPosters,
+      };
+      sendJson(res, 200, { data: row });
+    });
+    try {
+      process.env.TPDB_BASE_URL = fixture.origin;
+      const detail = await getCatalogDetail({
+        provider: "tpdb",
+        kind: "movie",
+        id: MOVIE_ID,
+      });
+      assert.ok(detail !== null);
+      assert.deepEqual(detail.credits, [
+        {
+          reference: {
+            provider: "tpdb",
+            kind: "performer",
+            id: CANON_PERFORMER_ID,
+          },
+          name: "Credited Name",
+          imageUrl: scenario.expected,
+        },
+      ]);
+      assert.equal(JSON.stringify(detail).includes("gammacdn"), false);
+    } finally {
+      await fixture.close();
+      restore();
+    }
+  });
+}
 
 // --- StashDB scene detail mapping ---
 

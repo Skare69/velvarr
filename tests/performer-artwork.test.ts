@@ -135,7 +135,7 @@ test("no usable poster keeps the image, thumbnail, face fallback", () => {
   }
 });
 
-test("credits prefer the largest servable poster and keep canonical identity", () => {
+test("credits prefer canonical posters and keep canonical identity", () => {
   const detail = tpdbMediaDetail(
     "movie",
     movieRow([
@@ -168,11 +168,11 @@ test("credits prefer the largest servable poster and keep canonical identity", (
     id: PERFORMER_ID,
   });
   assert.equal(detail?.credits[0]?.name, "Credited Name");
-  assert.equal(detail?.credits[0]?.imageUrl, `${THUMB}/p/big.jpg`);
+  assert.equal(detail?.credits[0]?.imageUrl, `${CDN}/p/parent.jpg`);
   assert.equal(JSON.stringify(detail).includes("gammacdn"), false);
 });
 
-test("credits without a usable poster keep the canonical parent image", () => {
+test("credits with rejected row posters still use canonical posters", () => {
   const detail = tpdbMediaDetail(
     "movie",
     movieRow([
@@ -194,7 +194,159 @@ test("credits without a usable poster keep the canonical parent image", () => {
     kind: "performer",
     id: PERFORMER_ID,
   });
-  assert.equal(detail?.credits[0]?.imageUrl, `${CDN}/p/canon.jpg`);
+  assert.equal(detail?.credits[0]?.imageUrl, `${CDN}/p/parent.jpg`);
+});
+
+test("credits select canonical posters before row posters and image fallbacks", () => {
+  const canonicalImage = `${CDN}/p/canon.jpg`;
+  const rowImage = `${CDN}/p/row.jpg`;
+  const parentPoster = `${THUMB}/p/parent.jpg`;
+  const rowPoster = `${THUMB}/p/row.jpg`;
+  const cases: {
+    name: string;
+    parent?: Record<string, unknown>;
+    posters?: unknown;
+    expected: string | undefined;
+  }[] = [
+    {
+      name: "parent-only posters",
+      parent: { posters: [{ url: parentPoster, size: 1 }] },
+      expected: parentPoster,
+    },
+    {
+      name: "canonical poster wins over a larger alias poster",
+      parent: { posters: [{ url: parentPoster, size: 1 }] },
+      posters: [{ url: rowPoster, size: Number.MAX_VALUE }],
+      expected: parentPoster,
+    },
+    {
+      name: "largest usable parent poster keeps the first equal size",
+      parent: {
+        posters: [
+          { url: `${THUMB}/p/smaller.jpg`, size: 0.125, order: -100 },
+          { url: `${GAMMA}/rejected.jpg`, size: Number.MAX_VALUE },
+          { url: `${THUMB}/p/query.jpg?size=full`, size: Number.MAX_VALUE },
+          { url: parentPoster, size: 0.25, order: 99 },
+          { url: `${THUMB}/p/tied.jpg`, size: 0.25, order: -99 },
+        ],
+      },
+      posters: [{ url: rowPoster, size: Number.MAX_VALUE }],
+      expected: parentPoster,
+    },
+    {
+      name: "invalid parent entries permit the largest usable row poster",
+      parent: {
+        posters: [
+          null,
+          undefined,
+          "junk",
+          42,
+          false,
+          { url: parentPoster, size: "1024000" },
+          { url: parentPoster, size: Infinity },
+          { url: parentPoster, size: -Infinity },
+          { url: parentPoster, size: NaN },
+          { url: parentPoster, size: 0 },
+          { url: parentPoster, size: -1 },
+          { url: parentPoster, size: null },
+          { url: parentPoster, size: true },
+          { url: parentPoster },
+          { url: `${GAMMA}/rejected.jpg`, size: Number.MAX_VALUE },
+          { url: `${THUMB}/p/query.jpg?size=full`, size: Number.MAX_VALUE },
+          {
+            url: "http://thumb.theporndb.net/plain.jpg",
+            size: Number.MAX_VALUE,
+          },
+        ],
+      },
+      posters: [
+        { url: `${THUMB}/p/smaller.jpg`, size: 1 },
+        { url: rowPoster, size: 2, order: 99 },
+        { url: `${THUMB}/p/tied.jpg`, size: 2, order: -99 },
+      ],
+      expected: rowPoster,
+    },
+    {
+      name: "malformed parent list permits row posters",
+      parent: { posters: { full: parentPoster } },
+      posters: [{ url: rowPoster, size: 1 }],
+      expected: rowPoster,
+    },
+    {
+      name: "neither list usable preserves the canonical image",
+      parent: { posters: [{ url: parentPoster, size: 0 }] },
+      posters: [{ url: `${GAMMA}/rejected.jpg`, size: Number.MAX_VALUE }],
+      expected: canonicalImage,
+    },
+    {
+      name: "neither list usable and rejected canonical image preserve the row image",
+      parent: {
+        image: `${GAMMA}/rejected.jpg`,
+        posters: [{ url: parentPoster, size: "1000" }],
+      },
+      posters: [null, { url: rowPoster, size: Infinity }],
+      expected: rowImage,
+    },
+    {
+      name: "parent-less credits use row posters",
+      posters: [{ url: rowPoster, size: 1 }],
+      expected: rowPoster,
+    },
+    {
+      name: "credit fallback does not extend to thumbnail or face",
+      parent: {
+        image: `${GAMMA}/rejected.jpg`,
+        posters: [{ url: parentPoster, size: 0 }],
+      },
+      posters: [{ url: rowPoster, size: NaN }],
+      expected: undefined,
+    },
+  ];
+  for (const { name, parent, posters, expected } of cases) {
+    const canonical = parent
+      ? {
+          id: PERFORMER_ID,
+          name: "Canonical Name",
+          image: canonicalImage,
+          thumbnail: `${THUMB}/p/thumbnail.jpg`,
+          face: `${THUMB}/p/face.jpg`,
+          ...parent,
+        }
+      : undefined;
+    const detail = tpdbMediaDetail(
+      "movie",
+      movieRow([
+        {
+          id: ALIAS_ID,
+          name: "Credited Name",
+          image: expected === undefined ? `${GAMMA}/row.jpg` : rowImage,
+          thumbnail: `${THUMB}/p/row-thumbnail.jpg`,
+          face: `${THUMB}/p/row-face.jpg`,
+          parent: canonical,
+          posters,
+        },
+      ]),
+    );
+    assert.equal(detail?.credits.length, 1, name);
+    assert.deepEqual(
+      detail?.credits[0]?.reference,
+      {
+        provider: "tpdb",
+        kind: "performer",
+        id: parent ? PERFORMER_ID : ALIAS_ID,
+      },
+      name,
+    );
+    assert.equal(detail?.credits[0]?.name, "Credited Name", name);
+    assert.equal(detail?.credits[0]?.imageUrl, expected, name);
+    if (expected === parentPoster) {
+      assert.equal(
+        detail?.credits[0]?.imageUrl,
+        tpdbPerformerDetail(canonical)?.imageUrl,
+        name,
+      );
+    }
+  }
 });
 
 test("credits without canonical artwork keep the row image and identity", () => {
@@ -225,7 +377,7 @@ test("credits without canonical artwork keep the row image and identity", () => 
   }
 });
 
-test("property: both mappers select the stable usable maximum or their fallback", () => {
+test("property: independent poster lists keep stable maxima and canonical priority", () => {
   const usableUrls = [
     `${THUMB}/p/first.jpg`,
     `${CDN}/p/second.jpg`,
@@ -259,57 +411,84 @@ test("property: both mappers select the stable usable maximum or their fallback"
       order: fc.integer(),
     }),
   );
+  const maximum = (posters: unknown[]) =>
+    posters
+      .filter(
+        (entry): entry is { url: string; size: number } =>
+          typeof entry === "object" &&
+          entry !== null &&
+          "url" in entry &&
+          typeof entry.url === "string" &&
+          usableUrls.includes(entry.url) &&
+          "size" in entry &&
+          typeof entry.size === "number" &&
+          Number.isFinite(entry.size) &&
+          entry.size > 0,
+      )
+      .toSorted((a, b) => b.size - a.size)[0]?.url;
   fc.assert(
-    fc.property(fc.array(entryArb, { maxLength: 12 }), (posters) => {
-      const expected = posters
-        .filter(
-          (entry): entry is { url: string; size: number; order: number } =>
-            typeof entry === "object" &&
-            entry !== null &&
-            typeof entry.url === "string" &&
-            usableUrls.includes(entry.url) &&
-            typeof entry.size === "number" &&
-            Number.isFinite(entry.size) &&
-            entry.size > 0,
-        )
-        .toSorted((a, b) => b.size - a.size)[0]?.url;
-      const performer = tpdbPerformerDetail(
-        performerRow({ thumbnail: `${THUMB}/chain.jpg`, posters }),
-      );
-      const media = tpdbMediaDetail(
-        "movie",
-        movieRow([
-          {
-            id: ALIAS_ID,
-            name: "Credited Name",
-            image: `${CDN}/p/row.jpg`,
-            parent: {
-              id: PERFORMER_ID,
-              name: "Canonical Name",
-              image: `${CDN}/p/canon.jpg`,
-              posters: [{ url: `${CDN}/p/parent.jpg`, size: Number.MAX_VALUE }],
+    fc.property(
+      fc.array(entryArb, { maxLength: 12 }),
+      fc.array(entryArb, { maxLength: 12 }),
+      (parentPosters, posters) => {
+        const expectedParent = maximum(parentPosters);
+        const expectedRow = maximum(posters);
+        const parent = {
+          id: PERFORMER_ID,
+          name: "Canonical Name",
+          image: `${CDN}/p/canon.jpg`,
+          posters: parentPosters,
+        };
+        const performer = tpdbPerformerDetail(
+          performerRow({ thumbnail: `${THUMB}/chain.jpg`, posters }),
+        );
+        const canonicalPerformer = tpdbPerformerDetail(parent);
+        const media = tpdbMediaDetail(
+          "movie",
+          movieRow([
+            {
+              id: ALIAS_ID,
+              name: "Credited Name",
+              image: `${CDN}/p/row.jpg`,
+              parent,
+              posters,
             },
-            posters,
-          },
-        ]),
-      );
-      assert.equal(performer?.imageUrl, expected ?? `${THUMB}/chain.jpg`);
-      assert.equal(media?.credits.length, 1);
-      assert.deepEqual(media?.credits[0]?.reference, {
-        provider: "tpdb",
-        kind: "performer",
-        id: PERFORMER_ID,
-      });
-      assert.equal(media?.credits[0]?.name, "Credited Name");
-      assert.equal(
-        media?.credits[0]?.imageUrl,
-        expected ?? `${CDN}/p/canon.jpg`,
-      );
-    }),
+          ]),
+        );
+        assert.equal(performer?.imageUrl, expectedRow ?? `${THUMB}/chain.jpg`);
+        assert.equal(
+          canonicalPerformer?.imageUrl,
+          expectedParent ?? `${CDN}/p/canon.jpg`,
+        );
+        assert.equal(media?.credits.length, 1);
+        assert.deepEqual(media?.credits[0]?.reference, {
+          provider: "tpdb",
+          kind: "performer",
+          id: PERFORMER_ID,
+        });
+        assert.equal(media?.credits[0]?.name, "Credited Name");
+        assert.equal(
+          media?.credits[0]?.imageUrl,
+          expectedParent ?? expectedRow ?? `${CDN}/p/canon.jpg`,
+        );
+        if (expectedParent !== undefined) {
+          assert.equal(
+            media?.credits[0]?.imageUrl,
+            canonicalPerformer?.imageUrl,
+          );
+        }
+      },
+    ),
     {
       examples: [
-        [[]],
+        [[], []],
+        [[{ url: usableUrls[0], size: Number.MAX_VALUE, order: 0 }], []],
         [
+          [{ url: usableUrls[0], size: 1, order: 0 }],
+          [{ url: usableUrls[1], size: Number.MAX_VALUE, order: 0 }],
+        ],
+        [
+          [{ url: `${GAMMA}/rejected.jpg`, size: 1_000_000, order: -100 }],
           [
             null,
             "junk",
@@ -319,6 +498,16 @@ test("property: both mappers select the stable usable maximum or their fallback"
             { url: usableUrls[1], size: 0.25, order: 99 },
             { url: usableUrls[2], size: 0.25, order: -99 },
           ],
+        ],
+        [
+          [
+            { url: usableUrls[0], size: Infinity, order: -100 },
+            { url: usableUrls[0], size: undefined, order: -100 },
+            { url: `${GAMMA}/rejected.jpg`, size: 1_000_000, order: -100 },
+            { url: usableUrls[1], size: 0.25, order: 99 },
+            { url: usableUrls[2], size: 0.25, order: -99 },
+          ],
+          [],
         ],
       ],
     },

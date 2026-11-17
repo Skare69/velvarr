@@ -216,7 +216,8 @@ function tpdbPerformerPoster(posters: unknown): string | undefined {
 
 /** Credits resolve canonical identity through performers[].parent.id (the
  * canonical performer UUID), falling back to the row id itself. Deduplicated
- * by provider id, never by name. */
+ * by provider id, never by name. Canonical posters precede row posters,
+ * then the existing image fallback applies. */
 function tpdbCredits(rows: unknown): CatalogCreditAcc[] {
   if (!Array.isArray(rows)) return [];
   const mapped: CatalogCreditAcc[] = [];
@@ -233,6 +234,7 @@ function tpdbCredits(rows: unknown): CatalogCreditAcc[] {
       cleanString(canonical.name, MAX.name);
     if (id === undefined || name === undefined) continue;
     const imageUrl =
+      tpdbPerformerPoster(person.parent?.posters) ??
       tpdbPerformerPoster(person.posters) ??
       servableImage(canonical.image) ??
       servableImage(person.image);
