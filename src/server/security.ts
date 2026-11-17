@@ -154,7 +154,7 @@ function requireSameHostOrigin(request: Request): void {
     throw new AppError(
       403,
       "origin_mismatch",
-      `origin not allowed: set VELVARR_ORIGIN to the address you browse (got ${got.host})`,
+      `origin not allowed: have the proxy forward the original host (proxy_set_header Host $host or X-Forwarded-Host), or set VELVARR_ORIGIN to the address you browse (got ${got.host})`,
     );
   }
 }

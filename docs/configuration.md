@@ -6,7 +6,7 @@ Put the variables in `.env.local`.
 | ----------------------------- | --------------- | ------- |
 | `VELVARR_SECRET_KEY`          | yes             | 64 hex characters. Decrypts the credentials in the database. A restore needs the key from the time of the backup. |
 | `VELVARR_SETUP_SECRET`        | until bootstrap | 32 characters or more. Gates the one-time owner setup. |
-| `VELVARR_ORIGIN`              | no              | The public origin, for example behind a reverse proxy. Velvarr refuses changes from other origins. An `https:` origin marks the session cookie `Secure`. |
+| `VELVARR_ORIGIN`              | no              | The public origin, for example behind a reverse proxy. Velvarr refuses changes from other origins. An `https:` origin marks the session cookie `Secure`. On plain HTTP, only a loopback address needs no flag; a private IP, a `.local` name, or a dotless name needs `VELVARR_ALLOW_HTTP=1`. |
 | `VELVARR_DATA_DIR`            | no              | Data directory. Default `./data`, and `/data` in the container. |
 | `VELVARR_ALLOW_HTTP`          | no              | `1` allows plain HTTP to private and Docker-network addresses. |
 | `VELVARR_DISCORD_WEBHOOK_URL` | no              | Private Discord webhook (https only). |
@@ -26,7 +26,11 @@ Put the variables in `.env.local`.
 
 Unless `VELVARR_ORIGIN` is `https:`, the cookie is `Secure` only when the proxy sends `X-Forwarded-Proto: https` or the request URL is https. On each change request, a supplied `Sec-Fetch-Site` header must say `same-origin`, and a request that sends a body or a `Content-Type` header must send `application/json`.
 
-When `VELVARR_ORIGIN` is not set and a change request has no `Sec-Fetch-Site` header, the request must send an `Origin` header that names the host that receives the request (`Host` or `X-Forwarded-Host`). A request with neither header fails with `origin_missing`, as it does when `VELVARR_ORIGIN` is set. Browsers on plain-HTTP LAN addresses send no `Sec-Fetch-Site` header, but current browsers send `Origin` on each change request. This rule stops other apps on the same host from changing data, for example to sign you out. If a plain-HTTP proxy changes the `Host` header and changes fail with `origin_mismatch`, set `VELVARR_ORIGIN`.
+When `VELVARR_ORIGIN` is not set and a change request has no `Sec-Fetch-Site` header, the request must send an `Origin` header that names the host that receives the request (`Host` or `X-Forwarded-Host`). A request with neither header fails with `origin_missing`, as it does when `VELVARR_ORIGIN` is set. Browsers on plain-HTTP LAN addresses send no `Sec-Fetch-Site` header, but current browsers send `Origin` on each change request. This rule stops other apps on the same host from changing data, for example to sign you out.
+
+A reverse proxy that rewrites the `Host` header (the nginx `proxy_pass` default) makes each change request fail with `origin_mismatch`. Forward the host that the browsers use. Set `proxy_set_header Host $host;` in the proxy location, or send an `X-Forwarded-Host` header. With the original host forwarded, changes work without a Velvarr setting.
+
+Alternatively, set `VELVARR_ORIGIN` to the origin that you browse. On plain HTTP, Velvarr accepts that pin only for a loopback address without a flag, or for a private IP, a `.local` name, or a dotless name with `VELVARR_ALLOW_HTTP=1`. A dotted name such as `velvarr.lan` fails with `unsafe_origin`.
 
 Browsers send a cookie to all ports of a host. Thus another app on the same host can set a second `velvarr_session` cookie. When a request has more than one `velvarr_session` cookie, Velvarr uses none of them and asks you to sign in. If Velvarr asks you to sign in again after each sign-in, clear the cookies for the host in your browser.
 

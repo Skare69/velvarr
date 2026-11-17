@@ -901,6 +901,35 @@ test("origin pin is optional: unset VELVARR_ORIGIN skips the configured pin", ()
   }
 });
 
+test("unpinned origin_mismatch names the proxy host fix", () => {
+  // The documented VELVARR_ORIGIN answer is refused for a dotted plain-HTTP
+  // name (unsafe_origin), so the 403 must also name the real fix: the proxy
+  // forwarding the original host.
+  const previous = process.env.VELVARR_ORIGIN;
+  delete process.env.VELVARR_ORIGIN;
+  try {
+    // Plain-HTTP LAN: no Sec-Fetch-Site, no content type, no body.
+    const req = new Request("http://192.168.1.5:6699/api/login", {
+      method: "POST",
+      headers: { origin: "http://velvarr.lan" },
+    });
+    let message = "";
+    assert.throws(
+      () => security.guardMutation(req),
+      (e: { code: string; message: string }) => {
+        message = e.message;
+        return e.code === "origin_mismatch";
+      },
+    );
+    assert.match(message, /forward the original host/);
+    assert.match(message, /X-Forwarded-Host/);
+    assert.match(message, /\(got velvarr\.lan\)/);
+  } finally {
+    if (previous !== undefined) process.env.VELVARR_ORIGIN = previous;
+    else delete process.env.VELVARR_ORIGIN;
+  }
+});
+
 // --- M2 foundations ---
 
 const UUID_RE =
