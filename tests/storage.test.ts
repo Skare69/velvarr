@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
+import fc from "fast-check";
 import {
   createCipheriv,
   createHash,
@@ -821,6 +822,43 @@ test("session cookie flags follow request transport and clear correctly", () => 
   const clear = security.sessionCookie(undefined, true);
   assert.ok(clear.startsWith("velvarr_session=;"));
   assert.ok(clear.includes("Max-Age=0") && clear.includes("Secure"));
+});
+
+test("session cookie values preserve all nonempty matches and exclude other names", () => {
+  fc.assert(
+    fc.property(
+      fc.array(
+        fc.record({
+          name: fc.constantFrom(
+            "velvarr_session",
+            "other",
+            "velvarr_session_extra",
+          ),
+          value: fc.stringMatching(/^[A-Za-z0-9_=-]{0,32}$/),
+        }),
+        { maxLength: 20 },
+      ),
+      (cookies) => {
+        const request = new Request("http://127.0.0.1/api/logout", {
+          headers: {
+            cookie: cookies
+              .map(({ name, value }) => ` ${name} = ${value} `)
+              .join(";"),
+          },
+        });
+        const expected = cookies
+          .filter(
+            ({ name, value }) => name === "velvarr_session" && value !== "",
+          )
+          .map(({ value }) => value)
+          .toSorted();
+        assert.deepEqual(
+          security.readSessionTokens(request).toSorted(),
+          expected,
+        );
+      },
+    ),
+  );
 });
 
 test("origin pin is optional: unset VELVARR_ORIGIN skips the configured pin", () => {

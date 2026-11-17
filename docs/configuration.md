@@ -32,7 +32,7 @@ A reverse proxy that rewrites the `Host` header (the nginx `proxy_pass` default)
 
 Alternatively, set `VELVARR_ORIGIN` to the origin that you browse. On plain HTTP, Velvarr accepts that pin only for a loopback address without a flag, or for a private IP, a `.local` name, or a dotless name with `VELVARR_ALLOW_HTTP=1`. A dotted name such as `velvarr.lan` fails with `unsafe_origin`.
 
-Browsers send a cookie to all ports of a host. Thus another app on the same host can set a second `velvarr_session` cookie. When a request has more than one `velvarr_session` cookie, Velvarr uses none of them and asks you to sign in. If Velvarr asks you to sign in again after each sign-in, clear the cookies for the host in your browser.
+Browsers send a cookie to all ports of a host. Thus another app on the same host can set a second `velvarr_session` cookie. For authentication, Velvarr rejects requests with more than one `velvarr_session` cookie. Sign out revokes all session values from the cookie header. If Velvarr asks you to sign in again after each sign-in, clear the cookies for the host in your browser.
 
 Each failed sign-in writes one log line: `[auth] failed sign-in attempt: account="<name>" ip="<address>"`. The log never contains the password. The address is the first `X-Forwarded-For` entry, or `unknown`. A client can set this header. Trust the address only when your proxy replaces the header.
 
