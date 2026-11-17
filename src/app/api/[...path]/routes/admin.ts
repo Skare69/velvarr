@@ -8,7 +8,7 @@ import {
   requireId,
   optionalBool,
 } from "../parse.ts";
-import { type AuthContext, json } from "../admission.ts";
+import { type AuthContext, json, requireLiveAdmin } from "../admission.ts";
 import type {
   AdminAccount,
   IntegrationConfig,
@@ -154,6 +154,7 @@ export async function adminUpdateUser(
   id: string,
 ): Promise<Response> {
   const body = await readJson(request);
+  requireLiveAdmin(ctx);
   const target = getAccount(requireId(id));
   if (!target) throw new AppError(404, "not_found", "Account not found.");
   const enabled = fieldBool(body, "enabled");

@@ -156,6 +156,14 @@ export async function requireAdmin(request: Request): Promise<AuthContext> {
   return ctx;
 }
 
+/** Admission's account is a snapshot taken before the body is read. A
+ *  privileged write re-checks the live session after its body read: a
+ *  demotion or disable during a slow body deletes the caller's sessions. */
+export function requireLiveAdmin(ctx: AuthContext): void {
+  if (getSession(ctx.rawSessionToken)?.account.role !== "admin")
+    throw new AppError(403, "forbidden", "Administrator access required.");
+}
+
 // Stryker restore all — the per-account rate budget is under mutation
 // testing: the cap-eviction and refill logic below is pure decision logic
 // whose regression ships green (see the api suite's rate-budget tests).

@@ -8951,6 +8951,77 @@ test("a grant revoked while the request body is read leaves the new request pend
   assert.equal(cancel.status, 200);
 });
 
+// VELV-190: admission snapshots the role before the body is read. An admin
+// demoted while its own PATCH body is still in flight must not finish that
+// PATCH with the old role and restore its admin grant.
+test("a self-promotion PATCH whose admin is demoted mid-body answers 403 and stays demoted", async () => {
+  await boot();
+  const admin = await loginAs("owner");
+  const setNogrants = async (role: string) => {
+    const res = await call("PATCH", `/api/admin/users/${NOGRANT_ID}`, {
+      cookie: admin,
+      body: { enabled: true, role, libraryIds: [], autoApprove: true },
+    });
+    assert.equal(res.status, 200);
+  };
+  const roleOf = async () => {
+    const listed = await call("GET", "/api/admin/users", { cookie: admin });
+    const { accounts } = (await listed.json()) as {
+      accounts: { id: string; role: string; enabled: boolean }[];
+    };
+    return accounts.find((account) => account.id === NOGRANT_ID)!.role;
+  };
+  try {
+    await setNogrants("admin");
+    const staleAdmin = await loginAs("nogrants");
+    let demoted = false;
+    // highWaterMark 0: pull runs only when the route reads the body, which is
+    // after admission has loaded the session's account as an admin.
+    const body = new ReadableStream<Uint8Array>(
+      {
+        async pull(controller) {
+          await setNogrants("requester");
+          demoted = (await roleOf()) === "requester";
+          controller.enqueue(
+            new TextEncoder().encode(
+              JSON.stringify({
+                enabled: true,
+                role: "admin",
+                libraryIds: [],
+                autoApprove: true,
+              }),
+            ),
+          );
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const res = await api.PATCH(
+      new Request(`${ORIGIN}/api/admin/users/${NOGRANT_ID}`, {
+        method: "PATCH",
+        headers: {
+          origin: ORIGIN,
+          cookie: staleAdmin,
+          "content-type": "application/json",
+        },
+        body,
+        duplex: "half",
+      } as RequestInit),
+      { params: Promise.resolve({ path: ["admin", "users", NOGRANT_ID] }) },
+    );
+    assert.ok(demoted, "the admin was demoted during the body read");
+    assert.deepEqual(
+      { status: res.status, role: await roleOf() },
+      { status: 403, role: "requester" },
+    );
+  } finally {
+    // Restore the grant state later tests share.
+    await setNogrants("requester");
+    nogrants = await loginAs("nogrants");
+  }
+});
+
 test("discover appends ONE followed rail across providers and isolates a provider outage", async () => {
   await boot();
   const member2 = await loginAs("member2");
