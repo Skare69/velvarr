@@ -327,7 +327,7 @@ type BulkResponse = {
   failed?: { id: string; code: string }[];
   scanned?: number;
   capped?: boolean;
-  /** A pass that ended early, before the cap and with provider pages left. */
+  /** The reason this pass stops before completion. */
   error?: { code: string; message: string };
 };
 

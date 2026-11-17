@@ -180,7 +180,7 @@ export const BULK_SCAN_PAGE = 24;
 export const BULK_SCAN_PAGES = 10;
 
 type BulkScanStop = {
-  code: "scan_ceiling" | "unreadable_page";
+  code: "scan_ceiling" | "unreadable_page" | "request_limit";
   message: string;
 };
 
@@ -298,6 +298,10 @@ export async function bulkRequestRoute(
     } catch (err) {
       if (err instanceof AppError && err.code === "request_exists") {
         skipped += 1;
+      } else if (err instanceof AppError && err.code === "request_limit") {
+        // The pending cap blocks every remaining title, not just this one.
+        stopped = { code: "request_limit", message: err.message };
+        break;
       } else if (err instanceof AppError) {
         failed.push({ id: media.id, code: err.code });
       } else {
@@ -311,7 +315,8 @@ export async function bulkRequestRoute(
     autoApproved,
     failed,
     scanned,
-    capped,
+    // A capacity stop must not invite another pass.
+    ...(stopped?.code === "request_limit" ? {} : { capped }),
     ...(stopped !== undefined ? { error: stopped } : {}),
   });
 }

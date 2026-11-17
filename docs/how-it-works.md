@@ -161,8 +161,11 @@ sequenceDiagram
   at once when the account holds the auto-approve grant or when an admin
   requests their own title (201, `autoApproved: true`). A pending
   request waits for the PATCH decision of an admin or moderator. An
-  account can hold at most 500 pending requests (`OPEN_REQUEST_CAP`);
-  the next POST gets 429 `request_limit`. `GET /api/requests` returns
+  account can hold at most 500 pending requests (`OPEN_REQUEST_CAP`).
+  A single-title POST then returns 429 `request_limit`. The bulk POST stops
+  at its first `request_limit` and returns 200 with `error: { code, message }`.
+  It omits `capped`, and the UI shows the cap message instead of the repeat
+  hint. `GET /api/requests` returns
   one keyset page (50 rows by default) with the server-side filters,
   sort and the pending-approvals count.
 - **Store (SQLite)** — `src/server/storage.ts` (`createRequest`,

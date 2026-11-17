@@ -178,6 +178,10 @@ const TPDB_PERFORMER2 = "2a2b3c4d-0000-0000-0000-00000000000e";
 // Filmography of 120 distinct titles across five 24-row pages: the bulk
 // continuation test needs unfiled backlog past the first 100 the cap files.
 const TPDB_PERFORMER_PAGING = "2a2b3c4d-0000-0000-0000-00000000b161";
+// Same shape as PAGING but in its own band: the pending-cap test needs an
+// unfiled backlog bigger than the pass's 100-title cap, on titles no other
+// test has filed.
+const TPDB_PERFORMER_CAPFILL = "2a2b3c4d-0000-0000-0000-00000000ca70";
 // A published cross-provider pair: the TPDB record links to the StashDB one,
 // so following either follows both. Fresh ids — every other performer follow
 // in this file must stay single-provider.
@@ -671,6 +675,9 @@ const tpdbFx = {
 // paging fixture serves five pages of, in the performer's own id band.
 const bulkContinuationId = (n: number) =>
   `2a2b3c4d-0000-0000-b161-${String(n).padStart(12, "0")}`;
+// Same for the pending-cap filmography, in its own band.
+const capFillId = (n: number) =>
+  `2a2b3c4d-0000-0000-ca70-${String(n).padStart(12, "0")}`;
 
 function tpdbMovieRow(id: string) {
   return {
@@ -1076,6 +1083,21 @@ async function tpdbHandler(
       data: Array.from({ length: 24 }, (_, i) => ({
         ...tpdbMovieRow(bulkContinuationId(start + i + 1)),
         title: `Bulk Continuation ${start + i + 1}`,
+      })),
+      meta: { total: 120 },
+      links: page < 5 ? { next: "https://fixture.test/next" } : {},
+    });
+  }
+  // Same walk as PAGING, own band: the pending-cap test reads five pages to
+  // fill the pass's 100-title cap, then the account's pending cap refuses.
+  if (p === `/performers/${TPDB_PERFORMER_CAPFILL}/movies`) {
+    tpdbFx.pageReads.set(p, (tpdbFx.pageReads.get(p) ?? 0) + 1);
+    const page = Number(url.searchParams.get("page") ?? "1");
+    const start = (page - 1) * 24;
+    return json(res, 200, {
+      data: Array.from({ length: 24 }, (_, i) => ({
+        ...tpdbMovieRow(capFillId(start + i + 1)),
+        title: `Pending Cap ${start + i + 1}`,
       })),
       meta: { total: 120 },
       links: page < 5 ? { next: "https://fixture.test/next" } : {},
@@ -7318,7 +7340,9 @@ interface BulkCounters {
   autoApproved: number;
   failed: { id: string; code: string }[];
   scanned: number;
-  capped: boolean;
+  /** Absent when a `request_limit` stop ends the pass: the body must not
+   * invite another pass while the account cannot hold one more request. */
+  capped?: boolean;
   error?: { code: string; message: string };
 }
 
@@ -8757,6 +8781,56 @@ test("a second bulk run files the titles past the first 100", async () => {
       (r) => r.media.id === bulkContinuationId(105) && r.decision === "pending",
     ),
   );
+});
+
+test("a bulk pass at the pending cap stops at the first refusal and says why", async () => {
+  await boot();
+  const db = new DatabaseSync(join(apiDataDir, "velvarr.sqlite"));
+  const { pending } = db
+    .prepare(
+      "SELECT COUNT(*) AS pending FROM requests WHERE account_id = ? AND decision = 'pending'",
+    )
+    .get(MEMBER_ID) as { pending: number };
+  db.close();
+  const base = seedBase();
+  // Fill member's pending balance to the cap with rows the scan never
+  // touches; dropped again below so later phases keep their own budget.
+  const ids = seedRequests(
+    Array.from({ length: OPEN_REQUEST_CAP - pending }, (_, i) => ({
+      accountId: MEMBER_ID,
+      createdAt: base + i,
+    })),
+  );
+  const path = `/performers/${TPDB_PERFORMER_CAPFILL}/movies`;
+  tpdbFx.pageReads.delete(path);
+  try {
+    const res = await call("POST", "/api/requests/bulk", {
+      cookie: member,
+      body: {
+        performer: {
+          provider: "tpdb",
+          kind: "performer",
+          id: TPDB_PERFORMER_CAPFILL,
+        },
+        kind: "movie",
+      },
+    });
+    assert.equal(res.status, 200);
+    const counters = (await res.json()) as BulkCounters;
+    // The first refused filing ends the pass with the cap's own words:
+    // not a failed[] wall, and not a "press again" hint, because another
+    // pass can hold nothing while the account sits at the cap.
+    assert.equal(counters.error?.code, "request_limit");
+    assert.match(counters.error?.message ?? "", /500 requests waiting/);
+    assert.equal(counters.requested, 0);
+    assert.deepEqual(counters.failed, []);
+    assert.equal("capped" in counters, false);
+    // Five pages fill the pass's own 100-title cap; the refusal then stops
+    // everything, so not one further read happens after it.
+    assert.equal(tpdbFx.pageReads.get(path), 5);
+  } finally {
+    dropRequests(ids);
+  }
 });
 
 test("the autoApprove grant approves bulk requests and attaches the shared acquisition like the single path", async () => {
