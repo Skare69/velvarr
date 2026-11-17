@@ -111,14 +111,15 @@ export type BrowseQuery = {
   performerMode: PerformerMode;
   performerStarred?: true;
   studioMode: "exact" | "withChildren";
-  /** Release-year window: `year` stays native on TPDB and exact-match on
-   * StashDB; `yearTo` adds the local upper bound on both. */
+  /** Inclusive release-year window. A lone year stays exact.
+   * With release-date order, a range sends one bound upstream and checks
+   * both bounds locally. */
   year?: number;
   yearTo?: number;
   date?: string;
   dateOperation?: ReleaseDateOperation;
-  /** Inclusive release-date upper bound (`YYYY-MM-DD`), valid only beside
-   * `date` + `>=`; checks locally on both providers, like `yearTo`. */
+  /** Inclusive release-date upper bound (`YYYY-MM-DD`). Requires `date` + `>=`.
+   * Release-date order selects the native bound. Both bounds also check locally. */
   dateTo?: string;
   sort?: CatalogSortKey;
   direction?: CatalogSortDirection;
@@ -516,6 +517,7 @@ function visiblePredicate(
   years: { from?: number; to?: number } | undefined,
   creditsAllOf: string[],
   dateTo?: string,
+  dateFrom?: string,
 ): (d: CatalogDetail) => boolean {
   // Exclusions win over includes: a hidden or excluded match blocks the item
   // regardless of any include criterion. Selections fold once here, per
@@ -561,6 +563,12 @@ function visiblePredicate(
       // prove the window, so it excludes — same rule as the year check.
       const released = d.releaseDate?.slice(0, 10);
       if (released === undefined || released > dateTo) return false;
+    }
+    if (dateFrom !== undefined) {
+      // ISO dates compare as strings; a missing release date can never
+      // prove the window, so it excludes — same rule as the year check.
+      const released = d.releaseDate?.slice(0, 10);
+      if (released === undefined || released < dateFrom) return false;
     }
     return true;
   };
@@ -829,6 +837,11 @@ class Stream {
    * because the native pre-filter kept the scanned pages productive and
    * the matches found are a real partial answer. */
   readonly softCeiling: boolean;
+  /** Ends the ordered scan once a fetched page's last mapped row (provider
+   * order, not yet visibility-filtered) passes the local bound of a range
+   * whose far side rides native (resolveDateBound): the provider's order
+   * means later pages hold only rows further past it. */
+  private readonly dateStop?: (d: CatalogDetail) => boolean;
   private page = 0;
   private fetches = 0;
   private readonly base: CatalogSearchQuery;
@@ -841,12 +854,14 @@ class Stream {
     perPage: number,
     localFiltered: boolean,
     softCeiling = false,
+    dateStop?: (d: CatalogDetail) => boolean,
   ) {
     this.base = base;
     this.visible = visible;
     this.perPage = perPage;
     this.localFiltered = localFiltered;
     this.softCeiling = softCeiling;
+    this.dateStop = dateStop;
   }
 
   get live(): boolean {
@@ -907,6 +922,18 @@ class Stream {
       this.totalKnown = result.totalCountKnown;
       this.sort = result.sort;
       if (!result.hasMore) this.exhausted = true;
+      else if (
+        this.dateStop !== undefined &&
+        result.items.length > 0 &&
+        this.dateStop(result.items[result.items.length - 1]!)
+      ) {
+        // The page's last row sits past the local bound of a range whose
+        // far side rides native: the release-date order guarantees later
+        // pages hold only rows further past it, so the scan ends here
+        // instead of walking into the ceiling. Strict comparisons keep
+        // ties scanning (equal dates never prove the bound).
+        this.exhausted = true;
+      }
     } catch (err) {
       // The request's own input fault keeps its status: capture would bury
       // an impossible date or unsupported order (raised before any upstream
@@ -1094,6 +1121,92 @@ async function mergeStreams(
 
 // --- native query assembly ---
 
+/** The far-side release-date bound of a year/date range: the one criterion
+ * riding the native releaseDate slot, and where the ordered local scan may
+ * stop. */
+type DateBound = {
+  /** The native releaseDate criterion: the far side of a range, or the
+   * caller's own single-sided pair. */
+  ride?: { cutoff: string; operation: ReleaseDateOperation };
+  /** Present only beside a range under a release-date order: rows past
+   * this local bound prove the ordered stream exhausted. */
+  stop?: { bound: string; side: "lower" | "upper" };
+};
+
+/** Resolves the far side of a year/date range against the effective sort
+ * (release recency desc by default; "date" is StashDB's own key). A range's
+ * FAR side rides the native release-date criterion, so a newest-first
+ * upstream scan never reads every newer title; the NEAR side stays local
+ * (visiblePredicate) and comes back as a stop bound that ends the ordered
+ * stream once a fetched page passes it. Strict comparisons in the stop keep
+ * ties safe: equal dates never prove the bound, so a tie spanning pages
+ * keeps scanning. A single-sided date pair keeps today's native wire
+ * byte-for-byte, and a lone TPDB `year` keeps the native exact-year param. */
+function resolveDateBound(
+  query: BrowseQuery,
+  sort: SortOrder | undefined,
+  provider: CatalogProvider,
+): DateBound {
+  const dateOrder =
+    sort !== undefined &&
+    (sort.key === "recency" || (provider === "stashdb" && sort.key === "date"));
+  const direction = sort?.direction ?? "desc";
+  // A date+dateOperation pair always owns the releaseDate slot first
+  // (today's precedence: `year` beside a single-sided `date` stays legal),
+  // so date handling branches before the year window.
+  if (query.date !== undefined && query.dateOperation !== undefined) {
+    if (query.dateTo !== undefined && query.dateOperation === ">=") {
+      if (!dateOrder) {
+        // No date order: only the lower bound rides, as before.
+        return { ride: { cutoff: query.date, operation: ">=" } };
+      }
+      return direction === "asc"
+        ? {
+            ride: { cutoff: query.date, operation: ">=" },
+            stop: { bound: query.dateTo, side: "upper" },
+          }
+        : {
+            ride: { cutoff: query.dateTo, operation: "<=" },
+            stop: { bound: query.date, side: "lower" },
+          };
+    }
+    // Single-sided pair: byte-for-byte today's wire, no stop.
+    return { ride: { cutoff: query.date, operation: query.dateOperation } };
+  }
+  if (provider === "tpdb") {
+    if (query.year === undefined || query.yearTo === undefined) {
+      // A lone year keeps the native exact-year param, so it needs no ride.
+      return {};
+    }
+    if (!dateOrder) {
+      return { ride: { cutoff: `${query.year}-01-01`, operation: ">=" } };
+    }
+    return direction === "asc"
+      ? {
+          ride: { cutoff: `${query.year}-01-01`, operation: ">=" },
+          stop: { bound: `${query.yearTo}-12-31`, side: "upper" },
+        }
+      : {
+          ride: { cutoff: `${query.yearTo}-12-31`, operation: "<=" },
+          stop: { bound: `${query.year}-01-01`, side: "lower" },
+        };
+  }
+  if (query.year === undefined && query.yearTo === undefined) return {};
+  if (!dateOrder) return {}; // no date order: nothing rides on StashDB, as before
+  return direction === "asc"
+    ? {
+        ride: { cutoff: `${query.year}-01-01`, operation: ">=" },
+        stop: { bound: `${query.yearTo ?? query.year}-12-31`, side: "upper" },
+      }
+    : {
+        ride: {
+          cutoff: `${query.yearTo ?? query.year}-12-31`,
+          operation: "<=",
+        },
+        stop: { bound: `${query.year}-01-01`, side: "lower" },
+      };
+}
+
 /** One planned stream's native query. The seed carries the provider, the
  * kind and the entity criteria; the caller adds its side's resolved include
  * criteria and the resolved TPDB studio site id. */
@@ -1116,10 +1229,7 @@ function nativeQuery(
   perPage: number,
 ): CatalogSearchQuery {
   const seed = plan.seed;
-  const date =
-    query.date !== undefined && query.dateOperation !== undefined
-      ? { cutoff: query.date, operation: query.dateOperation }
-      : undefined;
+  const ride = resolveDateBound(query, sort, seed.provider).ride;
   if (seed.provider === "tpdb") {
     if (seed.filmographyPerformer !== undefined) {
       // Filmography route: paging-only. Query, year, date, studio, tags and
@@ -1134,27 +1244,20 @@ function nativeQuery(
       };
     }
     // Every other movie query passes the AND-of-includes natively. A year
-    // range's LOWER bound rides the native date pair: TPDB `year` is an
-    // exact one-year filter, so it would clip the range to its first year
-    // and hide every later one. `yearTo` never rides native (TPDB has no
-    // upper-bound param); the visible predicate bounds it (localYearRange),
-    // which keeps range totals approximate. A single year (no yearTo) keeps
-    // the native exact-year filter, exactly as before.
+    // range's FAR side rides the native date pair (resolveDateBound): TPDB
+    // `year` alone is an exact one-year filter, so the range must ride
+    // dates, and under a release-date order the ordered scan then stops at
+    // the range's near edge instead of reading every newer title into the
+    // ceiling. A single year (no yearTo) keeps the native exact-year
+    // filter, exactly as before.
     return {
       provider: "tpdb",
       kind: "movie",
       ...(query.q !== undefined ? { query: query.q } : {}),
-      ...(query.yearTo !== undefined && query.year !== undefined
-        ? {
-            releaseDate: {
-              cutoff: `${query.year}-01-01`,
-              operation: ">=" as const,
-            },
-          }
-        : query.year !== undefined
-          ? { year: query.year }
-          : {}),
-      ...(date !== undefined ? { releaseDate: date } : {}),
+      ...(query.year !== undefined && query.yearTo === undefined
+        ? { year: query.year }
+        : {}),
+      ...(ride !== undefined ? { releaseDate: ride } : {}),
       ...(plan.resolvedStudio !== undefined
         ? { studio: plan.resolvedStudio }
         : {}),
@@ -1205,7 +1308,7 @@ function nativeQuery(
       : plan.excludeIds.length > 0
         ? { tagsExclude: plan.excludeIds }
         : {}),
-    ...(date !== undefined ? { releaseDate: date } : {}),
+    ...(ride !== undefined ? { releaseDate: ride } : {}),
     ...(sort !== undefined
       ? {
           // "recency" is the browse vocabulary for release recency;
@@ -1598,9 +1701,12 @@ export async function browseTitles(
             query.dateTo !== undefined,
           localInclude: tpdbIncludes.localInclude,
           localFree: tpdbIncludes.localFree,
-          // year stays native upstream; only the upper bound is local here.
+          // Under a release-date order the range's far side rides native
+          // (resolveDateBound); both ends still check locally here.
           localYearRange:
-            query.yearTo !== undefined ? { to: query.yearTo } : undefined,
+            query.yearTo !== undefined
+              ? { from: query.year, to: query.yearTo }
+              : undefined,
           creditsAllOf: [],
           resolvedStudio: siteId,
         });
@@ -1625,8 +1731,12 @@ export async function browseTitles(
           query.dateTo !== undefined,
         localInclude: tpdbIncludes.localInclude,
         localFree: tpdbIncludes.localFree,
+        // Under a release-date order the range's far side rides native
+        // (resolveDateBound); both ends still check locally here.
         localYearRange:
-          query.yearTo !== undefined ? { to: query.yearTo } : undefined,
+          query.yearTo !== undefined
+            ? { from: query.year, to: query.yearTo }
+            : undefined,
         creditsAllOf: [],
       });
       continue;
@@ -1659,8 +1769,10 @@ export async function browseTitles(
         query.dateTo !== undefined,
       localInclude: stashIncludes.localInclude,
       localFree: stashIncludes.localFree,
-      // Both year bounds check locally on StashDB; `yearTo` defaults the
-      // upper end so `year` alone stays an exact-year filter, as before.
+      // Under a release-date order the range's far side rides native
+      // (resolveDateBound); the year window still checks locally here, and
+      // `yearTo` defaults the upper end so `year` alone stays an exact-year
+      // filter, as before.
       localYearRange:
         query.year !== undefined || query.yearTo !== undefined
           ? { from: query.year, to: query.yearTo ?? query.year }
@@ -1729,6 +1841,24 @@ export async function browseTitles(
   const streams: Stream[] = [];
   const dedupeSets = new Map<string, Set<string>>();
   for (const seedPlan of seedPlans) {
+    const dateBound = resolveDateBound(
+      query,
+      nativeSort,
+      seedPlan.seed.provider,
+    );
+    // Tie-safe: strict comparisons mean equal dates never prove the bound,
+    // so a tie spanning pages keeps scanning instead of stopping early.
+    let dateStop: ((d: CatalogDetail) => boolean) | undefined;
+    if (dateBound.stop !== undefined) {
+      const stop = dateBound.stop;
+      dateStop = (d: CatalogDetail) => {
+        const released = d.releaseDate?.slice(0, 10);
+        if (released === undefined) return false;
+        return stop.side === "lower"
+          ? released < stop.bound
+          : released > stop.bound;
+      };
+    }
     const base = visiblePredicate(
       hiddenTags,
       query.exclude,
@@ -1736,6 +1866,7 @@ export async function browseTitles(
       seedPlan.localYearRange,
       seedPlan.creditsAllOf,
       query.dateTo,
+      query.dateTo !== undefined ? query.date : undefined,
     );
     let visible = base;
     let localFiltered = seedPlan.localFiltered;
@@ -1770,6 +1901,7 @@ export async function browseTitles(
           localInclude: seedPlan.localFree,
           freeTextNative: seedPlan.freeTextNative,
         }),
+        dateStop,
       ),
     );
   }

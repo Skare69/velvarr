@@ -752,6 +752,59 @@ interface InjectedMovieRow {
 
 let extraTpdbMovies: InjectedMovieRow[] = [];
 
+const HISTORICAL_BROWSE_QUERY = "HistoricalRanges";
+const historicalBrowseId = (year: number, index: number) =>
+  `b1800000-0000-0000-${year}-${String(index).padStart(12, "0")}`;
+const historicalBrowseDate = (year: number, index: number) =>
+  index === 39
+    ? `${year}-12-31`
+    : new Date(Date.UTC(year, 0, index + 1)).toISOString().slice(0, 10);
+const historicalBrowseCatalog = [2024, 2012, 2011, 2010, 2005].flatMap((year) =>
+  Array.from(
+    { length: year === 2024 || year === 2005 ? 2500 : 40 },
+    (_, index) => ({
+      id: historicalBrowseId(year, index),
+      date:
+        year === 2024 || year === 2005
+          ? `${year}-06-15`
+          : historicalBrowseDate(year, index),
+    }),
+  ),
+);
+let historicalBrowseMode:
+  { reads: { movie: number; scene: number } } | undefined;
+
+function historicalBrowseRows(
+  cutoff: string | undefined,
+  operation: string | undefined,
+  ascending: boolean,
+) {
+  return historicalBrowseCatalog
+    .filter(({ date }) => {
+      if (cutoff === undefined) return true;
+      switch (operation) {
+        case "<":
+          return date < cutoff;
+        case "<=":
+          return date <= cutoff;
+        case "=":
+          return date === cutoff;
+        case ">":
+          return date > cutoff;
+        case ">=":
+          return date >= cutoff;
+        default:
+          throw new Error(`Unexpected historical date operator: ${operation}`);
+      }
+    })
+    .sort(
+      (a, b) =>
+        (ascending
+          ? a.date.localeCompare(b.date)
+          : b.date.localeCompare(a.date)) || a.id.localeCompare(b.id),
+    );
+}
+
 async function tpdbHandler(
   req: IncomingMessage,
   res: ServerResponse,
@@ -786,6 +839,38 @@ async function tpdbHandler(
   if (auth !== `Bearer ${tpdbToken}`) return json(res, 401, {});
   if (p === "/user") return json(res, 200, { data: { name: "Fixture TPDB" } });
   if (p === "/movies") {
+    if (
+      historicalBrowseMode &&
+      url.searchParams.get("q") === HISTORICAL_BROWSE_QUERY
+    ) {
+      historicalBrowseMode.reads.movie += 1;
+      const rows = historicalBrowseRows(
+        url.searchParams.get("date") ?? undefined,
+        url.searchParams.get("date_operation") ?? undefined,
+        url.searchParams.get("orderBy") === "former_released",
+      ).filter(
+        ({ date }) =>
+          !url.searchParams.has("year") ||
+          date.slice(0, 4) === url.searchParams.get("year"),
+      );
+      const page = Number(url.searchParams.get("page") ?? 1);
+      const perPage = Number(url.searchParams.get("per_page") ?? 50);
+      return json(res, 200, {
+        data: rows.slice((page - 1) * perPage, page * perPage).map((row) => ({
+          ...tpdbMovieRow(row.id),
+          title: `${HISTORICAL_BROWSE_QUERY} ${row.id}`,
+          date: row.date,
+          tags: [],
+        })),
+        meta: { total: rows.length },
+        links: {
+          next:
+            page * perPage < rows.length
+              ? `http://fixture/movies?page=${page + 1}`
+              : null,
+        },
+      });
+    }
     // Family-proof snapshot, isolated behind an exact q marker so the
     // shared unfiltered /movies rows keep feeding every existing
     // assertion unchanged.
@@ -1091,6 +1176,54 @@ async function stashdbHandler(
     });
   }
   if (query.includes("queryScenes")) {
+    const input = (
+      body.variables as
+        | {
+            f?: {
+              text?: string;
+              date?: { value: string; modifier: string };
+              sort?: string;
+              direction?: string;
+              page?: number;
+              per_page?: number;
+            };
+          }
+        | undefined
+    )?.f;
+    if (historicalBrowseMode && input?.text === HISTORICAL_BROWSE_QUERY) {
+      historicalBrowseMode.reads.scene += 1;
+      const operators: Record<string, string> = {
+        LESS_THAN: "<",
+        EQUALS: "=",
+        GREATER_THAN: ">",
+      };
+      const rows = historicalBrowseRows(
+        input.date?.value,
+        input.date ? operators[input.date.modifier] : undefined,
+        input.sort === "DATE" && input.direction === "ASC",
+      );
+      const page = input.page ?? 1;
+      const perPage = input.per_page ?? 50;
+      return json(res, 200, {
+        data: {
+          queryScenes: {
+            count: rows.length,
+            scenes: rows
+              .slice((page - 1) * perPage, page * perPage)
+              .map((row) => ({
+                ...row,
+                title: `${HISTORICAL_BROWSE_QUERY} ${row.id}`,
+                duration: 600,
+                urls: [],
+                images: [],
+                studio: { id: STASH_STUDIO, name: "Fixture Studio" },
+                tags: [],
+                performers: [],
+              })),
+          },
+        },
+      });
+    }
     return json(res, 200, {
       data: {
         queryScenes: {
@@ -10320,7 +10453,7 @@ interface PreferencesBody {
 }
 
 interface BrowsePageBody {
-  items: FacetTile[];
+  items: (FacetTile & { releaseDate?: string })[];
   page: number;
   perPage: number;
   hasMore: boolean;
@@ -10790,6 +10923,81 @@ test("browse is the unified visible-catalog surface and counts the caller's hidd
     assert.equal(restored.status, 200);
   }
 });
+
+for (const type of ["movie", "scene"] as const) {
+  for (const range of [
+    {
+      name: "year window",
+      query: "year=2010&yearTo=2012",
+      years: [2012, 2011, 2010],
+    },
+    {
+      name: "date window",
+      query: "date=2011-01-01&date_operation=%3E%3D&dateTo=2011-12-31",
+      years: [2011],
+    },
+    ...(type === "scene"
+      ? [{ name: "lone year", query: "year=2011", years: [2011] }]
+      : []),
+  ]) {
+    test(`historical browse ranges: ${type} ${range.name}`, async () => {
+      await boot();
+      if (!member) member = await loginAs("member");
+      const previousMode = historicalBrowseMode;
+      historicalBrowseMode = { reads: { movie: 0, scene: 0 } };
+      const expected = range.years.flatMap((year) =>
+        Array.from({ length: 40 }, (_, i) => ({
+          id: historicalBrowseId(year, 39 - i),
+          date: historicalBrowseDate(year, 39 - i),
+        })),
+      );
+      try {
+        for (const page of expected.length === 120 ? [1, 3] : [1]) {
+          resetMetaCache();
+          historicalBrowseMode.reads[type] = 0;
+          const path =
+            `/api/browse?type=${type}&q=${HISTORICAL_BROWSE_QUERY}` +
+            `&${range.query}&page=${page}&perPage=50`;
+          const response = await call("GET", path, { cookie: member });
+          const text = await response.text();
+          assert.equal(response.status, 200, `${path}: ${text}`);
+          const body = JSON.parse(text) as BrowsePageBody;
+          const provider = type === "movie" ? "tpdb" : "stashdb";
+          assert.deepEqual(
+            body.items.map((item) => ({
+              reference: refOf(item),
+              date: item.releaseDate,
+            })),
+            expected.slice((page - 1) * 50, page * 50).map((row) => ({
+              reference: { provider, kind: type, id: row.id },
+              date: row.date,
+            })),
+          );
+          assert.equal(body.page, page);
+          assert.equal(body.perPage, 50);
+          assert.deepEqual(body.errors, []);
+          assert.ok(
+            historicalBrowseMode.reads[type] > 0 &&
+              historicalBrowseMode.reads[type] < 40,
+            `upstream reads: ${historicalBrowseMode.reads[type]}`,
+          );
+          if (expected.length === 120 && page === 1) {
+            assert.equal(body.hasMore, true);
+            assert.equal(body.totalCountKnown, false);
+            assert.equal(body.total, undefined);
+          } else {
+            assert.equal(body.hasMore, false);
+            assert.equal(body.totalCountKnown, true);
+            assert.equal(body.total, expected.length);
+          }
+        }
+      } finally {
+        historicalBrowseMode = previousMode;
+        resetMetaCache();
+      }
+    });
+  }
+}
 
 test("free-text terms that can never match are refused with no upstream call", async () => {
   const tpdbBefore = tpdbFx.calls;

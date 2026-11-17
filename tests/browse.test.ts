@@ -5696,8 +5696,9 @@ test("parseBrowseQuery validates dateTo as the inclusive tail of a date>= range"
   assert.equal(range.dateTo, "2021-12-31");
 });
 
-test("a date>= + dateTo range filters both providers locally past the native lower bound", async () => {
+test("a descending date>= + dateTo range sends the native upper bound and checks both bounds locally", async () => {
   const movieUrls: string[] = [];
+  const sceneInputs: Record<string, unknown>[] = [];
   await runBrowse(
     scriptedUpstream({
       tagRows: [],
@@ -5708,19 +5709,22 @@ test("a date>= + dateTo range filters both providers locally past the native low
             tpdbRow(uuid(11), "Late Movie", "2022-06-01"),
             // A bogus date maps to no releaseDate, like a missing one.
             tpdbRow(uuid(12), "Undated Movie", "garbage"),
+            tpdbRow(uuid(13), "Early Movie", "2018-12-31"),
           ],
           next: null,
-          total: 3,
+          total: 4,
         },
       ],
       scenes: {
-        count: 2,
+        count: 3,
         rows: [
           stashRow(uuid(30), "Inside Scene", "2021-03-03"),
           stashRow(uuid(31), "Late Scene", "2022-03-03"),
+          stashRow(uuid(32), "Early Scene", "2018-12-31"),
         ],
       },
       onMovieRequest: (_page, qs) => movieUrls.push(qs.toString()),
+      onScenesRequest: (input) => sceneInputs.push(input),
     }),
     async () => {
       const page = await browseTitles(
@@ -5731,12 +5735,15 @@ test("a date>= + dateTo range filters both providers locally past the native low
         }),
         [],
       );
-      // The lower bound keeps its native ride on both providers; `dateTo`
-      // is the local inclusive upper bound, like `yearTo`.
-      assert.match(movieUrls[0]!, /date=2019-01-01/);
-      assert.match(movieUrls[0]!, /date_operation=%3E%3D/);
-      // Only in-range titles show: the late pair drops and the undated
-      // movie drops (a missing release date cannot prove the window).
+      // Deliberate flip: newest-first scans send the upper bound natively.
+      // Both local checks still exclude rows outside the inclusive window.
+      assert.match(movieUrls[0]!, /date=2021-12-31/);
+      assert.match(movieUrls[0]!, /date_operation=%3C%3D/);
+      assert.deepEqual(sceneInputs[0]!.date, {
+        value: "2022-01-01",
+        modifier: "LESS_THAN",
+      });
+      // Early, late, and undated titles cannot satisfy the window.
       assert.deepEqual(page.items.map((d) => d.title).sort(), [
         "Inside Movie",
         "Inside Scene",
@@ -5746,6 +5753,265 @@ test("a date>= + dateTo range filters both providers locally past the native low
     },
   );
 });
+
+/** HTTP fixture with native date filters, date order, and real page offsets.
+ * Equal durations preserve catalog order for the non-date cases. */
+function rangeScanUpstream(
+  catalog: { id: string; date: string }[],
+  inputs: Record<string, unknown>[],
+): FixtureHandler {
+  return (req, res, body) => {
+    const path = pathOf(req.url ?? "");
+    const movie = path === "/movies";
+    if (!movie && path !== "/graphql") {
+      sendJson(res, 404, { message: `fixture has no ${path}` });
+      return;
+    }
+    let input: Record<string, unknown>;
+    if (movie) {
+      input = Object.fromEntries(queryOf(req.url ?? ""));
+    } else {
+      const gql: { variables: { f: Record<string, unknown> } } =
+        JSON.parse(body);
+      input = gql.variables.f;
+    }
+    inputs.push(input);
+    const date = movie
+      ? undefined
+      : (input.date as { value: string; modifier: string } | undefined);
+    const cutoff = movie ? (input.date as string | undefined) : date?.value;
+    const operation = movie
+      ? input.date_operation
+      : date?.modifier === "LESS_THAN"
+        ? "<"
+        : date?.modifier === "GREATER_THAN"
+          ? ">"
+          : "=";
+    const rows = catalog.filter((row) => {
+      if (cutoff === undefined) return true;
+      switch (operation) {
+        case "<":
+          return row.date < cutoff;
+        case "<=":
+          return row.date <= cutoff;
+        case ">":
+          return row.date > cutoff;
+        case ">=":
+          return row.date >= cutoff;
+        case "=":
+          return row.date === cutoff;
+        default:
+          assert.fail(`Unexpected date operation: ${operation}`);
+      }
+    });
+    const ordered = movie
+      ? ["former_released", "recently_released"].includes(String(input.orderBy))
+      : input.sort === "DATE";
+    if (ordered) {
+      const asc = movie
+        ? input.orderBy === "former_released"
+        : input.direction === "ASC";
+      rows.sort((a, b) => (asc ? 1 : -1) * a.date.localeCompare(b.date));
+    }
+    const page = Number(input.page);
+    const perPage = Number(input.per_page);
+    const makeRow = movie ? tpdbRow : stashRow;
+    const items = rows
+      .slice((page - 1) * perPage, page * perPage)
+      .map((row) => makeRow(row.id, `Title ${row.id}`, row.date));
+    sendJson(
+      res,
+      200,
+      movie
+        ? {
+            data: items,
+            links: { next: page * perPage < rows.length ? "next" : null },
+            meta: { total: rows.length },
+          }
+        : { data: { queryScenes: { count: rows.length, scenes: items } } },
+    );
+  };
+}
+
+const rangeScanOrders = [
+  { type: "movie", sort: "recency", direction: "asc" },
+  { type: "scene", sort: "date", direction: "asc" },
+  { type: "scene", sort: "date", direction: "desc" },
+] as const;
+
+for (const order of rangeScanOrders) {
+  test(`range scan order ${order.type} ${order.sort} ${order.direction} stops past the terminal date with an exact total`, async () => {
+    const terminalDate =
+      order.direction === "asc" ? "2012-01-01" : "2010-12-31";
+    const inputs: Record<string, unknown>[] = [];
+    const catalog = [
+      { id: uuid(1), date: "2011-01-01" },
+      { id: uuid(2), date: "2011-06-01" },
+      { id: uuid(3), date: "2011-12-31" },
+      ...Array.from({ length: 2100 }, (_, i) => ({
+        id: uuid(100 + i),
+        date: terminalDate,
+      })),
+    ];
+    await runBrowse(rangeScanUpstream(catalog, inputs), async () => {
+      const page = await browseTitles(
+        planQuery({
+          ...order,
+          date: "2011-01-01",
+          dateOperation: ">=",
+          dateTo: "2011-12-31",
+          perPage: 50,
+          page: 2,
+        }),
+        [],
+      );
+      assert.deepEqual(page.items, []);
+      assert.equal(page.totalCountKnown, true);
+      assert.equal(page.total, 3);
+      assert.equal(page.hasMore, false);
+      assert.deepEqual(page.errors, []);
+      assert.ok(inputs.length < 5, `upstream reads: ${inputs.length}`);
+    });
+  });
+
+  test(`range scan order ${order.type} ${order.sort} ${order.direction} keeps inclusive terminal ties across pages`, async () => {
+    const edge = order.direction === "asc" ? "2011-12-31" : "2011-01-01";
+    const outside = order.direction === "asc" ? "2012-01-01" : "2010-12-31";
+    const inputs: Record<string, unknown>[] = [];
+    const catalog = [
+      { id: uuid(1), date: "2011-06-01" },
+      { id: uuid(2), date: edge },
+      { id: uuid(3), date: edge },
+      { id: uuid(4), date: edge },
+      { id: uuid(5), date: outside },
+    ];
+    await runBrowse(rangeScanUpstream(catalog, inputs), async () => {
+      const ids: string[] = [];
+      for (let page = 1; page <= 3; page += 1) {
+        const result = await browseTitles(
+          planQuery({
+            ...order,
+            date: "2011-01-01",
+            dateOperation: ">=",
+            dateTo: "2011-12-31",
+            perPage: 2,
+            page,
+          }),
+          [],
+        );
+        ids.push(...result.items.map((item) => item.reference.id));
+        if (page === 3) {
+          assert.equal(result.totalCountKnown, true);
+          assert.equal(result.total, 4);
+          assert.equal(result.hasMore, false);
+        }
+      }
+      assert.deepEqual(ids.sort(), [uuid(1), uuid(2), uuid(3), uuid(4)].sort());
+    });
+  });
+}
+
+for (const type of ["movie", "scene"] as const) {
+  test(`range scan order ${type} duration does not stop before a later in-range page`, async () => {
+    const inputs: Record<string, unknown>[] = [];
+    // Equal durations form a valid duration order, but not a date order.
+    const catalog = [
+      { id: uuid(1), date: "2012-01-01" },
+      { id: uuid(2), date: "2012-02-01" },
+      { id: uuid(3), date: "2011-06-01" },
+    ];
+    await runBrowse(rangeScanUpstream(catalog, inputs), async () => {
+      const page = await browseTitles(
+        planQuery({
+          type,
+          sort: "duration",
+          direction: "asc",
+          date: "2011-01-01",
+          dateOperation: ">=",
+          dateTo: "2011-12-31",
+          perPage: 2,
+        }),
+        [],
+      );
+      assert.deepEqual(
+        page.items.map((item) => item.reference.id),
+        [uuid(3)],
+      );
+      assert.equal(page.totalCountKnown, true);
+      assert.equal(page.total, 1);
+      assert.equal(page.hasMore, false);
+      assert.equal(inputs.length, 2);
+      if (type === "movie") {
+        assert.equal(inputs[0]!.date, "2011-01-01");
+        assert.equal(inputs[0]!.date_operation, ">=");
+      } else {
+        assert.deepEqual(inputs[0]!.date, {
+          value: "2010-12-31",
+          modifier: "GREATER_THAN",
+        });
+      }
+    });
+  });
+
+  test(`range scan order ${type} does not infer exhaustion from a missing terminal date`, async () => {
+    const scenes = {
+      count: 4,
+      rows: [
+        stashRow(uuid(1), "First", "2011-12-31"),
+        stashRow(uuid(9), "Undated", "garbage"),
+      ],
+    };
+    await runBrowse(
+      scriptedUpstream({
+        tagRows: [],
+        moviePages: [
+          {
+            rows: [
+              tpdbRow(uuid(1), "First", "2011-12-31"),
+              tpdbRow(uuid(9), "Undated", "garbage"),
+            ],
+            next: "next",
+            total: 4,
+          },
+          {
+            rows: [
+              tpdbRow(uuid(2), "Last", "2011-01-01"),
+              tpdbRow(uuid(3), "Outside", "2010-12-31"),
+            ],
+            next: null,
+            total: 4,
+          },
+        ],
+        scenes,
+        onScenesRequest: (input) => {
+          if (input.page === 2) {
+            scenes.rows = [
+              stashRow(uuid(2), "Last", "2011-01-01"),
+              stashRow(uuid(3), "Outside", "2010-12-31"),
+            ];
+          }
+        },
+      }),
+      async () => {
+        const page = await browseTitles(
+          planQuery({
+            type,
+            date: "2011-01-01",
+            dateOperation: ">=",
+            dateTo: "2011-12-31",
+            perPage: 2,
+            page: 2,
+          }),
+          [],
+        );
+        assert.deepEqual(page.items, []);
+        assert.equal(page.totalCountKnown, true);
+        assert.equal(page.total, 2);
+        assert.equal(page.hasMore, false);
+      },
+    );
+  });
+}
 
 // --- or-groups and entities at the fixture level ---
 
@@ -6025,8 +6291,9 @@ test("withChildren with two StashDB studios sends two parentStudio searches and 
   );
 });
 
-test("a year range rides its lower bound on the TPDB date pair; a lone year stays native", async () => {
+test("a descending year range sends the native upper date bound; a lone TPDB year stays native", async () => {
   const movieUrls: string[] = [];
+  const sceneInputs: Record<string, unknown>[] = [];
   await runBrowse(
     scriptedUpstream({
       tagRows: [],
@@ -6037,9 +6304,10 @@ test("a year range rides its lower bound on the TPDB date pair; a lone year stay
             tpdbRow(uuid(11), "Inside Movie", "2020-06-01"),
             tpdbRow(uuid(12), "Upper Movie", "2021-06-01"),
             tpdbRow(uuid(13), "Late Movie", "2022-06-01"),
+            tpdbRow(uuid(14), "Early Movie", "2018-12-31"),
           ],
           next: null,
-          total: 4,
+          total: 5,
         },
         // The second page serves the second browse (each browse reads one
         // page; the scripted upstream hands pages out in request order).
@@ -6060,22 +6328,23 @@ test("a year range rides its lower bound on the TPDB date pair; a lone year stay
         ],
       },
       onMovieRequest: (_page, qs) => movieUrls.push(qs.toString()),
+      onScenesRequest: (input) => sceneInputs.push(input),
     }),
     async () => {
       const ranged = await browseTitles(
         planQuery({ year: 2019, yearTo: 2021 }),
         [],
       );
-      // Contract fix (VELV-166 send-back): TPDB `year` is an EXACT one-year
-      // filter upstream, so the range's lower bound rides the native date
-      // pair (>= the first year's January 1) and `year` itself never rides.
-      // `yearTo` stays the local upper bound on BOTH sources.
-      assert.match(movieUrls[0]!, /date=2019-01-01/);
-      assert.match(movieUrls[0]!, /date_operation=%3E%3D/);
+      // Deliberate flip: newest-first scans send the upper date bound.
+      // TPDB's exact-year filter must not clip a multi-year window.
+      assert.match(movieUrls[0]!, /date=2021-12-31/);
+      assert.match(movieUrls[0]!, /date_operation=%3C%3D/);
       assert.doesNotMatch(movieUrls[0]!, /year=/);
-      // Every year of the range shows — 2019 through 2021 — and only the
-      // year past the upper bound drops. The local upper bound keeps the
-      // totals exact at exhaustion.
+      assert.deepEqual(sceneInputs[0]!.date, {
+        value: "2022-01-01",
+        modifier: "LESS_THAN",
+      });
+      // Both local year bounds exclude early and late rows.
       assert.deepEqual(ranged.items.map((d) => d.title).sort(), [
         "First-Year Movie",
         "Inside Movie",
@@ -6085,13 +6354,16 @@ test("a year range rides its lower bound on the TPDB date pair; a lone year stay
       assert.equal(ranged.totalCountKnown, true);
       assert.equal(ranged.total, 4);
 
-      // A lone year keeps today's behavior: the year rides TPDB's native
-      // query (the fixture ignores it, so both rows survive locally) while
-      // StashDB's year is a local exact-match (2022 drops).
+      // TPDB keeps its native exact-year filter. This fixture ignores it.
+      // StashDB sends an upper date bound and checks the year locally.
       movieUrls.length = 0;
       const lone = await browseTitles(planQuery({ year: 2020 }), []);
       assert.match(movieUrls[0]!, /year=2020/);
       assert.doesNotMatch(movieUrls[0]!, /date=/);
+      assert.deepEqual(sceneInputs[1]!.date, {
+        value: "2021-01-01",
+        modifier: "LESS_THAN",
+      });
       assert.deepEqual(lone.items.map((d) => d.title).sort(), [
         "Inside Movie",
         "Inside Scene",

@@ -12,3 +12,10 @@
 - **Update notice** when a newer GitHub release is available.
 - **Optional:** Discord notifications, and AI-assisted title matching through [TypeSafe](https://typesafe.ai) or an [Ollama](ai.md#ai-matching-with-ollama) decision model. AI only flags a near match for administrator review. It never marks a title as available.
 - **Optional natural-language search** on Browse: a member describes a search in plain words, and an [OpenAI-compatible chat server](ai.md#natural-language-search) that you set up writes a draft of the filters. Velvarr checks each tag, performer, and studio against the providers before it applies a filter, and lists each part that it did not apply.
+
+## Browse date ranges
+
+A year range includes both years. A release-date range includes both dates.
+Newest first sends the upper bound to the provider. Oldest first sends the lower bound.
+With release-date order, Browse stops after the opposite bound.
+Other local filters can still reach the scan limit.
