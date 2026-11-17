@@ -18,6 +18,35 @@ once. CI runs these two suites; there is no separate connection-only test or
 coverage rerun. The suites check different layers: application logic and API
 behavior versus interactions with the rendered UI.
 
+## Mutation test temporary data
+
+```sh
+bun run test:mutation
+bun run test:mutation:delta
+```
+
+The full command tests all configured mutation files. The delta command tests
+eligible files that changed since the last release tag.
+
+Each run creates one unique temporary parent outside the repository. It contains
+the Stryker sandbox and test data. Each test process creates its own subtree.
+Suites that pin a database directory use `testTempDir(prefix)` inside that subtree.
+Separate processes do not share SQLite paths.
+
+The TAP runner uses `SIGTERM` after a test failure. The test process exits with
+143, and its exit hook removes its subtree. The run owner removes its entire
+parent at exit, including data from children that cannot execute their hooks.
+Cleanup removes only data that the current run or process creates. It does not
+scan for stale directories or remove data from other runs.
+
+An external `SIGKILL` of the run owner prevents its exit hook. Automatic cleanup
+cannot cover that case. Existing leaked directories also remain untouched.
+
+The pagination regression in `tests/api.test.ts` retains its 50,000-row fixture
+and all assertions. Its database and SQLite WAL can each reach about 32 MB,
+or about 64 MB together. SQLite retains allocated pages after the fixture deletes
+its rows.
+
 ## Settings browser regressions
 
 The same Playwright suite covers **Connections** and **Metadata providers**.

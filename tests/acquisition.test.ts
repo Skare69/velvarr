@@ -11,10 +11,10 @@ import {
   type ServerResponse,
 } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { testTempDir } from "./setup.ts";
 // No top-level side effects: hoisting this above the env setup is safe.
 import { register } from "../src/instrumentation.ts";
 import type {
@@ -30,7 +30,7 @@ process.env.VELVARR_SECRET_KEY = "33".repeat(32);
 // storage opens lazily but reads VELVARR_DATA_DIR at each open: pin even the
 // pre-freshDb window to a throwaway dir so no code path can fall back to the
 // repo's ./data default while tests run in parallel with other files.
-const bootDir = mkdtempSync(join(tmpdir(), "velvarr-acq-boot-"));
+const bootDir = testTempDir("velvarr-acq-boot-");
 process.env.VELVARR_DATA_DIR = bootDir;
 
 const storage = await import("../src/server/storage.ts");
@@ -192,7 +192,7 @@ function freshDb(): void {
       maxRetries: 10,
       retryDelay: 50,
     });
-  dir = mkdtempSync(join(tmpdir(), "velvarr-acquisition-"));
+  dir = testTempDir("velvarr-acquisition-");
   process.env.VELVARR_DATA_DIR = dir;
   knobs = {
     hasFile: false,

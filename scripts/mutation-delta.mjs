@@ -10,9 +10,11 @@
 
 import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import config from "../stryker.config.mjs";
+
+// The config captures this base before it changes TMPDIR for test processes.
+// Keep the scratch config and the spawned Stryker owner outside that run.
+import config, { mutationTempBase } from "../stryker.config.mjs";
 
 function git(args) {
   return spawnSync("git", args, { encoding: "utf8" });
@@ -132,7 +134,7 @@ for (const name of targets) console.log(`  ${name}`);
 // thresholds; it imports the repo config, so the runner options stay
 // single-sourced.
 const deltaConfigPath = join(
-  tmpdir(),
+  mutationTempBase,
   `velvarr-stryker-delta-${process.pid}.mjs`,
 );
 const repoConfigUrl = new URL("../stryker.config.mjs", import.meta.url);
@@ -148,7 +150,10 @@ export default deltaConfig;
 `,
 );
 try {
+  const childEnv = { ...process.env, TMPDIR: mutationTempBase };
+  delete childEnv.VELVARR_DATA_DIR;
   const run = spawnSync("stryker", ["run", deltaConfigPath], {
+    env: childEnv,
     stdio: "inherit",
     shell: process.platform === "win32",
   });

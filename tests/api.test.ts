@@ -10,17 +10,15 @@ import {
 } from "node:http";
 import {
   existsSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   statSync,
   utimesSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { rmTempDir } from "./setup.ts";
+import { rmTempDir, testTempDir } from "./setup.ts";
 import { Buffer } from "node:buffer";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -113,7 +111,7 @@ test("route tables never shadow: every request shape matches at most one def", (
 });
 
 // Isolated environment BEFORE importing route/storage modules.
-const apiDataDir = mkdtempSync(join(tmpdir(), "velvarr-api-test-"));
+const apiDataDir = testTempDir("velvarr-api-test-");
 process.env.VELVARR_DATA_DIR = apiDataDir;
 process.env.VELVARR_SECRET_KEY = "ab".repeat(32);
 process.env.VELVARR_SETUP_SECRET = "setup-secret-".repeat(4);

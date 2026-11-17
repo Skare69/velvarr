@@ -12,16 +12,14 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { rmTempDir } from "./setup.ts";
+import { rmTempDir, testTempDir } from "./setup.ts";
 import { AppError } from "../src/server/http.ts";
 import type {
   Account,
@@ -52,7 +50,7 @@ let currentDir = "";
 function freshDir(): string {
   storage.closeStorage();
   rmTempDir(currentDir);
-  currentDir = mkdtempSync(join(tmpdir(), "velvarr-storage-"));
+  currentDir = testTempDir("velvarr-storage-");
   process.env.VELVARR_DATA_DIR = currentDir;
   return currentDir;
 }
@@ -2988,7 +2986,7 @@ test("backup restores into a fresh data directory with everything intact; a wron
   );
 
   // Restore = copy the snapshot in as velvarr.sqlite of a NEW data directory.
-  const restored = mkdtempSync(join(tmpdir(), "velvarr-restore-"));
+  const restored = testTempDir("velvarr-restore-");
   copyFileSync(snapshot, join(restored, "velvarr.sqlite"));
   storage.closeStorage();
   process.env.VELVARR_DATA_DIR = restored;
@@ -3003,7 +3001,7 @@ test("backup restores into a fresh data directory with everything intact; a wron
 
   // A wrong key fails loudly and corrupts nothing on the restored copy.
   storage.closeStorage();
-  const wrongKey = mkdtempSync(join(tmpdir(), "velvarr-wrongkey-"));
+  const wrongKey = testTempDir("velvarr-wrongkey-");
   copyFileSync(snapshot, join(wrongKey, "velvarr.sqlite"));
   process.env.VELVARR_DATA_DIR = wrongKey;
   process.env.VELVARR_SECRET_KEY = KEY_B;
@@ -3056,7 +3054,7 @@ test("restored in-flight submissions reconcile to uncertain, never unsent; ident
   // Crash-equivalent: snapshot mid-submission, restore elsewhere.
   const snapshot = join(dir, "snapshot.sqlite");
   runBackup(dir, snapshot);
-  const restored = mkdtempSync(join(tmpdir(), "velvarr-reconcile-"));
+  const restored = testTempDir("velvarr-reconcile-");
   copyFileSync(snapshot, join(restored, "velvarr.sqlite"));
   storage.closeStorage();
   process.env.VELVARR_DATA_DIR = restored;

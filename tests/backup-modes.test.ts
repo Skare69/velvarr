@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import { rmTempDir } from "./setup.ts";
+import { rmTempDir, testTempDir } from "./setup.ts";
 
 const BACKUP_SCRIPT = fileURLToPath(
   new URL("../scripts/backup.mjs", import.meta.url),
@@ -19,7 +18,7 @@ after(() => {
 });
 
 function tempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "velvarr-backup-"));
+  const dir = testTempDir("velvarr-backup-");
   tempDirs.push(dir);
   return dir;
 }

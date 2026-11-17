@@ -5,22 +5,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import {
-  copyFileSync,
-  mkdirSync,
-  mkdtempSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { copyFileSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { rmTempDir } from "./setup.ts";
+import { rmTempDir, testTempDir } from "./setup.ts";
 
 test(
   "setup.mjs creates .env.local with owner-only permissions",
   { skip: process.platform === "win32" && "POSIX modes only" },
   (t) => {
-    const root = mkdtempSync(path.join(tmpdir(), "velvarr-setup-"));
+    const root = testTempDir("velvarr-setup-");
     t.after(() => rmTempDir(root));
     mkdirSync(path.join(root, "scripts"));
     copyFileSync(

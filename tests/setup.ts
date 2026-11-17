@@ -34,9 +34,14 @@ export function rmTempDir(dir: string | undefined): void {
   }
 }
 
-// Test files that pin their own data dir (api, acquisition, storage) remove it
-// in their own after() hooks, storage closed first; this covers the fallback.
+// Suite hooks close storage first. The exit hook also covers TAP bailouts.
 process.on("exit", () => rmTempDir(created));
+process.once("SIGTERM", () => process.exit(143));
+
+// Keep suite data under the process subtree even when a suite changes its env.
+export function testTempDir(prefix: string): string {
+  return mkdtempSync(join(created, prefix));
+}
 
 // --- property-based fuzzing tier (fast-check) ---
 // Gate tier (default): fixed seed 42, 200 runs per property, inside the
