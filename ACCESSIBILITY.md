@@ -17,7 +17,7 @@ Velvarr must work for every household member, also with a keyboard, a screen rea
 - Sheets and modals use the native `<dialog>` element.
 - A form field with an error has `aria-invalid` and points to its error text with `aria-describedby`.
 - The `prefers-reduced-motion` setting makes all animations and transitions almost instant.
-- On touch screens, controls have a minimum target size of 44 px.
+- On touch screens, most buttons, inputs, and navigation items have a minimum target size of 44 px.
 - The color tokens have measured contrast ratios. [`src/app/globals.css`](src/app/globals.css) lists them. These ratios are design targets. No automated test measures them.
 - The settings browser tests check that the keyboard focus goes to the correct field after some actions.
 
@@ -28,6 +28,7 @@ Velvarr must work for every household member, also with a keyboard, a screen rea
 - Posters and photos come from TPDB and StashDB. Their text alternative is only the title or the name.
 - Velvarr has only a dark theme.
 - Video playback occurs in Jellyfin. Velvarr has no control over the accessibility of the player.
+- On touch screens, checkboxes and radio buttons do not get the 44 px minimum target size. Some checkbox rows, for example the account permission rows, are smaller than 44 px.
 
 ## Report a barrier
 
