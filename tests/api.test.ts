@@ -5009,7 +5009,7 @@ test("catalog artwork width: cached passthrough preserves its index and skips ex
         apiDataDir,
         "artwork",
         indexContent.slice(0, 2),
-        `${indexContent}-600.webp`,
+        `${indexContent}-600c.webp`,
       ),
     ),
     false,
@@ -5242,7 +5242,9 @@ test("catalog artwork proxy: another URL spelling reads the disk variant after a
   assert.equal(first.status, 200);
   assert.equal(first.headers.get("content-type"), "image/webp");
   const bytes = Buffer.from(await first.arrayBuffer());
-  assert.equal((await sharp(bytes).metadata()).width, 400);
+  // 810x1210 is a bit wider than 2:3: the 600 px cover height binds.
+  const meta = await sharp(bytes).metadata();
+  assert.deepEqual([meta.width, meta.height], [402, 600]);
   assert.equal(tpdbFx.calls - callsBefore, 1);
   resetMetaCache();
   const stored = await call(

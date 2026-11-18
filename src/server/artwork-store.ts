@@ -66,8 +66,19 @@ function artworkRootDir(): string {
   return path.join(process.env.VELVARR_DATA_DIR || "./data", "artwork");
 }
 
+// Cards crop with object-fit: cover into frames from 2:3 portrait to wide, so
+// a w variant must cover a w × 1.5w box: a 16:9 scene still at w=200 needs
+// 300 px of height, not the 113 px a plain width resize gives (VELV-170
+// tiles went blurry). The "c" suffix retires the old width-only files; they
+// age out by the store TTL.
+const COVER_HEIGHT_RATIO = 1.5;
+
 function variantPath(hash: string, width: ArtworkWidth): string {
-  return path.join(artworkRootDir(), hash.slice(0, 2), `${hash}-${width}.webp`);
+  return path.join(
+    artworkRootDir(),
+    hash.slice(0, 2),
+    `${hash}-${width}c.webp`,
+  );
 }
 
 /** Best-effort read of a fresh non-empty variant; null means "miss". */
@@ -315,11 +326,17 @@ export async function artworkVariantFor(
   } catch (err) {
     return passthroughDegrade(source, hash, width, err);
   }
-  // Never upscale: at or below the ladder rung the source is the answer.
-  // Rotated sources count on the oriented axis (EXIF 6 stores an upright
+  // Never upscale: when either oriented axis is already at or below the
+  // cover box, no downscale keeps the cover, so the source is the answer.
+  // Rotated sources count on the oriented axes (EXIF 6 stores an upright
   // portrait as landscape pixels), else the upright image gets upscaled.
   const orientedWidth = meta.autoOrient?.width ?? meta.width;
-  if (orientedWidth !== undefined && orientedWidth <= width) {
+  const orientedHeight = meta.autoOrient?.height ?? meta.height;
+  const height = Math.round(width * COVER_HEIGHT_RATIO);
+  if (
+    (orientedWidth !== undefined && orientedWidth <= width) ||
+    (orientedHeight !== undefined && orientedHeight <= height)
+  ) {
     return {
       bytes: source.bytes,
       contentType: source.contentType,
@@ -332,7 +349,7 @@ export async function artworkVariantFor(
   try {
     variant = await sharp(source.bytes)
       .autoOrient()
-      .resize({ width, withoutEnlargement: true })
+      .resize({ width, height, fit: "outside", withoutEnlargement: true })
       .webp({ quality: 80 })
       .toBuffer();
   } catch (err) {

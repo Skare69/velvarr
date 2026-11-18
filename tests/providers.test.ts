@@ -2541,15 +2541,16 @@ test("artwork fetch: an empty 200 image is refused and never cached", async () =
 
 // --- artwork width ladder and on-disk variant store ---
 
-// Pinned store layout: <VELVARR_DATA_DIR>/artwork/<hash[0:2]>/<hash>-<w>.webp.
-// tests/setup.ts points VELVARR_DATA_DIR at a per-process throwaway dir, so
-// these assertions never touch real data.
+// Pinned store layout: <VELVARR_DATA_DIR>/artwork/<hash[0:2]>/<hash>-<w>c.webp
+// ("c": the variant covers a w × 1.5w frame; the suffix retired the old
+// width-only files). tests/setup.ts points VELVARR_DATA_DIR at a per-process
+// throwaway dir, so these assertions never touch real data.
 function artworkStorePath(hash: string, width: number): string {
   return join(
     process.env.VELVARR_DATA_DIR!,
     "artwork",
     hash.slice(0, 2),
-    `${hash}-${width}.webp`,
+    `${hash}-${width}c.webp`,
   );
 }
 
@@ -2601,7 +2602,7 @@ const ORIENTED_6_JPEG = await sharp({
     sharp(landscape).withMetadata({ orientation: 6 }).jpeg().toBuffer(),
   );
 
-test("artwork width ladder: w=400 returns a 400px webp variant stored under the content-hash name", async () => {
+test("artwork width ladder: w=400 returns a webp variant covering 400x600, stored under the content-hash name", async () => {
   const sourceHash = createHash("sha256").update(POSTER_1000).digest("hex");
   let upstreamCount = 0;
   const fixture = await startFixture((req, res) => {
@@ -2617,8 +2618,10 @@ test("artwork width ladder: w=400 returns a 400px webp variant stored under the 
     const at400 = await fetchProviderArtwork(url, { width: 400 });
     assert.equal(at400.contentType, "image/webp");
     assert.equal(at400.hash, sourceHash);
+    // The 1000x1400 poster is a bit wider than 2:3, so the 600 px height
+    // binds: 429x600 covers a 400x600 frame.
     const meta = await sharp(Buffer.from(at400.bytes)).metadata();
-    assert.equal(meta.width, 400);
+    assert.deepEqual([meta.width, meta.height], [429, 600]);
     assert.equal(meta.format, "webp");
 
     // The stored file is the variant: same bytes, real content, pinned name.
@@ -2631,12 +2634,34 @@ test("artwork width ladder: w=400 returns a 400px webp variant stored under the 
     // source from the memory cache and stores its own variant.
     const at200 = await fetchProviderArtwork(url, { width: 200 });
     const meta200 = await sharp(Buffer.from(at200.bytes)).metadata();
-    assert.equal(meta200.width, 200);
+    assert.deepEqual([meta200.width, meta200.height], [214, 300]);
     assert.equal(meta200.format, "webp");
     assert.equal(upstreamCount, 1);
   } finally {
     await fixture.close();
   }
+});
+
+test("artwork variant: a landscape scene still covers a 2:3 card frame, not only its width", async () => {
+  // Cards crop with object-fit: cover into 2:3 frames. A width-only resize
+  // turned a 16:9 still at w=200 into 200x113, stretched to 300 px tall.
+  const still = await sharp({
+    create: {
+      width: 1600,
+      height: 900,
+      channels: 3,
+      background: { r: 90, g: 40, b: 120 },
+    },
+  })
+    .png()
+    .toBuffer();
+  const variant = await artworkVariantFor(
+    { bytes: new Uint8Array(still), contentType: "image/png" },
+    200,
+  );
+  assert.equal(variant.isVariant, true);
+  const meta = await sharp(Buffer.from(variant.bytes)).metadata();
+  assert.deepEqual([meta.width, meta.height], [533, 300]);
 });
 
 test("artwork no-upscale: a 185px source at w=400 returns the exact source bytes", async () => {
