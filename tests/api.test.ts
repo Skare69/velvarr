@@ -8952,9 +8952,9 @@ test("a grant revoked while the request body is read leaves the new request pend
 });
 
 // VELV-190: admission snapshots the role before the body is read. An admin
-// demoted while its own PATCH body is still in flight must not finish that
-// PATCH with the old role and restore its admin grant.
-test("a self-promotion PATCH whose admin is demoted mid-body answers 403 and stays demoted", async () => {
+// demoted while its own body is still in flight must not finish that admin
+// write with the old role (and, on the user PATCH, restore its admin grant).
+test("an admin demoted while its request body is read gets 403 on every admin body route", async () => {
   await boot();
   const admin = await loginAs("owner");
   const setNogrants = async (role: string) => {
@@ -8971,35 +8971,34 @@ test("a self-promotion PATCH whose admin is demoted mid-body answers 403 and sta
     };
     return accounts.find((account) => account.id === NOGRANT_ID)!.role;
   };
-  try {
+  const integrations = async () =>
+    (await call("GET", "/api/admin/integrations", { cookie: admin })).json();
+  // Promote, sign in, start the request, demote during the body read, then
+  // let the body finish. Returns the in-flight request's status.
+  const demotedMidBody = async (
+    method: "POST" | "PATCH",
+    path: string,
+    payload: Record<string, unknown>,
+  ): Promise<number> => {
     await setNogrants("admin");
     const staleAdmin = await loginAs("nogrants");
     let demoted = false;
-    // highWaterMark 0: pull runs only when the route reads the body, which is
-    // after admission has loaded the session's account as an admin.
+    // highWaterMark 0: pull runs only when the route reads the body, which
+    // is after admission has loaded the session's account as an admin.
     const body = new ReadableStream<Uint8Array>(
       {
         async pull(controller) {
           await setNogrants("requester");
           demoted = (await roleOf()) === "requester";
-          controller.enqueue(
-            new TextEncoder().encode(
-              JSON.stringify({
-                enabled: true,
-                role: "admin",
-                libraryIds: [],
-                autoApprove: true,
-              }),
-            ),
-          );
+          controller.enqueue(new TextEncoder().encode(JSON.stringify(payload)));
           controller.close();
         },
       },
       { highWaterMark: 0 },
     );
-    const res = await api.PATCH(
-      new Request(`${ORIGIN}/api/admin/users/${NOGRANT_ID}`, {
-        method: "PATCH",
+    const res = await api[method](
+      new Request(`${ORIGIN}${path}`, {
+        method,
         headers: {
           origin: ORIGIN,
           cookie: staleAdmin,
@@ -9008,13 +9007,38 @@ test("a self-promotion PATCH whose admin is demoted mid-body answers 403 and sta
         body,
         duplex: "half",
       } as RequestInit),
-      { params: Promise.resolve({ path: ["admin", "users", NOGRANT_ID] }) },
+      { params: Promise.resolve({ path: segments(path) }) },
     );
-    assert.ok(demoted, "the admin was demoted during the body read");
+    assert.ok(demoted, `${path}: the admin was demoted during the body read`);
+    return res.status;
+  };
+  try {
+    // The confirmed case: a self-promotion must not restore the admin role.
     assert.deepEqual(
-      { status: res.status, role: await roleOf() },
+      {
+        status: await demotedMidBody(
+          "PATCH",
+          `/api/admin/users/${NOGRANT_ID}`,
+          { enabled: true, role: "admin", libraryIds: [], autoApprove: true },
+        ),
+        role: await roleOf(),
+      },
       { status: 403, role: "requester" },
     );
+    // Every other admin route that reads a body after admission.
+    const before = await integrations();
+    const routes: ["POST" | "PATCH", string, Record<string, unknown>][] = [
+      ["PATCH", "/api/admin/integrations", { tpdbApiToken: "stale-admin" }],
+      ["POST", "/api/admin/users/import", {}],
+      ["POST", "/api/admin/providers/tpdb/test", {}],
+      ["POST", "/api/admin/jellyfin/test", { url: jellyfinUrl }],
+      ["POST", "/api/admin/whisparr/test", { url: whisparrUrl }],
+    ];
+    for (const [method, path, payload] of routes) {
+      assert.equal(await demotedMidBody(method, path, payload), 403, path);
+    }
+    assert.deepEqual(await integrations(), before);
+    assert.equal(await roleOf(), "requester");
   } finally {
     // Restore the grant state later tests share.
     await setNogrants("requester");

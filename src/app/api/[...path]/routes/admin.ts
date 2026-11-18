@@ -106,6 +106,18 @@ export function providerShape(
   };
 }
 
+/** Every admin route reads its body through here: admission checked the
+ *  role before the body arrived, so the live session is checked again after
+ *  the read (an admin demoted or disabled mid-body gets 403). */
+async function readAdminJson(
+  request: Request,
+  ctx: AuthContext,
+): Promise<Record<string, unknown>> {
+  const body = await readJson(request);
+  requireLiveAdmin(ctx);
+  return body;
+}
+
 export async function adminUsers(ctx: AuthContext): Promise<Response> {
   const [views, users] = await Promise.all([
     listLibraries(ctx.config, ctx.token),
@@ -143,7 +155,7 @@ export async function adminImport(
   request: Request,
   ctx: AuthContext,
 ): Promise<Response> {
-  await readJson(request);
+  await readAdminJson(request, ctx);
   const imported = importAccounts(await listUsers(ctx.config));
   return json({ accounts: imported });
 }
@@ -153,8 +165,7 @@ export async function adminUpdateUser(
   ctx: AuthContext,
   id: string,
 ): Promise<Response> {
-  const body = await readJson(request);
-  requireLiveAdmin(ctx);
+  const body = await readAdminJson(request, ctx);
   const target = getAccount(requireId(id));
   if (!target) throw new AppError(404, "not_found", "Account not found.");
   const enabled = fieldBool(body, "enabled");
@@ -643,7 +654,7 @@ export async function adminUpdateIntegrations(
   request: Request,
   ctx: AuthContext,
 ): Promise<Response> {
-  const body = await readJson(request);
+  const body = await readAdminJson(request, ctx);
   // Before any write: the guard compares against the live stored key and
   // must sit directly next to the synchronous provider-only saveConfig.
   guardProviderClear(body);
@@ -779,13 +790,14 @@ export async function adminProviderCheck(
 
 export async function adminProviderTest(
   request: Request,
+  ctx: AuthContext,
   raw: string,
 ): Promise<Response> {
   if (raw !== "tpdb" && raw !== "stashdb") {
     throw new AppError(400, "invalid_provider", "Unknown credential provider.");
   }
   const provider = raw;
-  const body = await readJson(request);
+  const body = await readAdminJson(request, ctx);
   // The save path's token rules: the same caps as nextProviderCredentials,
   // and a trimmed value. Blank or omitted tests the saved credential.
   const key = optionalText(body, "key", provider === "tpdb" ? 1024 : 512);
@@ -802,7 +814,7 @@ export async function adminJellyfinTest(
   request: Request,
   ctx: AuthContext,
 ): Promise<Response> {
-  const body = await readJson(request);
+  const body = await readAdminJson(request, ctx);
   const url = fieldUrl(body, "url");
   const suppliedExternal = optionalText(body, "externalUrl", 2048);
   // The same origin rule as the save path: a blank key reuses the saved one
@@ -854,7 +866,7 @@ export async function adminWhisparrTest(
   request: Request,
   ctx: AuthContext,
 ): Promise<Response> {
-  const body = await readJson(request);
+  const body = await readAdminJson(request, ctx);
   const rawUrl = optionalText(body, "url", 2048);
   const suppliedKey = optionalText(body, "apiKey", 512);
   // The save path's rule: a key without a URL is a malformed draft.
@@ -970,7 +982,8 @@ export const routes: RouteDef[] = [
     method: "POST",
     segments: ["admin", "providers", ":provider", "test"],
     auth: "admin",
-    run: async (_ctx, request, p) => adminProviderTest(request, p.provider!),
+    run: async (ctx, request, p) =>
+      adminProviderTest(request, ctx, p.provider!),
   },
   {
     method: "POST",
