@@ -370,16 +370,21 @@ test("PROSE_DRAFT_SCHEMA holds no $ref or $defs anywhere", () => {
   assert.ok(!text.includes('"definitions"'), "no definitions");
 });
 
-test("PROSE_DRAFT_SCHEMA caps every list at 10 and alternatives at 1..10", () => {
-  const arrays = schemaNodes(PROSE_DRAFT_SCHEMA).filter(([, node]) =>
-    types(node).includes("array"),
-  );
-  assert.ok(
-    arrays.length >= 6,
-    "include, alternatives, exclude, names x2, skipped",
-  );
-  for (const [path, node] of arrays) {
-    assert.equal(node.maxItems, 10, path);
+// Anthropic's structured outputs answer HTTP 400 for maxItems, minimum and
+// maximum, so the schema leaves those limits to parseProseDraft (pinned above)
+// and the mapper. minItems 1 on alternatives is accepted and stays.
+test("PROSE_DRAFT_SCHEMA uses no keyword that Anthropic rejects", () => {
+  const nodes = schemaNodes(PROSE_DRAFT_SCHEMA);
+  for (const [path, node] of nodes) {
+    for (const key of [
+      "maxItems",
+      "minimum",
+      "maximum",
+      "minLength",
+      "maxLength",
+    ])
+      assert.ok(!(key in node), `${path}.${key}`);
+    if ("minItems" in node) assert.ok(node.minItems === 1, path);
   }
   const root = PROSE_DRAFT_SCHEMA.properties as Record<string, SchemaNode>;
   const term = objectBranch(root.include?.items);
@@ -387,7 +392,6 @@ test("PROSE_DRAFT_SCHEMA caps every list at 10 and alternatives at 1..10", () =>
     .alternatives;
   assert.ok(alternatives);
   assert.equal(alternatives.minItems, 1);
-  assert.equal(alternatives.maxItems, 10);
 });
 
 test("PROSE_DRAFT_SCHEMA enums match the draft vocabulary", () => {
@@ -433,12 +437,10 @@ test("PROSE_DRAFT_SCHEMA enums match the draft vocabulary", () => {
     "unclear",
   ]);
   const year = objectBranch(root.year);
-  for (const bound of ["from", "to"]) {
-    const node = prop(year, bound);
-    assert.equal(node.type, "integer", bound);
-    assert.equal(node.minimum, 1900, bound);
-    assert.equal(node.maximum, 2100, bound);
-  }
+  // The year range is the mapper's job (CATALOG_YEAR_MIN/MAX): Anthropic
+  // rejects minimum/maximum in the schema.
+  for (const bound of ["from", "to"])
+    assert.equal(prop(year, bound).type, "integer", bound);
   assert.equal(
     prop(objectBranch(root.date), "date").pattern,
     "^\\d{4}-\\d{2}-\\d{2}$",

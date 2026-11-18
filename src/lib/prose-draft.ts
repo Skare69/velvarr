@@ -83,13 +83,11 @@ function nullableSchema(schema: Schema): Schema {
   return { anyOf: [{ type: "null" }, schema] };
 }
 
+// No maxItems, minimum or maximum: Anthropic's structured outputs reject them
+// (HTTP 400). parseProseDraft enforces PROSE_LIST_CAP and the mapper the year
+// range, so the server still holds every limit. minItems 1 is accepted.
 function listSchema(items: Schema, minItems = 0): Schema {
-  return {
-    type: "array",
-    items,
-    ...(minItems > 0 ? { minItems } : {}),
-    maxItems: PROSE_LIST_CAP,
-  };
+  return { type: "array", items, ...(minItems > 0 ? { minItems } : {}) };
 }
 
 function citedSchema(value: Schema = stringSchema()): Schema {
@@ -98,11 +96,7 @@ function citedSchema(value: Schema = stringSchema()): Schema {
 
 const sourceSchema = (): Schema => objectSchema({ source: stringSchema() });
 
-const yearSchema = (): Schema => ({
-  type: "integer",
-  minimum: 1900,
-  maximum: 2100,
-});
+const yearSchema = (): Schema => ({ type: "integer" });
 
 /** The strict json_schema the chat request sends; its shape is ProseDraft. */
 export const PROSE_DRAFT_SCHEMA: Record<string, unknown> = objectSchema({
