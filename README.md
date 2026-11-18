@@ -72,7 +72,7 @@ docker compose up -d
 
 ## Contribute
 
-Build and change Velvarr from source. The setup and the checks are in [docs/development.md](docs/development.md).
+Build and change Velvarr from source. [CONTRIBUTING.md](CONTRIBUTING.md) tells you how to set up, run the checks, and open a pull request. Report a vulnerability as [SECURITY.md](SECURITY.md) tells you. Report an accessibility barrier as [ACCESSIBILITY.md](ACCESSIBILITY.md) tells you.
 
 ## License
 

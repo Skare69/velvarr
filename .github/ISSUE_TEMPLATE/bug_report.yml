@@ -1,0 +1,60 @@
+name: Bug report
+description: Tell us about a problem in Velvarr.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report security problems here. Use [private vulnerability reporting](https://github.com/Skare69/velvarr/security/advisories/new).
+        Remove tokens, keys, passwords, and personal data from logs and screenshots.
+  - type: input
+    id: version
+    attributes:
+      label: Velvarr version
+      description: The version shows at the foot of the sidebar.
+      placeholder: v0.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install type
+      options:
+        - Docker
+        - From source
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Write what you saw.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. See ...
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and device
+      placeholder: Firefox 140 on Windows 11
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The output of `docker compose logs velvarr` or the server console. Remove secrets first.
+      render: text
