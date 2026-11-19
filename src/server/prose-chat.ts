@@ -1,6 +1,7 @@
 // Natural-language search chat client: the admin-configured
 // OpenAI-compatible chat server turns member text into a ProseDraft. One
-// request, no retry. The member's text, the API key and the reply are never
+// request, retried once only when the server refuses the `temperature`
+// field. The member's text, the API key and the reply are never
 // logged, stored, or put into an error message.
 
 import {
@@ -36,8 +37,6 @@ export type ProseChatConfiguration = {
 const CHAT_TIMEOUT_MS = 30_000;
 const REPLY_LIMIT = 256 * 1024;
 const ERROR_BODY_LIMIT = 2 * 1024;
-/** The connection check never sends member data. */
-const CHECK_TEXT = "Vixen scenes from 2019 with Riley Reid, newest first";
 
 /** The effective configuration from the stored settings. Never throws: a
  * stored value that no longer validates (for example plain HTTP after
@@ -237,16 +236,13 @@ function draftFromReply(bytes: Uint8Array): ProseDraft {
   return parsed.draft;
 }
 
-/** One chat request for a configured server. `quoteServer` adds the server's
- * error text, with the stored key redacted, to an HTTP failure: only the
- * connection check sets it, because an error body can echo the member's
- * text. */
+/** One chat request for a configured server. An HTTP failure never quotes
+ * the server: an error body can echo the member's text. */
 async function postDraft(
-  config: ProseChatConfiguration,
+  config: Pick<ProseChatConfiguration, "url" | "model">,
   apiKey: string | undefined,
   text: string,
   today: string,
-  quoteServer: boolean,
 ): Promise<ProseDraft> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -259,9 +255,8 @@ async function postDraft(
     signal.aborted
       ? failed("The chat server did not answer within 30 seconds.")
       : failed("The chat server could not be reached.");
-  let res: Response;
-  try {
-    res = await fetch(`${config.url}/chat/completions`, {
+  const send = (withTemperature: boolean) =>
+    fetch(`${config.url}/chat/completions`, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -270,7 +265,7 @@ async function postDraft(
           { role: "system", content: proseSystemMessage(today) },
           { role: "user", content: text },
         ],
-        temperature: 0,
+        ...(withTemperature ? { temperature: 0 } : {}),
         max_tokens: 1000,
         response_format: {
           type: "json_schema",
@@ -284,17 +279,26 @@ async function postDraft(
       redirect: "error",
       signal,
     });
+  let res: Response;
+  try {
+    res = await send(true);
   } catch {
     throw unreachable();
   }
-  if (!res.ok) {
-    let detail = "";
-    if (quoteServer) detail = await serverMessage(res, apiKey);
-    else await res.body?.cancel().catch(() => undefined); // best-effort release
-    throw failed(
-      `The chat server answered HTTP ${res.status}${detail ? `: ${detail}` : "."}`,
-    );
+  // temperature 0 keeps the filters repeatable where a model allows it;
+  // newer models (Anthropic's among them) refuse the field with a 400 that
+  // names it, and then the same request goes once more without it.
+  let detail = "";
+  if (!res.ok) detail = await serverMessage(res, apiKey);
+  if (res.status === 400 && /temperature/i.test(detail)) {
+    try {
+      res = await send(false);
+    } catch {
+      throw unreachable();
+    }
+    detail = res.ok ? "" : await serverMessage(res, apiKey);
   }
+  if (!res.ok) throw failed(`The chat server answered HTTP ${res.status}.`);
   let body: { bytes: Uint8Array; complete: boolean };
   try {
     body = await readUpTo(res, REPLY_LIMIT);
@@ -327,32 +331,121 @@ export async function requestProseDraft(
       "Natural-language search is off or not set up.",
     );
   }
-  return postDraft(config, providers?.proseChatApiKey, text, today, false);
+  return postDraft(config, providers?.proseChatApiKey, text, today);
 }
 
-/** The admin connection check with the stored values and a fixed sample
- * text: connected only when the server returns a valid draft. */
+type ProseCheckResult =
+  { connected: true } | { connected: false; error: string };
+
+/** A connection check that costs nothing: `GET {url}/models` proves the
+ * server answers and accepts the key, and the model must be in its list. No
+ * chat request is sent, so no tokens are billed. Its ceiling: it cannot
+ * prove the model returns valid filters; a member search reports that. */
+async function checkModelListed(
+  url: string,
+  model: string,
+  apiKey: string | undefined,
+): Promise<ProseCheckResult> {
+  const { models, error } = await listProseModels(url, apiKey);
+  if (error !== undefined) return { connected: false, error };
+  if (models.includes(model)) return { connected: true };
+  return {
+    connected: false,
+    error:
+      models.length === 0
+        ? "The server lists no models, so the model cannot be confirmed."
+        : `The server does not list the model "${model}".`,
+  };
+}
+
+/** The admin connection check with the stored values (free, see above). */
 export async function checkProseChat(
   providers?: Providers,
-): Promise<{ connected: true } | { connected: false; error: string }> {
+): Promise<ProseCheckResult> {
   const config = proseChatConfiguration(providers);
   if (!config.configured)
     return {
       connected: false,
       error: "Natural-language search is off or not set up.",
     };
-  try {
-    await postDraft(
-      config,
-      providers?.proseChatApiKey,
-      CHECK_TEXT,
-      serverToday(),
-      true,
-    );
-    return { connected: true };
-  } catch (err) {
-    if (err instanceof AppError)
-      return { connected: false, error: err.message };
-    throw err;
+  return checkModelListed(config.url, config.model, providers?.proseChatApiKey);
+}
+
+/** The editor's check with the typed values: the same free check as the
+ * saved one, and nothing is stored. */
+export async function testProseChat(draft: {
+  url: string;
+  model: string;
+  apiKey: string | undefined;
+}): Promise<ProseCheckResult> {
+  return checkModelListed(draft.url, draft.model, draft.apiKey);
+}
+
+const MODELS_TIMEOUT_MS = 15_000;
+const MODELS_LIMIT = 1024 * 1024;
+const MODELS_MAX = 500;
+
+/** The server's model ids from `GET {url}/models`, for the editor's
+ * suggestions. OpenAI, Ollama and Anthropic all answer `{ data: [{ id }] }`;
+ * Anthropic reads its key from `x-api-key`, so the same key goes there too
+ * (one key, one host). Any failure is a plain message beside an empty list:
+ * the model field stays free text. */
+export async function listProseModels(
+  url: string,
+  apiKey: string | undefined,
+): Promise<{ models: string[]; error?: string }> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+    headers["x-api-key"] = apiKey;
+    headers["anthropic-version"] = "2023-06-01";
   }
+  const signal = AbortSignal.timeout(MODELS_TIMEOUT_MS);
+  const unreachable = () => ({
+    models: [],
+    error: signal.aborted
+      ? "The server did not answer within 15 seconds."
+      : "The server could not be reached.",
+  });
+  let res: Response;
+  try {
+    res = await fetch(`${url}/models`, { headers, redirect: "error", signal });
+  } catch {
+    return unreachable();
+  }
+  if (!res.ok) {
+    const detail = await serverMessage(res, apiKey);
+    return {
+      models: [],
+      error: `The server answered HTTP ${res.status}${detail ? `: ${detail}` : "."}`,
+    };
+  }
+  let body: { bytes: Uint8Array; complete: boolean };
+  try {
+    body = await readUpTo(res, MODELS_LIMIT);
+  } catch {
+    return unreachable();
+  }
+  if (!body.complete)
+    return { models: [], error: "The model list is larger than 1 MiB." };
+  let data: unknown;
+  try {
+    data = (
+      JSON.parse(new TextDecoder().decode(body.bytes)) as {
+        data?: unknown;
+      } | null
+    )?.data;
+  } catch {
+    data = undefined;
+  }
+  if (!Array.isArray(data))
+    return { models: [], error: "The server's model list has no data array." };
+  const ids = new Set<string>();
+  for (const row of data) {
+    const id = (row as { id?: unknown } | null)?.id;
+    if (isProseChatModel(id) && (!apiKey || !id.includes(apiKey))) ids.add(id);
+  }
+  return {
+    models: [...ids].sort((a, b) => a.localeCompare(b)).slice(0, MODELS_MAX),
+  };
 }

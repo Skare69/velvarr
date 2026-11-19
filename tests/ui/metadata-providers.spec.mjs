@@ -37,6 +37,14 @@ async function showMetadata(page) {
     page.getByRole("heading", { name: "TPDB", exact: true }),
   ).toBeVisible();
 }
+// Contract move: AI-assisted matching and Natural-language search left
+// Metadata providers for their own AI tab (operator request, 2026-11-19).
+async function showAi(page) {
+  await page.getByRole("button", { name: "AI", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "AI-assisted matching", exact: true }),
+  ).toBeVisible();
+}
 async function openMetadata(h, mode = {}) {
   await h.fresh(mode);
   await showMetadata(h.page);
@@ -273,6 +281,7 @@ scenario(
   async (h) => {
     const { page, edit, save, badge, control } = h;
     await openMetadata(h);
+    await showAi(page);
     const ai = aiCard(page);
     const before = (await control({})).config;
     await edit(ai).click();
@@ -311,6 +320,7 @@ scenario(
   async (h) => {
     const { page, edit, save, cancel, check, badge, control } = h;
     await openMetadata(h, { environmentProviders: { typesafe: true } });
+    await showAi(page);
     const ai = aiCard(page);
     await edit(ai).click();
     await ai.getByLabel(/^TypeSafe API key/).fill("synthetic-typesafe-key");
@@ -357,6 +367,8 @@ scenario(
       configured: true,
       source: "environment",
     });
+    // Contract move: Check lives in the open editor.
+    await edit(ai).click();
     await check(ai).click();
     await expect(badge(ai)).toHaveText("Connected");
   },
@@ -373,6 +385,7 @@ scenario(
         model: "environment-model",
       },
     });
+    await showAi(page);
     const ai = aiCard(page);
     const providers = (await control({})).config.providers;
     await edit(ai).click();
@@ -409,9 +422,10 @@ scenario(
         exact: true,
       }),
     ).toBeVisible();
+    // Contract move: Check lives in the open editor.
+    await edit(ai).click();
     await check(ai).click();
     await expect(badge(ai)).toHaveText("Connected");
-    await edit(ai).click();
     await expect(
       ai.getByRole("button", { name: "Use environment settings", exact: true }),
     ).toHaveCount(0);
@@ -423,10 +437,13 @@ scenario(
   async (h) => {
     const { page, edit, save, cancel, check, badge, control } = h;
     await openMetadata(h);
+    await showAi(page);
     const ai = aiCard(page);
+    // Contract move: Check lives in the open editor (a closed card offers
+    // it only as the retry after a failed check).
+    await edit(ai).click();
     await check(ai).click();
     await expect(badge(ai)).toHaveText("Connected");
-    await edit(ai).click();
     await selectAi(ai, "ollama");
     await ai.getByLabel("Ollama URL", { exact: true }).fill("");
     await expect(save(ai)).toBeDisabled();
@@ -472,6 +489,12 @@ scenario(
     const { page, edit, cancel } = h;
     await openMetadata(h);
     for (const row of rows) await edit(card(page, row.id)).click();
+    // Contract move: the AI cards sit on their own tab; each tab shows only
+    // its own headings.
+    expect(
+      await page.getByRole("heading", { level: 2 }).allTextContents(),
+    ).toEqual(["TPDB", "StashDB"]);
+    await showAi(page);
     const prose = proseCard(page);
     await edit(prose).click();
     const ai = aiCard(page);
@@ -481,12 +504,7 @@ scenario(
     expect(await page.locator("button:not([type])").count()).toBe(0);
     expect(
       await page.getByRole("heading", { level: 2 }).allTextContents(),
-    ).toEqual([
-      "TPDB",
-      "StashDB",
-      "AI-assisted matching",
-      "Natural-language search",
-    ]);
+    ).toEqual(["AI-assisted matching", "Natural-language search"]);
     const ids = await page
       .locator("[id]")
       .evaluateAll((nodes) => nodes.map((node) => node.id));
@@ -497,6 +515,7 @@ scenario(
     await expect(edit(prose)).toBeFocused();
     await cancel(ai).click();
     await expect(edit(ai)).toBeFocused();
+    await showMetadata(page);
     for (const row of rows) {
       const own = card(page, row.id);
       await cancel(own).click();
@@ -523,6 +542,10 @@ scenario(
     ).toBeVisible();
     await expect(check(stash)).toBeDisabled();
     await control({ judgment403: true });
+    // Contract move: the AI card is on the AI tab, and its Check lives in
+    // the open editor (the closed card offers it only as a retry).
+    await showAi(page);
+    await edit(ai).click();
     await check(ai).click();
     await expect(
       ai.getByText(
@@ -549,7 +572,9 @@ scenario(
         const indicator = node.querySelector(
           ".settings-service-status .connection-state",
         );
-        const actions = node.querySelector(".settings-card-actions");
+        // Contract move: a closed card's actions sit at the top right of
+        // its heading (.settings-service-action), not in a foot row.
+        const actions = node.querySelector(".settings-service-action");
         return {
           titleRow:
             indicator.parentElement.parentElement.classList.contains(
@@ -567,12 +592,18 @@ scenario(
       });
     const baseline = await metrics(jf);
     expect(await metrics(w)).toEqual(baseline);
-    await showMetadata(page);
+    await showAi(page);
     const ai = aiCard(page);
+    // Its check now runs from the open editor; Cancel keeps the result.
+    await edit(ai).click();
     await check(ai).click();
     await expect(badge(ai)).toHaveText("Connected");
+    await h.cancel(ai).click();
     await expect(edit(ai)).toBeEnabled();
-    for (const own of [card(page, "tpdb"), card(page, "stashdb"), ai])
+    await expect(badge(ai)).toHaveText("Connected");
+    for (const own of [ai]) expect(await metrics(own)).toEqual(baseline);
+    await showMetadata(page);
+    for (const own of [card(page, "tpdb"), card(page, "stashdb")])
       expect(await metrics(own)).toEqual(baseline);
   },
 );
@@ -597,6 +628,9 @@ scenario(
     await showMetadata(page);
     await edit(provider).click();
     await provider.getByLabel("TPDB API token").fill("synthetic-metadata-save");
+    // Contract move: the AI card is on its own tab; drafts on hidden tabs
+    // stay mounted.
+    await showAi(page);
     const ai = aiCard(page);
     await edit(ai).click();
     await selectAi(ai, "ollama");
@@ -606,6 +640,7 @@ scenario(
     await ai.getByLabel("Decision model").fill("draft-model");
 
     await control({ holdPatch: true });
+    await showMetadata(page);
     await save(provider).click();
     await page
       .getByRole("button", { name: "Connections", exact: true })
@@ -623,6 +658,7 @@ scenario(
     await expect(
       provider.getByText("Credential saved.", { exact: true }),
     ).toBeVisible();
+    await showAi(page);
     await expect(aiOption(ai, "ollama")).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -639,7 +675,7 @@ scenario(
     );
     await cancel(jf).click();
     await expect(edit(jf)).toBeFocused();
-    await showMetadata(page);
+    await showAi(page);
     await cancel(ai).click();
     await expect(edit(ai)).toBeFocused();
     const state = await control({});
@@ -655,6 +691,7 @@ scenario(
   async (h) => {
     const { page, edit, save, control } = h;
     await openMetadata(h);
+    await showAi(page);
     const ai = aiCard(page);
     await edit(ai).click();
     await ai.getByLabel(/^TypeSafe API key/).fill("synthetic-first-key");
@@ -677,6 +714,7 @@ scenario(
   async (h) => {
     const { page, edit, save, control } = h;
     await openMetadata(h);
+    await showAi(page);
     const ai = aiCard(page);
     await edit(ai).click();
     await save(ai).click();
@@ -898,10 +936,11 @@ for (const row of rows) {
 
 const proseCard = (page) =>
   page.locator('section[aria-labelledby="prose-heading"]');
-const proseSwitch = (own, enabled) =>
-  own
-    .getByRole("group", { name: "Natural-language search", exact: true })
-    .getByRole("button", { name: enabled ? "On" : "Off", exact: true });
+// Contract move: the Off/On segments became one switch named by the
+// "Natural-language search" label; a click toggles it. `enabled` names the
+// state the caller wants, so the call sites read as before.
+const proseSwitch = (own, _enabled) =>
+  own.getByRole("switch", { name: "Natural-language search", exact: true });
 async function openConfiguredProse(h) {
   await openMetadata(h);
   const state = await h.control({});
@@ -914,7 +953,7 @@ async function openConfiguredProse(h) {
   };
   await h.control({ config: state.config });
   await h.page.reload();
-  await showMetadata(h.page);
+  await showAi(h.page);
   const own = proseCard(h.page);
   await expect(h.edit(own)).toBeEnabled();
   return own;
@@ -926,10 +965,14 @@ scenario(
     await openMetadata(h);
     const own = proseCard(page),
       peer = card(page, "tpdb");
-    await expect(own.getByText("Off", { exact: true })).toBeVisible();
-    await expect(check(own)).toBeDisabled();
+    await expect(own.getByText("Off", { exact: true })).toBeHidden();
     await edit(peer).click();
     await peer.locator('input[type="password"]').fill("synthetic-peer-draft");
+    await showAi(page);
+    await expect(own.getByText("Off", { exact: true })).toBeVisible();
+    // Contract move: a closed card offers Check connection only as the
+    // retry after a failed saved check.
+    await expect(check(own)).toHaveCount(0);
     await edit(own).click();
     await expect(proseSwitch(own, false)).toBeFocused();
     await proseSwitch(own, true).click();
@@ -943,7 +986,9 @@ scenario(
       .getByLabel("API key (optional)", { exact: true })
       .fill("synthetic-chat-key");
     await expect(badge(own)).toHaveText("Unsaved changes");
-    await expect(check(own)).toBeDisabled();
+    // Contract move: the editor's Check tests the typed values
+    // (/api/admin/prose/test), so unsaved values can be checked.
+    await expect(check(own)).toBeEnabled();
     await save(own).click();
     await expect(edit(own)).toBeEnabled();
     await expect(badge(own)).toHaveText("Connected");
@@ -1072,10 +1117,12 @@ for (const proseFail of [false, true])
     async (h) => {
       const { page, edit, check, badge, control } = h;
       const own = await openConfiguredProse(h);
+      // Contract move: Check connection lives in the open editor and tests
+      // the typed values; the closed card offers it only as a retry.
+      await edit(own).click();
       await check(own).click();
       await expect(badge(own)).toHaveText("Connected");
       const before = (await control({})).config;
-      await edit(own).click();
       await own
         .getByLabel("API key (optional)", { exact: true })
         .fill("synthetic-unsaved-key");
@@ -1104,11 +1151,13 @@ for (const proseFail of [false, true])
       await expect(clear).toBeDisabled();
       await expect(badge(own)).toHaveText("Unsaved changes");
       await expect.poll(async () => patches(await control({})).length).toBe(1);
+      // Contract move: the editor's check went to /api/admin/prose/test
+      // (typed values); the saved check runs only after the clear lands.
       expect(
         (await control({})).requests.filter(
           (r) => r.path === "/api/admin/prose/check",
         ),
-      ).toHaveLength(1);
+      ).toHaveLength(0);
       await control({ holdPatch: false });
       await expect(edit(own)).toBeEnabled();
       await expect(badge(own)).toHaveText(
@@ -1126,8 +1175,8 @@ for (const proseFail of [false, true])
       const probes = state.requests.filter(
         (r) => r.path === "/api/admin/prose/check",
       );
-      expect(probes).toHaveLength(2);
-      expect(probes[1].started).toBeGreaterThanOrEqual(
+      expect(probes).toHaveLength(1);
+      expect(probes[0].started).toBeGreaterThanOrEqual(
         patches(state)[0].finished,
       );
       await expect(
@@ -1142,9 +1191,9 @@ scenario(
   async (h) => {
     const { page, edit, check, badge, control } = h;
     const own = await openConfiguredProse(h);
+    await edit(own).click();
     await check(own).click();
     await expect(badge(own)).toHaveText("Connected");
-    await edit(own).click();
     await control({ patchFail: true });
     await own
       .getByRole("button", { name: "Clear stored credential", exact: true })
@@ -1160,9 +1209,11 @@ scenario(
     ).toBeEnabled();
     const state = await control({});
     expect(state.config.proseChat.keyStored).toBe(true);
+    // Contract move: the earlier check was the editor's draft check
+    // (/api/admin/prose/test); the failed clear starts no saved check.
     expect(
       state.requests.filter((r) => r.path === "/api/admin/prose/check"),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     await expect(
       own.getByText("Stored natural-language search credential cleared.", {
         exact: true,
@@ -1179,7 +1230,7 @@ scenario(
     await jf
       .getByLabel("Jellyfin external URL")
       .fill("https://queued.example.test");
-    await showMetadata(page);
+    await showAi(page);
     const own = proseCard(page);
     await edit(own).click();
     await proseSwitch(own, true).click();
@@ -1192,7 +1243,7 @@ scenario(
       .click();
     await control({ holdPatch: true });
     await save(jf).click();
-    await showMetadata(page);
+    await showAi(page);
     await expect(save(own)).toBeDisabled();
     await expect(own.getByLabel("Model", { exact: true })).toHaveValue(
       "draft-chat",
@@ -1219,8 +1270,9 @@ scenario(
   async ({ page, control, edit }) => {
     await control({ reset: true, configFail: true });
     await page.goto("/?view=settings#prose-heading");
+    // Contract move: the prose card lives on the AI tab.
     await expect(
-      page.getByRole("button", { name: "Metadata providers", exact: true }),
+      page.getByRole("button", { name: "AI", exact: true }),
     ).toHaveAttribute("aria-pressed", "true");
     const heading = page.getByRole("heading", {
       name: "Natural-language search",
@@ -1233,7 +1285,7 @@ scenario(
     await control({ configFail: false });
     await page
       .getByRole("alert")
-      .filter({ hasText: "Provider configuration read failed" })
+      .filter({ hasText: "AI configuration read failed" })
       .getByRole("button", { name: "Retry", exact: true })
       .click();
     await expect(edit(own)).toBeEnabled();
@@ -1245,6 +1297,7 @@ scenario(
     const { page, check, edit, control } = h;
     const own = await openConfiguredProse(h);
     await control({ prose403: true });
+    await edit(own).click();
     await check(own).click();
     await expect(
       own.getByText(
@@ -1253,10 +1306,13 @@ scenario(
       ),
     ).toBeVisible();
     await expect(check(own)).toBeDisabled();
-    await expect(edit(own)).toBeDisabled();
+    // The open editor's Save is the restricted control now (no Edit while
+    // the editor is open).
+    await expect(h.save(own)).toBeDisabled();
     await expect(
       page.getByRole("heading", { name: "Settings", exact: true }),
     ).toBeVisible();
+    await showMetadata(page);
     await expect(edit(card(page, "tpdb"))).toBeEnabled();
   },
 );

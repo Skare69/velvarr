@@ -25,17 +25,21 @@ export function connectionState(input: {
   return check.verified ? "connected" : "failed";
 }
 
-/** Which Settings tab a deep link's hash targets. Discover's key links point
- * at provider card headings (`provider-heading-tpdb` /
- * `provider-heading-stashdb`) and Browse's describe-search link at
- * `prose-heading`, all on the metadata tab; any other hash (the Jellyfin
- * heading, or none) stays on the default Connections tab. */
-export function settingsSectionForHash(
-  hash: string,
-): "connections" | "metadata" {
-  return hash.startsWith("#provider-heading-") || hash === "#prose-heading"
-    ? "metadata"
-    : "connections";
+export const SETTINGS_SECTIONS = ["connections", "metadata", "ai"] as const;
+export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
+
+/** Which Settings tab a hash targets. A tab's own anchor (`#connections`,
+ * `#metadata`, `#ai`) names it, so a reload stays on the open tab. Card
+ * deep links name a card: Discover's key links point at provider headings
+ * (`provider-heading-tpdb` / `provider-heading-stashdb`) on the metadata tab;
+ * Browse's describe-search link points at `prose-heading` on the AI tab,
+ * beside `judgment-heading`. Any other hash stays on Connections. */
+export function settingsSectionForHash(hash: string): SettingsSection {
+  const tab = SETTINGS_SECTIONS.find((s) => hash === "#" + s);
+  if (tab) return tab;
+  if (hash.startsWith("#provider-heading-")) return "metadata";
+  if (hash === "#prose-heading" || hash === "#judgment-heading") return "ai";
+  return "connections";
 }
 
 export const CREDENTIAL_SAVED_NOTICE = "Credential saved.";

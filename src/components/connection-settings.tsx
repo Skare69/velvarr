@@ -288,6 +288,24 @@ function ConnectionCard({
             )}
           </>
         }
+        action={
+          !editing && (
+            <div className="settings-service-buttons">
+              <button
+                type="button"
+                className="btn"
+                ref={editRef}
+                disabled={busy || !info || configurationUnavailable}
+                onClick={begin}
+              >
+                <Icon name="edit" />
+                Edit
+              </button>
+              {/* Only after a failed saved check: the retry. */}
+              {checkButton}
+            </div>
+          )
+        }
       />
       {current?.url && (
         <p className="mt-3 break-all text-sm text-muted">{current.url}</p>
@@ -307,21 +325,6 @@ function ConnectionCard({
             title={name + " connection check failed"}
             message={failure}
           />
-        </div>
-      )}
-      {!editing && (
-        <div className="settings-service-buttons settings-card-actions">
-          <button
-            type="button"
-            className="btn"
-            ref={editRef}
-            disabled={busy || !info || configurationUnavailable}
-            onClick={begin}
-          >
-            <Icon name="edit" />
-            Edit
-          </button>
-          {checkButton}
         </div>
       )}
       {editing && info && (
@@ -551,7 +554,7 @@ function WhisparrFields({
               Root folder
             </label>
             {roots.length ? (
-              <div className="settings-select mt-2">
+              <div className="mt-2">
                 <select
                   id={id + "-root"}
                   {...fieldErrorAttributes(id, "rootFolderPath", errors)}
@@ -595,7 +598,7 @@ function WhisparrFields({
               Quality profile
             </label>
             {profiles.length ? (
-              <div className="settings-select mt-2">
+              <div className="mt-2">
                 <select
                   id={id + "-profile"}
                   {...fieldErrorAttributes(id, "qualityProfileId", errors)}

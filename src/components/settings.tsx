@@ -10,22 +10,30 @@ import { useCallback, useEffect, useState } from "react";
 import { ForbiddenPanel } from "./shared.tsx";
 import { ConnectionsSettings } from "./connection-settings.tsx";
 import { MetadataSettings } from "./metadata-settings.tsx";
-import { settingsSectionForHash } from "../lib/provider-settings.ts";
+import { AiSettings } from "./ai-settings.tsx";
+import {
+  SETTINGS_SECTIONS,
+  settingsSectionForHash,
+  type SettingsSection,
+} from "../lib/provider-settings.ts";
 import { useSettingsOperations } from "./settings-service.tsx";
 
 /* ---------- Settings: integrations, Whisparr, providers ---------- */
 
 export function SettingsView() {
   const [forbidden, setForbidden] = useState(false);
-  const [section, setSection] = useState("connections");
-  // A settings deep link names its card, not its tab: Discover's key links
-  // target provider headings that live on the metadata tab, whose cards
-  // mount only after their config load. The tab flips after mount because
-  // SSR renders no hash, and the reveal loop waits for the anchor to exist.
+  const [section, setSection] = useState<SettingsSection>("connections");
+  // The hash names the tab (`#ai`) or a card on it. A card deep link (e.g.
+  // Discover's key links to provider headings) also scrolls to its card,
+  // whose tab mounts the card only after its config load. The tab flips
+  // after mount because SSR renders no hash, and the reveal loop waits for
+  // the anchor to exist.
   useEffect(() => {
     const hash = window.location.hash;
     if (hash === "") return;
     setSection(settingsSectionForHash(hash));
+    // A tab anchor names no card: nothing to scroll to.
+    if (SETTINGS_SECTIONS.some((s) => hash === "#" + s)) return;
     let timer: number | undefined;
     let tries = 0;
     let pins = -1;
@@ -64,15 +72,23 @@ export function SettingsView() {
         </div>
       </div>
       <nav className="settings-tabs" aria-label="Settings sections">
-        {[
-          ["connections", "Connections"],
-          ["metadata", "Metadata providers"],
-        ].map(([id, label]) => (
+        {(
+          [
+            ["connections", "Connections"],
+            ["metadata", "Metadata providers"],
+            ["ai", "AI"],
+          ] as const
+        ).map(([id, label]) => (
           <button
             key={id}
             type="button"
             aria-pressed={section === id}
-            onClick={() => setSection(id!)}
+            onClick={() => {
+              setSection(id);
+              // Replace, not push: a reload keeps the tab, and Back still
+              // leaves Settings instead of walking through tab clicks.
+              history.replaceState(history.state, "", "#" + id);
+            }}
           >
             {label}
           </button>
@@ -86,6 +102,11 @@ export function SettingsView() {
       <div hidden={section !== "metadata"}>
         <div className="settings-content">
           <MetadataSettings onForbidden={forbid} {...operations} />
+        </div>
+      </div>
+      <div hidden={section !== "ai"}>
+        <div className="settings-content">
+          <AiSettings onForbidden={forbid} {...operations} />
         </div>
       </div>
     </section>

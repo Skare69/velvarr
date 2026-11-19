@@ -36,16 +36,20 @@ export function ConnectionState({ state }: { state: ConnectionStateLabel }) {
   );
 }
 
+/** A service card's heading. `action` is the closed card's Edit button: it
+ * sits at the top right, and the open editor holds its own action row. */
 export function SettingsServiceHeading({
   id,
   title,
   description,
   status,
+  action,
 }: {
   id: string;
   title: string;
   description?: string;
   status?: ReactNode;
+  action?: ReactNode;
 }) {
   return (
     <div className="settings-service-summary">
@@ -62,6 +66,7 @@ export function SettingsServiceHeading({
         </div>
         {description && <p>{description}</p>}
       </div>
+      {action && <div className="settings-service-action">{action}</div>}
     </div>
   );
 }

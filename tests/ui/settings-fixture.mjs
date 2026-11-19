@@ -417,6 +417,30 @@ const server = http.createServer(async (req, res) => {
           : {}),
       });
     }
+    // The editor's draft check (typed values, nothing stored) and the model
+    // list behind its suggestions; same failure modes as the saved check.
+    if (path === "/api/admin/prose/test") {
+      if (probeHeld(path)) await hold(heldProbe);
+      if (requestGeneration !== generation)
+        return error(res, 409, "Obsolete test request.");
+      if (mode.prose403) return error(res, 403, "Administrators only.");
+      return json(res, 200, {
+        connected: !mode.proseFail,
+        ...(mode.proseFail
+          ? { error: "The synthetic chat server is unavailable." }
+          : {}),
+      });
+    }
+    if (path === "/api/admin/prose/models") {
+      if (mode.prose403) return error(res, 403, "Administrators only.");
+      return json(
+        res,
+        200,
+        mode.proseFail
+          ? { models: [], error: "The synthetic chat server is unavailable." }
+          : { models: ["synthetic-model"] },
+      );
+    }
     if (path === "/api/admin/judgment/check") {
       if (probeHeld(path)) await hold(heldProbe);
       if (requestGeneration !== generation)

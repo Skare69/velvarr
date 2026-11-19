@@ -190,12 +190,18 @@ test("clear is blocked while a request is pending", () => {
   assert.equal(canClearCredential({ source: "stored", pending: true }), false);
 });
 
-test("provider deep links name the metadata tab; every other hash keeps Connections", () => {
+test("settings deep links name the tab of their card; every other hash keeps Connections", () => {
+  // A tab's own anchor keeps that tab across a reload.
+  assert.equal(settingsSectionForHash("#metadata"), "metadata");
+  assert.equal(settingsSectionForHash("#ai"), "ai");
+  assert.equal(settingsSectionForHash("#connections"), "connections");
   // Discover's key links target exactly these two headings.
   assert.equal(settingsSectionForHash("#provider-heading-tpdb"), "metadata");
   assert.equal(settingsSectionForHash("#provider-heading-stashdb"), "metadata");
-  // Browse's describe-search setup link targets the prose card there too.
-  assert.equal(settingsSectionForHash("#prose-heading"), "metadata");
+  // Both AI cards live on the AI tab; Browse's describe-search setup link
+  // targets the prose card.
+  assert.equal(settingsSectionForHash("#prose-heading"), "ai");
+  assert.equal(settingsSectionForHash("#judgment-heading"), "ai");
   // The Jellyfin heading lives on the default tab, as does no hash at all.
   assert.equal(
     settingsSectionForHash("#jellyfin-settings-title"),

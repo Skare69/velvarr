@@ -29,7 +29,7 @@ scenario(
         .getByRole("navigation", { name: "Settings sections" })
         .getByRole("button")
         .allTextContents(),
-    ).toEqual(["Connections", "Metadata providers"]);
+    ).toEqual(["Connections", "Metadata providers", "AI"]);
     await expect(edit(jf)).toBeEnabled();
     await expect(edit(w)).toBeEnabled();
     assert.equal(
@@ -60,14 +60,18 @@ scenario(
       await provider.locator(".settings-service-summary").count(),
       1,
     );
+    // Contract move: the two AI cards left Metadata providers for their own
+    // AI tab (operator request, 2026-11-19).
     expect(
       await page.getByRole("heading", { level: 2 }).allTextContents(),
-    ).toEqual([
-      "TPDB",
-      "StashDB",
-      "AI-assisted matching",
-      "Natural-language search",
-    ]);
+    ).toEqual(["TPDB", "StashDB"]);
+    await page.getByRole("button", { name: "AI", exact: true }).click();
+    expect(
+      await page.getByRole("heading", { level: 2 }).allTextContents(),
+    ).toEqual(["AI-assisted matching", "Natural-language search"]);
+    await page
+      .getByRole("button", { name: "Metadata providers", exact: true })
+      .click();
     await expect(badge(provider)).toHaveText("Connected");
   },
 );
@@ -117,11 +121,14 @@ scenario(
       1,
       "unrelated card must not remount after Save",
     );
+    // Contract move: Connections, Metadata providers and AI each read the
+    // configuration once on load (the AI tab has its own component now), so
+    // three GETs before the save and none after it.
     assert.equal(
       data.requests.filter(
         (r) => r.path === "/api/admin/integrations" && r.method === "GET",
       ).length,
-      2,
+      3,
       "Save uses its response, without a failure-prone config reload",
     );
     assert.deepEqual(
@@ -612,20 +619,19 @@ scenario(
     await edit(w).click();
     for (const label of ["Root folder", "Quality profile"]) {
       const select = w.getByLabel(label, { exact: true });
+      // Contract move: every select.input draws the house chevron as a
+      // background image (no .settings-select wrapper or ::after any more),
+      // with the same 40px end padding.
       const metrics = await select.evaluate((node) => ({
         appearance: getComputedStyle(node).appearance,
         padding: getComputedStyle(node).paddingRight,
-        wrapper: node.parentElement.classList.contains("settings-select"),
-        arrowInset: getComputedStyle(node.parentElement, "::after").right,
-        pointerEvents: getComputedStyle(node.parentElement, "::after")
-          .pointerEvents,
+        chevron:
+          getComputedStyle(node).backgroundImage.startsWith("linear-gradient"),
       }));
       assert.deepEqual(metrics, {
         appearance: "none",
         padding: "40px",
-        wrapper: true,
-        arrowInset: "14px",
-        pointerEvents: "none",
+        chevron: true,
       });
     }
     const profile = w.getByLabel("Quality profile", { exact: true });
@@ -712,9 +718,8 @@ scenario(
     };
     await control({ config: data.config });
     await page.reload();
-    await page
-      .getByRole("button", { name: "Metadata providers", exact: true })
-      .click();
+    // Contract move: the AI cards live on their own AI tab.
+    await page.getByRole("button", { name: "AI", exact: true }).click();
     const ai = page.locator('section[aria-labelledby="judgment-heading"]');
     await edit(ai).click();
     await expect(aiOption(ai, "none")).toBeFocused();
@@ -749,9 +754,7 @@ scenario(
     check,
   }) => {
     await fresh();
-    await page
-      .getByRole("button", { name: "Metadata providers", exact: true })
-      .click();
+    await page.getByRole("button", { name: "AI", exact: true }).click();
     const ai = page.locator('section[aria-labelledby="judgment-heading"]');
     await edit(ai).click();
     await selectAi(ai, "ollama");

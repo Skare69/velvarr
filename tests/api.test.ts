@@ -12539,7 +12539,6 @@ const PROSE_SUMMER_DRAFT = {
 };
 const PROSE_KEY = "sk-test-key-123";
 const PROSE_MODEL = "test-model";
-const PROSE_CHECK_TEXT = "Vixen scenes from 2019 with Riley Reid, newest first";
 
 type ProseChatHit = {
   method: string;
@@ -12557,7 +12556,8 @@ type ProseChatFixture = {
     | "redirect"
     | "hold"
     | "echo_error"
-    | "echo_draft";
+    | "echo_draft"
+    | "no_temperature";
   hits: ProseChatHit[];
   /** Resolved when a request arrives; armed by the test that waits. */
   arrived?: PromiseWithResolvers<void>;
@@ -12604,6 +12604,28 @@ async function startProseChat(): Promise<ProseChatFixture> {
         error: {
           message: `Incorrect API key provided: ${auth}. It starts with ${key.slice(0, 9)}…`,
         },
+      });
+      return;
+    }
+    // A model that refuses `temperature` names it in a 400, like Anthropic.
+    if (state.reply === "no_temperature" && "temperature" in body) {
+      json(res, 400, {
+        error: { message: "`temperature` is deprecated for this model." },
+      });
+      return;
+    }
+    // The model list route (the free connection check reads it too): the
+    // configured model, ids with a duplicate, and one that no model name
+    // may carry (a control character), unsorted.
+    if ((req.url ?? "").endsWith("/models")) {
+      json(res, 200, {
+        data: [
+          { id: "zeta-model" },
+          { id: PROSE_MODEL },
+          { id: "alpha-model" },
+          { id: "zeta-model" },
+          { id: "bad\u0001model" },
+        ],
       });
       return;
     }
@@ -13018,7 +13040,10 @@ test("prose search: a URL move to another origin without the key is refused and 
   assert.equal(other.hits.length, otherHits, "the stored key never moved");
 });
 
-test("prose search: the admin connection check answers connected for a valid draft reply", async () => {
+// Contract move: the connection check used to send a real chat request with
+// a sample sentence, which a hosted server bills. It now reads the free
+// model list: connected means the key is accepted and the model is listed.
+test("prose search: the admin connection check is free: it reads the model list and sends no chat request", async () => {
   const { admin, chat } = await proseSetup();
   await proseOn(admin, chat);
   await setNograntsProseGrant(admin, true);
@@ -13035,15 +13060,135 @@ test("prose search: the admin connection check answers connected for a valid dra
   });
   assert.equal(check.status, 200, await check.clone().text());
   assert.deepEqual(await check.json(), { connected: true });
-  assert.equal(chat.hits.length, hits + 1);
-  const messages = (chat.hits.at(-1)?.body.messages ?? []) as {
-    role: string;
-    content: string;
-  }[];
-  assert.deepEqual(messages.at(-1), {
-    role: "user",
-    content: PROSE_CHECK_TEXT,
+  const sent = chat.hits.slice(hits);
+  assert.deepEqual(
+    sent.map((h) => `${h.method} ${h.path.replace(/^.*(\/[a-z]+)$/, "$1")}`),
+    ["GET /models"],
+  );
+  assert.equal(sent[0]?.headers.authorization, `Bearer ${PROSE_KEY}`);
+});
+
+test("prose search: a model the server does not list fails the check", async () => {
+  const { admin, chat } = await proseSetup();
+  await proseOn(admin, chat);
+  const check = await call("POST", "/api/admin/prose/test", {
+    cookie: admin,
+    body: { url: chat.url, model: "missing-model" },
   });
+  assert.equal(check.status, 200, await check.clone().text());
+  assert.deepEqual(await check.json(), {
+    connected: false,
+    error: 'The server does not list the model "missing-model".',
+  });
+});
+
+test("prose search: a model that refuses temperature gets the same request once more without it", async () => {
+  const { admin, chat } = await proseSetup();
+  await proseOn(admin, chat);
+  chat.reply = "no_temperature";
+  try {
+    const hits = chat.hits.length;
+    await proseSummerApplied(await proseSearchCall(admin, "summer"));
+    const sent = chat.hits.slice(hits).map((h) => "temperature" in h.body);
+    assert.deepEqual(sent, [true, false]);
+  } finally {
+    chat.reply = "draft";
+  }
+});
+
+test("prose search: the editor test uses the typed values, stores nothing, and keeps the stored key on its own origin", async () => {
+  const { admin, chat, other } = await proseSetup();
+  await proseOn(admin, chat);
+  const before = getConfig()?.providers;
+
+  // Typed values on another host, no key typed: that host gets no key.
+  const otherHits = other.hits.length;
+  const moved = await call("POST", "/api/admin/prose/test", {
+    cookie: admin,
+    body: { url: other.url, model: PROSE_MODEL },
+  });
+  assert.equal(moved.status, 200, await moved.clone().text());
+  assert.deepEqual(await moved.json(), { connected: true });
+  assert.equal(other.hits.length, otherHits + 1);
+  assert.equal(other.hits.at(-1)?.headers.authorization, undefined);
+  assert.ok(other.hits.at(-1)?.path.endsWith("/models"));
+
+  // The stored host, no key typed: the stored key is reused there.
+  const same = await call("POST", "/api/admin/prose/test", {
+    cookie: admin,
+    body: { url: chat.url, model: PROSE_MODEL },
+  });
+  assert.equal(same.status, 200, await same.clone().text());
+  assert.equal(chat.hits.at(-1)?.headers.authorization, `Bearer ${PROSE_KEY}`);
+
+  // A typed key wins.
+  await call("POST", "/api/admin/prose/test", {
+    cookie: admin,
+    body: { url: other.url, model: PROSE_MODEL, apiKey: "sk-typed" },
+  });
+  assert.equal(other.hits.at(-1)?.headers.authorization, "Bearer sk-typed");
+
+  // Nothing of the draft was stored.
+  assert.deepEqual(getConfig()?.providers, before);
+});
+
+test("prose search: the editor test and model list refuse bad input and non-admins", async () => {
+  const { admin, chat } = await proseSetup();
+  const cases: [string, Record<string, unknown>, string][] = [
+    ["/api/admin/prose/test", { url: "not a url", model: "m" }, "invalid_url"],
+    ["/api/admin/prose/test", { url: chat.url, model: "" }, "invalid_field"],
+    [
+      "/api/admin/prose/test",
+      { url: chat.url, model: "m", apiKey: "has space" },
+      "invalid_field",
+    ],
+    ["/api/admin/prose/models", { url: "not a url" }, "invalid_url"],
+  ];
+  for (const [path, body, code] of cases) {
+    const res = await call("POST", path, { cookie: admin, body });
+    assert.equal(res.status, 400, `${path} ${JSON.stringify(body)}`);
+    assert.equal((await errorShape(res)).code, code);
+  }
+  for (const path of ["/api/admin/prose/test", "/api/admin/prose/models"]) {
+    const denied = await call("POST", path, {
+      cookie: nogrants,
+      body: { url: chat.url, model: "m" },
+    });
+    assert.equal(denied.status, 403);
+  }
+});
+
+test("prose search: the model list is the server's ids, valid names only, deduplicated and sorted", async () => {
+  const { admin, chat } = await proseSetup();
+  const listed = await call("POST", "/api/admin/prose/models", {
+    cookie: admin,
+    body: { url: chat.url, apiKey: "sk-typed" },
+  });
+  assert.equal(listed.status, 200, await listed.clone().text());
+  assert.deepEqual(await listed.json(), {
+    models: ["alpha-model", PROSE_MODEL, "zeta-model"],
+  });
+  const hit = chat.hits.at(-1);
+  assert.equal(hit?.method, "GET");
+  assert.ok(hit?.path.endsWith("/models"));
+  assert.equal(hit?.headers.authorization, "Bearer sk-typed");
+
+  // A rejected key is an empty list with the server's words, key redacted.
+  chat.reply = "echo_error";
+  try {
+    const refused = await call("POST", "/api/admin/prose/models", {
+      cookie: admin,
+      body: { url: chat.url, apiKey: "sk-typed" },
+    });
+    assert.equal(refused.status, 200, await refused.clone().text());
+    const wire = await refused.text();
+    const shape = JSON.parse(wire) as { models: string[]; error: string };
+    assert.deepEqual(shape.models, []);
+    assert.match(shape.error, /^The server answered HTTP 401/);
+    assert.equal(wire.includes("sk-typed"), false);
+  } finally {
+    chat.reply = "draft";
+  }
 });
 
 test("prose search: the connection check hides the stored key when the chat server repeats it", async () => {
@@ -13061,7 +13206,7 @@ test("prose search: the connection check hides the stored key when the chat serv
     assert.deepEqual(JSON.parse(wire), {
       connected: false,
       error:
-        "The chat server answered HTTP 401: Incorrect API key provided: Bearer [redacted]. It starts with [redacted]…",
+        "The server answered HTTP 401: Incorrect API key provided: Bearer [redacted]. It starts with [redacted]…",
     });
     assert.equal(wire.includes(PROSE_KEY.slice(0, 8)), false);
   } finally {
@@ -13079,15 +13224,8 @@ test("prose search: a reply that repeats the stored key fails, and nothing from 
     assert.equal((await res.clone().text()).includes(PROSE_KEY), false);
     const error = await errorShape(res, 502);
     assert.equal(error.code, "prose_search_bad_reply");
-    // The check reads the same reply rule.
-    const check = await call("POST", "/api/admin/prose/check", {
-      cookie: admin,
-      body: {},
-    });
-    assert.deepEqual(await check.json(), {
-      connected: false,
-      error: error.message,
-    });
+    // The connection check sends no chat request any more (the free model
+    // list), so only member searches meet this reply rule.
     // Text the member typed is theirs: the reply repeats it, nothing more.
     const typed = await proseSearchCall(admin, `summer ${PROSE_KEY}`);
     assert.equal(typed.status, 200, await typed.clone().text());

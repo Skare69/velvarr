@@ -55,7 +55,9 @@ import {
 } from "../../../../server/judgment.ts";
 import {
   checkProseChat,
+  listProseModels,
   proseChatConfiguration,
+  testProseChat,
 } from "../../../../server/prose-chat.ts";
 import { getWhisparrStatus } from "../../../../server/whisparr.ts";
 
@@ -407,6 +409,39 @@ function savedKeyForUrl(input: {
     "invalid_field",
     input.saved === undefined ? input.messages.missing : input.messages.moved,
   );
+}
+
+/** The URL and key of a natural-language search draft (editor check, model
+ * list). The key is optional for this server: a typed key wins; a blank one
+ * reuses the stored key only on the stored URL's origin, so the stored
+ * secret never reaches another host; otherwise no key is sent. */
+async function proseDraftTarget(
+  request: Request,
+  ctx: AuthContext,
+): Promise<{
+  body: Record<string, unknown>;
+  url: string;
+  apiKey: string | undefined;
+}> {
+  const body = await readAdminJson(request, ctx);
+  const url = fieldUrl(body, "url");
+  const typed = optionalText(body, "apiKey", 512)?.trim();
+  if (typed && !/^[\x21-\x7E]{1,512}$/.test(typed)) {
+    throw new AppError(
+      400,
+      "invalid_field",
+      "The API key must be printable ASCII without spaces.",
+    );
+  }
+  const saved = ctx.config.providers;
+  const apiKey = typed
+    ? typed
+    : saved?.proseChatApiKey &&
+        saved.proseChatUrl &&
+        new URL(saved.proseChatUrl).origin === new URL(url).origin
+      ? saved.proseChatApiKey
+      : undefined;
+  return { body, url, apiKey };
 }
 
 /** The upstream half of a Jellyfin connection change, shared by the save path
@@ -976,6 +1011,32 @@ export const routes: RouteDef[] = [
           "Natural-language search is off or not set up.",
         );
       return json(await checkProseChat(ctx.config.providers));
+    },
+  },
+  {
+    method: "POST",
+    segments: ["admin", "prose", "test"],
+    auth: "admin",
+    run: async (ctx, request) => {
+      const { body, url, apiKey } = await proseDraftTarget(request, ctx);
+      const model = optionalText(body, "model", 128)?.trim();
+      if (!isProseChatModel(model)) {
+        throw new AppError(
+          400,
+          "invalid_field",
+          "The model name must have 1 to 128 characters and no control characters.",
+        );
+      }
+      return json(await testProseChat({ url, model, apiKey }));
+    },
+  },
+  {
+    method: "POST",
+    segments: ["admin", "prose", "models"],
+    auth: "admin",
+    run: async (ctx, request) => {
+      const { url, apiKey } = await proseDraftTarget(request, ctx);
+      return json(await listProseModels(url, apiKey));
     },
   },
   {
