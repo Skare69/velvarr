@@ -580,17 +580,11 @@ function JudgmentCard({
           </>
         )}
       {!editing && saveFeedback}
-      {editor.check && !unsaved && (
-        <p
-          className="judgment-check mt-2"
-          data-state={editor.check.state}
-          role="status"
-        >
-          {editor.check.state === "checking"
-            ? "Checking the saved connection…"
-            : editor.check.state === "connected"
-              ? `${editor.check.provider === "ollama" ? "Ollama" : "TypeSafe"} answered a decision successfully.`
-              : editor.check.message}
+      {/* The title chip already says Checking… / Connected; only a failure
+          needs a line, because the chip cannot say why. */}
+      {editor.check?.state === "failed" && !unsaved && (
+        <p className="judgment-check mt-2" data-state="failed" role="status">
+          {editor.check.message}
         </p>
       )}
       {forbidden && (
@@ -760,6 +754,19 @@ function ProseSearchCard({
       setCheck({ state: "failed", message: messageOf(error) });
     }
   }
+
+  // Like the other service cards, the saved connection is checked once when
+  // Settings opens. The check only reads the server's model list (no chat
+  // request), so it costs nothing on a hosted server.
+  const checkedOnLoad = useRef(false);
+  useEffect(() => {
+    // Decided on the first configuration read only: a later save that turns
+    // the card on runs its own check, so this must not add a second one.
+    if (checkedOnLoad.current || !config) return;
+    checkedOnLoad.current = true;
+    if (config.configured) void runCheck(false);
+    // runCheck reads only stable setters and props: one run per mount.
+  }, [config]);
 
   async function apply(body: ProviderSettingsPatch, success: string) {
     if (busy || !config) return null;
@@ -1113,17 +1120,11 @@ function ProseSearchCard({
         </>
       )}
       {!editing && saveFeedback}
-      {check && !unsaved && (
-        <p
-          className="judgment-check mt-2"
-          data-state={check.state}
-          role="status"
-        >
-          {check.state === "checking"
-            ? "Checking the saved connection…"
-            : check.state === "connected"
-              ? "Connected: the chat server answered with a valid filter draft."
-              : "Connection failed: " + check.message}
+      {/* The title chip already says Checking… / Connected; only a failure
+          needs a line, because the chip cannot say why. */}
+      {check?.state === "failed" && !unsaved && (
+        <p className="judgment-check mt-2" data-state="failed" role="status">
+          {"Connection failed: " + check.message}
         </p>
       )}
       {forbidden && (

@@ -248,6 +248,14 @@ function ConnectionCard({
       />
     );
   const testFailure = draftCheckError ?? draftStatus?.error?.message;
+  const draftResult = testFailure
+    ? testFailure
+    : draftStatus
+      ? draftStatus.configured
+        ? (draftStatus.version ? name + " " + draftStatus.version : name) +
+          " answered with these settings."
+        : "Not configured — enter a URL and API key to test."
+      : null;
   const current = info?.[service];
   const fieldErrors =
     saveError && info ? connectionFieldErrors(service, draft, info) : {};
@@ -414,13 +422,57 @@ function ConnectionCard({
                 />
               </div>
             </div>
-            <p className="mt-3 text-sm text-muted">
-              Check connection tests the values in this editor without saving.
-              Leave the API key blank to use the saved credential. Moving to
-              another server origin requires its API key again.
-              {service === "jellyfin" &&
-                " The external URL is the address your browser uses for playback; the Jellyfin server identity stays the same."}
-            </p>
+            {/* The check tests the fields above it, so it sits with them,
+                before the Whisparr delivery section; Save stays at the foot. */}
+            <div className="settings-check-row">
+              <p className="text-sm text-muted">
+                Check connection tests the values in this editor without saving.
+                Leave the API key blank to use the saved credential. Moving to
+                another server origin requires its API key again.
+                {service === "jellyfin" &&
+                  " The external URL is the address your browser uses for playback; the Jellyfin server identity stays the same."}
+              </p>
+              <div className="settings-check">
+                {checkMode !== null && (
+                  <SettingsCheckButton
+                    checking={checking || draftChecking}
+                    disabled={
+                      busy ||
+                      (checkMode === "draft" && configurationUnavailable)
+                    }
+                    helpId={draftResult ? editorId + "-check" : undefined}
+                    outcome={
+                      checkMode !== "draft"
+                        ? null
+                        : testFailure
+                          ? "failed"
+                          : draftStatus?.configured
+                            ? "connected"
+                            : null
+                    }
+                    onCheck={() =>
+                      void (checkMode === "draft" ? testDraft() : verify(false))
+                    }
+                  />
+                )}
+                {/* The why behind the button's state: the version that
+                    answered, or the reason it failed. */}
+                <p
+                  id={editorId + "-check"}
+                  className={
+                    "settings-check-line" +
+                    (testFailure
+                      ? " is-failed"
+                      : draftStatus?.configured
+                        ? " is-connected"
+                        : "")
+                  }
+                  role="status"
+                >
+                  {draftResult}
+                </p>
+              </div>
+            </div>
             {service === "whisparr" && (
               <WhisparrFields
                 draft={draft}
@@ -445,26 +497,9 @@ function ConnectionCard({
                   Cancel
                 </button>
               )}
-              {checkButton}
             </div>
           </fieldset>
           {saveFeedback}
-          {testFailure && (
-            <div className="mt-3">
-              <ErrorPanel
-                title={name + " connection test failed"}
-                message={testFailure}
-              />
-            </div>
-          )}
-          {!testFailure && draftStatus && (
-            <p className="mt-2 text-sm text-muted">
-              {draftStatus.configured
-                ? "Connection works" +
-                  (draftStatus.version ? ": " + draftStatus.version : ".")
-                : "Not configured — enter a URL and API key to test."}
-            </p>
-          )}
         </form>
       )}
       {editing && service === "whisparr" && info?.whisparr && (

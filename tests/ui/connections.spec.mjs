@@ -1019,17 +1019,20 @@ for (const service of ["jellyfin", "whisparr"]) {
       await expect(edit(peer)).toBeEnabled();
       await expect(badge(own)).toHaveText("Unsaved changes");
       await control({ holdProbe: false, [service + "DraftFail"]: true });
-      await expect(own.getByRole("alert")).toContainText(
-        "draft credential was rejected",
-      );
+      // Contract move: the editor's check result now sits in one status line
+      // under the Check button (red on failure), not in an alert panel.
+      const line = own.locator(".settings-check-line");
+      await expect(line).toContainText("draft credential was rejected");
+      await expect(line).toHaveClass(/is-failed/);
       expect((await control({})).config).toEqual(before);
       await own.locator('input[type="password"]').fill("synthetic-corrected");
-      await expect(own.getByRole("alert")).toHaveCount(0);
+      // An edit clears the last result.
+      await expect(line).toHaveText("");
       await control({ [service + "DraftFail"]: false });
       await check(own).click();
-      await expect(
-        own.getByText("Connection works: draft-version", { exact: true }),
-      ).toBeVisible();
+      await expect(line).toHaveText(
+        /draft-version answered with these settings\.$/,
+      );
       const state = await control({});
       const probes = state.requests.filter(
         (r) => r.path === `/api/admin/${service}/test`,

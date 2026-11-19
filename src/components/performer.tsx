@@ -15,6 +15,7 @@ import {
   ErrorPanel,
   GridSkeleton,
   detailParams,
+  ClampedText,
   Icon,
   imgSrc,
   ItemImage,
@@ -1285,46 +1286,6 @@ function PerformerBio({ person }: { person: CatalogPerson }) {
   );
 }
 
-/** The provider's bio, clamped to two lines so a long one never stretches
- * the hero; "Read more" appears only when the text really overflows, and
- * the full text stays in the DOM for search and assistive tech. */
-function ClampedBio({ text }: { text: string }) {
-  const ref = useRef<HTMLParagraphElement>(null);
-  const [open, setOpen] = useState(false);
-  const [overflows, setOverflows] = useState(false);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const measure = () => {
-      if (!open) setOverflows(el.scrollHeight > el.clientHeight + 1);
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [open, text]);
-  return (
-    <div className="mt-3 max-w-prose">
-      <p
-        ref={ref}
-        className={`text-sm leading-relaxed text-muted${open ? "" : " line-clamp-2"}`}
-      >
-        {text}
-      </p>
-      {(overflows || open) && (
-        <button
-          type="button"
-          className="cat-inline-link mt-1 text-sm"
-          aria-expanded={open}
-          onClick={() => setOpen((v) => !v)}
-        >
-          {open ? "Show less" : "Read more"}
-        </button>
-      )}
-    </div>
-  );
-}
-
 /** A gender glyph beside the name, from the provider's own gender value.
  * Only values a standard symbol names exactly get one; any other value
  * (intersex, non-binary) stays text in the facts panel, never a guessed
@@ -1550,7 +1511,13 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
                       Also known as {d.aliases.join(", ")}
                     </p>
                   )}
-                  {d.description && <ClampedBio text={d.description} />}
+                  {d.description && (
+                    <ClampedText
+                      text={d.description}
+                      lines={2}
+                      className="mt-3 max-w-prose"
+                    />
+                  )}
 
                   {(d.links.length > 0 || sourceUrl) && (
                     <div className="mt-4">

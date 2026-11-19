@@ -941,6 +941,13 @@ const proseCard = (page) =>
 // state the caller wants, so the call sites read as before.
 const proseSwitch = (own, _enabled) =>
   own.getByRole("switch", { name: "Natural-language search", exact: true });
+// Contract move: a configured natural-language search card checks its saved
+// connection once when Settings opens (the free model list). The opener
+// waits for that one check; savedChecks counts only the checks after it.
+const proseChecks = (state) =>
+  state.requests.filter((r) => r.path === "/api/admin/prose/check");
+const savedChecks = (state) => proseChecks(state).slice(1);
+
 async function openConfiguredProse(h) {
   await openMetadata(h);
   const state = await h.control({});
@@ -956,6 +963,9 @@ async function openConfiguredProse(h) {
   await showAi(h.page);
   const own = proseCard(h.page);
   await expect(h.edit(own)).toBeEnabled();
+  await expect
+    .poll(async () => proseChecks(await h.control({})).length)
+    .toBe(1);
   return own;
 }
 scenario(
@@ -1088,9 +1098,7 @@ scenario(
     });
     expect(state.config.providers).toEqual(before.providers);
     expect(state.config.judgment.provider).toBe("none");
-    expect(
-      state.requests.filter((r) => r.path === "/api/admin/prose/check"),
-    ).toHaveLength(0);
+    expect(savedChecks(state)).toHaveLength(0);
     await edit(own).click();
     await own
       .getByRole("button", { name: "Clear stored credential", exact: true })
@@ -1106,9 +1114,7 @@ scenario(
       ...state.config.proseChat,
       keyStored: false,
     });
-    expect(
-      cleared.requests.filter((r) => r.path === "/api/admin/prose/check"),
-    ).toHaveLength(0);
+    expect(savedChecks(cleared)).toHaveLength(0);
   },
 );
 for (const proseFail of [false, true])
@@ -1153,11 +1159,7 @@ for (const proseFail of [false, true])
       await expect.poll(async () => patches(await control({})).length).toBe(1);
       // Contract move: the editor's check went to /api/admin/prose/test
       // (typed values); the saved check runs only after the clear lands.
-      expect(
-        (await control({})).requests.filter(
-          (r) => r.path === "/api/admin/prose/check",
-        ),
-      ).toHaveLength(0);
+      expect(savedChecks(await control({}))).toHaveLength(0);
       await control({ holdPatch: false });
       await expect(edit(own)).toBeEnabled();
       await expect(badge(own)).toHaveText(
@@ -1172,9 +1174,7 @@ for (const proseFail of [false, true])
         keyStored: false,
       });
       expect(state.config.providers).toEqual(before.providers);
-      const probes = state.requests.filter(
-        (r) => r.path === "/api/admin/prose/check",
-      );
+      const probes = savedChecks(state);
       expect(probes).toHaveLength(1);
       expect(probes[0].started).toBeGreaterThanOrEqual(
         patches(state)[0].finished,
@@ -1211,9 +1211,7 @@ scenario(
     expect(state.config.proseChat.keyStored).toBe(true);
     // Contract move: the earlier check was the editor's draft check
     // (/api/admin/prose/test); the failed clear starts no saved check.
-    expect(
-      state.requests.filter((r) => r.path === "/api/admin/prose/check"),
-    ).toHaveLength(0);
+    expect(savedChecks(state)).toHaveLength(0);
     await expect(
       own.getByText("Stored natural-language search credential cleared.", {
         exact: true,

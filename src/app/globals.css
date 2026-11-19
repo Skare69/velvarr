@@ -40,8 +40,14 @@
 
 :root {
   color-scheme: dark;
-  --sidebar-width: 232px;
-  --topbar-height: 76px;
+  --sidebar-width: 200px;
+  /* The page edge: the same space above the content as on its sides
+     (ui-ux-check rule 48); detail pages also use it under the back row,
+     and the top bar keeps it around its 44px search field. */
+  --page-gutter: 20px;
+  /* 44px search field + one page edge above and below it + the 1px bottom
+     border, so the field sits exactly one edge from both. */
+  --topbar-height: calc(44px + 2 * var(--page-gutter) + 1px);
   /* Motion tokens (rule 16): every transition and animation uses these
    * tiers; no literal durations or one-off easings elsewhere. */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
@@ -114,8 +120,7 @@ summary:focus-visible,
 /* Page-level containers take focus programmatically (skip link, detail pages);
    a ring around the whole page is noise, the heading is the landmark. */
 .app-main:focus-visible,
-.cat-detail:focus-visible,
-.library-detail:focus-visible {
+.cat-detail:focus-visible {
   outline: none;
 }
 ::selection {
@@ -561,10 +566,9 @@ body:has(.auth-page) {
   inset: 0 auto 0 0;
   z-index: 40;
   width: var(--sidebar-width);
-  /* 18.5px top = (topbar 76px - brand 39px) / 2: the logo shares the
-     search field's centre line (rule 48), and the top inset matches the
-     16px side inset. */
-  padding: 18.5px 16px 20px;
+  /* Top inset = (topbar height - brand 39px) / 2: the logo shares the search
+     field's centre line (rule 48). */
+  padding: calc((var(--topbar-height) - 39px) / 2) 16px 20px;
   display: flex;
   flex-direction: column;
   background: var(--color-panel);
@@ -729,7 +733,7 @@ body:has(.auth-page) {
   display: flex;
   align-items: center;
   gap: 18px;
-  padding: 12px 28px;
+  padding: 0 var(--page-gutter);
   background: color-mix(in oklab, var(--color-canvas) 96%, transparent);
   border-bottom: 1px solid
     color-mix(in oklab, var(--color-edge) 50%, var(--color-canvas));
@@ -852,7 +856,8 @@ body:has(.auth-page) {
 }
 .app-main {
   margin-left: var(--sidebar-width);
-  padding: calc(var(--topbar-height) + 26px) 28px 56px;
+  padding: calc(var(--topbar-height) + var(--page-gutter)) var(--page-gutter)
+    56px;
   min-width: 0;
 }
 .page-heading {
@@ -1047,7 +1052,8 @@ body:has(.auth-page) {
 .performer-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(142px, 1fr));
-  gap: 22px 16px;
+  /* One gap both ways (ui-ux-check rule 48). */
+  gap: 16px;
 }
 /* Endless-scroll grids: cards far off-screen skip layout and paint, and the
    browser drops their rendered representation once they scroll away — the
@@ -1516,9 +1522,6 @@ a.media-card {
   }
 }
 
-.settings-page {
-  max-width: 1200px;
-}
 .settings-tabs {
   display: flex;
   gap: 6px;
@@ -1574,13 +1577,11 @@ a.media-card {
   color: var(--color-ok);
   font-size: 0.875rem;
 }
-/* The probe of the saved AI-matching settings, apart from the save notice. */
+/* The reason a saved AI connection check failed (the title chip shows the
+   state; this line says why). */
 .judgment-check {
   color: var(--color-muted);
   font-size: 0.875rem;
-}
-.judgment-check[data-state="connected"] {
-  color: var(--color-ok);
 }
 .judgment-check[data-state="failed"] {
   color: var(--color-danger);
@@ -1622,6 +1623,53 @@ a.media-card {
 .settings-card-actions {
   justify-content: flex-end;
   margin-top: 16px;
+}
+/* Check connection beside the help text it explains, right under the fields
+   it tests; on a narrow card the button wraps below the text. */
+.settings-check-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px 16px;
+  margin-top: 12px;
+}
+.settings-check-row > p {
+  flex: 1 1 22rem;
+  max-width: 75ch;
+}
+/* The button carries the last check's outcome: icon + word + tone, the same
+   mint/danger mixes as the connection chip; the line under it says why. */
+.settings-check {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: 100%;
+}
+.btn.check-connected {
+  color: var(--color-ok);
+  border-color: color-mix(in oklab, var(--color-ok) 45%, var(--color-edge));
+}
+.btn.check-failed {
+  color: var(--color-danger);
+  border-color: color-mix(in oklab, var(--color-danger) 45%, var(--color-edge));
+}
+.settings-check-line {
+  margin: 0;
+  max-width: 48ch;
+  font-size: 0.8125rem;
+  text-align: right;
+  color: var(--color-muted);
+}
+.settings-check-line:empty {
+  display: none;
+}
+.settings-check-line.is-connected {
+  color: var(--color-ok);
+}
+.settings-check-line.is-failed {
+  color: var(--color-danger);
 }
 .settings-service-status {
   margin-top: 18px;
@@ -1680,9 +1728,6 @@ a.media-card {
   margin-top: 18px;
   padding-top: 18px;
 }
-.library-detail {
-  outline: none;
-}
 .auth-page {
   min-height: 100dvh;
   display: grid;
@@ -1717,15 +1762,12 @@ a.media-card {
   .performer-grid {
     grid-template-columns: repeat(auto-fill, minmax(165px, 1fr));
   }
-  .app-main {
-    padding-left: 36px;
-    padding-right: 36px;
-  }
 }
 @media (max-width: 1023px) {
   :root {
     --sidebar-width: 0px;
     --topbar-height: 68px;
+    --page-gutter: 20px;
   }
   .app-sidebar {
     display: none;
@@ -1735,7 +1777,7 @@ a.media-card {
     padding: 10px 14px;
   }
   .app-main {
-    padding: calc(var(--topbar-height) + 22px) 20px
+    padding: calc(var(--topbar-height) + var(--page-gutter)) var(--page-gutter)
       calc(90px + env(safe-area-inset-bottom));
   }
   .mobile-bottom-nav {
@@ -1772,9 +1814,8 @@ a.media-card {
   }
 }
 @media (max-width: 600px) {
-  .app-main {
-    padding-left: 16px;
-    padding-right: 16px;
+  :root {
+    --page-gutter: 16px;
   }
   .app-topbar {
     padding-left: 8px;
@@ -1805,7 +1846,7 @@ a.media-card {
   .poster-grid,
   .performer-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 20px 12px;
+    gap: 12px;
   }
   /* Wrapping put the active tab on its own row and split the underline;
    * scroll the strip instead. min-width: max-content + nowrap keep every

@@ -263,23 +263,48 @@ export function SettingsCheckButton({
   checking,
   disabled,
   helpId,
+  outcome,
   onCheck,
 }: {
   checking: boolean;
   disabled: boolean;
   helpId?: string;
+  /** The last check of the values on screen. The button carries it in its
+   * icon, word and tone (never color alone); an edit clears it. */
+  outcome?: "connected" | "failed" | null;
   onCheck: () => void;
 }) {
+  const shown = checking ? null : outcome;
   return (
     <button
       type="button"
-      className="btn"
+      className={
+        shown === "connected"
+          ? "btn check-connected"
+          : shown === "failed"
+            ? "btn check-failed"
+            : "btn"
+      }
       disabled={disabled}
       aria-describedby={helpId}
       onClick={onCheck}
     >
-      <Icon name="refresh" />
-      {checking ? "Checking…" : "Check connection"}
+      <Icon
+        name={
+          shown === "connected"
+            ? "check"
+            : shown === "failed"
+              ? "info"
+              : "refresh"
+        }
+      />
+      {checking
+        ? "Checking…"
+        : shown === "connected"
+          ? "Connected"
+          : shown === "failed"
+            ? "Check again"
+            : "Check connection"}
     </button>
   );
 }

@@ -182,12 +182,19 @@
 
 /* ---------- Bulk request confirm (native <dialog>) ---------- */
 
+/* Confirm dialogs (bulk request, cancel request, settings clears). Tailwind's
+   preflight zeroes every margin, which pins a modal <dialog> to the top-left:
+   inset 0 + margin auto restore the native centering. The dialog also sits
+   inside right-aligned button rows, so its text resets to the start. */
 .bulk-dialog {
+  inset: 0;
+  margin: auto;
   width: min(26rem, calc(100vw - 2rem));
   border: 1px solid var(--color-edge);
   border-radius: 14px;
   background: var(--color-panel);
   color: var(--color-ink);
+  text-align: start;
 }
 
 .bulk-dialog::backdrop {
