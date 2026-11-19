@@ -14,6 +14,7 @@ import {
 } from "../../../../server/storage.ts";
 import { AppError, shelfError } from "../../../../server/http.ts";
 import { resolvePlaybackAccess } from "../../../../server/jellyfin.ts";
+import { findWhisparrPathByIdentity } from "../../../../server/whisparr.ts";
 import {
   getCatalogDetail,
   searchCatalog,
@@ -52,8 +53,9 @@ async function identityHints(
 
 // Per-user playback verdict for one external identity. Runs under THIS
 // caller's Jellyfin token; hints are the validated reference plus the
-// shared acquisition's persisted Whisparr facts when present. This is a
-// read route: no Whisparr call ever happens here.
+// shared acquisition's persisted Whisparr facts when present. Without a
+// Velvarr acquisition (a title grabbed in Whisparr directly), the folder
+// comes from Whisparr's cached movie list: one shared read per 30 s window.
 export async function availability(
   ctx: AuthContext,
   providerRaw: string,
@@ -62,6 +64,8 @@ export async function availability(
 ): Promise<Response> {
   const media = parseMediaReference(providerRaw, kindRaw, idRaw);
   const acquisition = getAcquisitionByReference(media);
+  const whisparrPath =
+    acquisition?.whisparrPath ?? (await whisparrFolderOf(ctx, media));
   const verdict = await resolvePlaybackAccess(
     ctx.config,
     ctx.token,
@@ -70,9 +74,7 @@ export async function availability(
       provider: media.provider,
       kind: media.kind,
       id: media.id,
-      ...(acquisition?.whisparrPath
-        ? { whisparrPath: acquisition.whisparrPath }
-        : {}),
+      ...(whisparrPath ? { whisparrPath } : {}),
       ...(acquisition?.whisparrTitle
         ? { title: acquisition.whisparrTitle }
         : {}),
@@ -100,6 +102,23 @@ export async function availability(
     });
   }
   return json(verdict);
+}
+
+/** The Whisparr folder of one identity, or undefined. A Whisparr failure only
+ * costs the hint (the verdict then stands on Jellyfin's own IDs, as before);
+ * it is logged, never shown as a match or a miss of its own. */
+async function whisparrFolderOf(
+  ctx: AuthContext,
+  media: MediaReference,
+): Promise<string | undefined> {
+  try {
+    return (await findWhisparrPathByIdentity(ctx.config, media)) ?? undefined;
+  } catch (e) {
+    console.error(
+      `[velvarr:availability] Whisparr folder lookup failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return undefined;
+  }
 }
 
 // Real provider verification for the admin UI: configured:false stays

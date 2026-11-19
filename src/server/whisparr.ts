@@ -380,6 +380,33 @@ export async function findWhisparrItemByPath(
   return matches[0] ?? null;
 }
 
+/** The reverse of findWhisparrItemByPath: the folder Whisparr files one
+ * catalog identity under, from the same 30 s list cache. A title grabbed in
+ * Whisparr directly has no Velvarr acquisition record, so this is the only
+ * path hint the availability check can get for it. Null when Whisparr is
+ * unconfigured, the identity is not in Whisparr, or more than one entry
+ * carries it (no guess). */
+export async function findWhisparrPathByIdentity(
+  config: IntegrationConfig,
+  media: MediaReference,
+): Promise<string | null> {
+  const whisparr = config?.whisparr;
+  if (!whisparr?.url || !whisparr.apiKey) return null;
+  const provider = media.kind === "movie" ? "tpdb" : "stashdb";
+  if (media.provider !== provider) return null;
+  const wanted = media.id.toLowerCase();
+  const paths = (await cachedMovieList(whisparr)).flatMap((dto) => {
+    const routed = identityOf(dto);
+    const path = asString(dto.path)?.trim() ?? "";
+    return routed?.itemType === media.kind &&
+      routed.identity.toLowerCase() === wanted &&
+      path !== ""
+      ? [path]
+      : [];
+  });
+  return paths.length === 1 ? paths[0]! : null;
+}
+
 // --- movie-list cache for list enrichment ---
 
 /** The /api/v3/movie list is the only full-list read. Radarr-family movie
@@ -429,6 +456,11 @@ const movieListCache = new Map<
     dtos: Promise<MovieResourceDto[]>;
   }
 >();
+
+/** Tests only: forget cached movie lists (like resetSweepCache). */
+export function resetMovieListCache(): void {
+  movieListCache.clear();
+}
 
 /** Throws synchronously on an invalid size limit (see movieListBytes). */
 function cachedMovieList(

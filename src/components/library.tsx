@@ -18,7 +18,9 @@ import {
   CardTypeBadge,
   EnlargeableImage,
   ErrorPanel,
+  duration,
   FileFacts,
+  ClampedText,
   Icon,
   ItemImage,
   detailParams,
@@ -27,14 +29,92 @@ import {
   useApiGet,
   useGridColumns,
   useNearEnd,
+  useCatalogSummary,
   useParamsSetter,
+  useSession,
   wholeRows,
+  type CatalogSummary,
 } from "./shared.tsx";
 import { DetailBody, type DetailTarget } from "./catalog-detail.tsx";
 import { useBrowseTo, useSyncedInput } from "./catalog.tsx";
 
 const runtime = (ticks?: number) =>
   ticks && ticks > 0 ? `${Math.round(ticks / 600_000_000)} min` : null;
+
+/** A matched item reads its catalog summary once (shared cache), so the tile
+ * shows the same facts as a Browse tile. */
+function CatalogLibraryTile({
+  item,
+  catalog,
+  onOpen,
+}: {
+  item: LibraryItem;
+  catalog: MediaReference;
+  onOpen: () => void;
+}) {
+  const summary = useCatalogSummary(catalog);
+  return <LibraryTile item={item} summary={summary} onOpen={onOpen} />;
+}
+
+/** One grid tile: catalog facts once a match loaded (Browse's order: scene =
+ * studio · date + performers, movie = year · studio), otherwise only what
+ * Jellyfin reports. A failed or pending catalog read never fakes a fact. */
+function LibraryTile({
+  item,
+  summary,
+  onOpen,
+}: {
+  item: LibraryItem;
+  summary?: CatalogSummary | null;
+  onOpen: () => void;
+}) {
+  const scene = item.kind === "scene";
+  const seconds =
+    summary?.durationSeconds ??
+    (item.durationTicks ? Math.round(item.durationTicks / 1e7) : undefined);
+  const year = summary?.releaseDate?.slice(0, 4) ?? item.year;
+  const subtitle = (
+    summary
+      ? scene
+        ? [summary.studio, summary.releaseDate]
+        : [year, summary.studio]
+      : [item.year, item.kind]
+  )
+    .filter(Boolean)
+    .join(" · ");
+  const performers = scene ? summary?.performers?.join(", ") : undefined;
+  const description = summary?.description ?? item.overview;
+  return (
+    <button type="button" className="media-card" onClick={onOpen}>
+      <div className="media-art aspect-[2/3]">
+        <ItemImage
+          name={item.name}
+          src={item.image}
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+        <CardTypeBadge kind={item.kind} />
+        {item.canPlay && (
+          <CardStatusBadge status="available" title={item.name} />
+        )}
+        {scene && duration(seconds) && (
+          <span className="media-runtime">{duration(seconds)}</span>
+        )}
+        <div className="media-quick-overlay">
+          <div className="media-quick-summary" aria-hidden="true">
+            {year && <span>{year}</span>}
+            <strong>{item.name}</strong>
+            {description && <p>{description}</p>}
+          </div>
+        </div>
+      </div>
+      <div className="media-meta">
+        <div className="media-title">{item.name}</div>
+        {subtitle && <div className="media-subtitle">{subtitle}</div>}
+        {performers && <div className="media-subtitle">{performers}</div>}
+      </div>
+    </button>
+  );
+}
 
 /* ---------- Library ---------- */
 
@@ -279,38 +359,19 @@ export function LibraryView() {
               {acc.total === 1 ? "item" : "items"}
             </p>
             <div className="poster-grid">
-              {wholeRows(items, cols, hasMore).map((it) => (
-                <button
-                  key={it.id}
-                  type="button"
-                  className="media-card"
-                  onClick={() => setP({ item: it.id }, { push: true })}
-                >
-                  <div className="media-art aspect-[2/3]">
-                    <ItemImage
-                      name={it.name}
-                      src={it.image}
-                      className="absolute inset-0 h-full w-full object-cover"
-                    />
-                    <CardTypeBadge kind={it.kind} />
-                    {it.canPlay && (
-                      <CardStatusBadge status="available" title={it.name} />
-                    )}
-                    <div className="media-quick-overlay">
-                      <div className="media-quick-summary" aria-hidden="true">
-                        {it.year && <span>{it.year}</span>}
-                        <strong>{it.name}</strong>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="media-meta">
-                    <div className="media-title">{it.name}</div>
-                    <div className="media-subtitle">
-                      {[it.year, it.kind].filter(Boolean).join(" · ")}
-                    </div>
-                  </div>
-                </button>
-              ))}
+              {wholeRows(items, cols, hasMore).map((it) => {
+                const open = () => setP({ item: it.id }, { push: true });
+                return it.catalog ? (
+                  <CatalogLibraryTile
+                    key={it.id}
+                    item={it}
+                    catalog={it.catalog}
+                    onOpen={open}
+                  />
+                ) : (
+                  <LibraryTile key={it.id} item={it} onOpen={open} />
+                );
+              })}
             </div>
             {loading && (
               <p className="mt-6 text-center text-sm text-muted" role="status">
@@ -359,10 +420,13 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
     item: LibraryItem;
     catalog?: MediaReference;
     catalogNote?: string;
+    catalogIssue?: "not_connected" | "ambiguous" | "failed";
   }>(`/api/library/${encodeURIComponent(id)}`, [id]);
   const item = data?.item ?? null;
   const catalog = data?.catalog;
   const catalogNote = data?.catalogNote;
+  const catalogIssue = data?.catalogIssue;
+  const isAdmin = useSession().account.role === "admin";
   const target: DetailTarget | undefined = catalog
     ? { provider: catalog.provider, kind: catalog.kind, id: catalog.id }
     : undefined;
@@ -418,15 +482,15 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
     <div
       ref={panelRef}
       tabIndex={-1}
-      className="library-detail"
+      className="cat-detail"
       aria-label="Item details"
     >
-      <div className="page-heading">
+      {/* Same frame as the title page (CatalogDetailView): width, back row
+          and spacing come from .cat-detail / .cat-topline. */}
+      <div className="cat-topline">
         <button type="button" className="btn" onClick={onClose}>
-          <Icon name="chevron-left" />
-          Back to library
+          <Icon name="chevron-left" /> Back to library
         </button>
-        <span className="chip">In your library</span>
       </div>
       {error ? (
         <ErrorPanel title="Item unavailable" message={error} onRetry={reload} />
@@ -446,6 +510,7 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
           onNavigate={(r) => setP(detailParams(r), { push: true })}
           onBrowse={browseTo}
           onRefetch={reloadCat}
+          libraryItem={item}
         />
       ) : (
         <>
@@ -468,6 +533,12 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
                 imgClass="cat-poster-img"
               />
               <div className="cat-hero-copy">
+                {/* Every item here comes from Jellyfin, so the fact always
+                    holds; same badge as a title page's availability. */}
+                <span className="cat-badge cat-badge-available">
+                  <Icon name="check" />
+                  In your library
+                </span>
                 <h1 className="cat-hero-title">
                   {item.name}
                   {item.year != null && (
@@ -520,19 +591,64 @@ function ItemDetail({ id, onClose }: { id: string; onClose: () => void }) {
           </header>
           <section className="cat-section" aria-label="Overview">
             <h2 className="cat-section-title">Overview</h2>
-            <p className="cat-overview mt-2 text-sm leading-relaxed text-muted">
-              {item.overview || "No synopsis available."}
-            </p>
+            <ClampedText
+              text={item.overview || "No synopsis available."}
+              lines={5}
+              className="mt-2"
+              textClassName="cat-overview text-sm leading-relaxed text-muted"
+            />
           </section>
           {/* ponytail: identity is Whisparr path correspondence only; the
               upgrade path is mapping Jellyfin ProviderIds. */}
+          {/* Why there are no catalog details: one panel with a headline, a
+              danger tone only for a failed lookup, and a next step only when
+              one exists. */}
           {!catalog && (
-            <p className="mt-4 text-sm text-muted">
-              Catalog details unavailable
-              {catalogNote
-                ? `: ${catalogNote}`
-                : " — no provider match was found for this item's file paths."}
-            </p>
+            <div
+              className={
+                catalogIssue === "failed"
+                  ? "catalog-note is-failed"
+                  : "catalog-note"
+              }
+              role={catalogIssue === "failed" ? "alert" : "status"}
+            >
+              <strong>
+                {catalogIssue === "not_connected"
+                  ? "Catalog details are off"
+                  : catalogIssue === "ambiguous"
+                    ? "Match needs review"
+                    : catalogIssue === "failed"
+                      ? "Catalog lookup failed"
+                      : "No catalog match"}
+              </strong>
+              <p>
+                {catalogIssue === "not_connected"
+                  ? "Velvarr matches library files to TPDB or StashDB through Whisparr, and Whisparr is not connected."
+                  : catalogIssue === "ambiguous"
+                    ? "More than one Whisparr title uses this file's folder. Velvarr does not guess which one."
+                    : (catalogNote ??
+                      "Whisparr has no title at this file's folder.")}
+                {catalogIssue === "not_connected" &&
+                  !isAdmin &&
+                  " Ask an administrator to connect it."}
+              </p>
+              {catalogIssue === "not_connected" && isAdmin && (
+                <Link
+                  className="btn mt-3"
+                  href="/?view=settings#whisparr-heading"
+                  prefetch={false}
+                >
+                  <Icon name="settings" />
+                  Open Whisparr settings
+                </Link>
+              )}
+              {catalogIssue === "failed" && (
+                <button type="button" className="btn mt-3" onClick={reload}>
+                  <Icon name="refresh" />
+                  Retry
+                </button>
+              )}
+            </div>
           )}
           {catalog && catError ? (
             catErr?.status === 404 ? (

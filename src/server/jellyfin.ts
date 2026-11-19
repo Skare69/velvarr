@@ -31,6 +31,7 @@ import type {
   LibraryItem,
   LibraryPage,
   MediaKind,
+  MediaReference,
   PlaybackAccess,
 } from "../lib/contracts.ts";
 
@@ -497,9 +498,9 @@ async function withSceneIdentity(
   // the next page inside the TTL labels instantly.
   const SCENE_ENRICH_TIMEOUT_MS = 2_000;
   let enrichTimer: NodeJS.Timeout | undefined;
-  let sceneIds: Set<string>;
+  let resolved: Map<string, MediaReference>;
   try {
-    const resolved = await Promise.race([
+    resolved = await Promise.race([
       resolveIdentitiesByPath(config, entries),
       new Promise<never>((_, reject) => {
         enrichTimer = setTimeout(
@@ -515,18 +516,23 @@ async function withSceneIdentity(
         );
       }),
     ]).finally(() => clearTimeout(enrichTimer));
-    sceneIds = new Set(
-      [...resolved].filter(([, ref]) => ref.kind === "scene").map(([id]) => id),
-    );
   } catch (e) {
     console.error(
       `[velvarr:library] scene enrichment degraded to library kinds: ${errorReason(e)}`,
     );
     return items;
   }
-  return items.map((item) =>
-    sceneIds.has(item.id) ? { ...item, kind: "scene" } : item,
-  );
+  // The resolved identity rides along (`catalog`), so a tile can show its
+  // catalog facts; a Whisparr-declared scene also upgrades the Jellyfin kind.
+  return items.map((item) => {
+    const catalog = resolved.get(item.id);
+    if (!catalog) return item;
+    return {
+      ...item,
+      catalog,
+      ...(catalog.kind === "scene" ? { kind: "scene" } : {}),
+    };
+  });
 }
 
 function itemsPath(userId: string, params: Record<string, string>): string {

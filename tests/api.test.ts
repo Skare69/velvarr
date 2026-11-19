@@ -45,6 +45,7 @@ import {
   saveConfig,
 } from "../src/server/storage.ts";
 import { resetSweepCache } from "../src/server/jellyfin.ts";
+import { resetMovieListCache } from "../src/server/whisparr.ts";
 import { resetUpdateCache } from "../src/server/update.ts";
 import { resetLoginBuckets } from "../src/server/security.ts";
 import { AppError } from "../src/server/http.ts";
@@ -2786,9 +2787,11 @@ test("library detail: catalog enrichment via whisparr path mappings", async (t) 
       item: { kind: string };
       catalog?: unknown;
       catalogNote?: string;
+      catalogIssue?: string;
     };
     assert.equal(ambiguousBody.catalog, undefined);
     assert.equal(typeof ambiguousBody.catalogNote, "string");
+    assert.equal(ambiguousBody.catalogIssue, "ambiguous");
     // Ambiguous identity: no upgrade, the honest Jellyfin kind stays.
     assert.equal(ambiguousBody.item.kind, "movie");
     whisparrMovies.pop();
@@ -2802,9 +2805,12 @@ test("library detail: catalog enrichment via whisparr path mappings", async (t) 
     const bareBody = (await bare.json()) as {
       catalog?: unknown;
       catalogNote?: string;
+      catalogIssue?: string;
     };
     assert.equal(bareBody.catalog, undefined);
     assert.equal(bareBody.catalogNote, undefined);
+    // A plain absence is no issue: the page shows a neutral "No catalog match".
+    assert.equal(bareBody.catalogIssue, undefined);
 
     // Whisparr configured but unreachable: the failure is named, not hidden.
     assert.equal((await saveWhisparr("http://127.0.0.1:9")).status, 200);
@@ -2815,13 +2821,15 @@ test("library detail: catalog enrichment via whisparr path mappings", async (t) 
     const outageBody = (await outage.json()) as {
       catalog?: unknown;
       catalogNote?: string;
+      catalogIssue?: string;
     };
     assert.equal(outageBody.catalog, undefined);
     assert.equal(typeof outageBody.catalogNote, "string");
+    assert.equal(outageBody.catalogIssue, "failed");
 
-    // Whisparr unconfigured: no catalog, no note. A blank URL clears the
-    // connection, so the body must not also carry the key — key + blank URL
-    // is rejected by the integrations validation, never dropped.
+    // Whisparr unconfigured: no catalog, and a note that names the cause.
+    // A blank URL clears the connection, so the body must not also carry the
+    // key — key + blank URL is rejected by the integrations validation.
     assert.equal(
       (
         await call("PATCH", "/api/admin/integrations", {
@@ -2842,9 +2850,16 @@ test("library detail: catalog enrichment via whisparr path mappings", async (t) 
     const unconfiguredBody = (await unconfigured.json()) as {
       catalog?: unknown;
       catalogNote?: string;
+      catalogIssue?: string;
     };
     assert.equal(unconfiguredBody.catalog, undefined);
-    assert.equal(unconfiguredBody.catalogNote, undefined);
+    // Contract move: this used to be no note, so the page claimed "no
+    // provider match" when nothing could ever match. The cause is named now.
+    assert.match(
+      unconfiguredBody.catalogNote ?? "",
+      /Whisparr is not connected/,
+    );
+    assert.equal(unconfiguredBody.catalogIssue, "not_connected");
   } finally {
     // Leave whisparr removed: later tests re-establish it themselves.
     await call("PATCH", "/api/admin/integrations", {
@@ -5929,6 +5944,81 @@ test("availability: distinct verdicts under the caller's own token", async () =>
       cookie: member,
     }),
   );
+});
+
+test("availability: a title grabbed in Whisparr directly is matched through Whisparr's folder", async () => {
+  // No Velvarr request exists for this id, so no acquisition carries a path:
+  // the folder must come from Whisparr's own list (the reported "Request
+  // this title" on a scene that was already in the library).
+  await boot();
+  const member = await loginAs("member");
+  fx.fail.items = 0;
+  const DIRECT = "7a1b2c3d-1111-4222-8333-0000000d1a1c";
+  const UNKNOWN = "7a1b2c3d-1111-4222-8333-0000000d1a1d";
+  // Written out in full: other tests swap whisparrMovies[0] in and out.
+  whisparrMovies.push({
+    id: 499,
+    title: "Grabbed Directly",
+    monitored: true,
+    path: `/data/whisparr/${ITEM_MOVIE}.mkv`,
+    hasFile: true,
+    movieFileId: 9,
+    sizeOnDisk: 1,
+    added: "2026-11-19T12:00:00Z",
+    tmdbId: 0,
+    tpdbId: DIRECT,
+    foreignId: `tpdbId:${DIRECT}`,
+    itemType: "movie",
+    statistics: { movieFileCount: 1, sizeOnDisk: 1 },
+  });
+  // Restore exactly what this test changes, so later tests see the same
+  // Whisparr settings.
+  const before = (
+    (await (
+      await call("GET", "/api/admin/integrations", { cookie: owner })
+    ).json()) as {
+      whisparr: { url: string; pathMappings: unknown[] } | null;
+    }
+  ).whisparr;
+  const save = (url: string, pathMappings: unknown[]) =>
+    call("PATCH", "/api/admin/integrations", {
+      cookie: owner,
+      body: {
+        jellyfinUrl,
+        jellyfinExternalUrl: jellyfinUrl,
+        whisparrUrl: url,
+        ...(url ? { whisparrApiKey: whisparrKey } : {}),
+        pathMappings,
+      },
+    });
+  const mappings = [
+    { whisparrPrefix: "/data/whisparr", jellyfinPrefix: "/media" },
+  ];
+  // Change the settings only when they differ: a URL move rotates the
+  // Whisparr identity, which later tests depend on.
+  const differs =
+    before?.url !== whisparrUrl ||
+    JSON.stringify(before.pathMappings) !== JSON.stringify(mappings);
+  try {
+    if (differs) assert.equal((await save(whisparrUrl, mappings)).status, 200);
+    resetMovieListCache();
+    resetSweepCache();
+    const outcome = async (id: string) =>
+      (await (
+        await call("GET", `/api/availability/tpdb/movie/${id}`, {
+          cookie: member,
+        })
+      ).json()) as { outcome: string; item?: { id: string } };
+    const direct = await outcome(DIRECT);
+    assert.equal(direct.outcome, "available");
+    assert.equal(direct.item?.id, ITEM_MOVIE);
+    // An id Whisparr does not hold gets no folder and stays missing.
+    assert.equal((await outcome(UNKNOWN)).outcome, "missing");
+  } finally {
+    whisparrMovies.pop();
+    resetMovieListCache();
+    if (differs) await save(before?.url ?? "", before?.pathMappings ?? []);
+  }
 });
 
 test("availability: the catalog year reaches the judgment; no detail read without a title hint", async () => {

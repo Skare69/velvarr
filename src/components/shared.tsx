@@ -530,6 +530,8 @@ export type CatalogSummary = {
   durationSeconds?: number;
   /** Studio name only. */
   studio?: string;
+  /** Credited performer names, in provider order. */
+  performers?: string[];
 };
 
 /**
@@ -572,6 +574,7 @@ export function useCatalogSummary(
           releaseDate: d.detail.releaseDate,
           durationSeconds: d.detail.durationSeconds,
           studio: d.detail.studio?.name,
+          performers: d.detail.credits.map((c) => c.name),
         };
         catalogSummaryCache.set(key, s);
         if (live) setSummary(s);
@@ -1021,6 +1024,60 @@ export function imgSrc(
 export function artSrcSet(url: string | undefined): string | undefined {
   if (!url || url.startsWith("/")) return undefined;
   return ARTWORK_WIDTHS.map((w) => `${imgSrc(url, w)} ${w}w`).join(", ");
+}
+
+/** Literal classes, so Tailwind generates both clamps. */
+const CLAMP_CLASS = { 2: "line-clamp-2", 5: "line-clamp-5" } as const;
+
+/** Provider prose (a bio, a title's description) clamped to a few lines so
+ * a long text never stretches its section. "Read more" appears only when the
+ * text really overflows, and the full text stays in the DOM for search and
+ * assistive tech. */
+export function ClampedText({
+  text,
+  lines,
+  className,
+  textClassName = "text-sm leading-relaxed text-muted",
+}: {
+  text: string;
+  lines: keyof typeof CLAMP_CLASS;
+  className?: string;
+  textClassName?: string;
+}) {
+  const ref = useRef<HTMLParagraphElement>(null);
+  const [open, setOpen] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      if (!open) setOverflows(el.scrollHeight > el.clientHeight + 1);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [open, text]);
+  return (
+    <div className={className}>
+      <p
+        ref={ref}
+        className={`${textClassName}${open ? "" : ` ${CLAMP_CLASS[lines]}`}`}
+      >
+        {text}
+      </p>
+      {(overflows || open) && (
+        <button
+          type="button"
+          className="cat-inline-link mt-1 text-sm"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        >
+          {open ? "Show less" : "Read more"}
+        </button>
+      )}
+    </div>
+  );
 }
 
 /**

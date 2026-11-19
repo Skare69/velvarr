@@ -80,11 +80,24 @@ export async function libraryItem(
   // correspondence. A lookup failure is reported, never faked as a match.
   let catalog: MediaReference | undefined;
   let catalogNote: string | undefined;
-  try {
-    catalog = (await findWhisparrItemByPath(ctx.config, paths)) ?? undefined;
-  } catch (error) {
-    const whisparr = ctx.config?.whisparr;
-    if (whisparr?.url && whisparr.apiKey) {
+  // Why there is no catalog, as a kind the page can style; absent when the
+  // lookup ran and simply found no Whisparr title at the item's folder.
+  let catalogIssue: "not_connected" | "ambiguous" | "failed" | undefined;
+  const whisparr = ctx.config?.whisparr;
+  if (!whisparr?.url || !whisparr.apiKey) {
+    // Matching is Whisparr path correspondence only: without Whisparr no item
+    // can ever match, so say that instead of "no match".
+    catalogIssue = "not_connected";
+    catalogNote =
+      "Whisparr is not connected, so Velvarr cannot match library files to TPDB or StashDB.";
+  } else {
+    try {
+      catalog = (await findWhisparrItemByPath(ctx.config, paths)) ?? undefined;
+    } catch (error) {
+      catalogIssue =
+        error instanceof AppError && error.code === "ambiguous_identity"
+          ? "ambiguous"
+          : "failed";
       catalogNote =
         error instanceof AppError ? error.message : "Whisparr lookup failed.";
     }
@@ -95,6 +108,7 @@ export async function libraryItem(
     item: catalog?.kind === "scene" ? { ...item, kind: "scene" } : item,
     catalog,
     catalogNote,
+    catalogIssue,
   });
 }
 

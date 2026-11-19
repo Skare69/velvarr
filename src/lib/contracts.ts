@@ -737,6 +737,9 @@ export type LibraryItem = {
   image?: string;
   canPlay: boolean;
   watchUrl?: string;
+  /** The TPDB/StashDB record Whisparr files at this item's path; absent
+   * when no match, an ambiguous match, or the lookup failed. */
+  catalog?: MediaReference;
 };
 
 export type LibraryPage = {

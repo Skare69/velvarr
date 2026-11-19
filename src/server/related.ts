@@ -51,7 +51,9 @@ export type RelatedTitles = {
 // CANDIDATE_PAGE if rails feel thin; add pages only with a real reason.
 const SEED_TAGS = 8;
 const CANDIDATE_PAGE = 24;
-const RELATED_LIMIT = 12;
+// Ranked from the one candidate page already fetched, so the cap is only a
+// display bound: enough for two full rows; the client trims to whole rows.
+const RELATED_LIMIT = 24;
 // Co-appearances come from her already-fetched filmography (no extra
 // provider calls), so the cap is only a display bound: enough for two
 // full desktop rows of performer tiles; the client trims to whole rows.

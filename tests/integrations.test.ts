@@ -3856,7 +3856,7 @@ test("unconfigured Whisparr upgrades nothing and calls nothing", async () => {
   });
 });
 
-test("listLibraryItems labels Whisparr-managed scenes as scene in the grid", async () => {
+test("listLibraryItems labels Whisparr-managed scenes as scene and carries their catalog identity", async () => {
   const items = [
     {
       ...datedItem(0x387, "Grid Scene", "2026-09-03T10:00:00.000Z"),
@@ -3890,6 +3890,13 @@ test("listLibraryItems labels Whisparr-managed scenes as scene in the grid", asy
       page.items.map((item) => [item.name, item.kind]),
       [["Grid Scene", "scene"]],
     );
+    // The tile reads its catalog facts through this reference; it is the
+    // record Whisparr files at the path, never a name match.
+    assert.deepEqual(page.items[0]!.catalog, {
+      provider: "stashdb",
+      kind: "scene",
+      id: dashed(hexId(0x5a4)),
+    });
   });
 });
 
