@@ -23,6 +23,7 @@ import {
   type CatalogTagSelection,
 } from "./contracts.ts";
 import type { Cited, ProseDateOperation, ProseDraft } from "./prose-draft.ts";
+import type { MissedTag } from "./prose-repair.ts";
 import {
   browseSortIsDirectional,
   browseSortsFor,
@@ -45,7 +46,13 @@ export type ProseNoteCode =
   | "cannot_combine"
   | "not_available";
 
-export type ProseNote = { code: ProseNoteCode; message: string };
+/** `read` (read_as notes only): the member's words and what they became, so
+ * the UI can group one phrase's readings without parsing the message. */
+export type ProseNote = {
+  code: ProseNoteCode;
+  message: string;
+  read?: { from: string; to: string };
+};
 
 /** POST /api/browse/prose 200 body. `params` is a useParamsSetter patch
  * (null deletes a key), or null when nothing applies. */
@@ -144,16 +151,24 @@ type AppliedEntity = { entry: BrowseEntity; label: string };
 
 type Notes = {
   add(key: NoteKey, code: ProseNoteCode, message: string): ProseNote;
+  readAs(key: NoteKey, from: string, to: string): void;
   sorted(): ProseNote[];
 };
 
 function noteCollector(): Notes {
   const pending: { key: NoteKey; seq: number; note: ProseNote }[] = [];
+  const push = (key: NoteKey, note: ProseNote) => {
+    pending.push({ key, seq: pending.length, note });
+    return note;
+  };
   return {
-    add(key, code, message) {
-      const note = { code, message };
-      pending.push({ key, seq: pending.length, note });
-      return note;
+    add: (key, code, message) => push(key, { code, message }),
+    readAs(key, from, to) {
+      push(key, {
+        code: "read_as",
+        message: `Read '${from}' as ${to}`,
+        read: { from, to },
+      });
     },
     sorted() {
       return [...pending]
@@ -184,6 +199,11 @@ type MapContext = {
   nameFailed: Set<CatalogProvider>;
   linkUnconfigured: Set<CatalogProvider>;
   linkFailures: Map<CatalogProvider, { note: ProseNote; names: string[] }>;
+  /** Include/exclude values no tag anchors (the repair's input). */
+  missed: MissedTag[];
+  /** Folded names the repair picked from real tags: one that exists on only
+   * one provider anchors there instead of becoming free text. */
+  picked: ReadonlySet<string>;
 };
 
 function fold(s: string): string {
@@ -272,6 +292,7 @@ async function resolveTag(
   ctx: MapContext,
   value: string,
   key: NoteKey,
+  source: string,
 ): Promise<CatalogTagSelection | undefined> {
   const label = nf(value);
   if (value.length > LABEL_MAX || label === "") {
@@ -323,8 +344,34 @@ async function resolveTag(
       stashdb: stashdbRow.id.toLowerCase(),
     };
   }
+  // A repair pick is a real tag name: anchored on the provider that has it,
+  // so that provider filters natively (the other side treats it as absent,
+  // which an OR group of per-provider picks covers).
+  if (ctx.picked.has(label)) {
+    if (tpdbRow !== undefined)
+      return { name: tpdbRow.name.trim(), tpdb: tpdbRow.id.toLowerCase() };
+    if (stashdbRow !== undefined)
+      return {
+        name: stashdbRow.name.trim(),
+        stashdb: stashdbRow.id.toLowerCase(),
+      };
+  }
+  const miss = (kind: MissedTag["kind"]) => {
+    if (key[0] !== FIELD.include && key[0] !== FIELD.exclude) return;
+    ctx.missed.push({
+      field: key[0] === FIELD.include ? "include" : "exclude",
+      term: key[1],
+      alt: key[2],
+      value,
+      source,
+      kind,
+    });
+  };
   for (const rows of found.values()) {
     if (rows.some((r) => nf(r.name).includes(label))) {
+      // Applied, but only as free text that Browse checks page by page:
+      // still a repair candidate.
+      miss("free_text");
       return { name: value.trim() };
     }
   }
@@ -340,6 +387,7 @@ async function resolveTag(
       "no_matching_tag",
       `Not applied: ${value} (no matching tag)`,
     );
+    miss("no_match");
   }
   return undefined;
 }
@@ -363,9 +411,9 @@ async function appliedTag(
     );
     return undefined;
   }
-  const selection = await resolveTag(ctx, word.value, key);
+  const selection = await resolveTag(ctx, word.value, key, word.source);
   if (selection !== undefined && nf(selection.name) !== nf(word.source)) {
-    ctx.notes.add(key, "read_as", `Read '${word.source}' as ${selection.name}`);
+    ctx.notes.readAs(key, word.source, selection.name);
   }
   return selection;
 }
@@ -568,7 +616,7 @@ async function resolveNames(
     setId(entry, provider, id);
     const label = entry.name ?? n.value;
     if (nf(row.name) !== nf(n.source)) {
-      ctx.notes.add(key, "read_as", `Read '${n.source}' as ${name}`);
+      ctx.notes.readAs(key, n.source, name);
     }
     const linked = await linkedId(ctx, kind, provider, row.id, label, key);
     if (linked !== undefined && !otherIds.has(linked)) {
@@ -589,10 +637,14 @@ function jsonOrNull(list: readonly unknown[]): string | null {
 /**
  * Maps a validated draft to a browse patch that replaces every filter, plus
  * notes in draft order for everything that did not apply as written.
+ * `missed`, when given, collects the include/exclude values that matched no
+ * tag, for the grounded repair (prose-repair.ts).
  */
 export async function mapProseDraft(
   input: { prose: string; tab: BrowseTab; draft: ProseDraft },
   lookups: ProseLookups,
+  missed: MissedTag[] = [],
+  picked: ReadonlySet<string> = new Set(),
 ): Promise<ProseSearchResult> {
   const { draft, tab } = input;
   const notes = noteCollector();
@@ -608,6 +660,8 @@ export async function mapProseDraft(
     nameFailed: new Set(),
     linkUnconfigured: new Set(),
     linkFailures: new Map(),
+    missed,
+    picked: new Set([...picked].map((n) => nf(n))),
   };
   const blocked = (key: NoteKey, value: string) =>
     notes.add(
@@ -727,7 +781,7 @@ export async function mapProseDraft(
       year = { lo, hi };
       // "the 2010s" names neither bound, "2019" names its one bound.
       if ([lo, hi].some((n) => !new RegExp(`\\b${n}\\b`).test(source))) {
-        notes.add(key, "read_as", `Read '${source}' as ${display}`);
+        notes.readAs(key, source, display);
       }
     }
   }
@@ -754,7 +808,7 @@ export async function mapProseDraft(
     } else {
       date = { date: draft.date.date, operation };
       if (!source.includes(draft.date.date)) {
-        notes.add(key, "read_as", `Read '${source}' as ${display}`);
+        notes.readAs(key, source, display);
       }
     }
   }

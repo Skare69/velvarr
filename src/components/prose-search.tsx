@@ -217,13 +217,17 @@ export function ProseSearchField({
           {shown && (
             <>
               {!outcome.applied && <p className="cat-note">Nothing applied.</p>}
-              {outcome.notes.length > 0 && (
+              <ReadAsLine notes={outcome.notes} />
+              {outcome.notes.some((n) => n.read === undefined) && (
                 <ul className="prose-search-notes">
-                  {outcome.notes.map((n, i) => (
-                    <li key={`${n.code}:${i}`} className="cat-note">
-                      {n.message}
-                    </li>
-                  ))}
+                  {outcome.notes.map(
+                    (n, i) =>
+                      n.read === undefined && (
+                        <li key={`${n.code}:${i}`} className="cat-note">
+                          {n.message}
+                        </li>
+                      ),
+                  )}
                 </ul>
               )}
             </>
@@ -236,5 +240,35 @@ export function ProseSearchField({
         )}
       </div>
     </>
+  );
+}
+
+/** Every reading in one quiet line: "Read as  young guy → Twink · anal
+ * masturbation → Anal, Solo, Anal Toys". One phrase shows once, its
+ * readings joined, in note order; the reading is in ink, the member's own
+ * words stay muted. */
+function ReadAsLine({ notes }: { notes: ProseNote[] }) {
+  const byPhrase = new Map<string, string[]>();
+  for (const n of notes) {
+    if (n.read === undefined) continue;
+    const to = byPhrase.get(n.read.from) ?? [];
+    if (!to.includes(n.read.to)) to.push(n.read.to);
+    byPhrase.set(n.read.from, to);
+  }
+  if (byPhrase.size === 0) return null;
+  return (
+    <p className="cat-note prose-read-as">
+      <span className="prose-read-as-cap">Read as</span>
+      {[...byPhrase].map(([from, to], i) => (
+        <span key={from}>
+          {i > 0 && (
+            <span className="prose-read-as-sep" aria-hidden="true">
+              ·
+            </span>
+          )}
+          {from} → <b>{to.join(", ")}</b>
+        </span>
+      ))}
+    </p>
   );
 }

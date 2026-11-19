@@ -654,6 +654,10 @@ async function includeIdsForSide(
       let complete = true;
       let dropped = false;
       let allNative = true;
+      // Members whose label does not exist on this side: an OR group only
+      // proves the side can never match when EVERY member is absent; one
+      // absent member just adds nothing (TPDB "Anal" or StashDB "Anal Sex").
+      let absent = 0;
       for (const member of sel) {
         const direct = side === "tpdb" ? member.tpdb : member.stashdb;
         if (direct !== undefined) {
@@ -682,7 +686,10 @@ async function includeIdsForSide(
           side === "tpdb" ? "stashdb" : "tpdb",
           member.name,
         );
-        if (counterpart === undefined) return undefined;
+        if (counterpart === undefined) {
+          absent += 1;
+          continue;
+        }
         if (counterpart.native) {
           if (!union.includes(counterpart.id)) union.push(counterpart.id);
         } else {
@@ -692,6 +699,7 @@ async function includeIdsForSide(
           complete = false;
         }
       }
+      if (absent === sel.length) return undefined;
       terms.push({
         term: sel,
         expansion: { complete: complete && allNative, dropped, ids: union },

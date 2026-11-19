@@ -6472,6 +6472,48 @@ test("an or-group include matches either member, ANDs with plains, and drops mat
   );
 });
 
+test("an or-group whose other member is absent on a side still matches by its present member", async () => {
+  // The grounded describe repair builds groups like TPDB "Anal" or StashDB
+  // "Anal Sex": the StashDB-only member has no TPDB label, which must add
+  // nothing on TPDB, never mark the whole TPDB side as "cannot match".
+  const A = { id: 11, uuid: uuid(101), name: "Anal" };
+  const movieUrls: string[] = [];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [A],
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(10), "Anal Movie", "2024-03-01", [A])],
+          next: null,
+          total: 1,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: (_page, qs) => movieUrls.push(qs.toString()),
+    }),
+    async () => {
+      const page = await browseTitles(
+        planQuery({
+          type: "movie",
+          include: [
+            [
+              { name: A.name, tpdb: A.uuid },
+              { name: "Anal Sex", stashdb: uuid(202) },
+            ],
+          ],
+        }),
+        [],
+      );
+      assert.deepEqual(
+        page.items.map((d) => d.title),
+        ["Anal Movie"],
+      );
+      // The present member travels natively.
+      assert.match(movieUrls[0]!, /tags%5B11%5D=1|tags\[11\]=1/);
+    },
+  );
+});
+
 test("notices name the sources an entity filter skips or narrows, per tab", async () => {
   const stashOnlyPerformer = { stashdb: uuid(6), name: "Scene Only" };
   const sceneInputs: Record<string, unknown>[] = [];

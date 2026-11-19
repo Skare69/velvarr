@@ -16,6 +16,14 @@ import {
   proseSystemMessage,
   type ProseDraft,
 } from "../lib/prose-draft.ts";
+import {
+  parseProseRepair,
+  PROSE_REPAIR_SCHEMA,
+  proseRepairSystemMessage,
+  proseRepairUserMessage,
+  type RepairItem,
+  type RepairPicks,
+} from "../lib/prose-repair.ts";
 import { redactSecret, secretSpans } from "../lib/redact.ts";
 import { AppError, validateBaseUrl } from "./http.ts";
 
@@ -195,8 +203,8 @@ function draftRepeatsKey(
   );
 }
 
-/** The chat reply envelope → a validated draft, or a named error. */
-function draftFromReply(bytes: Uint8Array): ProseDraft {
+/** The chat reply envelope → the model's JSON answer, or a named error. */
+function answerFromReply(bytes: Uint8Array): unknown {
   let reply: unknown;
   try {
     reply = JSON.parse(new TextDecoder().decode(bytes));
@@ -224,26 +232,31 @@ function draftFromReply(bytes: Uint8Array): ProseDraft {
   const content = message?.content;
   if (typeof content !== "string")
     throw badReply("The chat model's reply holds no text.");
-  let draft: unknown;
   try {
-    draft = JSON.parse(content);
+    return JSON.parse(content);
   } catch {
     throw badReply("The chat model's reply is not JSON.");
   }
-  const parsed = parseProseDraft(draft);
+}
+
+/** The chat reply envelope → a validated draft, or a named error. */
+function draftFromReply(bytes: Uint8Array): ProseDraft {
+  const parsed = parseProseDraft(answerFromReply(bytes));
   if (!parsed.ok)
     throw badReply("The chat model's reply does not match the filter format.");
   return parsed.draft;
 }
 
-/** One chat request for a configured server. An HTTP failure never quotes
- * the server: an error body can echo the member's text. */
-async function postDraft(
+/** One chat request for a configured server: a system and a user message,
+ * answered under a strict json_schema. Returns the reply body. An HTTP
+ * failure never quotes the server: an error body can echo the member's
+ * text. */
+async function postChat(
   config: Pick<ProseChatConfiguration, "url" | "model">,
   apiKey: string | undefined,
-  text: string,
-  today: string,
-): Promise<ProseDraft> {
+  messages: { system: string; user: string },
+  schema: { name: string; schema: Record<string, unknown> },
+): Promise<Uint8Array> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json",
@@ -262,17 +275,17 @@ async function postDraft(
       body: JSON.stringify({
         model: config.model,
         messages: [
-          { role: "system", content: proseSystemMessage(today) },
-          { role: "user", content: text },
+          { role: "system", content: messages.system },
+          { role: "user", content: messages.user },
         ],
         ...(withTemperature ? { temperature: 0 } : {}),
         max_tokens: 1000,
         response_format: {
           type: "json_schema",
           json_schema: {
-            name: "browse_filters",
+            name: schema.name,
             strict: true,
-            schema: PROSE_DRAFT_SCHEMA,
+            schema: schema.schema,
           },
         },
       }),
@@ -307,7 +320,23 @@ async function postDraft(
   }
   if (!body.complete)
     throw badReply("The chat server's reply is larger than 256 KiB.");
-  const draft = draftFromReply(body.bytes);
+  return body.bytes;
+}
+
+async function postDraft(
+  config: Pick<ProseChatConfiguration, "url" | "model">,
+  apiKey: string | undefined,
+  text: string,
+  today: string,
+): Promise<ProseDraft> {
+  const draft = draftFromReply(
+    await postChat(
+      config,
+      apiKey,
+      { system: proseSystemMessage(today), user: text },
+      { name: "browse_filters", schema: PROSE_DRAFT_SCHEMA },
+    ),
+  );
   // Draft values reach notes, the URL and provider searches, so a reply that
   // repeats the key is refused whole: no part of it reaches anyone.
   if (apiKey && draftRepeatsKey(draft, text, apiKey))
@@ -332,6 +361,37 @@ export async function requestProseDraft(
     );
   }
   return postDraft(config, providers?.proseChatApiKey, text, today);
+}
+
+/** The grounded repair (docs/specs/prose-tag-repair.md): one more chat
+ * request with the missed phrases and their real candidate tags. Returns
+ * only picks that are candidates (parseProseRepair). Throws the same
+ * AppErrors as requestProseDraft; the caller keeps pass 1 on a throw. */
+export async function requestTagRepair(
+  providers: Providers,
+  request: string,
+  items: RepairItem[],
+): Promise<RepairPicks> {
+  const config = proseChatConfiguration(providers);
+  if (!config.configured) {
+    throw new AppError(
+      503,
+      "prose_search_not_configured",
+      "Natural-language search is off or not set up.",
+    );
+  }
+  const answer = answerFromReply(
+    await postChat(
+      config,
+      providers?.proseChatApiKey,
+      {
+        system: proseRepairSystemMessage(),
+        user: proseRepairUserMessage(request, items),
+      },
+      { name: "tag_picks", schema: PROSE_REPAIR_SCHEMA },
+    ),
+  );
+  return parseProseRepair(answer, items);
 }
 
 type ProseCheckResult =

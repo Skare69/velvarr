@@ -128,10 +128,15 @@ function decoded(
   return out;
 }
 
-const note = (code: ProseNote["code"], message: string): ProseNote => ({
-  code,
-  message,
-});
+// A read_as note also carries its words and reading as data (the UI groups
+// them); the fixtures spell them only once, in the message.
+const note = (code: ProseNote["code"], message: string): ProseNote => {
+  const read =
+    code === "read_as" ? /^Read '(.*)' as (.*)$/.exec(message) : null;
+  return read === null
+    ? { code, message }
+    : { code, message, read: { from: read[1]!, to: read[2]! } };
+};
 
 // Tags published on both providers. StashDB has no exact "outdoor".
 const TAGS: FakeOptions["tags"] = {
