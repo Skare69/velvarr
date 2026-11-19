@@ -156,6 +156,13 @@ summary:focus-visible,
   opacity: 0.45;
   cursor: not-allowed;
 }
+/* A pending action ("Saving…", "Searching…", aria-busy) is disabled against
+   a second click but is not unavailable: it keeps full contrast so its
+   label reads as progress, and the cursor says so. */
+.btn[aria-busy="true"]:disabled {
+  opacity: 1;
+  cursor: progress;
+}
 .btn-accent {
   background: var(--color-accent);
   border-color: var(--color-accent);
@@ -199,7 +206,11 @@ summary:focus-visible,
   padding: 0.55rem 0.75rem;
   border-radius: 7px;
   border: 1px solid var(--color-edge);
-  background: color-mix(in oklab, var(--color-canvas) 65%, var(--color-panel));
+  background-color: color-mix(
+    in oklab,
+    var(--color-canvas) 65%,
+    var(--color-panel)
+  );
   color: var(--color-ink);
   font-size: 0.9rem;
 }
@@ -230,6 +241,35 @@ summary:focus-visible,
 }
 .input[aria-invalid="true"]:focus {
   box-shadow: inset 0 0 0 1px var(--color-danger);
+}
+/* Every select draws one house chevron instead of the native arrow, with
+   0.875rem to its right edge and room for it in the padding, so the arrow
+   never crowds the border. Two 6px squares each carry one 1.5px diagonal
+   stroke in the ink token ("\" then "/"), forming a "v". Rules that tint a
+   field set background-color only, so they never erase the chevron. */
+select.input {
+  appearance: none;
+  padding-inline-end: 2.5rem;
+  background-image:
+    linear-gradient(
+      45deg,
+      transparent calc(50% - 0.75px),
+      var(--color-ink) calc(50% - 0.75px),
+      var(--color-ink) calc(50% + 0.75px),
+      transparent calc(50% + 0.75px)
+    ),
+    linear-gradient(
+      -45deg,
+      transparent calc(50% - 0.75px),
+      var(--color-ink) calc(50% - 0.75px),
+      var(--color-ink) calc(50% + 0.75px),
+      transparent calc(50% + 0.75px)
+    );
+  background-size: 6px 6px;
+  background-position:
+    right calc(0.875rem + 6px) center,
+    right 0.875rem center;
+  background-repeat: no-repeat;
 }
 .check {
   width: 1rem;
@@ -288,6 +328,72 @@ summary:focus-visible,
   color: var(--color-accent-text);
 }
 .segmented button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+/* On/off switch (role="switch"): the whole row is the 44px target, the
+   state word sits beside the track, so color never carries it alone. Off =
+   raised track on the edge hairline, muted thumb; On = the selected state's
+   magenta-soft track and accent edge (as a selected segment), accent thumb.
+   The thumb slides on the control-feedback tokens; the global
+   prefers-reduced-motion clamp stops the slide. */
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.switch-track {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  border: 1px solid var(--color-edge);
+  background: var(--color-raised);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.switch-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-muted);
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+.switch[aria-checked="true"] .switch-track {
+  background: var(--color-accent-soft);
+  border-color: color-mix(
+    in oklab,
+    var(--color-accent) 45%,
+    var(--color-panel)
+  );
+}
+.switch[aria-checked="true"] .switch-thumb {
+  background: var(--color-accent);
+  transform: translateX(20px);
+}
+.switch:hover:not(:disabled) .switch-track {
+  border-color: color-mix(in oklab, var(--color-edge) 60%, var(--color-ink));
+}
+.switch[aria-checked="true"]:hover:not(:disabled) .switch-track {
+  border-color: var(--color-accent);
+}
+.switch:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
@@ -778,6 +884,93 @@ body:has(.auth-page) {
 }
 .page-toolbar > div {
   min-width: 150px;
+}
+/* Shared by Browse and Requests (moved from catalog.css). The group caption
+   style also names the active-filter groups on Browse. */
+.filter-group-name {
+  margin-right: 0.125rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+/* Browse toolbar: each control (Type, Sort) in its own small panel with
+   its name inside, the same look as an active-filter group. 5px inner
+   radius + 5px padding = the panel's 10px (nested radii). 44px tall, so
+   the plain buttons beside the groups match it. */
+.toolbar-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: 100%;
+  min-width: 0;
+  padding: 5px 5px 5px 12px;
+  border: 1px solid var(--color-edge);
+  border-radius: 10px;
+  background: var(--color-panel);
+}
+.toolbar-group > .filter-group-name {
+  margin: 0;
+  white-space: nowrap;
+}
+.toolbar-group .segmented button,
+.toolbar-group .btn,
+.toolbar-group .input {
+  min-height: 32px;
+  border-radius: 5px;
+}
+/* One line per group: the panel draws the edge, the controls inside are
+   told apart by their raised fill and the 4px gaps, not by a second
+   hairline 5px inside the first. The selected segment keeps its accent
+   edge (it is the selection cue), and a focused select its accent ring. */
+.toolbar-group .segmented button:not([aria-pressed="true"]),
+.toolbar-group .btn,
+.toolbar-group .input:not(:focus) {
+  border-color: transparent;
+}
+.toolbar-group .input {
+  background-color: var(--color-raised);
+}
+/* Block padding 0: min-height alone sets 32px, so a group is exactly
+   32 + 2 x 5 + 2 x 1 = 44px, the height of the buttons beside it. */
+.toolbar-group .segmented button {
+  padding: 0 0.8rem;
+}
+.toolbar-group .btn {
+  padding: 0 0.6rem;
+}
+.toolbar-group .input {
+  width: auto;
+  padding-block: 0;
+}
+/* One width for every type's sort list, so switching All / Movies /
+   Scenes never moves the row. The group is at least 375px; the select
+   takes the room the caption and direction button leave. */
+.toolbar-group .sort-select {
+  flex: 1;
+  min-width: 0;
+}
+@media (min-width: 1024px) {
+  .toolbar-group.sort-group {
+    min-width: 375px;
+  }
+  .toolbar-group .sort-select {
+    min-width: 15.5rem;
+  }
+}
+.page-toolbar:has(> .toolbar-group) > .btn {
+  min-height: 44px;
+}
+@media (pointer: coarse) {
+  .toolbar-group .segmented button,
+  .toolbar-group .btn,
+  .toolbar-group .input {
+    min-height: 44px;
+  }
+  .page-toolbar:has(> .toolbar-group) > .btn {
+    min-height: 56px;
+  }
 }
 .mobile-bottom-nav {
   display: none;
@@ -1403,6 +1596,10 @@ a.media-card {
   flex: 1 1 280px;
   min-width: 0;
 }
+/* A closed card's Edit sits at the top right, level with the title row. */
+.settings-service-summary > .settings-service-action {
+  align-self: flex-start;
+}
 .settings-service-buttons,
 .settings-service-status {
   display: flex;
@@ -1478,25 +1675,6 @@ a.media-card {
   color: var(--color-danger);
   background: color-mix(in srgb, var(--color-danger) 12%, transparent);
 }
-.settings-select {
-  position: relative;
-}
-.settings-select > select {
-  appearance: none;
-  padding-inline-end: 2.5rem;
-}
-.settings-select::after {
-  content: "";
-  position: absolute;
-  inset-inline-end: 0.875rem;
-  top: 50%;
-  width: 8px;
-  height: 8px;
-  border-right: 1.5px solid var(--color-ink);
-  border-bottom: 1.5px solid var(--color-ink);
-  transform: translateY(-70%) rotate(45deg);
-  pointer-events: none;
-}
 .settings-service-editor {
   border-top: 1px solid var(--color-edge);
   margin-top: 18px;
@@ -1504,69 +1682,6 @@ a.media-card {
 }
 .library-detail {
   outline: none;
-}
-.library-detail-hero {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
-  border-radius: 12px;
-  min-height: 380px;
-  padding: 40px;
-  display: flex;
-  align-items: end;
-  gap: 30px;
-  background: var(--color-panel);
-}
-.library-backdrop {
-  position: absolute;
-  inset: 0;
-  z-index: -2;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  opacity: 0.36;
-}
-.library-detail-hero::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  background:
-    linear-gradient(
-      0deg,
-      var(--color-canvas),
-      color-mix(in srgb, var(--color-canvas) 25%, transparent)
-    ),
-    linear-gradient(
-      90deg,
-      color-mix(in srgb, var(--color-canvas) 44%, transparent),
-      transparent
-    );
-}
-.library-detail-poster {
-  width: 300px;
-  aspect-ratio: 2 / 3;
-  flex-shrink: 0;
-  overflow: hidden;
-  border-radius: 9px;
-  box-shadow: 0 10px 30px rgb(0 0 0 / 0.4);
-}
-.library-detail-copy {
-  min-width: 0;
-  max-width: 800px;
-}
-.library-detail-copy h2 {
-  font-size: clamp(1.8rem, 3.5vw, 3rem);
-  font-weight: 700;
-  line-height: 1.15;
-  margin: 16px 0 20px;
-}
-.library-overview {
-  margin: 30px 0;
-  max-width: 75ch;
-  font-size: 1rem;
-  color: var(--color-muted);
-  line-height: 1.8;
 }
 .auth-page {
   min-height: 100dvh;
@@ -1691,29 +1806,6 @@ a.media-card {
   .performer-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 20px 12px;
-  }
-  .library-detail-hero {
-    align-items: center;
-    flex-direction: column;
-    min-height: 0;
-    padding: 28px 20px;
-    gap: 16px;
-  }
-  .library-detail-poster {
-    width: 100%;
-    max-width: 240px;
-  }
-  .library-detail-copy {
-    align-self: stretch;
-    text-align: center;
-  }
-  /* Chip row and the watch button follow the centred title. */
-  .library-detail-copy > div {
-    justify-content: center;
-  }
-  .library-detail-copy h2 {
-    font-size: clamp(1.4rem, 6vw, 1.9rem);
-    margin: 12px 0 16px;
   }
   /* Wrapping put the active tab on its own row and split the underline;
    * scroll the strip instead. min-width: max-content + nowrap keep every

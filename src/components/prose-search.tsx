@@ -160,13 +160,33 @@ export function ProseSearchField({
             aria-describedby={statusNote ? noteId : undefined}
             onChange={(e) => setText(e.target.value)}
           />
+          {/* Clears the typed text only, never the applied filters; the
+              focus stays in the field for the next description. */}
+          {text !== "" && !running && (
+            <button
+              type="button"
+              className="prose-clear"
+              aria-label="Clear the description"
+              title="Clear the description"
+              disabled={!ready}
+              onClick={() => {
+                setText("");
+                inputRef.current?.focus();
+              }}
+            >
+              <Icon name="close" />
+            </button>
+          )}
         </div>
+        {/* The house pending pattern (DESIGN.md Buttons): the action names
+            what it is doing, with aria-busy, until the answer lands. */}
         <button
           type="submit"
           className="btn btn-accent"
           disabled={!ready || running || trimmed.length < 2}
+          aria-busy={running || undefined}
         >
-          Search
+          {running ? "Searching…" : "Search"}
         </button>
       </form>
       <div className="prose-search-status">
@@ -188,7 +208,12 @@ export function ProseSearchField({
           </p>
         )}
         <div aria-live="polite">
-          {running && <p className="cat-note">Reading your search…</p>}
+          {running && (
+            <p className="cat-note">
+              Reading your search with the AI service. This can take up to 30
+              seconds.
+            </p>
+          )}
           {shown && (
             <>
               {!outcome.applied && <p className="cat-note">Nothing applied.</p>}

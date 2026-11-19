@@ -20,6 +20,7 @@ import {
   imgSrc,
   ItemImage,
   messageOf,
+  ToolbarGroup,
   useCatalogSummary,
   useParamsSetter,
   useSession,
@@ -616,11 +617,8 @@ export function RequestsView() {
         imported into the library has nothing left to cancel.
       </p>
 
-      <div className="mb-6 flex flex-wrap items-end gap-3">
-        <div>
-          <span className="label" id="req-type-label">
-            Type
-          </span>
+      <div className="page-toolbar">
+        <ToolbarGroup caption="Type" captionId="req-type-label">
           <div
             role="group"
             aria-labelledby="req-type-label"
@@ -648,11 +646,8 @@ export function RequestsView() {
               Scenes
             </button>
           </div>
-        </div>
-        <div>
-          <label className="label" htmlFor="req-status">
-            Status
-          </label>
+        </ToolbarGroup>
+        <ToolbarGroup caption="Status" htmlFor="req-status">
           <select
             id="req-status"
             className="input"
@@ -669,11 +664,8 @@ export function RequestsView() {
               </option>
             ))}
           </select>
-        </div>
-        <div>
-          <span className="label" id="req-sort-label">
-            Sort
-          </span>
+        </ToolbarGroup>
+        <ToolbarGroup caption="Sort" captionId="req-sort-label">
           <div
             role="group"
             aria-labelledby="req-sort-label"
@@ -694,7 +686,7 @@ export function RequestsView() {
               Last modified
             </button>
           </div>
-        </div>
+        </ToolbarGroup>
       </div>
 
       {content}

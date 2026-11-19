@@ -13,12 +13,14 @@ import "./catalog.css";
 import { isFreeText, TagPicker } from "./tag-picker.tsx";
 import {
   api,
+  ApiError,
   artSrcSet,
   detailParams,
   ErrorPanel,
   GridSkeleton,
   Icon,
   InfoTip,
+  ToolbarGroup,
   imgSrc,
   intOr,
   ItemImage,
@@ -29,6 +31,7 @@ import {
   SceneCard,
   useApiGet,
   useGridColumns,
+  useNearEnd,
   wholeRows,
   useParamsSetter,
   useSession,
@@ -246,10 +249,7 @@ function SortSelect({
   const directional =
     sort !== "" && browseSortIsDirectional(type, sort as SortKey);
   return (
-    <div className="toolbar-group sort-group">
-      <label className="filter-group-name" htmlFor={id}>
-        Sort
-      </label>
+    <ToolbarGroup caption="Sort" htmlFor={id} className="sort-group">
       <div className="flex flex-1 gap-1">
         <select
           id={id}
@@ -284,7 +284,7 @@ function SortSelect({
           <Icon name={direction === "asc" ? "sort-asc" : "sort-desc"} />
         </button>
       </div>
-    </div>
+    </ToolbarGroup>
   );
 }
 
@@ -1244,6 +1244,10 @@ export function TitlesView() {
   const [acc, setAcc] = useState<BrowseAccum | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // query_too_broad is an answer, not an outage: the scan read its page
+  // limit without filling the page. A retry repeats the same scan, so that
+  // code gets its own wording and no Retry.
+  const [scanLimited, setScanLimited] = useState(false);
   const seqRef = useRef(0);
 
   /* Grid columns come from the rendered CSS tracks, so the page size is
@@ -1325,6 +1329,7 @@ export function TitlesView() {
       if (mode === "reset") setAcc(null);
       setLoading(true);
       setError(null);
+      setScanLimited(false);
       try {
         const page = await api<BrowsePage>(`${basePath}&page=${n}`);
         if (seqRef.current !== seq) return;
@@ -1371,6 +1376,7 @@ export function TitlesView() {
       } catch (e) {
         if (seqRef.current !== seq) return;
         setError(messageOf(e));
+        setScanLimited(e instanceof ApiError && e.code === "query_too_broad");
       } finally {
         if (seqRef.current === seq) setLoading(false);
       }
@@ -1383,21 +1389,9 @@ export function TitlesView() {
     void load(1, "reset");
   }, [load, reload]);
 
-  // Sentinel below the grid: the next page starts loading before the user
-  // reaches the bottom (800px early), so scrolling feels continuous.
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-  const [nearEnd, setNearEnd] = useState(false);
-  const hasGrid = acc !== null && acc.items.length > 0;
-  useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el || typeof IntersectionObserver === "undefined") return;
-    const io = new IntersectionObserver(
-      (entries) => setNearEnd(entries.some((e) => e.isIntersecting)),
-      { rootMargin: "800px 0px" },
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, [hasGrid]);
+  const [sentinelRef, nearEnd] = useNearEnd(
+    acc !== null && acc.items.length > 0,
+  );
 
   // Sentinel visible + more to have + idle: fetch the next page. The effect
   // re-runs after each append, so short pages chain until the grid fills
@@ -1703,10 +1697,7 @@ export function TitlesView() {
           {/* Rule 39: three exclusive types read at once as segments. Each
                 control sits in its own small panel with its name inside, the
                 same look as the active-filter groups below. */}
-          <div className="toolbar-group">
-            <span className="filter-group-name" id="titles-type-label">
-              Type
-            </span>
+          <ToolbarGroup caption="Type" captionId="titles-type-label">
             <div
               role="group"
               aria-labelledby="titles-type-label"
@@ -1723,7 +1714,7 @@ export function TitlesView() {
                 </button>
               ))}
             </div>
-          </div>
+          </ToolbarGroup>
           {/* TPDB filmography refuses search and order only where the
                 TPDB side runs; the Scenes tab runs the StashDB side. A
                 merged source offers only recency and duration. */}
@@ -1775,6 +1766,16 @@ export function TitlesView() {
         <div className="mt-4">
           {notConfigured !== null ? (
             <NotConfigured provider={notConfigured} />
+          ) : error !== null && acc === null && scanLimited ? (
+            <div className="panel p-5" role="status">
+              <h3 className="font-semibold">No match within the scan limit</h3>
+              <p className="mt-2 max-w-[75ch] text-sm text-muted">
+                Velvarr reads a limited number of pages from each provider and
+                found no title that matches every filter there. Remove a filter,
+                or pick tags from the list instead of typing them: a picked tag
+                narrows the search at the provider, typed text is checked here.
+              </p>
+            </div>
           ) : error !== null && acc === null ? (
             // A failed first page is an outage: an error, never an empty page.
             <ErrorPanel
@@ -1883,13 +1884,15 @@ export function TitlesView() {
                           "Retry" hid the server's diagnosis, e.g. the scan
                           ceiling's "narrow the filters". */}
                       <span>Couldn&rsquo;t load more titles: {error}</span>
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={() => void load(acc.page + 1, "more")}
-                      >
-                        Retry
-                      </button>
+                      {!scanLimited && (
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => void load(acc.page + 1, "more")}
+                        >
+                          Retry
+                        </button>
+                      )}
                     </div>
                   )}
                   <div ref={sentinelRef} aria-hidden="true" />

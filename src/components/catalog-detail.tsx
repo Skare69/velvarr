@@ -301,7 +301,10 @@ function MediaActions({
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function DetailBody({
+/** The title page: hero (poster, title, studio, actions, facts panel) and
+ * the detail sections. Shared with the library item page, so a matched
+ * library item reads exactly like its catalog title. */
+export function DetailBody({
   payload,
   target,
   onNavigate,

@@ -311,6 +311,30 @@ export const PREFERENCES_CHANGED = "velvarr:preferences-changed";
  * dispatchers. */
 export const OPEN_PREFERENCES = "velvarr:open-preferences";
 
+/** Endless scroll's sentinel: true while the element the returned ref is
+ * attached to (placed below a grid) is within 800px of the viewport, so the
+ * next page starts loading before the user reaches the bottom. `mounted`
+ * re-attaches the observer when the sentinel first renders (it exists only
+ * under a filled grid). Callers fetch on true, while idle and with more to
+ * have; the effect re-running after each append chains short pages. */
+export function useNearEnd(
+  mounted: boolean,
+): [RefObject<HTMLDivElement | null>, boolean] {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [near, setNear] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      (entries) => setNear(entries.some((e) => e.isIntersecting)),
+      { rootMargin: "800px 0px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [mounted]);
+  return [ref, near];
+}
+
 /** The items a grid shows while more pages exist: whole rows only, so a
  * column change (sidebar collapse, resize) never leaves a ragged last row
  * and never refetches. The held-back items show once the next page lands;
@@ -758,6 +782,41 @@ export function Icon({
     >
       <path d={ICON_PATHS[name]} />
     </svg>
+  );
+}
+
+/** One page-toolbar control in its own small panel with its name inside
+ * (DESIGN.md Toolbar groups; CSS `.toolbar-group` in globals.css). Every
+ * page toolbar uses it, so a layout change lands everywhere at once. Give
+ * `htmlFor` when the caption labels one field (a select, an input), or
+ * `captionId` when it titles a `role="group"` (segments) that points at it
+ * with aria-labelledby. */
+export function ToolbarGroup({
+  caption,
+  htmlFor,
+  captionId,
+  className,
+  children,
+}: {
+  caption: string;
+  htmlFor?: string;
+  captionId?: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className={className ? `toolbar-group ${className}` : "toolbar-group"}>
+      {htmlFor !== undefined ? (
+        <label className="filter-group-name" htmlFor={htmlFor}>
+          {caption}
+        </label>
+      ) : (
+        <span className="filter-group-name" id={captionId}>
+          {caption}
+        </span>
+      )}
+      {children}
+    </div>
   );
 }
 
