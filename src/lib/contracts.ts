@@ -425,6 +425,30 @@ export type SourceError = {
   message: string;
 };
 
+export type DuplicateMovieMatch = {
+  reference: CatalogReference;
+  title: string;
+  releaseDate?: string;
+  durationSeconds?: number;
+  studio?: string;
+  tpdbUrl: string;
+  rules: Array<"hash" | "metadata">;
+  evidence: {
+    sharedHashes?: { type: "OSHASH" | "PHASH"; hash: string }[];
+    sharedPerformerIds?: string[];
+    tagOverlap?: number;
+    posterDistance?: number;
+  };
+};
+
+/** A bounded check, not a complete scan of the TPDB catalog. */
+export type DuplicateMoviesResponse = {
+  selfUrl: string;
+  matches: DuplicateMovieMatch[];
+  incomplete: string[];
+  errors: SourceError[];
+};
+
 /** A shelf that could not be built at all: no items key, only the error. */
 export type ShelfError = { code: string; message: string };
 

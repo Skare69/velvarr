@@ -381,7 +381,7 @@ function envBaseUrl(
   return typeof value === "string" && value.trim() !== "" ? value : fallback;
 }
 
-function tpdbGet<T>(
+export function tpdbGet<T>(
   path: string,
   bypassCache = false,
   tokenOverride?: string,

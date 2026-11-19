@@ -10,6 +10,7 @@
 - **Performer follows** across both providers, with a Following view and a Discover rail.
 - **Preferences:** hidden tags and Discover shelf order for each account.
 - **Similar titles** for movies and scenes, and **Often appears with** for performers.
+- **Possible duplicate movies:** TPDB movie details compare hashes or cast, year, tags, duration, and poster similarity. Copy a manual report with both TPDB links.
 - **Update notice** when a newer GitHub release is available.
 - **Optional:** Discord notifications, and AI-assisted title matching through [TypeSafe](https://typesafe.ai) or an [Ollama](ai.md#ai-matching-with-ollama) decision model. AI only flags a near match for administrator review. It never marks a title as available.
 - **Optional natural-language search** on Browse: a member describes a search in plain words, and an [OpenAI-compatible chat server](ai.md#natural-language-search) that you set up writes a draft of the filters. Velvarr checks each tag, performer, and studio against the providers before it applies a filter, and lists each part that it did not apply.
@@ -44,3 +45,21 @@ credit row has an eligible poster, credits retain the canonical parent's
 `image`, then the credit row's `image`. The URL check still applies to each
 fallback. Credits use a valid canonical parent UUID, or the credit row UUID.
 They keep the credited name and one entry per UUID.
+
+## Possible duplicate TPDB movies
+
+The check runs after a TPDB movie detail loads. Playback and request actions do not wait for it.
+It checks one page for the first eligible performer and release year, plus up to five distinct file hashes.
+It compares at most ten candidate posters. Notes identify failed sources, missing fields, and limits.
+This is not a complete catalog scan.
+
+An exact same-type OSHASH or PHASH match qualifies independently of metadata.
+Otherwise, both casts must be non-empty and one cast must contain the other.
+Both dates must have the same year. At least half of the smaller tag set must match.
+Known durations must differ by no more than ten percent of the longer duration.
+Poster dHash distance must be at most ten bits out of 64.
+Titles and studios can differ, so translated releases can qualify.
+
+Hidden-tag preferences suppress candidates. A complete check without matches shows no notice.
+For a possible duplicate, select **Copy report** and submit the text on TPDB yourself.
+TPDB links require website sign-in. Velvarr never submits the report, merges records, or hides either record.

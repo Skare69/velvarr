@@ -32,6 +32,7 @@ import {
 } from "../src/server/artwork-store.ts";
 import { normalizeFacetName } from "../src/lib/contracts.ts";
 import type { IntegrationConfig, ProviderCheck } from "../src/lib/contracts.ts";
+import type { DuplicateMoviesResponse } from "../src/lib/contracts.ts";
 import {
   DISCOVER_CACHE_TTL_MS,
   releasesCacheKey,
@@ -672,6 +673,34 @@ const tpdbFx = {
   lastQuery: "",
 };
 
+const DUPLICATE_SOURCE = "2a2b3c4d-0000-0000-d001-000000000001";
+const DUPLICATE_CANDIDATE = "2a2b3c4d-0000-0000-d001-000000000002";
+let duplicateFixture:
+  | {
+      source: Record<string, unknown>;
+      candidates: Record<string, unknown>[];
+      failMetadata: boolean;
+      hashReads: number;
+    }
+  | undefined;
+
+function duplicateMovieRow(id: string): Record<string, unknown> {
+  return {
+    ...tpdbMovieRow(id),
+    title: id === DUPLICATE_SOURCE ? "Originaltitel" : "Translated title",
+    duration: 1000,
+    posters: { full: "https://cdn.theporndb.net/duplicate-poster.png" },
+    performers: [
+      {
+        id: TPDB_PERFORMER,
+        name: "Fixture performer",
+        parent: { id: TPDB_PERFORMER, _id: 123, name: "Fixture performer" },
+      },
+    ],
+    hashes: [],
+  };
+}
+
 // Distinct uuids for the bulk continuation filmography: 120 titles the
 // paging fixture serves five pages of, in the performer's own id band.
 const bulkContinuationId = (n: number) =>
@@ -843,6 +872,19 @@ async function tpdbHandler(
   // calls a route happens to issue around them.
   if (tpdbFx.failPaths.includes(p)) return json(res, 500, {});
   if (auth !== `Bearer ${tpdbToken}`) return json(res, 401, {});
+  if (duplicateFixture) {
+    if (p === `/movies/${DUPLICATE_SOURCE}`) {
+      return json(res, 200, { data: duplicateFixture.source });
+    }
+    if (p === "/movies") {
+      if (url.searchParams.has("hash")) duplicateFixture.hashReads += 1;
+      else if (duplicateFixture.failMetadata) return json(res, 503, {});
+      return json(res, 200, {
+        data: duplicateFixture.candidates,
+        links: { next: null },
+      });
+    }
+  }
   if (p === "/user") return json(res, 200, { data: { name: "Fixture TPDB" } });
   if (p === "/movies") {
     if (
@@ -11431,6 +11473,151 @@ test("browse caps entity entries, keeps the old one-id URL, and reports notices 
     stashPage.items.every((item) => refOf(item)?.provider === "stashdb"),
     "only the knowing source ran",
   );
+});
+
+test("movie duplicates: session boundary, translated pairs, vetoes, hash caps and hidden tags", async (t) => {
+  await boot();
+  const cookie = await loginAs("member");
+  const path = `/api/catalog/tpdb/movie/${DUPLICATE_SOURCE}/duplicates`;
+  const before = tpdbFx.calls;
+  assert.equal((await call("GET", path)).status, 401);
+  for (const reference of [
+    `tpdb/scene/${DUPLICATE_SOURCE}`,
+    `stashdb/movie/${DUPLICATE_SOURCE}`,
+    `stashdb/scene/${DUPLICATE_SOURCE}`,
+    "tpdb/movie/not-a-uuid",
+  ]) {
+    const res = await call("GET", `/api/catalog/${reference}/duplicates`, {
+      cookie,
+    });
+    assert.equal(res.status, 400);
+    await errorShape(res);
+  }
+  assert.equal(tpdbFx.calls, before);
+  const realFetch = globalThis.fetch;
+  t.mock.method(
+    globalThis,
+    "fetch",
+    (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      return realFetch(
+        url === "https://cdn.theporndb.net/duplicate-poster.png"
+          ? `${tpdbUrl}/duplicate-poster.png`
+          : input,
+        init,
+      );
+    },
+  );
+  artworkSources.set(
+    "/duplicate-poster.png",
+    await sharp({
+      create: { width: 32, height: 48, channels: 3, background: "#506070" },
+    })
+      .png()
+      .toBuffer(),
+  );
+  const reset = () => {
+    resetMetaCache();
+    duplicateFixture = {
+      source: duplicateMovieRow(DUPLICATE_SOURCE),
+      candidates: [duplicateMovieRow(DUPLICATE_CANDIDATE)],
+      failMetadata: false,
+      hashReads: 0,
+    };
+    return duplicateFixture;
+  };
+  const check = async () => {
+    const response = await call("GET", path, { cookie });
+    assert.equal(response.status, 200);
+    return (await response.json()) as DuplicateMoviesResponse;
+  };
+  try {
+    await t.test(
+      "different titles and studios match, but self and repeated rows do not repeat",
+      async () => {
+        const fx = reset();
+        fx.candidates[0]!.site = {
+          name: "English distributor",
+          uuid: TPDB_STUDIO,
+        };
+        fx.candidates.push(fx.source, fx.candidates[0]!);
+        const result = await check();
+        assert.deepEqual(
+          result.matches.map((m) => m.reference.id),
+          [DUPLICATE_CANDIDATE],
+        );
+        assert.deepEqual(result.matches[0]!.rules, ["metadata"]);
+        assert.equal(result.matches[0]!.evidence.posterDistance, 0);
+        assert.equal(
+          result.selfUrl,
+          `https://theporndb.net/movies/${DUPLICATE_SOURCE}`,
+        );
+        assert.deepEqual(result.errors, []);
+        assert.equal(tpdbFx.imageAuth, "", "image requests carry no API token");
+      },
+    );
+    for (const [label, patch] of [
+      ["empty cast", { performers: [] }],
+      ["other cast", { performers: [{ id: TPDB_PERFORMER3, name: "Other" }] }],
+      ["other year", { date: "2023-02-03" }],
+      ["missing date", { date: null }],
+      ["no tags", { tags: [] }],
+      ["other tags", { tags: [{ id: 71, uuid: TAG_B, name: "Other tag" }] }],
+      ["duration veto", { duration: 899 }],
+      ["missing poster", { posters: {}, background: {} }],
+    ] as const) {
+      await t.test(label, async () => {
+        const fx = reset();
+        Object.assign(fx.candidates[0]!, patch);
+        assert.deepEqual((await check()).matches, []);
+      });
+    }
+    await t.test(
+      "hash matches survive metadata source failure and five-hash cap",
+      async () => {
+        const fx = reset();
+        const hashes = Array.from({ length: 6 }, (_, n) => ({
+          type: "OSHASH",
+          hash: (n + 10).toString(16).padStart(16, "0"),
+        }));
+        fx.source.hashes = hashes;
+        fx.candidates[0]!.hashes = [
+          { ...hashes[0], hash: hashes[0]!.hash.toUpperCase() },
+        ];
+        fx.failMetadata = true;
+        const result = await check();
+        assert.deepEqual(
+          result.matches.map((m) => m.reference.id),
+          [DUPLICATE_CANDIDATE],
+        );
+        assert.ok(result.matches[0]!.rules.includes("hash"));
+        assert.equal(fx.hashReads, 5);
+        assert.ok(
+          result.incomplete.some((reason) => reason.includes("5 of 6")),
+        );
+        assert.ok(result.errors.some((error) => error.provider === "tpdb"));
+      },
+    );
+    await t.test("hidden matches never reach the caller", async () => {
+      reset();
+      const save = await call("PATCH", "/api/me/preferences", {
+        cookie,
+        body: { hiddenTags: [{ name: "Fixture Tag A", tpdb: TAG_A }] },
+      });
+      assert.equal(save.status, 200);
+      const result = await check();
+      assert.deepEqual(result.matches, []);
+      assert.ok(!JSON.stringify(result).includes(DUPLICATE_CANDIDATE));
+    });
+  } finally {
+    duplicateFixture = undefined;
+    resetMetaCache();
+    const restored = await call("PATCH", "/api/me/preferences", {
+      cookie,
+      body: { hiddenTags: [] },
+    });
+    assert.equal(restored.status, 200);
+  }
 });
 
 test("related titles: admission, reference validation before upstream, rank vocabulary", async () => {

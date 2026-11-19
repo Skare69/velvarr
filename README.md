@@ -56,7 +56,12 @@ docker compose up -d
 - Catalogs and one Browse grid across TPDB and StashDB: movies, scenes, performers, and studios, with filters that the URL holds.
 - Requests with administrator or moderator approval, crash-safe acquisition into Whisparr, and per-user Jellyfin watch links.
 - Performer follows, per-account preferences, similar titles, and an update notice for new releases.
+- Possible duplicate TPDB movies on the detail page, with evidence and a manual report to copy. Velvarr never submits reports to TPDB.
 - Optional: Discord notifications, AI-assisted title matching, and natural-language search.
+
+Movie detail with synthetic metadata:
+
+![Possible duplicate TPDB movie with manual report controls](.github/assets/screenshot.png)
 
 ## Learn more
 

@@ -49,6 +49,7 @@ import { seedDetail } from "../lib/names";
 // Pure URL policy from lib: the runtime graph stays one-way (catalog.tsx
 // renders catalog-detail.tsx, never the reverse).
 import { browseFilterHref, type BrowseFilter } from "../lib/browse-url";
+import { MovieDuplicates } from "./movie-duplicates";
 
 export type DetailTarget = {
   provider: CatalogProvider;
@@ -585,6 +586,9 @@ export function DetailSections({
   }, [studioRef, tagBrowse, d, target.provider]);
   return (
     <>
+      {d.reference.provider === "tpdb" && d.reference.kind === "movie" && (
+        <MovieDuplicates key={d.reference.id} movie={d} />
+      )}
       <div className="cat-cols">
         <div>
           {(d.description || d.aliases.length > 0) && (
