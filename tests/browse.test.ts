@@ -45,6 +45,7 @@ import {
 } from "../src/lib/browse-entities.ts";
 import {
   browseTitles,
+  includeIdsForSide,
   parseBrowseQuery,
   planBrowseSides,
   searchBrowseTags,
@@ -3070,6 +3071,94 @@ test("a multi-match free-text AND with no singleton sends the smallest expansion
       assert.equal(page.total, 1);
       assert.equal(page.totalCountKnown, true);
       assert.deepEqual(page.errors, []);
+    },
+  );
+});
+
+// --- the or-group union at walk scale: VELV-241 perf regression ---
+
+// 25 one-letter terms are the route's group cap (MAX_HIDDEN_TAGS) and the
+// listing walk caps at 5000 rows, so this is the worst union a legal group
+// can build: the deduped set holds all 5000 ids. The union build must keep
+// the same deduped set and push order after the Set rewrite (VELV-241: the
+// Array.includes dedupe blocked the loop ~565 ms on this shape).
+const UNION_LETTERS = "abcdefghijklmnopqrstuvwxy".split("");
+
+function unionListingPages(buildName: (i: number) => string): TpdbPage[] {
+  const rows = Array.from({ length: 5000 }, (_, i) => ({
+    id: i + 1,
+    uuid: uuid(i),
+    name: buildName(i),
+  }));
+  // Page 50 ends with next: null, so the walk completes at exactly the
+  // 5000-row cap instead of degrading to an incomplete listing.
+  return Array.from({ length: 50 }, (_, p) => ({
+    rows: rows.slice(p * 100, p * 100 + 100),
+    next: p === 49 ? null : `next-${p}`,
+    total: 5000,
+  }));
+}
+
+test("an or-group of 25 one-letter terms over a 5000-row listing keeps the deduped union ids and routes past the native cap locally", async () => {
+  // Every row matches exactly one letter, so the union holds all 5000 ids:
+  // past TAG_FILTER_ID_CAP, the whole group filters locally.
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [],
+      scenes: { count: 0, rows: [] },
+      tpdbTagPages: unionListingPages((i) => `${UNION_LETTERS[i % 25]}${i}`),
+    }),
+    async () => {
+      const group = UNION_LETTERS.map((name) => ({ name }));
+      const resolved = await includeIdsForSide([group], "tpdb", true);
+      assert.deepEqual(resolved, {
+        allOf: [],
+        anyOf: [],
+        localInclude: [group],
+        localFree: [group],
+        freeTextNative: false,
+        fanoutIds: [],
+      });
+    },
+  );
+  resetMetaCache();
+  // Overlapping rows: "ab0" matches both "a" and "b", so the union dedupe
+  // skips repeats; the 25 distinct ids sit at TAG_FILTER_ID_CAP and ride the
+  // native any-of. The pinned order is the union's first-seen order: a's
+  // rows (0, 24), then each later letter's one new row (1..23).
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [],
+      scenes: { count: 0, rows: [] },
+      tpdbTagPages: unionListingPages((i) =>
+        i < 25
+          ? `${UNION_LETTERS[i]}${UNION_LETTERS[(i + 1) % 25]}${i}`
+          : `z${i}`,
+      ),
+    }),
+    async () => {
+      const group = UNION_LETTERS.map((name) => ({ name }));
+      const resolved = await includeIdsForSide([group], "tpdb", true);
+      assert.ok(resolved !== undefined);
+      assert.deepEqual(resolved.anyOf, [
+        uuid(0),
+        uuid(24),
+        ...Array.from({ length: 23 }, (_, k) => uuid(k + 1)),
+      ]);
+      assert.deepEqual(resolved, {
+        allOf: [],
+        anyOf: [
+          uuid(0),
+          uuid(24),
+          ...Array.from({ length: 23 }, (_, k) => uuid(k + 1)),
+        ],
+        localInclude: [],
+        localFree: [],
+        freeTextNative: true,
+        fanoutIds: [],
+      });
     },
   );
 });

@@ -643,7 +643,7 @@ type ResolvedIncludes = {
  * while the other terms keep filtering locally. A lookup that fails
  * throws; browseTitles records the side as a failed source instead of
  * reading the outage as absence. */
-async function includeIdsForSide(
+export async function includeIdsForSide(
   selections: IncludeTerm[],
   side: "tpdb" | "stashdb",
   expandFree: boolean,
@@ -660,6 +660,12 @@ async function includeIdsForSide(
     if (Array.isArray(sel)) {
       // "or" group: build one TagExpansion from the members' native ids.
       const union: string[] = [];
+      // Membership Set in lockstep with the ordered array: expansion bursts
+      // push thousands of ids (the walk caps at 5000), and the old
+      // Array.includes dedupe scanned the whole union on every push —
+      // VELV-241 measured a 565 ms loop block for a 25-term one-letter
+      // group. The Set keeps the deduped set and push order identical.
+      const unionIds = new Set<string>();
       let complete = true;
       let dropped = false;
       let allNative = true;
@@ -670,7 +676,10 @@ async function includeIdsForSide(
       for (const member of sel) {
         const direct = side === "tpdb" ? member.tpdb : member.stashdb;
         if (direct !== undefined) {
-          if (!union.includes(direct)) union.push(direct);
+          if (!unionIds.has(direct)) {
+            unionIds.add(direct);
+            union.push(direct);
+          }
           continue;
         }
         if (isFreeTextSelection(member)) {
@@ -683,7 +692,10 @@ async function includeIdsForSide(
           }
           const expansion = await expandCatalogTagTerm(side, member.name);
           for (const id of expansion.ids) {
-            if (!union.includes(id)) union.push(id);
+            if (!unionIds.has(id)) {
+              unionIds.add(id);
+              union.push(id);
+            }
           }
           complete = complete && expansion.complete;
           dropped = dropped || expansion.dropped;
@@ -700,7 +712,10 @@ async function includeIdsForSide(
           continue;
         }
         if (counterpart.native) {
-          if (!union.includes(counterpart.id)) union.push(counterpart.id);
+          if (!unionIds.has(counterpart.id)) {
+            unionIds.add(counterpart.id);
+            union.push(counterpart.id);
+          }
         } else {
           // This member can only match locally, which makes the whole
           // group local: a partial union would silently drop titles.
