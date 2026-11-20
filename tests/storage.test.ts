@@ -23,6 +23,7 @@ import { rmTempDir, testTempDir } from "./setup.ts";
 import { AppError } from "../src/server/http.ts";
 import type {
   Account,
+  AcquisitionRecord,
   CatalogDetail,
   CatalogReference,
   CatalogTagSelection,
@@ -1772,7 +1773,7 @@ test("submission attempts are CAS-safe and recover to uncertain after restart", 
     done.id,
     { unavailable: true, reason: "whisparr timeout" },
     second.claimToken,
-  );
+  ) as AcquisitionRecord;
   assert.equal(outage.state, "monitoring");
   assert.equal(outage.lastError, "whisparr timeout");
   assert.equal(outage.lastObservedAt, null);
@@ -1780,7 +1781,7 @@ test("submission attempts are CAS-safe and recover to uncertain after restart", 
     done.id,
     { state: "downloading" },
     second.claimToken,
-  );
+  ) as AcquisitionRecord;
   assert.equal(observed.state, "downloading");
   assert.ok(observed.lastObservedAt);
   assert.equal(observed.lastError, null);
@@ -2462,12 +2463,12 @@ test("observations update changed facts; a proven absence is distinct from an ou
   const first = storage.recordAcquisitionObservation(work.id, {
     state: "monitoring",
     item: { whisparrId: 5, path: "/data/old", title: "Old" },
-  });
+  }) as AcquisitionRecord;
   assert.equal(first.whisparrPath, "/data/old");
   const moved = storage.recordAcquisitionObservation(work.id, {
     state: "monitoring",
     item: { whisparrId: 6, path: "/data/new", title: "New" },
-  });
+  }) as AcquisitionRecord;
   assert.equal(moved.whisparrPath, "/data/new", "a changed path is persisted");
   assert.ok(moved.lastObservedAt);
 
@@ -2475,7 +2476,7 @@ test("observations update changed facts; a proven absence is distinct from an ou
   const outage = storage.recordAcquisitionObservation(work.id, {
     unavailable: true,
     reason: "whisparr timeout",
-  });
+  }) as AcquisitionRecord;
   assert.equal(outage.whisparrPath, "/data/new");
   assert.equal(outage.lastObservedAt, moved.lastObservedAt);
   assert.ok(outage.lastErrorAt);
@@ -2502,7 +2503,7 @@ test("observations update changed facts; a proven absence is distinct from an ou
   const healed = storage.recordAcquisitionObservation(work.id, {
     state: "downloading",
     item: { whisparrId: 6, path: "/data/new" },
-  });
+  }) as AcquisitionRecord;
   assert.equal(
     storage.isObservationStale(
       healed,
@@ -2517,7 +2518,7 @@ test("observations update changed facts; a proven absence is distinct from an ou
   const absent = storage.recordAcquisitionObservation(work.id, {
     absent: true,
     reason: "whisparr no longer has this identity",
-  });
+  }) as AcquisitionRecord;
   assert.equal(
     storage.hasAuthoritativeAbsence(absent),
     true,
@@ -2538,7 +2539,7 @@ test("observations update changed facts; a proven absence is distinct from an ou
   const outage2 = storage.recordAcquisitionObservation(work.id, {
     unavailable: true,
     reason: "down again",
-  });
+  }) as AcquisitionRecord;
   assert.equal(
     storage.hasAuthoritativeAbsence(outage2),
     true,
@@ -2565,7 +2566,7 @@ test("observations persist monitored and progress facts without inventing or lea
     state: "downloading",
     item: { whisparrId: 7, path: "/data/dl", monitored: true },
     progress: { percent: 42, timeleft: "00:10:00" },
-  });
+  }) as AcquisitionRecord;
   assert.deepEqual(started.progress, { percent: 42, timeleft: "00:10:00" });
   assert.equal(started.whisparrMonitored, true);
   assert.equal(started.whisparrPath, "/data/dl");
@@ -2575,7 +2576,7 @@ test("observations persist monitored and progress facts without inventing or lea
   const outage = storage.recordAcquisitionObservation(work.id, {
     unavailable: true,
     reason: "whisparr timeout",
-  });
+  }) as AcquisitionRecord;
   assert.equal(outage.state, "downloading");
   assert.deepEqual(outage.progress, { percent: 42, timeleft: "00:10:00" });
   assert.equal(outage.whisparrMonitored, true);
@@ -2587,7 +2588,7 @@ test("observations persist monitored and progress facts without inventing or lea
     state: "downloading",
     item: { whisparrId: 7, path: "/data/dl" },
     progress: { percent: 90, timeleft: "00:02:00" },
-  });
+  }) as AcquisitionRecord;
   assert.equal(later.whisparrMonitored, true, "omitted monitored is preserved");
   assert.deepEqual(later.progress, { percent: 90, timeleft: "00:02:00" });
 
@@ -2596,14 +2597,14 @@ test("observations persist monitored and progress facts without inventing or lea
     state: "downloading",
     item: { whisparrId: 7, path: "/data/dl", monitored: false },
     progress: { percent: 95, timeleft: "00:01:00" },
-  });
+  }) as AcquisitionRecord;
   assert.equal(unmonitored.whisparrMonitored, false);
 
   // Progress never outlives its download.
   const done = storage.recordAcquisitionObservation(work.id, {
     state: "imported",
     item: { whisparrId: 7, path: "/data/dl", monitored: false },
-  });
+  }) as AcquisitionRecord;
   assert.equal(done.state, "imported");
   assert.equal(done.progress, null, "a finished download leaves no progress");
   assert.equal(done.whisparrMonitored, false);
@@ -2620,7 +2621,7 @@ test("observations persist monitored and progress facts without inventing or lea
       state: "downloading",
       item: { whisparrId: 7, path: "/data/dl" },
       progress,
-    });
+    }) as AcquisitionRecord;
     assert.deepEqual(
       bad.progress,
       { percent: null, timeleft: "00:01:00" },
@@ -2631,13 +2632,13 @@ test("observations persist monitored and progress facts without inventing or lea
     state: "downloading",
     item: { whisparrId: 7, path: "/data/dl" },
     progress: { percent: 50, timeleft: 7 as unknown as string },
-  });
+  }) as AcquisitionRecord;
   assert.deepEqual(badTimeleft.progress, { percent: 50, timeleft: null });
   const monitoring = storage.recordAcquisitionObservation(work.id, {
     state: "monitoring",
     item: { whisparrId: 7, path: "/data/dl" },
     progress: { percent: 50, timeleft: "00:01:00" },
-  });
+  }) as AcquisitionRecord;
   assert.equal(
     monitoring.progress,
     null,

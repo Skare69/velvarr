@@ -391,18 +391,27 @@ async function processOne(
     !whisparrReady(config) ||
     (item.state === "unsent" && !deliveryReady(config))
   ) {
-    storage.recordAcquisitionObservation(item.id, {
-      unavailable: true,
-      reason: "whisparr delivery is disabled or unconfigured",
-    });
+    if (
+      storage.recordAcquisitionObservation(item.id, {
+        unavailable: true,
+        reason: "whisparr delivery is disabled or unconfigured",
+      }) === null
+    ) {
+      // Withdrawn between listing and gating: skip, not an error.
+      return;
+    }
     summary.blocked++;
     return;
   }
   if (item.state === "unsent" && !storage.hasEligibleRequester(item.media)) {
-    storage.recordAcquisitionObservation(item.id, {
-      unavailable: true,
-      reason: "no eligible requester remains for this acquisition",
-    });
+    if (
+      storage.recordAcquisitionObservation(item.id, {
+        unavailable: true,
+        reason: "no eligible requester remains for this acquisition",
+      }) === null
+    ) {
+      return;
+    }
     summary.blocked++;
     return;
   }

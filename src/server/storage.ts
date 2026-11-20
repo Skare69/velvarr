@@ -2960,12 +2960,14 @@ export function completeSubmission(
 /** A successful observation updates recorded state and the last-observed
  * fact; a proven absence clears the recorded facts while keeping state and
  * the last observation; an unavailable/error check never touches state, the
- * last observation, or the facts. */
+ * last observation, or the facts. Returns null when no row matched: the
+ * row was withdrawn between listing and gating, and the caller skips it
+ * instead of failing. */
 export function recordAcquisitionObservation(
   id: string,
   observation: AcquisitionObservation,
   claimToken?: string,
-): AcquisitionRecord {
+): AcquisitionRecord | null {
   open();
   const now = Date.now();
   const claim = claimToken ?? null;
@@ -3042,6 +3044,12 @@ export function recordAcquisitionObservation(
       claim,
     );
   }
+  const row = S().getAcquisition.get(id) as AcquisitionRow | undefined;
+  if (row === undefined) {
+    // Withdrawn between listing and gating: no row matched, so there is
+    // nothing left to observe.
+    return null;
+  }
   if (claim !== null && res.changes === 0) {
     throw new AppError(
       409,
@@ -3049,7 +3057,7 @@ export function recordAcquisitionObservation(
       "claim changed; this worker is stale",
     );
   }
-  return rowToAcquisition(S().getAcquisition.get(id) as AcquisitionRow);
+  return rowToAcquisition(row);
 }
 
 /** True when the recorded item facts have aged past the staleness ceiling

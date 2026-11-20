@@ -1099,6 +1099,41 @@ test("cancellation suppresses only undispatched work; sent and in-flight work su
   assert.equal(probe(freshId).state, "monitoring");
 });
 
+test("a cancel landing between listing and gating skips the row instead of erroring", async (t) => {
+  const owner = boot();
+  approve(owner.id, MOVIE_A);
+  const requestB = storage.createRequest(owner.id, MOVIE_B);
+  storage.decideRequest(owner, requestB.id, "approved");
+  const idA = workId(MOVIE_A);
+  const idB = workId(MOVIE_B);
+
+  // Deterministic dispatch order: A is strictly the oldest due work, so its
+  // add POST is always first (see the contention test).
+  probeDb ??= new DatabaseSync(join(dir, "velvarr.sqlite"));
+  probeDb
+    .prepare("UPDATE acquisitions SET due_at = due_at - 1000 WHERE id = ?")
+    .run(idA);
+
+  // The cancel lands while A's add is in flight: B's request is withdrawn
+  // and its unsent row is deleted before the pass reaches B.
+  const logged: string[] = [];
+  const logError = t.mock.method(console, "error", (...args: unknown[]) => {
+    logged.push(args.map(String).join(" "));
+  });
+  onAdd = () => {
+    storage.cancelRequest(owner, requestB.id);
+  };
+
+  const summary = await acquisition.runDueWork();
+  assert.deepEqual(logged, [], "the pass logs nothing for a withdrawn row");
+  assert.equal(summary.errors, 0, "a withdrawn row is a skip, not an error");
+  assert.equal(summary.blocked, 0, "a withdrawn row is not counted blocked");
+  assert.equal(summary.delivered, 1);
+  assert.equal(storage.getAcquisition(idB), null, "the row stays withdrawn");
+  assert.equal(probe(idA).state, "monitoring");
+  logError.mock.restore();
+});
+
 test("changed facts persist; a proven absence is authoritative while an outage is not", async () => {
   const owner = boot();
   approve(owner.id, MOVIE_A);
