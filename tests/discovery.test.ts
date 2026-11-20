@@ -187,7 +187,13 @@ test("the read-through cache serves fresh entries and rebuilds stale ones", asyn
   await withEnv({ ...NO_PROVIDERS }, async () =>
     assert.equal(await cachedFollowed("acct-ttl", []), null),
   );
-  const key = followedKey("acct-ttl", fingerprint([], {}));
+  // The mirror key is computed under the same provider env as the build:
+  // an ambient TPDB or StashDB token otherwise fingerprints the mirror
+  // differently from the real cachedFollowed call inside withEnv.
+  const key = (await withEnv({ ...NO_PROVIDERS }, async () => {
+    assert.equal(await cachedFollowed("acct-ttl", []), null);
+    return followedKey("acct-ttl", fingerprint([], {}));
+  })) as string;
   assert.ok(getDiscoverCache(key), "the cold build wrote the documented key");
 
   // A fresh entry is served without a rebuild: poison the payload and the
