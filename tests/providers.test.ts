@@ -42,6 +42,7 @@ import {
   identityLinkKey,
 } from "../src/server/identity-links.ts";
 import {
+  ARTWORK_FETCH_CONCURRENCY,
   credentialFingerprint,
   expandCatalogTagTerm,
   fetchProviderArtwork,
@@ -2529,6 +2530,64 @@ test("artwork fetch: same URL twice hits upstream once; resetMetaCache clears th
     const third = await fetchProviderArtwork(url);
     assert.equal(upstreamCount, 2);
     assert.deepEqual([...third.bytes], [...first.bytes]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("artwork fetch: a global slot cap bounds upstream fetches in flight", async () => {
+  // VELV-215: one member can spend ARTWORK_BURST misses on distinct URLs at
+  // once, and each in-flight fetch buffers up to IMAGE_BYTE_CAP twice in
+  // readBounded. The semaphore keeps the resident worst case at
+  // ARTWORK_FETCH_CONCURRENCY × 2 × cap instead of miss burst × 2 × cap.
+  // Distinct held URLs prove both directions: batches run in parallel
+  // (maxActive > 1) and the cap holds (maxActive ≤ cap) while every fetch
+  // still answers with the right bytes and every distinct URL charges one
+  // miss.
+  let upstreamCount = 0;
+  let active = 0;
+  let maxActive = 0;
+  const fixture = await startFixture((req, res) => {
+    if (!req.url?.startsWith("/capped/")) {
+      sendBytes(res, 404, "nope", "text/plain");
+      return;
+    }
+    upstreamCount++;
+    active++;
+    maxActive = Math.max(maxActive, active);
+    // Real hold: responses must stay open over HTTP so the fetches are
+    // genuinely in flight, which no fake clock can drive over live sockets
+    // (same exception as the in-flight flood test near the api suite).
+    setTimeout(() => {
+      active--;
+      sendBytes(res, 200, PNG_BYTES, "image/png");
+    }, 60);
+  });
+  try {
+    const total = ARTWORK_FETCH_CONCURRENCY * 2 + 8;
+    const misses: number[] = [];
+    const contentTypes = await Promise.all(
+      Array.from({ length: total }, (_, i) =>
+        fetchProviderArtwork(`${fixture.origin}/capped/${i}`, {
+          onMiss: () => misses.push(i),
+        }).then(
+          (entry) => entry.contentType,
+          () => "error",
+        ),
+      ),
+    );
+    assert.equal(upstreamCount, total);
+    assert.equal(misses.length, total);
+    assert.equal(misses.length, new Set(misses).size, "one miss per URL");
+    assert.ok(
+      contentTypes.every((c) => c === "image/png"),
+      "every capped fetch must answer with the image",
+    );
+    assert.ok(maxActive > 1, "the cap must not serialize fetches");
+    assert.ok(
+      maxActive <= ARTWORK_FETCH_CONCURRENCY,
+      `fixture saw ${maxActive} concurrent artwork fetches, cap is ${ARTWORK_FETCH_CONCURRENCY}`,
+    );
   } finally {
     await fixture.close();
   }

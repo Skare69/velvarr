@@ -148,6 +148,37 @@ const artworkInFlight = new Map<
   Promise<{ bytes: Uint8Array; contentType: string }>
 >();
 
+// Artwork fetches also share one global concurrency cap (VELV-215, v0.44.0
+// audit lead). The artwork lane bounds misses per account (ARTWORK_BURST =
+// 800), but one member can spend the whole burst on 800 distinct URLs at
+// once, and every in-flight fetch buffers up to IMAGE_BYTE_CAP twice (stream
+// chunks plus the concat copy in readBounded). Measured on the lead's
+// loopback load test: 798 concurrent 8 MiB bodies pushed the server 1.7 GiB
+// past baseline before most bodies finished streaming; realistic 1 MiB
+// bodies alone cost ~0.3 GiB. Sixteen slots cap the transient worst case at
+// ~2 × 16 × IMAGE_BYTE_CAP while a cold household page still fills in a
+// wave. Joins (same URL) coalesce before they would queue, and the upstream
+// deadline of a queued fetch starts only when its slot opens, so a slow host
+// delays its own request, not unrelated lanes. ponytail: honor upstream
+// concurrency hints per host instead of one global number if a real
+// deployment shows a host starving another.
+export const ARTWORK_FETCH_CONCURRENCY = 16;
+const artworkSlots = { active: 0, waiters: [] as (() => void)[] };
+async function withArtworkSlot<T>(run: () => Promise<T>): Promise<T> {
+  while (artworkSlots.active >= ARTWORK_FETCH_CONCURRENCY) {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    artworkSlots.waiters.push(resolve);
+    await promise;
+  }
+  artworkSlots.active += 1;
+  try {
+    return await run();
+  } finally {
+    artworkSlots.active -= 1;
+    artworkSlots.waiters.shift()?.();
+  }
+}
+
 /** Test seam: the suite reuses one fixture upstream per file; tests reset
  * between phases so cached reads never mask a scripted outage. */
 export function resetMetaCache(): void {
@@ -640,7 +671,9 @@ export async function fetchProviderArtwork(
   // Exactly one caller per coalesced burst reaches this synchronous window,
   // so onMiss charges once per upstream fetch; hits and joins never do.
   options.onMiss?.();
-  const pending = fetchOnce()
+  // The fetch itself then queues on the global artwork slot cap; every
+  // joiner of the same URL awaits the one pending promise below.
+  const pending = withArtworkSlot(fetchOnce)
     .then((entry) => {
       artworkCache.set(key, { at: Date.now(), ...entry });
       artworkCacheBytes += entry.bytes.length;
