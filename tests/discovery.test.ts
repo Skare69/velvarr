@@ -10,6 +10,9 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+// Pins the throwaway VELVARR_DATA_DIR so a single-file run (no --import
+// preload) never falls back to the persistent repo ./data database.
+import "./setup.ts";
 
 import {
   MORE_PREVIEWS,
