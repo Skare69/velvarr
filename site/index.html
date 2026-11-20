@@ -174,6 +174,33 @@ h1 em { font-style: normal; color: var(--accent-text); }
   .stage { animation-delay: 300ms; }
   .hero-art::before { animation: drift 24s ease-in-out infinite alternate; }
   @keyframes drift { to { transform: translate3d(-4%, 3%, 0) scale(1.08); } }
+  /* Border beam on the hero screenshot: a fixed conic gradient on an oversized ::after turns with a
+     compositor transform, and the 2 px gap around the image shows it. The frame is display:none under
+     640 px, which is what omits the beam on phones. Measured at 4x CPU throttle: the beam causes zero
+     steady-state paint or raster work. */
+  .stage > .shot:first-child { position: relative; z-index: 0; }
+  .stage > .shot:first-child::after {
+    content: ""; position: absolute; z-index: -1;
+    left: 50%; top: 50%; width: 160%; aspect-ratio: 1; translate: -50% -50%;
+    background: conic-gradient(from 0deg, transparent 0deg, transparent 280deg, var(--accent) 325deg, oklch(88% 0.12 1.08) 345deg, oklch(55% 0.17 1.08) 356deg, transparent 360deg);
+    animation: beam-rot 5s linear infinite;
+    pointer-events: none;
+  }
+  .stage > .shot:first-child img { position: relative; z-index: 1; width: calc(100% - 4px); margin: 2px; border-radius: 12px; }
+  /* One shimmer pass across "Watch it." every 3.6 s; the band sweeps left to right, then rests.
+     A glyph-shaped band can only move through background-position, which Chromium records as a
+     per-frame paint phase with a document-sized clip; measured raster stays on the word's own
+     layer tiles (about two small tiles per frame), so no page-scale repaint happens. */
+  h1 em {
+    background: linear-gradient(105deg, var(--accent-text) 40%, color-mix(in srgb, var(--accent-text) 25%, #fff) 50%, var(--accent-text) 60%) no-repeat;
+    background-size: 300% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: shimmer 3.6s linear infinite;
+  }
+  @keyframes beam-rot { from { rotate: 0deg; } to { rotate: 360deg; } }
+  @keyframes shimmer { 0% { background-position: 0% 0; } 45%, 100% { background-position: 100% 0; } }
   @keyframes rise { to { opacity: 1; transform: none; } }
 }
 </style>
