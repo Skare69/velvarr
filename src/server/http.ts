@@ -292,38 +292,53 @@ async function send(
   return fetch(target, init);
 }
 
+// An error path that returns without reading the body leaves the undici
+// socket busy until the Response is garbage collected; an in-flight body
+// keeps its handler referenced, so that collection may never come and
+// repeated upstream errors drain the connection pool (VELV-217). Cancelling
+// an already-dead stream is best-effort, like readBounded's failure path.
+async function discardBody(res: Response): Promise<void> {
+  try {
+    await res.body?.cancel();
+  } catch {
+    // ignore
+  }
+}
+
 async function requireSuccess(res: Response, service: Service): Promise<void> {
+  let failure: AppError | undefined;
   if (res.status === 401) {
-    throw new AppError(
+    failure = new AppError(
       401,
       "upstream_auth",
       `${serviceName(service)} rejected the stored credentials.`,
       res.status,
     );
-  }
-  if (res.status === 403) {
-    throw new AppError(
+  } else if (res.status === 403) {
+    failure = new AppError(
       403,
       "upstream_forbidden",
       `${serviceName(service)} denied access to the requested resource.`,
       res.status,
     );
-  }
-  if (res.status === 404) {
-    throw new AppError(
+  } else if (res.status === 404) {
+    failure = new AppError(
       404,
       "upstream_not_found",
       `The requested ${serviceName(service)} resource was not found.`,
       res.status,
     );
-  }
-  if (!res.ok) {
-    throw new AppError(
+  } else if (!res.ok) {
+    failure = new AppError(
       502,
       "upstream_unavailable",
       `${serviceName(service)} reported an unexpected error.`,
       res.status,
     );
+  }
+  if (failure) {
+    await discardBody(res);
+    throw failure;
   }
 }
 
@@ -363,6 +378,7 @@ async function requestBounded(
       requireJsonType &&
       !/application\/(?:json|[\w.+-]+\+json)\b/i.test(contentType)
     ) {
+      await discardBody(res);
       throw new AppError(
         502,
         "upstream_bad_response",
