@@ -1,6 +1,6 @@
 import { requireId, queryInt } from "../parse.ts";
 import { createHash } from "node:crypto";
-import { type AuthContext, json } from "../admission.ts";
+import { chargeRateBudget, type AuthContext, json } from "../admission.ts";
 import type { MediaReference } from "../../../../lib/contracts.ts";
 import { AppError } from "../../../../server/http.ts";
 import {
@@ -56,13 +56,24 @@ export async function libraryPage(
   }
   // Empty grant list never means all libraries.
   if (grants.size === 0) return json({ items: [], total: 0, start, limit });
-  const page = await listLibraryItems(ctx.config, ctx.token, ctx.account, {
-    start,
-    limit,
-    search,
-    ...(libraryId !== undefined ? { libraryId } : {}),
-    ...(sortParam === "dateAdded" ? { sort: "dateAdded" as const } : {}),
-  });
+  const page = await listLibraryItems(
+    ctx.config,
+    ctx.token,
+    ctx.account,
+    {
+      start,
+      limit,
+      search,
+      ...(libraryId !== undefined ? { libraryId } : {}),
+      ...(sortParam === "dateAdded" ? { sort: "dateAdded" as const } : {}),
+    },
+    // VELV-243: the merged walk reads ~start/60 upstream chunks serially.
+    // Each chunk charges the dispatch lane before its read, so a deep page
+    // can no longer walk the whole window on the single dispatch token; an
+    // empty bucket refuses the walk mid-way. The scoped single-library path
+    // is one chunk and stays on the dispatch token alone.
+    () => chargeRateBudget(ctx.account.id),
+  );
   return json(page);
 }
 

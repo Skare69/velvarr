@@ -12887,6 +12887,62 @@ test("rate budget: artwork never charges the bucket; local reads still do", asyn
   await errorShape(across, 429);
 });
 
+test("rate budget: a cross-library deep page pays a token per upstream chunk", async (t) => {
+  // Frozen clock: no refill can land mid-test, so both boundaries are exact.
+  t.mock.timers.enable({ apis: ["Date"] });
+  // The audit's worst case (VELV-243): a start just below the merged total
+  // of two full libraries. A start at or past the total stops after the
+  // first chunks, so this window is the deepest walk a request can cause.
+  const movies = Array.from({ length: 5000 }, (_, i) => ({
+    Id: `${"3".repeat(28)}${i.toString(16).padStart(4, "0")}`,
+    Name: `Deep Movie ${String(i).padStart(5, "0")}`,
+    libraryId: MOVIES_LIB,
+  }));
+  const shows = Array.from({ length: 5000 }, (_, i) => ({
+    Id: `${"7".repeat(28)}${i.toString(16).padStart(4, "0")}`,
+    Name: `Deep Show ${String(i).padStart(5, "0")}`,
+    libraryId: SHOWS_LIB,
+  }));
+  const originalItems = fx.items;
+  const originalGrants = fx.grants.get(OWNER_ID);
+  fx.items = [...movies, ...shows];
+  fx.grants.set(OWNER_ID, [MOVIES_LIB, SHOWS_LIB]);
+  try {
+    const readsBefore = fx.sweepHits;
+    const deep = await call("GET", "/api/library?start=9900&limit=24", {
+      cookie: owner,
+    });
+    assert.equal(deep.status, 200);
+    const body = (await deep.json()) as {
+      items: { id: string }[];
+      total: number;
+    };
+    assert.equal(body.total, 10000);
+    assert.equal(body.items.length, 24);
+    const reads = fx.sweepHits - readsBefore;
+    // Bounded: the walk reads only the 60-row chunks its window consumes
+    // (ceil per library: 5000 and 4924 rows -> 84 + 83 = 167 chunks here),
+    // never the whole libraries and never past the window.
+    assert.ok(reads > 100, `expected the deep walk, saw ${reads} reads`);
+    assert.ok(
+      reads <= 168,
+      `expected <= 168 upstream chunk reads, saw ${reads}`,
+    );
+    // Priced: the dispatch token plus one charge per chunk leaves the
+    // bucket far short of a second walk of this depth, so it refuses
+    // mid-walk instead of running ~167 upstream reads for one token again.
+    const again = await call("GET", "/api/library?start=9900&limit=24", {
+      cookie: owner,
+    });
+    const error = await errorShape(again, 429);
+    assert.equal(error.code, "rate_limited");
+  } finally {
+    fx.items = originalItems;
+    if (originalGrants === undefined) fx.grants.delete(OWNER_ID);
+    else fx.grants.set(OWNER_ID, originalGrants);
+  }
+});
+
 test("rate budget: the FIFO cap evicts only refilled buckets, never a drained one", (t) => {
   // Frozen clock: no refill can land mid-flood, so every live bucket holds
   // exactly RATE_BURST - 1 and the drained one holds 0. The map is

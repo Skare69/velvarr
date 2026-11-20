@@ -619,6 +619,9 @@ function compareByDateCreatedDesc(a: BaseItemDto, b: BaseItemDto): number {
 // duplicates items. Cost is O(start+limit) upstream rows per library; if that
 // ever matters, move the cursor state into a per-request cache. A start at or
 // past the known total stops after the first chunks: no walk can reach a row.
+// Every chunk read fires onUpstreamRead BEFORE its fetch, so the caller can
+// price each chunk against the rate budget (VELV-243): one token no longer
+// buys the whole ~start/60-chunk walk, and an empty bucket refuses mid-walk.
 async function mergeAcrossLibraries(
   config: IntegrationConfig,
   userToken: string,
@@ -628,6 +631,7 @@ async function mergeAcrossLibraries(
   limit: number,
   search: string,
   sort?: "dateAdded",
+  onUpstreamRead?: () => void,
 ): Promise<LibraryPage> {
   // Each per-library stream must arrive in the merge comparator's order, so
   // the dateAdded merge re-fetches with the server's DateCreated ordering —
@@ -653,6 +657,7 @@ async function mergeAcrossLibraries(
   let total = 0;
   await Promise.all(
     libraryIds.map(async (libraryId) => {
+      onUpstreamRead?.();
       const first = await fetchItems(config, userToken, user.id, {
         parentId: libraryId,
         startIndex: 0,
@@ -675,6 +680,7 @@ async function mergeAcrossLibraries(
   if (start >= total) return { items: [], total, start, limit };
 
   const refill = async (cursor: Cursor): Promise<void> => {
+    onUpstreamRead?.();
     const next = await fetchItems(config, userToken, user.id, {
       parentId: cursor.libraryId,
       startIndex: cursor.fetched,
@@ -732,6 +738,7 @@ export async function listLibraryItems(
     libraryId?: string;
     sort?: "dateAdded";
   },
+  onUpstreamRead?: () => void,
 ): Promise<LibraryPage> {
   requireJellyfinConfig(config);
   const start = Number(query.start);
@@ -809,6 +816,7 @@ export async function listLibraryItems(
     limit,
     search,
     query.sort,
+    onUpstreamRead,
   );
 }
 
