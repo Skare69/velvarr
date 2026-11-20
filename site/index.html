@@ -80,6 +80,7 @@ h2 { font-size: clamp(30px, 3.6vw, 44px); line-height: 1.08; letter-spacing: -0.
 .needs li::before { content: ""; flex: none; width: 6px; height: 6px; margin-top: 9px; border-radius: 50%; background: var(--accent); }
 .term { border: 1px solid var(--edge); border-radius: 10px; background: oklch(14% 0.018 325); overflow: hidden; }
 .term-bar { display: flex; align-items: center; gap: 4px; padding: 6px 6px 6px 8px; border-bottom: 1px solid var(--edge); background: var(--panel); }
+.tabs { display: flex; gap: 4px; }
 .tab { min-height: 36px; padding: 0 12px; border: 0; border-radius: 5px; background: none; color: var(--muted); font: 600 13px/1 var(--font); cursor: pointer; }
 .tab[aria-selected="true"] { background: var(--accent-soft); color: var(--accent-text); }
 .copy { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; min-height: 36px; padding: 0 12px 0 10px; border: 1px solid var(--edge); border-radius: 5px; background: var(--raised); color: var(--ink); font: 600 13px/1 var(--font); cursor: pointer; }
@@ -242,7 +243,7 @@ h1 em, .shine { font-style: normal; color: var(--ink); display: inline-block; }
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="#top" aria-label="Velvarr home"><img src="logo.png" alt="" width="30" height="30">Velvarr</a>
+    <a class="brand" href="#top" aria-label="Velvarr home"><img src="logo-60.webp" alt="" width="30" height="30">Velvarr</a>
     <nav aria-label="Main">
       <a href="#tour">Tour</a>
       <a href="#install">Install</a>
@@ -393,9 +394,11 @@ h1 em, .shine { font-style: normal; color: var(--ink); display: inline-block; }
       </div>
       <div>
         <div class="term">
-          <div class="term-bar" role="tablist" aria-label="Operating system">
+          <div class="term-bar">
+            <div class="tabs" role="tablist" aria-label="Operating system">
             <button class="tab" role="tab" id="t-unix" aria-selected="true" aria-controls="p-unix">Linux and macOS</button>
             <button class="tab" role="tab" id="t-win" aria-selected="false" aria-controls="p-win" tabindex="-1">Windows</button>
+            </div>
             <button class="copy" type="button" id="copy">Copy</button>
           </div>
 <pre role="tabpanel" id="p-unix" aria-labelledby="t-unix"><code>mkdir velvarr &amp;&amp; cd velvarr
@@ -427,7 +430,7 @@ docker compose up -d</code></pre>
 
 <footer>
   <div class="wrap">
-    <a class="brand" href="https://github.com/Skare69/velvarr"><img src="logo.png" alt="" width="24" height="24">Velvarr</a>
+    <a class="brand" href="https://github.com/Skare69/velvarr"><img src="logo-60.webp" alt="" width="24" height="24">Velvarr</a>
     <nav aria-label="Footer">
       <a href="https://github.com/Skare69/velvarr">Source</a>
       <a href="https://github.com/Skare69/velvarr/releases">Releases</a>
