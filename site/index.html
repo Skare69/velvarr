@@ -132,12 +132,21 @@ h1 em { font-style: normal; color: var(--accent-text); }
 .feat .kicker { font: 600 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-text); }
 .feat h2 { margin-top: 14px; font-size: clamp(26px, 2.8vw, 36px); }
 .feat p { margin: 14px 0 0; color: var(--muted); font-size: 16px; }
+.feat[id] { scroll-margin-top: 80px; }
 
 /* Works with */
 .stack { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 40px 0 0; padding: 0; list-style: none; }
 .stack li { padding: 20px; border: 1px solid var(--edge); border-radius: 10px; background: var(--panel); color: var(--muted); font-size: 14px; }
 .stack b { display: block; margin-bottom: 6px; color: var(--ink); font-size: 17px; }
 .stack .opt { grid-column: 1 / -1; background: none; border-style: dashed; }
+
+/* Tour at a glance */
+.glance { grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; }
+.glance li { padding: 0; }
+.glance a { display: block; padding: 20px; color: var(--ink); text-decoration: none; }
+.glance .glance-num { display: block; margin-bottom: 8px; font: 600 12px/1 var(--mono); letter-spacing: 0.08em; color: var(--accent-text); }
+.glance a:hover b { color: var(--accent-text); }
+.glance-more { margin: 28px 0 0; }
 
 @media (max-width: 960px) {
   .hero { padding-top: 48px; }
@@ -206,7 +215,7 @@ h1 em { font-style: normal; color: var(--accent-text); }
 
   <section id="tour" aria-label="Tour">
     <div class="wrap">
-    <article class="feat">
+    <article class="feat" id="tour-browse">
       <div class="say">
         <span class="kicker">Browse</span>
         <h2>Filter by tags, terms, performers and dates</h2>
@@ -214,7 +223,7 @@ h1 em { font-style: normal; color: var(--accent-text); }
       </div>
       <figure class="shot tall"><img src="shots/browse-filters.webp" alt="Velvarr Browse view with the filter drawer open: two performers matched by any, a Lingerie or Velvet tag group, a free-text tag, and a release-date filter" width="1555" height="1800" loading="lazy" decoding="async"></figure>
     </article>
-    <article class="feat">
+    <article class="feat" id="tour-ai-search">
       <div class="say">
         <span class="kicker">AI search, optional</span>
         <h2>Describe it, get the filters</h2>
@@ -222,7 +231,7 @@ h1 em { font-style: normal; color: var(--accent-text); }
       </div>
       <figure class="shot"><img src="shots/prose.webp" alt="Velvarr natural-language search: a sentence turned into scene type, tag, performer and date filters, with notes for the parts it did not apply" width="1800" height="957" loading="lazy" decoding="async"></figure>
     </article>
-    <article class="feat">
+    <article class="feat" id="tour-performers">
       <div class="say">
         <span class="kicker">Performers</span>
         <h2>One page per performer, from both sources</h2>
@@ -230,7 +239,7 @@ h1 em { font-style: normal; color: var(--accent-text); }
       </div>
       <figure class="shot"><img src="shots/performer.webp" alt="Velvarr performer page with portrait, facts, follow button, counted tags and a movie grid" width="1800" height="1010" loading="lazy" decoding="async"></figure>
     </article>
-    <article class="feat">
+    <article class="feat" id="tour-requests">
       <div class="say">
         <span class="kicker">Requests</span>
         <h2>Members request, you approve</h2>
@@ -238,7 +247,7 @@ h1 em { font-style: normal; color: var(--accent-text); }
       </div>
       <figure class="shot"><img src="shots/requests.webp" alt="Velvarr Requests view with two pending requests that have Approve and Decline buttons, and an approved request that downloads at 62 percent" width="1800" height="1226" loading="lazy" decoding="async"></figure>
     </article>
-    <article class="feat">
+    <article class="feat" id="tour-watch">
       <div class="say">
         <span class="kicker">Watch</span>
         <h2>Play it in Jellyfin</h2>
@@ -259,6 +268,19 @@ h1 em { font-style: normal; color: var(--accent-text); }
         <li><b>Jellyfin</b>Sign-in, libraries and playback.</li>
         <li class="opt"><b>Optional</b>Discord notifications, AI title matching through an Ollama model or TypeSafe, and natural-language search through an OpenAI-compatible server that you set up.</li>
       </ul>
+    </div>
+  </section>
+
+  <section id="recap" aria-label="Tour at a glance">
+    <div class="wrap">
+      <ul class="stack glance">
+        <li><a href="#tour-browse"><span class="glance-num">1</span><b>Browse</b></a></li>
+        <li><a href="#tour-ai-search"><span class="glance-num">2</span><b>AI search, optional</b></a></li>
+        <li><a href="#tour-performers"><span class="glance-num">3</span><b>Performers</b></a></li>
+        <li><a href="#tour-requests"><span class="glance-num">4</span><b>Requests</b></a></li>
+        <li><a href="#tour-watch"><span class="glance-num">5</span><b>Watch</b></a></li>
+      </ul>
+      <p class="glance-more"><a class="btn btn-accent" href="#install">Install with Docker</a></p>
     </div>
   </section>
 
