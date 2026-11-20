@@ -1,8 +1,9 @@
-// Natural-language search chat client: the admin-configured
-// OpenAI-compatible chat server turns member text into a ProseDraft. One
-// request, retried once only when the server refuses the `temperature`
-// field. The member's text, the API key and the reply are never
-// logged, stored, or put into an error message.
+// Natural-language search chat client: the admin-configured chat server
+// (OpenAI-compatible, or Anthropic's native Messages API on
+// api.anthropic.com) turns member text into a ProseDraft. One request,
+// retried once only when the server refuses the `temperature` field. The
+// member's text, the API key and the reply are never logged, stored, or put
+// into an error message.
 
 import {
   isProseChatModel,
@@ -109,6 +110,10 @@ type ChatChoice = {
   message?: { refusal?: unknown; content?: unknown } | null;
 };
 
+/** The parts of an Anthropic Messages reply this client reads. Every field
+ * is unknown until a typeof check proves it. */
+type AnthropicReply = { content?: unknown; stop_reason?: unknown };
+
 /** Reads at most `limit` bytes; `complete` is false when the body is longer
  * (the rest is cancelled, never buffered). A read failure cancels and
  * rethrows. */
@@ -167,8 +172,8 @@ async function serverMessage(
   } catch {
     // Not JSON: the plain text is the message.
   }
-  // A server can repeat the Authorization value in its error text. The key
-  // goes before the cut, so the cut never leaves a piece of it behind.
+  // A server can repeat the key header in its error text. The key goes
+  // before the cut, so the cut never leaves a piece of it behind.
   return redactSecret(
     text
       .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
@@ -188,9 +193,9 @@ function draftStrings(value: unknown): string[] {
 }
 
 /** Whether a draft holds a span of the key that the member's text does not
- * hold. The model never receives the key (it travels only in the
- * Authorization header), so such a span comes from a server that writes the
- * header back into its reply. A span that the member typed is their text. */
+ * hold. The model never receives the key (it travels only in a request
+ * header), so such a span comes from a server that writes the header back
+ * into its reply. A span that the member typed is their text. */
 function draftRepeatsKey(
   draft: ProseDraft,
   text: string,
@@ -203,65 +208,160 @@ function draftRepeatsKey(
   );
 }
 
-/** The chat reply envelope → the model's JSON answer, or a named error. */
-function answerFromReply(bytes: Uint8Array): unknown {
-  let reply: unknown;
-  try {
-    reply = JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    throw badReply("The chat server's reply is not JSON.");
-  }
+/** What a reply envelope says about the model's answer. */
+type ModelReply = { refused: boolean; cutOff: boolean; text: unknown };
+
+/** An OpenAI-compatible envelope → the model's reply. */
+function openAiReply(reply: unknown): ModelReply {
   const choices = (reply as { choices?: unknown } | null)?.choices;
   const choice: unknown = Array.isArray(choices) ? choices[0] : undefined;
   if (typeof choice !== "object" || choice === null)
     throw badReply("The chat server's reply holds no answer.");
   const { finish_reason: finishReason, message } = choice as ChatChoice;
   const refusal = message?.refusal;
-  if (
-    (typeof refusal === "string" && refusal.trim() !== "") ||
-    finishReason === "content_filter"
-  ) {
+  return {
+    refused:
+      (typeof refusal === "string" && refusal.trim() !== "") ||
+      finishReason === "content_filter",
+    cutOff: finishReason === "length",
+    text: message?.content,
+  };
+}
+
+/** An Anthropic Messages envelope → the model's reply: its text blocks
+ * joined. Thinking and other blocks are not the answer. */
+function anthropicReply(reply: unknown): ModelReply {
+  const content = (reply as AnthropicReply | null)?.content;
+  if (!Array.isArray(content))
+    throw badReply("The chat server's reply holds no answer.");
+  const stopReason = (reply as AnthropicReply).stop_reason;
+  const texts = content.flatMap((block: unknown) => {
+    const { type, text } = (block ?? {}) as { type?: unknown; text?: unknown };
+    return type === "text" && typeof text === "string" ? [text] : [];
+  });
+  return {
+    refused: stopReason === "refusal",
+    cutOff: stopReason === "max_tokens",
+    text: texts.length > 0 ? texts.join("") : undefined,
+  };
+}
+
+/** The chat reply envelope → the model's JSON answer, or a named error. */
+function answerFromReply(bytes: Uint8Array, anthropic: boolean): unknown {
+  let reply: unknown;
+  try {
+    reply = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw badReply("The chat server's reply is not JSON.");
+  }
+  const { refused, cutOff, text } = anthropic
+    ? anthropicReply(reply)
+    : openAiReply(reply);
+  if (refused) {
     throw new AppError(
       502,
       "prose_search_refused",
       "The chat model refused this search. Hosted models can refuse adult text; a local model avoids this.",
     );
   }
-  if (finishReason === "length")
-    throw badReply("The chat model's reply was cut off.");
-  const content = message?.content;
-  if (typeof content !== "string")
+  if (cutOff) throw badReply("The chat model's reply was cut off.");
+  if (typeof text !== "string")
     throw badReply("The chat model's reply holds no text.");
   try {
-    return JSON.parse(content);
+    return JSON.parse(text);
   } catch {
     throw badReply("The chat model's reply is not JSON.");
   }
 }
 
-/** The chat reply envelope → a validated draft, or a named error. */
-function draftFromReply(bytes: Uint8Array): ProseDraft {
-  const parsed = parseProseDraft(answerFromReply(bytes));
+/** The model's JSON answer → a validated draft, or a named error. */
+function draftFromAnswer(answer: unknown): ProseDraft {
+  const parsed = parseProseDraft(answer);
   if (!parsed.ok)
     throw badReply("The chat model's reply does not match the filter format.");
   return parsed.draft;
 }
 
+type ChatMessages = { system: string; user: string };
+type ChatSchema = { name: string; schema: Record<string, unknown> };
+
+const ANTHROPIC_HOST = "api.anthropic.com";
+// 2023-06-01 still accepts `temperature`; 2026-10-21 removes it on every
+// model, which would make the temperature retry below pointless.
+const ANTHROPIC_VERSION = "2023-06-01";
+
+/** The OpenAI-compatible `/chat/completions` body. */
+function openAiBody(
+  model: string,
+  messages: ChatMessages,
+  schema: ChatSchema,
+  withTemperature: boolean,
+) {
+  return {
+    model,
+    messages: [
+      { role: "system", content: messages.system },
+      { role: "user", content: messages.user },
+    ],
+    ...(withTemperature ? { temperature: 0 } : {}),
+    max_tokens: 1000,
+    response_format: {
+      type: "json_schema",
+      json_schema: { name: schema.name, strict: true, schema: schema.schema },
+    },
+  };
+}
+
+/** The Anthropic `/messages` body. Anthropic's OpenAI compatibility layer
+ * ignores prompt caching, so its host gets the native API: a cache_control
+ * breakpoint on the system prompt caches that stable prefix (the member's
+ * text comes after it) for the default 5 minutes. A prompt shorter than the
+ * model's minimum cacheable length is just not cached, with no error. */
+function anthropicBody(
+  model: string,
+  messages: ChatMessages,
+  schema: ChatSchema,
+  withTemperature: boolean,
+) {
+  return {
+    model,
+    max_tokens: 1000,
+    system: [
+      {
+        type: "text",
+        text: messages.system,
+        cache_control: { type: "ephemeral" },
+      },
+    ],
+    messages: [{ role: "user", content: messages.user }],
+    ...(withTemperature ? { temperature: 0 } : {}),
+    output_config: { format: { type: "json_schema", schema: schema.schema } },
+  };
+}
+
 /** One chat request for a configured server: a system and a user message,
- * answered under a strict json_schema. Returns the reply body. An HTTP
- * failure never quotes the server: an error body can echo the member's
+ * answered under a strict json_schema. Returns the model's JSON answer. An
+ * HTTP failure never quotes the server: an error body can echo the member's
  * text. */
 async function postChat(
   config: Pick<ProseChatConfiguration, "url" | "model">,
   apiKey: string | undefined,
-  messages: { system: string; user: string },
-  schema: { name: string; schema: Record<string, unknown> },
-): Promise<Uint8Array> {
+  messages: ChatMessages,
+  schema: ChatSchema,
+): Promise<unknown> {
+  // Anthropic's own API gets its native dialect. The URL was validated when
+  // it was stored, so it parses.
+  const anthropic = new URL(config.url).hostname === ANTHROPIC_HOST;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json",
   };
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  if (anthropic) {
+    headers["anthropic-version"] = ANTHROPIC_VERSION;
+    if (apiKey) headers["x-api-key"] = apiKey;
+  } else if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  const path = anthropic ? "/messages" : "/chat/completions";
+  const body = anthropic ? anthropicBody : openAiBody;
   const signal = AbortSignal.timeout(CHAT_TIMEOUT_MS);
   // The deadline covers the whole exchange, body read included.
   const unreachable = () =>
@@ -269,26 +369,12 @@ async function postChat(
       ? failed("The chat server did not answer within 30 seconds.")
       : failed("The chat server could not be reached.");
   const send = (withTemperature: boolean) =>
-    fetch(`${config.url}/chat/completions`, {
+    fetch(`${config.url}${path}`, {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        model: config.model,
-        messages: [
-          { role: "system", content: messages.system },
-          { role: "user", content: messages.user },
-        ],
-        ...(withTemperature ? { temperature: 0 } : {}),
-        max_tokens: 1000,
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: schema.name,
-            strict: true,
-            schema: schema.schema,
-          },
-        },
-      }),
+      body: JSON.stringify(
+        body(config.model, messages, schema, withTemperature),
+      ),
       redirect: "error",
       signal,
     });
@@ -312,15 +398,15 @@ async function postChat(
     detail = res.ok ? "" : await serverMessage(res, apiKey);
   }
   if (!res.ok) throw failed(`The chat server answered HTTP ${res.status}.`);
-  let body: { bytes: Uint8Array; complete: boolean };
+  let reply: { bytes: Uint8Array; complete: boolean };
   try {
-    body = await readUpTo(res, REPLY_LIMIT);
+    reply = await readUpTo(res, REPLY_LIMIT);
   } catch {
     throw unreachable();
   }
-  if (!body.complete)
+  if (!reply.complete)
     throw badReply("The chat server's reply is larger than 256 KiB.");
-  return body.bytes;
+  return answerFromReply(reply.bytes, anthropic);
 }
 
 async function postDraft(
@@ -329,7 +415,7 @@ async function postDraft(
   text: string,
   today: string,
 ): Promise<ProseDraft> {
-  const draft = draftFromReply(
+  const draft = draftFromAnswer(
     await postChat(
       config,
       apiKey,
@@ -380,16 +466,14 @@ export async function requestTagRepair(
       "Natural-language search is off or not set up.",
     );
   }
-  const answer = answerFromReply(
-    await postChat(
-      config,
-      providers?.proseChatApiKey,
-      {
-        system: proseRepairSystemMessage(),
-        user: proseRepairUserMessage(request, items),
-      },
-      { name: "tag_picks", schema: PROSE_REPAIR_SCHEMA },
-    ),
+  const answer = await postChat(
+    config,
+    providers?.proseChatApiKey,
+    {
+      system: proseRepairSystemMessage(),
+      user: proseRepairUserMessage(request, items),
+    },
+    { name: "tag_picks", schema: PROSE_REPAIR_SCHEMA },
   );
   return parseProseRepair(answer, items);
 }

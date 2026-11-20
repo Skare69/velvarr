@@ -34,11 +34,14 @@ Members can describe a search in plain words on Browse, for example "Vixen scene
 
 While you edit, the card lists the model names that the server reports for the typed URL; a list that fails to load leaves the field free text. The check before Save is free: Velvarr reads the server's model list and confirms your model, and sends no chat request, so no tokens are billed.
 
-The server must support the Chat Completions API with a `json_schema` response format. Example URLs:
+Except for the Anthropic URL, the server must support the Chat Completions API with a `json_schema` response format. Example URLs:
 
+- Anthropic: `https://api.anthropic.com/v1`.
 - OpenAI: `https://api.openai.com/v1`.
 - Ollama on the same machine: `http://localhost:11434/v1`.
 - LM Studio on the same machine: `http://localhost:1234/v1`.
+
+For the Anthropic URL, Velvarr uses the native Anthropic Messages API, not the Chat Completions API. The Anthropic OpenAI compatibility layer does not support prompt caching. Velvarr marks the search instructions for the 5-minute Anthropic prompt cache. Repeated searches within 5 minutes then read the instructions from the cache, at lower input cost and with less delay. The results do not change. Each model has a minimum prompt length for the cache. A shorter prompt runs without the cache and gives no error.
 
 Plain HTTP works for loopback addresses. For a private address or `host.docker.internal`, set `VELVARR_ALLOW_HTTP=1`.
 
