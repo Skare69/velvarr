@@ -663,8 +663,9 @@ export async function includeIdsForSide(
       // Membership Set in lockstep with the ordered array: expansion bursts
       // push thousands of ids (the walk caps at 5000), and the old
       // Array.includes dedupe scanned the whole union on every push —
-      // VELV-241 measured a 565 ms loop block for a 25-term one-letter
-      // group. The Set keeps the deduped set and push order identical.
+      // validation #VELV-247 timed this group shape at a 565 ms loop block
+      // on a 1-vCPU sandbox; the dev box timed the same warm call at
+      // ~50 ms. The Set keeps the deduped set and push order identical.
       const unionIds = new Set<string>();
       let complete = true;
       let dropped = false;

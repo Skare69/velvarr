@@ -3080,8 +3080,9 @@ test("a multi-match free-text AND with no singleton sends the smallest expansion
 // 25 one-letter terms are the route's group cap (MAX_HIDDEN_TAGS) and the
 // listing walk caps at 5000 rows, so this is the worst union a legal group
 // can build: the deduped set holds all 5000 ids. The union build must keep
-// the same deduped set and push order after the Set rewrite (VELV-241: the
-// Array.includes dedupe blocked the loop ~565 ms on this shape).
+// the same deduped set and push order after the Set rewrite (VELV-241:
+// validation #VELV-247 timed the Array.includes dedupe at 565 ms per warm
+// side on a 1-vCPU sandbox; the dev box timed the same call at ~50 ms).
 const UNION_LETTERS = "abcdefghijklmnopqrstuvwxy".split("");
 
 function unionListingPages(buildName: (i: number) => string): TpdbPage[] {
