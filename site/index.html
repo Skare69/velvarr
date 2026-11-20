@@ -110,7 +110,7 @@ footer .age { flex-basis: 100%; margin: 0; font-size: 13px; }
 .eyebrow b { padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
 .eyebrow:hover { border-color: var(--accent); color: var(--ink); }
 h1 { font-size: clamp(42px, 6.4vw, 80px); line-height: 1.0; letter-spacing: -0.035em; font-weight: 700; max-width: 11ch; }
-h1 em { font-style: normal; color: var(--accent-text); display: inline-block; position: relative; }
+h1 em { font-style: normal; color: var(--accent-text); display: inline-block; position: relative; overflow: clip; }
 .lede { margin: 24px 0 0; max-width: 33em; font-size: clamp(17px, 1.6vw, 19px); color: var(--muted); }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin-top: 34px; }
 
@@ -194,8 +194,7 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; po
      its flat color. */
   h1 em::after {
     content: ""; position: absolute; top: 0; bottom: 0; left: -10%; width: 40%;
-    border-radius: 12px;
-    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent-text) 22%, transparent) 45%, color-mix(in srgb, #fff 24%, transparent) 50%, color-mix(in srgb, var(--accent-text) 22%, transparent) 55%, transparent);
+    background: radial-gradient(50% 50% at 50% 50%, color-mix(in srgb, #fff 24%, transparent), color-mix(in srgb, var(--accent-text) 22%, transparent) 45%, transparent 72%);
     filter: blur(4px);
     animation: shimmer 3.6s linear infinite;
     pointer-events: none;
