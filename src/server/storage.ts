@@ -826,8 +826,15 @@ function S(): Statements {
       // VELV-210: a terminal failed row is never revisited by a pass (due_at
       // NULL), so a fresh approval of the same identity is the recovery. Only
       // the terminal state is rescheduled; live work is never touched.
+      // VELV-234: a row that reached failed_permanent via recordAbsence may
+      // still carry submitted_at from an earlier accepted submission. A
+      // proven absence means Whisparr no longer holds the item, so the
+      // reactivated row is undispatched work again: the stale submission
+      // must be cleared with the dispatch residue, or withdrawUndispatched
+      // (which requires submitted_at IS NULL) can never remove it and the
+      // row wedges as unsent forever.
       reactivateFailedPermanent: d.prepare(
-        "UPDATE acquisitions SET state = ?, due_at = ?, last_error = NULL, last_error_at = NULL, updated_at = ? WHERE id = ? AND state = 'failed_permanent' AND claim_token IS NULL",
+        "UPDATE acquisitions SET state = ?, due_at = ?, submitted_at = NULL, attempt_token = NULL, last_error = NULL, last_error_at = NULL, updated_at = ? WHERE id = ? AND state = 'failed_permanent' AND claim_token IS NULL",
       ),
       recordObservation: d.prepare(
         `UPDATE acquisitions SET state = ?, last_observed_at = ?, due_at = ?,

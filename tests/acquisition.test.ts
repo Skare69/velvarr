@@ -490,6 +490,53 @@ test("approving again recovers a terminal failed row and resubmits it", async ()
   assert.equal(probe(id).state, "monitoring");
 });
 
+test("re-approving a proven absence lets the last cancel withdraw the row", async () => {
+  const owner = boot();
+
+  // Delivered once: Whisparr accepted the add, so the row records a
+  // submission (submittedAt).
+  const first = storage.createRequest(owner.id, MOVIE_A);
+  storage.decideRequest(owner, first.id, "approved");
+  const id = workId(MOVIE_A);
+  const delivered = await acquisition.runDueWork();
+  assert.equal(delivered.delivered, 1);
+  assert.ok(
+    probe(id).submittedAt,
+    "an accepted submission records submittedAt",
+  );
+
+  // The item then disappears upstream: a proven absence is terminal.
+  storedItems.delete(EXT_A);
+  const absent = await acquisition.runDueWork(later());
+  assert.equal(absent.absent, 1);
+  assert.equal(probe(id).state, "failed_permanent");
+
+  // The cancel of a terminal row survives: it is not undispatched state.
+  storage.cancelRequest(owner, first.id);
+  assert.equal(probe(id).state, "failed_permanent");
+
+  // Re-approval is the recovery (VELV-210): the row reschedules as unsent.
+  // A proven absence means Whisparr no longer holds the item, so the
+  // reactivated row is undispatched work again. reactivateFailedPermanent
+  // must therefore clear the stale submittedAt (and attemptToken) with the
+  // rest of the dispatch residue — withdrawUndispatched requires
+  // submitted_at IS NULL, so a surviving timestamp makes the last cancel
+  // below a no-op and the row stays unsent forever, reporting "no eligible
+  // requester" on every worker pass.
+  const second = storage.createRequest(owner.id, MOVIE_A);
+  storage.decideRequest(owner, second.id, "approved");
+  const recovered = probe(id);
+  assert.equal(recovered.state, "unsent", "re-approval reschedules the row");
+  assert.equal(recovered.attemptToken, null);
+
+  storage.cancelRequest(owner, second.id);
+  assert.equal(
+    storage.getAcquisition(id),
+    null,
+    "the last cancel removes the reactivated row",
+  );
+});
+
 test("an identity the lookup cannot resolve fails with a reason instead of looping as uncertain", async () => {
   const owner = boot();
   approve(owner.id, MOVIE_A);
