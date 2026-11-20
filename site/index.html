@@ -191,16 +191,18 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; po
      transform, then rests. A glyph-shaped band would need an animated background-position, which
      Chromium turns into per-frame paint phases clipped to the whole document (measured 26-34/s
      across containment and compositing variants), so the band is box-shaped and the word keeps
-     its flat color. */
+     its flat color. The strip fades in and out (opacity, also compositor-only) while it is still
+     inside the word: the em's overflow clip would otherwise cut the glow into a visible edge. */
   h1 em::after {
     content: ""; position: absolute; top: 0; bottom: 0; left: -10%; width: 40%;
     background: radial-gradient(50% 50% at 50% 50%, color-mix(in srgb, #fff 24%, transparent), color-mix(in srgb, var(--accent-text) 22%, transparent) 45%, transparent 72%);
     filter: blur(4px);
+    opacity: 0;
     animation: shimmer 3.6s linear infinite;
     pointer-events: none;
   }
   @keyframes beam-rot { from { rotate: 0deg; } to { rotate: 360deg; } }
-  @keyframes shimmer { 0% { translate: -100% 0; } 45%, 100% { translate: 350% 0; } }
+  @keyframes shimmer { 0% { translate: 0 0; opacity: 0; } 12%, 33% { opacity: 1; } 45%, 100% { translate: 200% 0; opacity: 0; } }
   @keyframes rise { to { opacity: 1; transform: none; } }
 }
 </style>
