@@ -18,6 +18,16 @@ mkdirSync(base, { recursive: true });
 const created = mkdtempSync(join(base, "velvarr-test-"));
 process.env.VELVARR_DATA_DIR = created;
 
+// Tests never read the operator's ambient provider credentials: the suites
+// set their own tokens through withEnv, and a key mirror computed outside a
+// withEnv window (discovery.test.ts's read-through test) must agree with the
+// key the build computed inside it. Ambient TPDB/STASHDB env on a worker box
+// flipped the mirror's configured-ness and failed the cache-key assertions.
+delete process.env.TPDB_API_TOKEN;
+delete process.env.STASHDB_API_KEY;
+delete process.env.TPDB_BASE_URL;
+delete process.env.STASHDB_BASE_URL;
+
 // ponytail: maxRetries/retryDelay rides out Windows AV/indexer lock grace;
 // a removal that still fails is reported, never hidden.
 export function rmTempDir(dir: string | undefined): void {
