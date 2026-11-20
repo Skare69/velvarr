@@ -1278,8 +1278,8 @@ test("v1 database migrates in place preserving config, accounts, sessions, and g
     raw.prepare("PRAGMA user_version").get() as { user_version: number }
   ).user_version;
   raw.close();
-  // Schema 15 adds the natural-language search grant.
-  assert.equal(version, 15, "v1 database must migrate to the current schema");
+  // Schema 16 folds stored provider ids to lowercase.
+  assert.equal(version, 16, "v1 database must migrate to the current schema");
   assert.equal(owner.proseSearch, false, "migrated accounts start ungranted");
   // A v1 database never contained the removal tables (current migration 5
   // creates none), so nothing here can assert about them; the schema-10 test
@@ -1504,7 +1504,7 @@ test("a schema-10 database migrates to 11: every removal object is dropped, rows
   );
   assert.equal(
     versionRow.user_version,
-    15,
+    16,
     "schema 10 database must migrate to the current schema",
   );
   assert.ok(
@@ -1660,6 +1660,117 @@ test("two admitted users share one acquisition per identity; active intent is un
     0,
     "declined requests never enqueue work",
   );
+});
+
+test("mixed-case provider ids fold at the storage boundary: one active intent, one acquisition", () => {
+  freshDir();
+  storage.bootstrap(deliveryConfig(true), ownerUser(), "jf-owner-token");
+  const owner = storage.getAccount(ownerUser().id) as Account;
+
+  const upper: MediaReference = {
+    provider: "stashdb",
+    kind: "scene",
+    id: SCENE.id.toUpperCase(),
+  };
+  const first = storage.createRequest(owner.id, upper);
+  // The case-variant spelling is the same intent: refused, not duplicated.
+  assert.throws(
+    () => storage.createRequest(owner.id, SCENE),
+    (e: { code: string }) => e.code === "request_exists",
+  );
+  assert.throws(
+    () => storage.createRequest(owner.id, upper),
+    (e: { code: string }) => e.code === "request_exists",
+  );
+  assert.equal(
+    first.media.id,
+    SCENE.id,
+    "the stored request folds the id to lowercase",
+  );
+  assert.equal(
+    storage.getActiveRequest(owner.id, upper)?.id,
+    first.id,
+    "a mixed-case lookup still resolves the stored intent",
+  );
+
+  storage.decideRequest(owner, first.id, "approved");
+  const due = storage.listDueAcquisitions(Date.now() + 60_000);
+  const shared = due.filter((a) => a.media.id === SCENE.id);
+  assert.equal(shared.length, 1, "one acquisition row for the title");
+  const byUpper = storage.getAcquisitionByReference(upper);
+  assert.ok(byUpper, "a mixed-case acquisition lookup still resolves the row");
+  assert.equal(byUpper.media.id, SCENE.id);
+});
+
+test("migration 16 folds stored ids and resolves case-duplicate conflicts", () => {
+  const dir = freshDir();
+  storage.bootstrap(deliveryConfig(true), ownerUser(), "jf-owner-token");
+  const owner = storage.getAccount(ownerUser().id) as Account;
+
+  // Real rows through the write path: one lowercase request, approved, with
+  // its acquisition. The injected rows below recreate the bug's shape from
+  // before the write path normalized ids: an OLDER pending duplicate in
+  // uppercase and an OLDER uppercase acquisition for the same identity.
+  const kept = storage.createRequest(owner.id, SCENE);
+  storage.decideRequest(owner, kept.id, "approved");
+  const now = Date.now();
+
+  // Migration 16 only rewrites data, so a bootstrapped database rewound to
+  // 15 already holds the exact schema a version-15 install has.
+  const instanceId = storage.getConfig()?.whisparr?.instanceId;
+  assert.ok(instanceId, "bootstrap stores the whisparr instance identity");
+  const raw = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  raw.exec("PRAGMA user_version = 15");
+  raw
+    .prepare(
+      "INSERT INTO requests (id, account_id, provider, kind, external_id, decision, created_at, decided_at) VALUES (?, ?, 'stashdb', 'scene', ?, 'pending', ?, NULL)",
+    )
+    .run(randomUUID(), owner.id, SCENE.id.toUpperCase(), now - 60_000);
+  raw
+    .prepare(
+      "INSERT INTO acquisitions (id, instance_id, provider, kind, external_id, state, created_at, updated_at) VALUES (?, ?, 'stashdb', 'scene', ?, 'unsent', ?, ?)",
+    )
+    .run(
+      randomUUID(),
+      instanceId,
+      SCENE.id.toUpperCase(),
+      now - 60_000,
+      now - 60_000,
+    );
+  raw.close();
+  storage.closeStorage();
+
+  // Reopening runs migration 16 in place: the newest active intent wins and
+  // older duplicates are cancelled; the newest acquisition wins and older
+  // ones are removed; every stored id ends up lowercase.
+  assert.equal(storage.isInitialized(), true);
+  const active = storage.getActiveRequest(owner.id, SCENE);
+  assert.ok(active, "the newest active intent survives");
+  assert.equal(active.id, kept.id);
+  assert.equal(active.decision, "approved");
+  const cancelled = visibleRequests(owner).find((r) => r.id !== kept.id);
+  assert.ok(cancelled, "the older duplicate intent is cancelled, not deleted");
+  assert.equal(cancelled.decision, "cancelled");
+  assert.ok(cancelled.decidedAt !== null);
+
+  const due = storage.listDueAcquisitions(Date.now() + 60_000);
+  assert.equal(
+    due.filter((a) => a.media.id === SCENE.id).length,
+    1,
+    "one acquisition row remains for the identity",
+  );
+  const check = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  const versionRow = check.prepare("PRAGMA user_version").get() as {
+    user_version: number;
+  };
+  const mixed = check
+    .prepare(
+      "SELECT (SELECT COUNT(*) FROM requests WHERE external_id != lower(external_id)) + (SELECT COUNT(*) FROM acquisitions WHERE external_id != lower(external_id)) AS n",
+    )
+    .get() as { n: number };
+  check.close();
+  assert.equal(versionRow.user_version, 16);
+  assert.equal(mixed.n, 0, "every stored id is lowercase");
 });
 
 test("request lifecycle authorization: role checks, privacy, own-cancellation isolation", () => {
@@ -2951,7 +3062,7 @@ test("migration 13 admits failed_permanent and preserves acquisition rows", () =
     const versionRow = raw.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(versionRow.user_version, 15);
+    assert.equal(versionRow.user_version, 16);
     // The fabricated row survives the rebuild intact.
     const row = raw
       .prepare(
@@ -4349,7 +4460,7 @@ test("migration 14 adds the request indexes to a schema 13 database and keeps ev
     const version = raw.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 15);
+    assert.equal(version.user_version, 16);
     const present = (
       raw
         .prepare(
@@ -4394,7 +4505,7 @@ test("migration 15 adds the natural-language search grant to a schema 14 databas
     const version = raw.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 15);
+    assert.equal(version.user_version, 16);
     const column = (
       raw.prepare("PRAGMA table_info(accounts)").all() as {
         name: string;

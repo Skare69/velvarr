@@ -61,7 +61,7 @@ import type {
 
 // Schema identity: application_id spells 'VLVR', user_version is the schema version.
 const APP_ID = 0x564c5652;
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 16;
 // ponytail: fixed 7-day session TTL; make it an env knob only if an operator asks.
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const BUSY_TIMEOUT_MS = 5000;
@@ -469,6 +469,45 @@ const MIGRATIONS: Record<number, string> = {
     -- without it; administrators use the search without a grant.
     ALTER TABLE accounts ADD COLUMN prose_search INTEGER NOT NULL DEFAULT 0
       CHECK (prose_search IN (0, 1));
+  `,
+  16: `
+    -- Fold provider ids to lowercase at rest. Ids are hex UUIDs and before
+    -- the write path normalized them, one title could hold two rows
+    -- differing only in case: requests_active_intent and
+    -- acquisitions_identity compare case-sensitively, so the pending cap
+    -- counted the title twice and the worker made two add attempts.
+    -- Resolve the collisions the fold would create first, newest wins:
+    -- the newest active intent may already carry its approval, and
+    -- latestAcquisitionForReference reads acquisitions newest-first. Older
+    -- duplicate intents are cancelled (history kept); older duplicate
+    -- acquisitions are removed (undispatched shadows of one title).
+    UPDATE requests SET decision = 'cancelled', decided_at =
+      (CAST(strftime('%s', 'now') AS INTEGER) * 1000)
+    WHERE decision IN ('pending', 'approved')
+      AND rowid IN (
+        SELECT rowid FROM (
+          SELECT rowid, ROW_NUMBER() OVER (
+            PARTITION BY account_id, provider, kind, lower(external_id)
+            ORDER BY created_at DESC, id DESC
+          ) AS rn
+          FROM requests
+          WHERE decision IN ('pending', 'approved')
+        ) WHERE rn > 1
+      );
+    DELETE FROM acquisitions
+    WHERE rowid IN (
+      SELECT rowid FROM (
+        SELECT rowid, ROW_NUMBER() OVER (
+          PARTITION BY instance_id, provider, kind, lower(external_id)
+          ORDER BY updated_at DESC, id DESC
+        ) AS rn
+        FROM acquisitions
+      ) WHERE rn > 1
+    );
+    UPDATE requests SET external_id = lower(external_id)
+      WHERE external_id != lower(external_id);
+    UPDATE acquisitions SET external_id = lower(external_id)
+      WHERE external_id != lower(external_id);
   `,
 };
 
@@ -1736,6 +1775,10 @@ export function createRequest(
   media: MediaReference,
 ): RequestRecord {
   assertMediaReference(media);
+  // Provider ids are hex UUIDs and arrive in either case (the bulk route
+  // passes provider rows unchanged): fold once here so the case-sensitive
+  // active-intent and acquisition identity keys see one spelling.
+  const externalId = media.id.toLowerCase();
   const d = open();
   return inTransaction(d, () => {
     const account = S().getAccount.get(accountId) as AccountRow | undefined;
@@ -1762,7 +1805,7 @@ export function createRequest(
         accountId,
         media.provider,
         media.kind,
-        media.id,
+        externalId,
         now,
       );
     } catch (e) {
@@ -2847,11 +2890,13 @@ export function getAcquisitionByReference(
   assertMediaReference(media);
   const instance = instanceId ?? getConfig()?.whisparr?.instanceId;
   if (!instance) return null;
+  // Stored ids are lowercase (createRequest folds, migration 16 folded old
+  // rows): fold the lookup so a mixed-case reference still resolves the row.
   const row = S().getAcquisitionByIdentity.get(
     instance,
     media.provider,
     media.kind,
-    media.id,
+    media.id.toLowerCase(),
   ) as AcquisitionRow | undefined;
   return row ? rowToAcquisition(row) : null;
 }
