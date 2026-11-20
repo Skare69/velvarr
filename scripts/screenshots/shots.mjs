@@ -9,6 +9,7 @@
 // and the screen's own handler, then writes the WebP at the exact size the
 // landing page declares for it.
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
 import {
   existsSync,
   mkdirSync,
@@ -68,6 +69,15 @@ if (missing.length)
       "\nSee scripts/screenshots/README.md.",
   );
 
+// An empty or broken file would only show as a letter fallback in a card.
+const broken = [];
+for (const [name, file] of artFiles)
+  if (name in ART)
+    await sharp(file)
+      .stats()
+      .catch((e) => broken.push(`  ${file}: ${e.message}`));
+if (broken.length) fail(`art file(s) do not decode:\n${broken.join("\n")}`);
+
 const names = args.only ? args.only.split(",") : SCREENS;
 for (const n of names)
   if (!SCREENS.includes(n)) fail(`unknown screen "${n}"; known: ${SCREENS}`);
@@ -85,6 +95,16 @@ function artResponse(url) {
 }
 
 const origin = `http://127.0.0.1:${args.port}`;
+// Another server on the port would answer our fetches and end up in the
+// shots, so the port must be free before our own server takes it.
+await new Promise((done) => {
+  const probe = createServer()
+    .once("error", (e) =>
+      fail(`port ${args.port} is not free (${e.code}). Use --port.`),
+    )
+    .listen(Number(args.port), "127.0.0.1", () => probe.close(done));
+});
+let stopping = false;
 const server = spawn(
   process.execPath,
   [
@@ -96,7 +116,7 @@ const server = spawn(
     args.port,
   ],
   {
-    stdio: ["ignore", "ignore", "inherit"],
+    stdio: ["ignore", "pipe", "inherit"],
     env: {
       ...process.env,
       NEXT_TELEMETRY_DISABLED: "1",
@@ -106,20 +126,34 @@ const server = spawn(
     },
   },
 );
-const stopServer = () => server.exitCode === null && server.kill("SIGTERM");
+server.once("exit", (code) => {
+  if (!stopping) fail(`next start exited (code ${code}).`);
+});
+const stopServer = () => {
+  stopping = true;
+  if (server.exitCode === null) server.kill("SIGTERM");
+};
 process.on("exit", stopServer);
 
-async function waitForServer() {
-  for (let i = 0; i < 120; i++) {
-    if (server.exitCode !== null) fail("next start exited early.");
-    try {
-      if ((await fetch(origin)).ok) return;
-    } catch {
-      // Not listening yet.
-    }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  fail(`no answer from ${origin} after 60 s.`);
+/** Resolves when our own `next start` prints its ready line; a server that
+ * exits first (for example on EADDRINUSE) fails the run in the exit hook. */
+function waitForServer() {
+  return new Promise((ready) => {
+    const timer = setTimeout(
+      () => fail(`next start was not ready after 60 s.`),
+      60_000,
+    );
+    let log = "";
+    server.stdout.on("data", (chunk) => {
+      if (log === null) return;
+      log += chunk;
+      if (/Ready in/.test(log)) {
+        log = null;
+        clearTimeout(timer);
+        ready();
+      }
+    });
+  });
 }
 
 /** Routes every /api/* call: the art proxy, then the shared answers, then
@@ -164,7 +198,7 @@ async function routeApi(screen, unanswered, route) {
  * fold never loads), so no shot catches a half-drawn card. */
 async function settle(page) {
   await page.waitForLoadState("networkidle");
-  const pending = await page.evaluate(async () => {
+  const { pending, broken } = await page.evaluate(async () => {
     await document.fonts.ready;
     const inView = (img) => {
       const r = img.getBoundingClientRect();
@@ -183,12 +217,26 @@ async function settle(page) {
     );
     const timeout = new Promise((r) => setTimeout(r, 15_000));
     await Promise.race([loaded, timeout]);
-    return waiting.filter((img) => !img.complete).map((img) => img.src);
+    // complete with no natural size = a load or decode failure.
+    const visible = [...document.images].filter(
+      (img) => img.loading !== "lazy" || inView(img),
+    );
+    return {
+      pending: waiting.filter((img) => !img.complete).map((img) => img.src),
+      broken: visible
+        .filter((img) => img.complete && img.src && img.naturalWidth === 0)
+        .map((img) => img.src),
+    };
   });
+  // Images whose error handler already swapped them for a fallback.
+  const failed = await page.evaluate(() => window.__shotsImageErrors);
   if (pending.length)
     throw new Error(
       `images still loading after 15 s:\n  ${pending.join("\n  ")}`,
     );
+  const bad = [...new Set([...broken, ...failed])];
+  if (bad.length)
+    throw new Error(`images failed to load:\n  ${bad.join("\n  ")}`);
   await page.waitForTimeout(300);
 }
 
@@ -227,6 +275,18 @@ async function shoot(browser, name) {
   });
   const page = await context.newPage();
   await page.clock.setFixedTime(NOW);
+  // Image errors do not bubble, so listen in the capture phase from the start.
+  await page.addInitScript(() => {
+    window.__shotsImageErrors = [];
+    addEventListener(
+      "error",
+      (e) => {
+        if (e.target instanceof HTMLImageElement)
+          window.__shotsImageErrors.push(e.target.src);
+      },
+      true,
+    );
+  });
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   const unanswered = new Set();
