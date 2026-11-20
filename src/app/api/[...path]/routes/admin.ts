@@ -737,6 +737,10 @@ export async function adminUpdateIntegrations(
     ...(whisparr ? { whisparr } : {}),
     ...(providers ? { providers } : {}),
   };
+  // The Jellyfin probe can hold this request for seconds, and readAdminJson's
+  // live-admin check predates it. Re-check so a demotion or disable during
+  // the probe cannot land the write with stale rights (VELV-244).
+  requireLiveAdmin(ctx);
   saveConfig(config);
   return json(integrationsShape(config));
 }

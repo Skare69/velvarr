@@ -328,6 +328,11 @@ const fx = {
   ] as FxUser[],
   tokens: new Map<string, string>(), // access token -> user id
   impersonate: null as string | null, // force /Users/Me identity for regression testing
+  // VELV-244: a test parks one fixture path mid-flight (an upstream probe
+  // held while a second session changes privileges) by setting holdPath.
+  holdPath: null as string | null,
+  holdArrived: null as (() => void) | null,
+  holdRelease: null as (() => void) | null,
 
   fail: { items: 0, views: 0, me401: 0, info: 0 },
   // Every /Users/{id}/Items hit; the sweep cache test reads the delta.
@@ -441,8 +446,17 @@ async function jellyfinHandler(
   const userId = token ? (fx.tokens.get(token) ?? null) : null;
   if (fx.journalOn) fx.journal.push({ method: req.method ?? "", path: p });
 
-  if (p === "/System/Info/Public")
+  if (p === "/System/Info/Public") {
+    // VELV-244: a test parks this one probe; the hold clears on release and
+    // the fixture keeps answering once holdRelease is set.
+    if (fx.holdPath === p && !fx.holdRelease) {
+      fx.holdArrived?.();
+      const hold = Promise.withResolvers<void>();
+      fx.holdRelease = hold.resolve;
+      await hold.promise;
+    }
     return json(res, 200, { Id: fx.serverId, ServerName: "FixtureJF" });
+  }
   if (p === "/System/Info") {
     // Countdown knob: one armed rejection for the admin status probe, then
     // honest answers again (same pattern as fail.me401).
@@ -9519,6 +9533,59 @@ test("an admin demoted while its request body is read gets 403 on every admin bo
     assert.deepEqual(await integrations(), before);
     assert.equal(await roleOf(), "requester");
   } finally {
+    // Restore the grant state later tests share.
+    await setNogrants("requester");
+    nogrants = await loginAs("nogrants");
+  }
+});
+
+// VELV-244: readAdminJson's live-admin check predates the Jellyfin probe in
+// the integration save. An admin demoted while the probe holds must not land
+// the write with the old role.
+test("an admin demoted while the Jellyfin probe holds gets 403 and the save never lands", async () => {
+  await boot();
+  const admin = await loginAs("owner");
+  const setNogrants = async (role: string) => {
+    const res = await call("PATCH", `/api/admin/users/${NOGRANT_ID}`, {
+      cookie: admin,
+      body: { enabled: true, role, libraryIds: [] },
+    });
+    assert.equal(res.status, 200);
+  };
+  const storedUrl = async () => {
+    const res = await call("GET", "/api/admin/integrations", { cookie: admin });
+    assert.equal(res.status, 200);
+    const shape = (await res.json()) as { jellyfin: { url: string } };
+    return shape.jellyfin.url;
+  };
+  try {
+    await setNogrants("admin");
+    const staleAdmin = await loginAs("nogrants");
+    const before = await storedUrl();
+    const movedUrl = new URL("jf", `${jellyfinUrl}/`).toString();
+    assert.notEqual(movedUrl, before);
+    // The probe parks in the fixture; the actor loses admin while it waits.
+    const arrivedGate = Promise.withResolvers<void>();
+    fx.holdArrived = arrivedGate.resolve;
+    fx.holdPath = "/System/Info/Public";
+    const pending = call("PATCH", "/api/admin/integrations", {
+      cookie: staleAdmin,
+      body: { jellyfinUrl: movedUrl, jellyfinExternalUrl: movedUrl },
+    });
+    await arrivedGate.promise;
+    assert.ok(fx.holdRelease, "the probe never parked in the fixture");
+    await setNogrants("requester");
+    fx.holdRelease?.();
+    const res = await pending;
+    assert.equal(res.status, 403);
+    const err = await errorShape(res);
+    assert.equal(err.code, "forbidden");
+    assert.equal(await storedUrl(), before);
+  } finally {
+    fx.holdRelease?.();
+    fx.holdPath = null;
+    fx.holdArrived = null;
+    fx.holdRelease = null;
     // Restore the grant state later tests share.
     await setNogrants("requester");
     nogrants = await loginAs("nogrants");
