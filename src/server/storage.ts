@@ -476,11 +476,18 @@ const MIGRATIONS: Record<number, string> = {
     -- differing only in case: requests_active_intent and
     -- acquisitions_identity compare case-sensitively, so the pending cap
     -- counted the title twice and the worker made two add attempts.
-    -- Resolve the collisions the fold would create first, newest wins:
-    -- the newest active intent may already carry its approval, and
-    -- latestAcquisitionForReference reads acquisitions newest-first. Older
-    -- duplicate intents are cancelled (history kept); older duplicate
-    -- acquisitions are removed (undispatched shadows of one title).
+    -- Resolve the collisions the fold would create first.
+    -- Requests: an approved intent outranks a pending one (the worker
+    -- dispatches an acquisition only while an approved requester exists,
+    -- so keeping the pending side of a pair would strand the title
+    -- blocked), then newest wins. Losers are cancelled and keep their
+    -- history rows.
+    -- Acquisitions: the row with the strongest external-contact evidence
+    -- wins (imported beats a watched Whisparr item beats a maybe-landed
+    -- uncertain beats an in-flight submission beats a recorded failure
+    -- beats never dispatched), ties prefer an observed whisparr_id and a
+    -- recorded submission, then newest. Losers are removed: they are
+    -- shadows of one title whose external truth the survivor tracks.
     UPDATE requests SET decision = 'cancelled', decided_at =
       (CAST(strftime('%s', 'now') AS INTEGER) * 1000)
     WHERE decision IN ('pending', 'approved')
@@ -488,7 +495,8 @@ const MIGRATIONS: Record<number, string> = {
         SELECT rowid FROM (
           SELECT rowid, ROW_NUMBER() OVER (
             PARTITION BY account_id, provider, kind, lower(external_id)
-            ORDER BY created_at DESC, id DESC
+            ORDER BY CASE decision WHEN 'approved' THEN 0 ELSE 1 END,
+                     created_at DESC, id DESC
           ) AS rn
           FROM requests
           WHERE decision IN ('pending', 'approved')
@@ -499,7 +507,19 @@ const MIGRATIONS: Record<number, string> = {
       SELECT rowid FROM (
         SELECT rowid, ROW_NUMBER() OVER (
           PARTITION BY instance_id, provider, kind, lower(external_id)
-          ORDER BY updated_at DESC, id DESC
+          ORDER BY CASE state
+                     WHEN 'imported' THEN 0
+                     WHEN 'monitoring' THEN 1
+                     WHEN 'downloading' THEN 2
+                     WHEN 'uncertain' THEN 3
+                     WHEN 'submitting' THEN 4
+                     WHEN 'failed' THEN 5
+                     WHEN 'failed_permanent' THEN 6
+                     WHEN 'blocked' THEN 7
+                     ELSE 8
+                   END,
+                   whisparr_id IS NULL, submitted_at IS NULL,
+                   updated_at DESC, id DESC
         ) AS rn
         FROM acquisitions
       ) WHERE rn > 1
@@ -1824,10 +1844,18 @@ export function createRequest(
   });
 }
 
+/** The active-intent key: "<provider>:<kind>:<external_id>", ids folded to
+ * lowercase. One builder for listActiveIntentKeys and the bulk route's
+ * pre-skip, so a mixed-case provider row matches the lowercase spelling
+ * createRequest stores. */
+export function intentKey(provider: string, kind: string, id: string): string {
+  return `${provider}:${kind}:${id.toLowerCase()}`;
+}
+
 /** The account's own active intents — the requests_active_intent predicate
- * (decision 'pending' or 'approved') — as "<provider>:<kind>:<external_id>"
- * keys, so a caller can pre-skip exactly what createRequest would refuse
- * without re-deriving the index's rule. */
+ * (decision 'pending' or 'approved') — as intentKey keys, so a caller can
+ * pre-skip exactly what createRequest would refuse without re-deriving the
+ * index's rule. */
 export function listActiveIntentKeys(accountId: string): Set<string> {
   // Reads only the active rows, through the requests_active_intent index.
   const rows = S().listActiveIntents.all(accountId) as Pick<
@@ -1835,7 +1863,7 @@ export function listActiveIntentKeys(accountId: string): Set<string> {
     "provider" | "kind" | "external_id"
   >[];
   return new Set(
-    rows.map((row) => `${row.provider}:${row.kind}:${row.external_id}`),
+    rows.map((row) => intentKey(row.provider, row.kind, row.external_id)),
   );
 }
 

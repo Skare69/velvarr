@@ -1740,9 +1740,10 @@ test("migration 16 folds stored ids and resolves case-duplicate conflicts", () =
   raw.close();
   storage.closeStorage();
 
-  // Reopening runs migration 16 in place: the newest active intent wins and
-  // older duplicates are cancelled; the newest acquisition wins and older
-  // ones are removed; every stored id ends up lowercase.
+  // Reopening runs migration 16 in place: an approved intent outranks a
+  // pending one, then newest wins; the acquisition with the strongest
+  // external-contact evidence wins; older duplicates lose as above and
+  // every stored id ends up lowercase.
   assert.equal(storage.isInitialized(), true);
   const active = storage.getActiveRequest(owner.id, SCENE);
   assert.ok(active, "the newest active intent survives");
@@ -1759,6 +1760,109 @@ test("migration 16 folds stored ids and resolves case-duplicate conflicts", () =
     1,
     "one acquisition row remains for the identity",
   );
+  const check = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  const versionRow = check.prepare("PRAGMA user_version").get() as {
+    user_version: number;
+  };
+  const mixed = check
+    .prepare(
+      "SELECT (SELECT COUNT(*) FROM requests WHERE external_id != lower(external_id)) + (SELECT COUNT(*) FROM acquisitions WHERE external_id != lower(external_id)) AS n",
+    )
+    .get() as { n: number };
+  check.close();
+  assert.equal(versionRow.user_version, 16);
+  assert.equal(mixed.n, 0, "every stored id is lowercase");
+});
+
+test("active intent keys fold ids, so a mixed-case provider row matches the stored spelling", () => {
+  freshDir();
+  storage.bootstrap(deliveryConfig(true), ownerUser(), "jf-owner-token");
+  const owner = storage.getAccount(ownerUser().id) as Account;
+  storage.createRequest(owner.id, SCENE);
+  const keys = storage.listActiveIntentKeys(owner.id);
+  assert.ok(keys.has(storage.intentKey("stashdb", "scene", SCENE.id)));
+  assert.ok(
+    keys.has(storage.intentKey("stashdb", "scene", SCENE.id.toUpperCase())),
+    "a mixed-case provider row matches the stored lowercase intent",
+  );
+  assert.equal(keys.size, 1, "both spellings fold to the one stored intent");
+});
+
+test("migration 16 keeps the approved intent and the contacted acquisition over newer shadows", () => {
+  const dir = freshDir();
+  storage.bootstrap(deliveryConfig(true), ownerUser(), "jf-owner-token");
+  const owner = storage.getAccount(ownerUser().id) as Account;
+
+  // The realistic duplicate order: the single route files lowercase and an
+  // admin approves (the acquisition reaches Whisparr and is observed), then
+  // a bulk run files an uppercase pending duplicate. The approval must
+  // survive, and the contacted acquisition must beat the never-dispatched
+  // shadow, or the worker loses its eligible requester and blocks the row.
+  const approved = storage.createRequest(owner.id, SCENE);
+  storage.decideRequest(owner, approved.id, "approved");
+  const due = storage.listDueAcquisitions(Date.now() + 60_000);
+  assert.equal(due.length, 1);
+  const work = due[0];
+  assert.ok(work);
+  const claim = storage.claimAcquisition(work.id);
+  storage.beginSubmission(work.id, claim.claimToken);
+  storage.recordAcquisitionObservation(
+    work.id,
+    {
+      state: "monitoring",
+      item: { whisparrId: 42, path: "/data/xxx", title: "Pirates II" },
+    },
+    claim.claimToken,
+  );
+  storage.releaseAcquisitionClaim(work.id, claim.claimToken);
+
+  const now = Date.now();
+  const instanceId = storage.getConfig()?.whisparr?.instanceId;
+  assert.ok(instanceId, "bootstrap stores the whisparr instance identity");
+  const raw = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  raw.exec("PRAGMA user_version = 15");
+  // A NEWER uppercase pending duplicate...
+  raw
+    .prepare(
+      "INSERT INTO requests (id, account_id, provider, kind, external_id, decision, created_at, decided_at) VALUES (?, ?, 'stashdb', 'scene', ?, 'pending', ?, NULL)",
+    )
+    .run(randomUUID(), owner.id, SCENE.id.toUpperCase(), now + 60_000);
+  // ...and a NEWER uppercase acquisition that never contacted Whisparr.
+  raw
+    .prepare(
+      "INSERT INTO acquisitions (id, instance_id, provider, kind, external_id, state, created_at, updated_at) VALUES (?, ?, 'stashdb', 'scene', ?, 'unsent', ?, ?)",
+    )
+    .run(
+      randomUUID(),
+      instanceId,
+      SCENE.id.toUpperCase(),
+      now + 60_000,
+      now + 60_000,
+    );
+  raw.close();
+  storage.closeStorage();
+
+  assert.equal(storage.isInitialized(), true);
+  const active = storage.getActiveRequest(owner.id, SCENE);
+  assert.ok(active, "the approved intent survives");
+  assert.equal(active.id, approved.id);
+  assert.equal(active.decision, "approved");
+  const cancelled = visibleRequests(owner).find((r) => r.id !== approved.id);
+  assert.ok(
+    cancelled,
+    "the newer pending duplicate is cancelled, not kept active",
+  );
+  assert.equal(cancelled.decision, "cancelled");
+  assert.ok(cancelled.decidedAt !== null);
+
+  const acq = storage.getAcquisitionByReference(SCENE);
+  assert.ok(acq, "one acquisition row remains for the identity");
+  assert.equal(
+    acq.state,
+    "monitoring",
+    "the contacted acquisition wins over the never-dispatched shadow",
+  );
+  assert.equal(acq.media.id, SCENE.id);
   const check = new DatabaseSync(join(dir, "velvarr.sqlite"));
   const versionRow = check.prepare("PRAGMA user_version").get() as {
     user_version: number;

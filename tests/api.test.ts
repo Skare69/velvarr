@@ -708,6 +708,14 @@ const bulkContinuationId = (n: number) =>
 // Same for the pending-cap filmography, in its own band.
 const capFillId = (n: number) =>
   `2a2b3c4d-0000-0000-ca70-${String(n).padStart(12, "0")}`;
+// VELV-211: bulk pre-skip mixed-case filmography. The movie id is UPPERCASE
+// like a raw provider row; the single-request route stores the lowercase
+// spelling, so the bulk key must fold to match it.
+const TPDB_PERFORMER_MIXED = "2a2b3c4d-0000-0000-0000-00000000001b";
+const TPDB_MOVIE_MIXED_UPPER = "2A2B3C4D-0000-0000-0000-00000000001C";
+const TPDB_MOVIE_MIXED = TPDB_MOVIE_MIXED_UPPER.toLowerCase();
+const bulkMixedBacklogId = (n: number) =>
+  `2a2b3c4d-0000-0000-0ba5-${String(n).padStart(12, "0")}`;
 
 function tpdbMovieRow(id: string) {
   return {
@@ -1086,6 +1094,25 @@ async function tpdbHandler(
       meta: { total: 1 },
       links: { next: "https://fixture.test/next" },
     });
+  // VELV-211: one row whose provider id is UPPERCASE, plus 100 unfiled
+  // backlog rows behind it over five 24-row pages. With the fold the
+  // pre-skip frees the cap slot for the backlog; without it the mixed-case
+  // row 409-skips inside the pass and costs one backlog title.
+  if (p === `/performers/${TPDB_PERFORMER_MIXED}/movies`) {
+    const page = Number(url.searchParams.get("page") ?? "1");
+    const start = (page - 1) * 24;
+    const rows = [
+      tpdbMovieRow(TPDB_MOVIE_MIXED_UPPER),
+      ...Array.from({ length: 100 }, (_, i) =>
+        tpdbMovieRow(bulkMixedBacklogId(i + 1)),
+      ),
+    ];
+    return json(res, 200, {
+      data: rows.slice(start, start + 24),
+      meta: { total: 101 },
+      links: page < 5 ? { next: "https://fixture.test/next" } : {},
+    });
+  }
   // The bulk cap test's filmography: full pages of the same 24 readable
   // titles and a `next` link that never ends, so the pass fills the
   // 100-title cap inside the page ceiling.
@@ -8937,6 +8964,64 @@ test("a second bulk run files the titles past the first 100", async () => {
       (r) => r.media.id === bulkContinuationId(105) && r.decision === "pending",
     ),
   );
+});
+
+test("bulk requests pre-skip a mixed-case provider row and spend the cap on the backlog", async () => {
+  await boot();
+  member = await loginAs("member");
+  // The single-request route stores the lowercase spelling; the filmography
+  // row carries the uppercase one, so the pre-skip must fold case or the
+  // already-filed title eats one of the 100 cap slots.
+  const seeded = await call("POST", "/api/requests", {
+    cookie: member,
+    body: { media: { provider: "tpdb", kind: "movie", id: TPDB_MOVIE_MIXED } },
+  });
+  assert.equal(seeded.status, 201);
+
+  const bulk = await call("POST", "/api/requests/bulk", {
+    cookie: member,
+    body: {
+      performer: {
+        provider: "tpdb",
+        kind: "performer",
+        id: TPDB_PERFORMER_MIXED,
+      },
+      kind: "movie",
+    },
+  });
+  assert.equal(bulk.status, 200);
+  const counters = (await bulk.json()) as BulkCounters;
+  assert.deepEqual(counters, {
+    requested: 100,
+    skipped: 1,
+    autoApproved: 0,
+    failed: [],
+    scanned: 101,
+    capped: false,
+  });
+
+  // The backlog got reached past the mixed-case row, and that title still
+  // holds exactly one intent. Read the rows directly: member's HTTP list is
+  // paginated and the file's earlier tests push these rows past page one.
+  const db = new DatabaseSync(join(apiDataDir, "velvarr.sqlite"));
+  try {
+    const mixed = db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM requests WHERE provider = 'tpdb' AND kind = 'movie' AND lower(external_id) = ?",
+      )
+      .get(TPDB_MOVIE_MIXED) as { n: number };
+    assert.equal(mixed.n, 1, "the mixed-case title holds exactly one intent");
+    const backlog = db
+      .prepare("SELECT COUNT(*) AS n FROM requests WHERE external_id = ?")
+      .get(bulkMixedBacklogId(100)) as { n: number };
+    assert.equal(
+      backlog.n,
+      1,
+      "the last backlog title got filed, so the cap was not spent on the duplicate",
+    );
+  } finally {
+    db.close();
+  }
 });
 
 test("a bulk pass at the pending cap stops at the first refusal and says why", async () => {

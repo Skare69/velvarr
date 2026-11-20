@@ -31,6 +31,7 @@ import {
   getAccount,
   getAcquisitionByReference,
   acquisitionView,
+  intentKey,
   listAccounts,
   listActiveIntentKeys,
   listRequestPage,
@@ -211,8 +212,10 @@ export async function bulkRequestRoute(
   // Titles the account already holds an active intent for never count
   // toward the cap — they are pre-skipped below (and still surface in
   // `skipped`), so a re-run reaches the unfiled backlog past them instead
-  // of re-collecting the same first 100 rows. The key format matches
-  // listActiveIntentKeys ("<provider>:<kind>:<id>"); the set also dedupes
+  // of re-collecting the same first 100 rows. Item keys come from the same
+  // intentKey builder as listActiveIntentKeys ("<provider>:<kind>:<id>",
+  // ids folded to lowercase), so a mixed-case provider row matches the
+  // spelling createRequest stored; the set also dedupes
   // rows the provider repeats within one pass.
   const activeKeys = listActiveIntentKeys(ctx.account.id);
   const items: CatalogDetail[] = [];
@@ -248,7 +251,7 @@ export async function bulkRequestRoute(
     scanned += result.items.length;
     more = result.hasMore;
     for (const item of result.items) {
-      const key = `${performer.provider}:${kind}:${item.reference.id}`;
+      const key = intentKey(performer.provider, kind, item.reference.id);
       if (activeKeys.has(key)) {
         skipped += 1;
         continue;
