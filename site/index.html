@@ -4,18 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Velvarr, the request app for adult media</title>
-<meta name="description" content="Self-hosted discovery and request app for adult media. Browse TPDB and StashDB, approve requests into Whisparr, and watch in Jellyfin. MIT licensed.">
+<meta name="description" content="Find adult movies and scenes, request them, and watch them in Jellyfin. Velvarr runs on your own server. Free and open source under the MIT license.">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#21151f">
 <meta name="rating" content="adult">
 <meta property="og:type" content="website">
 <meta property="og:title" content="Velvarr, the request app for adult media">
-<meta property="og:description" content="Browse TPDB and StashDB, approve requests into Whisparr, and watch in Jellyfin. Self-hosted, MIT licensed.">
+<meta property="og:description" content="Find adult movies and scenes, request them, and watch them in Jellyfin. Runs on your own server. MIT licensed.">
 <meta name="twitter:card" content="summary_large_image">
 <meta property="og:image" content="https://velvarr.dev/banner.jpg">
 <meta property="og:url" content="https://velvarr.dev/">
 <link rel="canonical" href="https://velvarr.dev/">
 <link rel="icon" href="icon-192.png">
+<link rel="preload" as="image" href="velvet.webp" fetchpriority="high">
 <style>
 html, body { background: oklch(17% 0.022 325); }
 :root {
@@ -99,13 +100,15 @@ footer .age { flex-basis: 100%; margin: 0; font-size: 13px; }
 
 /* Hero */
 .hero { position: relative; isolation: isolate; overflow: clip; padding: 88px 0 0; }
+/* The velvet picture stays still; the light layers drift and breathe on top of it in screen blend. */
 .hero-art { position: absolute; inset: 0 0 auto auto; width: min(52%, 720px); height: 760px; z-index: -1;
+  background: linear-gradient(color-mix(in srgb, var(--canvas) 25%, transparent) 0 0), url("velvet.webp") 50% 20% / cover no-repeat;
   -webkit-mask-image: linear-gradient(90deg, transparent, #000 45%), linear-gradient(180deg, #000 55%, transparent);
   -webkit-mask-composite: source-in; mask-image: linear-gradient(90deg, transparent, #000 45%), linear-gradient(180deg, #000 55%, transparent); mask-composite: intersect; }
-.hero-art::before { content: ""; position: absolute; inset: -12%;
-  background: radial-gradient(40% 36% at 70% 20%, color-mix(in srgb, var(--accent) 55%, transparent), transparent 70%),
-    radial-gradient(36% 42% at 34% 56%, color-mix(in srgb, oklch(55% 0.2 295) 45%, transparent), transparent 70%),
+.hero-art::before, .hero-art::after { content: ""; position: absolute; inset: -12%; mix-blend-mode: screen; transform-origin: 70% 30%; }
+.hero-art::before { background: radial-gradient(40% 36% at 70% 20%, color-mix(in srgb, var(--accent) 55%, transparent), transparent 70%),
     radial-gradient(30% 30% at 86% 66%, color-mix(in srgb, var(--accent) 30%, transparent), transparent 70%); }
+.hero-art::after { background: radial-gradient(36% 42% at 34% 56%, color-mix(in srgb, oklch(55% 0.2 295) 45%, transparent), transparent 70%); }
 .eyebrow { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 22px; padding: 5px 12px 5px 6px; border: 1px solid var(--edge); border-radius: 999px; background: color-mix(in srgb, var(--panel) 80%, transparent); font-size: 13px; font-weight: 600; color: var(--muted); text-decoration: none; }
 .eyebrow b { padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
 .eyebrow:hover { border-color: var(--accent); color: var(--ink); }
@@ -120,7 +123,9 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
 .shot img { display: block; width: 100%; height: auto; }
 .stage { position: relative; margin-top: 64px; }
 .stage .phone { position: absolute; right: -12px; bottom: -40px; width: 21%; border-radius: 26px; border-width: 6px; border-color: oklch(25% 0.03 325); }
-.note { margin: 64px 0 0; font-size: 13px; color: var(--muted); text-align: center; }
+.note { display: flex; align-items: center; gap: 12px; margin: 72px 0 0; padding: 12px 16px; border: 1px solid var(--edge); border-radius: 10px; background: var(--panel); font-size: 14px; line-height: 1.5; color: var(--muted); }
+.note b { margin-right: 6px; color: var(--ink); }
+.note::before { content: ""; flex: none; width: 16px; height: 16px; background: var(--muted); mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round'%3E%3Ccircle cx='8' cy='8' r='6.25'/%3E%3Cpath d='M8 7.25v4M8 4.9v.1'/%3E%3C/svg%3E") center / contain no-repeat; }
 
 /* Tour */
 #tour { padding-top: 80px; }
@@ -129,9 +134,10 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
 .feat:nth-child(even) { grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.72fr); }
 .feat:nth-child(even) .say { order: 2; }
 .feat .tall { justify-self: center; width: min(100%, 560px); }
-.feat .kicker { font: 600 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-text); }
+.feat .kicker, #ai .kicker { font: 600 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-text); }
 .feat .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 0; padding: 0; list-style: none; }
-.feat .chips li { padding: 5px 12px; border: 1px solid var(--edge); border-radius: 999px; font: 500 12px/1.4 var(--mono); color: var(--muted); }
+.feat .chips li { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.3rem 0.65rem; border: 1px solid var(--edge); border-radius: 5px; background: var(--raised); font: 600 0.8rem/1.4 var(--font); color: var(--ink); }
+.feat .chips li::before { content: ""; flex: none; width: 0.85rem; height: 0.85rem; background: var(--muted); mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E") center / contain no-repeat; }
 .feat h2 { margin-top: 14px; font-size: clamp(26px, 2.8vw, 36px); }
 .feat p { margin: 14px 0 0; color: var(--muted); font-size: 16px; }
 .feat[id] { scroll-margin-top: 80px; }
@@ -140,15 +146,37 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
 .stack { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 40px 0 0; padding: 0; list-style: none; }
 .stack li { padding: 20px; border: 1px solid var(--edge); border-radius: 10px; background: var(--panel); color: var(--muted); font-size: 14px; }
 .stack b { display: block; margin-bottom: 6px; color: var(--ink); font-size: 17px; }
-.stack .opt { grid-column: 1 / -1; background: none; border-style: dashed; }
+.stack li:has(> .tool) { padding: 0; border: 0; background: none; }
+.stack .tool { display: grid; grid-template-columns: auto 1fr auto; grid-template-rows: auto auto; align-items: center; column-gap: 14px; height: 100%; box-sizing: border-box; padding: 14px 16px; border: 1px solid var(--edge); border-radius: 10px; background: var(--panel); color: var(--muted); text-decoration: none; transition: border-color 160ms var(--ease), background-color 160ms var(--ease); }
+.stack .tool:hover { border-color: var(--accent); background: var(--raised); color: var(--muted); }
+.stack .tool img { grid-row: 1 / span 2; width: 44px; height: 44px; border-radius: 8px; }
+.stack .tool b { margin: 0; font-size: 16px; }
+.stack .tool .desc { grid-column: 2; font-size: 13px; line-height: 1.4; }
+.stack .tool .gh { grid-column: 3; grid-row: 1 / span 2; width: 16px; height: 16px; font-size: 0; background: var(--muted); mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 11l6-6M6 5h5v5'/%3E%3C/svg%3E") center / contain no-repeat; }
+.stack .tool:hover .gh { background: var(--accent-text); }
+.stack .opt .tool { grid-template-rows: auto auto auto; border-style: dashed; background: none; }
+.stack .opt .tool:hover { background: var(--panel); }
+.stack .opt .tool img, .stack .opt .tool .gh { grid-row: 1 / span 3; }
+.stack .opt .tool b { grid-column: 2; }
+.stack .opt-label { grid-column: 2; font-size: 0.72rem; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
 
-/* Tour at a glance */
-.glance { grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; }
-.glance li { padding: 0; }
-.glance a { display: block; padding: 20px; color: var(--ink); text-decoration: none; }
-.glance .glance-num { display: block; margin-bottom: 8px; font: 600 12px/1 var(--mono); letter-spacing: 0.08em; color: var(--accent-text); }
-.glance a:hover b { color: var(--accent-text); }
-.glance-more { margin: 28px 0 0; }
+/* AI library matching */
+#ai h2 { margin-top: 14px; }
+#ai .sub { max-width: 65ch; margin: 14px 0 0; color: var(--muted); font-size: 17px; }
+#ai .works { margin: 18px 0 0; color: var(--muted); font-size: 14px; }
+#ai .works b { color: var(--ink); font-weight: 600; }
+.ai-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 56px; align-items: center; }
+.ai-split > .match { order: -1; }
+.match { margin: 0; padding: 24px; border: 1px solid var(--edge); border-radius: 10px; background: var(--panel); }
+.match-ex { margin: 0 0 16px; font-size: 0.72rem; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+.match-row { display: grid; gap: 4px; padding: 14px 16px; border: 1px solid var(--edge); border-radius: 7px; background: var(--raised); }
+.match-row span { font-size: 13px; color: var(--muted); }
+.match-row b { color: var(--ink); font-size: 16px; overflow-wrap: anywhere; }
+.match-link { display: flex; align-items: center; gap: 10px; margin: 10px 0; padding-left: 16px; font-size: 14px; color: var(--accent-text); font-weight: 600; }
+.match-link::before { content: ""; width: 2px; height: 22px; border-radius: 1px; background: var(--accent); }
+.match-note { margin: 16px 0 0; display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink); }
+.match-note::before { content: ""; flex: none; width: 16px; height: 16px; background: var(--muted); mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round'%3E%3Ccircle cx='8' cy='8' r='6.25'/%3E%3Cpath d='M8 7.25v4M8 4.9v.1'/%3E%3C/svg%3E") center / contain no-repeat; }
+@media (max-width: 960px) { .ai-split { grid-template-columns: minmax(0, 1fr); gap: 32px; } .ai-split > .match { order: 0; } }
 
 @media (max-width: 960px) {
   .hero { padding-top: 48px; }
@@ -172,8 +200,12 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
   .rise { opacity: 0; transform: translateY(16px); animation: rise 700ms var(--ease) forwards; }
   .rise:nth-child(2) { animation-delay: 80ms; } .rise:nth-child(3) { animation-delay: 160ms; } .rise:nth-child(4) { animation-delay: 240ms; }
   .stage { animation-delay: 300ms; }
-  .hero-art::before { animation: drift 24s ease-in-out infinite alternate; }
-  @keyframes drift { to { transform: translate3d(-4%, 3%, 0) scale(1.08); } }
+  /* Magenta and violet glows drift apart at unmatched speeds and breathe on a third loop, so the motion never lines up. */
+  .hero-art::before { animation: drift-a 16s ease-in-out infinite alternate, breathe 10s ease-in-out infinite; }
+  .hero-art::after { animation: drift-b 20.8s ease-in-out infinite alternate, breathe 10s ease-in-out infinite; }
+  @keyframes drift-a { to { transform: translate3d(-10%, 7%, 0) scale(1.1); } }
+  @keyframes drift-b { to { transform: translate3d(9%, -6%, 0) scale(0.94); } }
+  @keyframes breathe { 0%, 100% { scale: 1; opacity: 0.75; } 50% { scale: 1.14; opacity: 1; } }
   /* Border beam on every screenshot: a fixed conic gradient on an oversized ::after turns with a
      compositor transform, and the 2 px gap around the image shows it. The square must cover the
      frame's diagonal, so the tall phone frame gets a wider one. Measured at 4x CPU throttle on the
@@ -183,7 +215,7 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
     content: ""; position: absolute; z-index: -1;
     left: 50%; top: 50%; width: 160%; aspect-ratio: 1; translate: -50% -50%;
     background: conic-gradient(from 0deg, transparent 0deg, transparent 280deg, var(--accent) 325deg, oklch(88% 0.12 1.08) 345deg, oklch(55% 0.17 1.08) 356deg, transparent 360deg);
-    animation: beam-rot 5s linear infinite;
+    animation: beam-rot 20s linear infinite;
     pointer-events: none;
   }
   .shot.phone::after { width: 260%; }
@@ -231,7 +263,7 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
     <div class="wrap">
       <a class="eyebrow rise" id="release" href="https://github.com/Skare69/velvarr/releases"><b>Releases</b><span>See the changelog on GitHub</span></a>
       <h1 class="rise">Discover it.<br>Request it.<br><em>Watch it.</em></h1>
-      <p class="lede rise">Velvarr is a self-hosted discovery and request app for adult media. TPDB, StashDB, Whisparr and Jellyfin usually run as four separate services. Velvarr is one container that connects to all four: browse TPDB and StashDB, approve requests into Whisparr, and watch in Jellyfin.</p>
+      <p class="lede rise">Velvarr runs on your own server. Browse new adult movies and scenes from TPDB and StashDB, and request what you want. Velvarr hands each request to Whisparr, and when the title is in your library, you watch it in Jellyfin.</p>
       <div class="actions rise">
         <a class="btn btn-accent" href="#install">Install with Docker</a>
         <a href="https://github.com/Skare69/velvarr">View the source on GitHub</a>
@@ -240,7 +272,7 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
         <figure class="shot"><img src="shots/discover.webp" alt="Velvarr Discover page with shelves of new scenes, trending movies and titles recently added to Jellyfin" width="2000" height="1250" decoding="async"></figure>
         <figure class="shot phone"><img src="shots/discover-mobile.webp" alt="Velvarr Discover page on a phone, with the bottom navigation bar" width="780" height="1688" loading="lazy" decoding="async"></figure>
       </div>
-      <p class="note">Screenshots show the real app with invented titles and names. AI generated the pictures.</p>
+      <p class="note"><span><b>Demo content in every screenshot</b>The screenshots show the real app. The titles and names are made up, and AI made the pictures.</span></p>
     </div>
   </div>
 
@@ -249,29 +281,28 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
     <article class="feat" id="tour-browse">
       <div class="say">
         <span class="kicker">Browse</span>
-        <h2>Filter by tags, terms, performers and dates</h2>
-        <p>Group provider tags with "or", exclude the ones you never want, mix in free-text terms, match any or all of several performers, plus studios and release dates. Every filter lives in the URL, so a search is a link you can share.</p>
+        <h2>Search by tag, performer, studio and date</h2>
+        <p>Pick the tags you want and hide the ones you never want to see. Add a few words of your own, one or more performers, a studio, or a range of release dates. Every search has its own link, so you can bookmark it or send it to someone.</p>
         <ul class="chips" aria-label="Browse capabilities">
-          <li>tag groups</li>
-          <li>excluded tags</li>
-          <li>any/all performers</li>
-          <li>date ranges</li>
-          <li>shareable URLs</li>
+          <li>tags you want</li>
+          <li>tags you hide</li>
+          <li>any or all performers</li>
+          <li>release date ranges</li>
+          <li>bookmarkable searches</li>
         </ul>
       </div>
       <figure class="shot tall"><img src="shots/browse-filters.webp" alt="Velvarr Browse view with the filter drawer open: two performers matched by any, a Lingerie or Velvet tag group, a free-text tag, and a release-date filter" width="1555" height="1800" loading="lazy" decoding="async"></figure>
     </article>
     <article class="feat" id="tour-ai-search">
       <div class="say">
-        <span class="kicker">AI search, optional</span>
-        <h2>Describe it, get the filters</h2>
-        <p>Plain-sentence search on a model that you host. It drafts the tag, performer, studio and date filters, and Velvarr checks every tag, performer and studio against the providers. Every part that did not apply is listed, so the filters you keep are real.</p>
-        <ul class="chips" aria-label="AI search capabilities">
-          <li>model-drafted filters</li>
-          <li>provider-verified names</li>
-          <li>lists unapplied parts</li>
-          <li>relative dates</li>
-          <li>Ollama or OpenAI-compatible</li>
+        <span class="kicker">AI-assisted search (optional)</span>
+        <h2>Search in plain words</h2>
+        <p>Type a sentence like "poolside scenes from this year". A language model turns it into filters. Velvarr checks each tag, performer and studio against TPDB and StashDB, and tells you which parts of your sentence it could not use. Connect any OpenAI-compatible server, on your own machine or hosted.</p>
+        <ul class="chips" aria-label="AI-assisted search capabilities">
+          <li>names checked against TPDB and StashDB</li>
+          <li>shows what it skipped</li>
+          <li>dates like "this year"</li>
+          <li>any OpenAI-compatible server</li>
         </ul>
       </div>
       <figure class="shot"><img src="shots/prose.webp" alt="Velvarr natural-language search: a sentence turned into scene type, tag, performer and date filters, with notes for the parts it did not apply" width="1800" height="957" loading="lazy" decoding="async"></figure>
@@ -279,74 +310,77 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
     <article class="feat" id="tour-performers">
       <div class="say">
         <span class="kicker">Performers</span>
-        <h2>One page per performer, from both sources</h2>
-        <p>Bio facts, aliases and links in the header. The most frequent tags and every movie and scene below it. When TPDB and StashDB publish a link between two records, Velvarr shows them as one person. Follow a performer, and Discover lists their new releases.</p>
+        <h2>Everything about a performer on one page</h2>
+        <p>The bio, other names and links are at the top, then the most common tags and every movie and scene. When TPDB and StashDB link their entries for the same person, Velvarr shows one page for both. Follow a performer, and their new releases show on your Discover page.</p>
         <ul class="chips" aria-label="Performers capabilities">
-          <li>bio facts and aliases</li>
-          <li>linked TPDB+StashDB records</li>
-          <li>frequent tags</li>
+          <li>bio and other names</li>
+          <li>TPDB and StashDB on one page</li>
+          <li>most common tags</li>
           <li>movies and scenes</li>
-          <li>one follow covers both records</li>
+          <li>follow for new releases</li>
         </ul>
       </div>
-      <figure class="shot"><img src="shots/performer.webp" alt="Velvarr performer page with portrait, facts, follow button, counted tags and a movie grid" width="1800" height="1010" loading="lazy" decoding="async"></figure>
+      <figure class="shot"><img src="shots/performer.webp" alt="Velvarr performer page with portrait, facts, follow button, most common tags and a movie grid" width="1800" height="1010" loading="lazy" decoding="async"></figure>
     </article>
     <article class="feat" id="tour-requests">
       <div class="say">
         <span class="kicker">Requests</span>
         <h2>Members request, you approve</h2>
-        <p>Member requests, approvals by an administrator or moderator, automatic hand-off to Whisparr. Every row shows the real state: pending, approved, downloading with its progress, or in the library, so nobody has to ask where a title is.</p>
+        <p>The people you share your server with can request titles. You or a moderator approve them, or you turn on auto-approval for people you trust. Velvarr sends each approved request to Whisparr and shows its real status: waiting, approved, in progress, or ready to watch. Nobody has to ask you where a title is.</p>
         <ul class="chips" aria-label="Requests capabilities">
-          <li>member requests</li>
-          <li>admin or moderator approvals</li>
+          <li>requests from members</li>
+          <li>approval by you or a moderator</li>
           <li>auto-approval</li>
-          <li>Whisparr handoff</li>
-          <li>download progress</li>
+          <li>sent to Whisparr</li>
+          <li>live status</li>
         </ul>
       </div>
-      <figure class="shot"><img src="shots/requests.webp" alt="Velvarr Requests view with two pending requests that have Approve and Decline buttons, and an approved request that downloads at 62 percent" width="1800" height="1226" loading="lazy" decoding="async"></figure>
+      <figure class="shot"><img src="shots/requests.webp" alt="Velvarr Requests view with two pending requests that have Approve and Decline buttons, and an approved request at 62 percent" width="1800" height="1226" loading="lazy" decoding="async"></figure>
     </article>
     <article class="feat" id="tour-watch">
       <div class="say">
         <span class="kicker">Watch</span>
         <h2>Play it in Jellyfin</h2>
-        <p>The title page carries the file facts and a Play on Jellyfin button once the file is in the library. Each member signs in with their own Jellyfin account and sees only their own libraries. An approved request ends at a Play button.</p>
+        <p>When a title is in your library, its page shows the file details and a Play on Jellyfin button. Everyone signs in with their own Jellyfin account and sees only the libraries that you share with them.</p>
         <ul class="chips" aria-label="Watch capabilities">
-          <li>own Jellyfin accounts</li>
-          <li>per-member libraries</li>
-          <li>file facts</li>
-          <li>Play on Jellyfin</li>
-          <li>in-library status</li>
+          <li>your Jellyfin accounts</li>
+          <li>libraries per person</li>
+          <li>file details</li>
         </ul>
       </div>
-      <figure class="shot"><img src="shots/detail-movie.webp" alt="Velvarr movie page marked Available, with file facts and a Play on Jellyfin button" width="1800" height="1010" loading="lazy" decoding="async"></figure>
+      <figure class="shot"><img src="shots/detail-movie.webp" alt="Velvarr movie page marked Available, with file details and a Play on Jellyfin button" width="1800" height="1010" loading="lazy" decoding="async"></figure>
     </article>
     </div>
   </section>
 
   <section id="stack">
     <div class="wrap">
-      <h2>The services Velvarr connects to</h2>
+      <h2>What Velvarr works with</h2>
       <ul class="stack">
-        <li><b>TPDB</b>Movies, scenes, performers and studios.</li>
-        <li><b>StashDB</b>Scenes, performers and studios.</li>
-        <li><b>Whisparr V3</b>Downloads the titles you approve.</li>
-        <li><b>Jellyfin</b>Sign-in, libraries and playback.</li>
-        <li class="opt"><b>Optional</b>Discord notifications, AI title matching through an Ollama model or TypeSafe, and natural-language search through an OpenAI-compatible server that you set up.</li>
+        <li><a class="tool" href="https://theporndb.net/"><img src="logos/tpdb.png" alt="" width="44" height="44" loading="lazy"><b>TPDB</b><span class="desc">A database of adult movies, scenes, performers and studios.</span><span class="gh">website</span></a></li>
+        <li><a class="tool" href="https://stashdb.org/"><img src="logos/stashdb.png" alt="" width="44" height="44" loading="lazy"><b>StashDB</b><span class="desc">A community database of scenes, performers and studios.</span><span class="gh">website</span></a></li>
+        <li><a class="tool" href="https://github.com/Whisparr/Whisparr"><img src="logos/whisparr.png" alt="" width="44" height="44" loading="lazy"><b>Whisparr V3</b><span class="desc">Adds the titles you approve to your library.</span><span class="gh">on GitHub</span></a></li>
+        <li><a class="tool" href="https://github.com/jellyfin/jellyfin"><img src="logos/jellyfin.png" alt="" width="44" height="44" loading="lazy"><b>Jellyfin</b><span class="desc">Your media server, for sign-in, libraries and playback.</span><span class="gh">on GitHub</span></a></li>
+        <li class="opt"><a class="tool" href="https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks"><img src="logos/discord.png" alt="" width="44" height="44" loading="lazy"><span class="opt-label">Optional</span><b>Discord</b><span class="desc">Sends a message when a request goes to Whisparr and when the title is ready to watch.</span><span class="gh">webhooks guide</span></a></li>
       </ul>
     </div>
   </section>
 
-  <section id="recap" aria-label="Tour at a glance">
-    <div class="wrap">
-      <ul class="stack glance">
-        <li><a href="#tour-browse"><span class="glance-num">1</span><b>Browse</b></a></li>
-        <li><a href="#tour-ai-search"><span class="glance-num">2</span><b>AI search, optional</b></a></li>
-        <li><a href="#tour-performers"><span class="glance-num">3</span><b>Performers</b></a></li>
-        <li><a href="#tour-requests"><span class="glance-num">4</span><b>Requests</b></a></li>
-        <li><a href="#tour-watch"><span class="glance-num">5</span><b>Watch</b></a></li>
-      </ul>
-      <p class="glance-more"><a class="btn btn-accent" href="#install">Install with Docker</a></p>
+  <section id="ai" aria-labelledby="ai-heading">
+    <div class="wrap ai-split">
+      <div>
+        <span class="kicker">AI-assisted matching (optional)</span>
+        <h2 id="ai-heading">Smarter library matching</h2>
+        <p class="sub">When a title in your library has a slightly different name than the one you requested, AI spots the likely match and flags it for you to review. It never marks a title as available on its own. It also sorts similar titles and suggests real tags while you search.</p>
+        <p class="works"><b>Works with</b> Ollama or TypeSafe</p>
+      </div>
+      <figure class="match" aria-label="Example of a flagged near match">
+        <p class="match-ex">Example</p>
+        <div class="match-row"><span>You requested</span><b>Midnight Lobby (2024)</b></div>
+        <p class="match-link">Likely the same title</p>
+        <div class="match-row"><span>In your Jellyfin library</span><b>Midnight Lobby: Director's Cut</b></div>
+        <p class="match-note">Flagged for your review. Nothing changes until you decide.</p>
+      </figure>
     </div>
   </section>
 
@@ -354,11 +388,11 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
     <div class="wrap split">
       <div>
         <h2>Install with Docker</h2>
-        <p class="sub">Velvarr runs as one container from <code>ghcr.io/skare69/velvarr</code>.</p>
+        <p class="sub">Velvarr is one Docker container, <code>ghcr.io/skare69/velvarr</code>. Before you start, you need:</p>
         <ul class="needs" aria-label="Requirements">
           <li><span>Docker with Compose</span></li>
-          <li><span>Jellyfin for sign-in, libraries, and playback</span></li>
-          <li><span>Whisparr V3 (Eros) to download approved titles</span></li>
+          <li><span>Jellyfin, for sign-in, libraries and playback</span></li>
+          <li><span>Whisparr V3 (Eros), to add approved titles to your library</span></li>
           <li><span>A TPDB token, a StashDB key, or both</span></li>
         </ul>
       </div>
@@ -415,10 +449,17 @@ fetch("https://api.github.com/repos/Skare69/velvarr/releases/latest")
   .then(r => r.ok ? r.json() : Promise.reject(r.status))
   .then(rel => {
     const a = document.getElementById("release");
-    const date = new Date(rel.published_at).toLocaleDateString("en", { year: "numeric", month: "short", day: "numeric" });
+    const published = new Date(rel.published_at);
+    // Calendar days in the visitor's time zone; round absorbs the DST hour.
+    const midnight = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const days = Math.round((midnight(new Date()) - midnight(published)) / 864e5);
+    const when = days >= 0 && days <= 7
+      ? new Intl.RelativeTimeFormat("en", { numeric: "auto" }).format(-days, "day")
+      : published.toLocaleDateString("en", { year: "numeric", month: "short", day: "numeric" });
     a.href = rel.html_url;
     a.querySelector("b").textContent = rel.tag_name;
-    a.querySelector("span").textContent = "Released " + date;
+    a.querySelector("span").textContent = "Released " + when;
+    a.querySelector("span").title = published.toLocaleString("en");
   })
   .catch(() => {});
 
