@@ -475,34 +475,66 @@ const MIGRATIONS: Record<number, string> = {
     -- hex UUIDs and before the write path normalized them, one title could
     -- hold two rows differing only in case: requests_active_intent and
     -- acquisitions_identity compare case-sensitively, so both spellings
-    -- cannot fold at once. A colliding active request pair keeps its
-    -- spelling and its decisions for a manual repair; the migration logs
-    -- those rows at startup (warnLeftMixedIds). The operator chose this
-    -- over cancelling requests and deleting acquisition rows
+    -- cannot fold at once. Cancellation and the eligibility checks match
+    -- ids exactly, so a request and its acquisition must keep one
+    -- spelling together: a request does not fold while an acquisition
+    -- still carries its spelling, and an acquisition does not fold while
+    -- a kept active request carries it. Identities with a case collision
+    -- stay exactly as they were for a manual repair; the migration logs
+    -- the rows it left at startup (warnLeftMixedIds). The operator chose
+    -- this over cancelling requests and deleting acquisition rows
     -- (VELV-233, 2026-11-20): an upgrade must not lose history.
-    -- The requests unique index only spans pending and approved rows, so
-    -- history rows always fold; only an active pair of more than one row
-    -- stays untouched.
     UPDATE requests SET external_id = lower(external_id)
     WHERE external_id != lower(external_id)
-      AND rowid NOT IN (
-        SELECT rowid FROM (
-          SELECT rowid, COUNT(*) OVER (
-            PARTITION BY account_id, provider, kind, lower(external_id)
-          ) AS active_n
-          FROM requests
-          WHERE decision IN ('pending', 'approved')
-        ) WHERE active_n > 1
+      AND (
+        -- History rows are inert: nothing looks them up by id again.
+        decision NOT IN ('pending', 'approved')
+        OR (
+          -- The account holds exactly one active intent for this
+          -- identity ...
+          (SELECT COUNT(*) FROM requests r2
+            WHERE r2.account_id = requests.account_id
+              AND r2.provider = requests.provider
+              AND r2.kind = requests.kind
+              AND r2.decision IN ('pending', 'approved')
+              AND lower(r2.external_id) = lower(requests.external_id)) = 1
+          -- ... and no acquisition keeps this spelling alive.
+          AND NOT EXISTS (
+            SELECT 1 FROM acquisitions a
+            WHERE a.provider = requests.provider
+              AND a.kind = requests.kind
+              AND a.external_id = requests.external_id
+              AND (SELECT COUNT(*) FROM acquisitions a2
+                    WHERE a2.instance_id = a.instance_id
+                      AND a2.provider = a.provider
+                      AND a2.kind = a.kind
+                      AND lower(a2.external_id) = lower(a.external_id)) > 1
+          )
+        )
       );
     UPDATE acquisitions SET external_id = lower(external_id)
     WHERE external_id != lower(external_id)
-      AND rowid IN (
-        SELECT rowid FROM (
-          SELECT rowid, COUNT(*) OVER (
-            PARTITION BY instance_id, provider, kind, lower(external_id)
-          ) AS n
-          FROM acquisitions
-        ) WHERE n = 1
+      -- The instance partition is single: no acquisition partner shares
+      -- the folded identity ...
+      AND (SELECT COUNT(*) FROM acquisitions a2
+            WHERE a2.instance_id = acquisitions.instance_id
+              AND a2.provider = acquisitions.provider
+              AND a2.kind = acquisitions.kind
+              AND lower(a2.external_id) = lower(acquisitions.external_id)) = 1
+      -- ... and no active request that an active partner holds down
+      -- carries this spelling.
+      AND NOT EXISTS (
+        SELECT 1 FROM requests r
+        WHERE r.provider = acquisitions.provider
+          AND r.kind = acquisitions.kind
+          AND r.external_id = acquisitions.external_id
+          AND r.decision IN ('pending', 'approved')
+          AND (SELECT COUNT(*) FROM requests r2
+                WHERE r2.account_id = r.account_id
+                  AND r2.provider = r.provider
+                  AND r2.kind = r.kind
+                  AND r2.decision IN ('pending', 'approved')
+                  AND lower(r2.external_id) = lower(r.external_id)) > 1
       );
   `,
 };
