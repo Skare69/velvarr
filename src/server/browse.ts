@@ -835,34 +835,37 @@ function before(
   return a.reference.id < b.reference.id;
 }
 
-/** One in-flight upstream catalog page read per provider: fan-out
- * multiplies the streams a single browse opens per side, and the
- * providers' rate limits for concurrent page reads are unmeasured, so the
- * gate bounds concurrent upstream reads at today's level (one per side,
- * two for a two-provider browse). Ordered merges stay correct: the gate
- * delays a stream's read, never its merge order — the merge already waits
- * for every live stream's next row before picking a head. Single-stream
- * sides are uncontended, so nothing changes for them. ponytail: measure
- * and parallelize if fan-out latency shows up. */
-const providerReadTurns = new Map<CatalogProvider, Promise<unknown>>();
-
-/** Queues `read` behind the provider's last queued turn. The chain is
- * `prev.then(read, read)` so a prior read's failure cannot block the
- * queue — the rejection handler runs the next read too. The stored tail
- * is the settled form of `next` (rejections swallowed), so the chain
- * never poisons a later reader; the caller's own promise still carries
- * the error. */
-function gatedRead<T>(
-  provider: CatalogProvider,
-  read: () => Promise<T>,
-): Promise<T> {
-  const prev = providerReadTurns.get(provider) ?? Promise.resolve();
-  const next = prev.then(read, read);
-  providerReadTurns.set(
-    provider,
-    next.catch(() => undefined),
-  );
-  return next;
+/** One in-flight upstream catalog page read per provider per browse: fan-out
+ * multiplies the streams a single browse opens per side, and the providers'
+ * rate limits for concurrent page reads are unmeasured, so the gate bounds
+ * the browse's fan-out reads at today's per-side level. The gate is created
+ * per browseTitles call and gates ONLY that browse's fan-out streams — every
+ * other read (non-fan-out streams of multi-seed browses, other requests,
+ * other users) keeps today's parallelism and never queues behind this
+ * browse. Ordered merges stay correct: the gate delays a stream's read,
+ * never its merge order — the merge already waits for every live stream's
+ * next row before picking a head. ponytail: measure and parallelize if
+ * fan-out latency shows up. */
+function createReadGate() {
+  const turns = new Map<CatalogProvider, Promise<unknown>>();
+  return function gateRead<T>(
+    provider: CatalogProvider,
+    read: () => Promise<T>,
+  ): Promise<T> {
+    // Queues `read` behind the provider's last queued turn. The chain is
+    // `prev.then(read, read)` so a prior read's failure cannot block the
+    // queue — the rejection handler runs the next read too. The stored tail
+    // is the settled form of `next` (rejections swallowed), so the chain
+    // never poisons a later reader; the caller's own promise still carries
+    // the error.
+    const prev = turns.get(provider) ?? Promise.resolve();
+    const next = prev.then(read, read);
+    turns.set(
+      provider,
+      next.catch(() => undefined),
+    );
+    return next;
+  };
 }
 
 /** One provider stream: consecutive native pages, visibility-filtered on
@@ -897,6 +900,14 @@ class Stream {
   private readonly base: CatalogSearchQuery;
   private readonly visible: (d: CatalogDetail) => boolean;
   private readonly perPage: number;
+  /** This browse's fan-out read gate (createReadGate), set on fan-out
+   * streams only: their upstream page reads queue per provider inside the
+   * one browse. Undefined on every other stream — those reads run exactly
+   * as before, in parallel, never behind this browse's fan-out. */
+  private readonly gate?: <T>(
+    provider: CatalogProvider,
+    read: () => Promise<T>,
+  ) => Promise<T>;
 
   constructor(
     base: CatalogSearchQuery,
@@ -905,6 +916,7 @@ class Stream {
     localFiltered: boolean,
     softCeiling = false,
     dateStop?: (d: CatalogDetail) => boolean,
+    gate?: <T>(provider: CatalogProvider, read: () => Promise<T>) => Promise<T>,
   ) {
     this.base = base;
     this.visible = visible;
@@ -912,6 +924,7 @@ class Stream {
     this.localFiltered = localFiltered;
     this.softCeiling = softCeiling;
     this.dateStop = dateStop;
+    this.gate = gate;
   }
 
   get live(): boolean {
@@ -961,16 +974,18 @@ class Stream {
     // macrotask per page so other members' requests interleave.
     await nextMacrotask();
     try {
-      // The per-provider gate (providerReadTurns) serializes the upstream
-      // page read; a lone stream passes straight through the resolved
-      // chain, so uncontended reads behave exactly as before.
-      const result = await gatedRead(this.base.provider, () =>
+      // A fan-out stream queues its read behind its browse's per-provider
+      // turn; every other stream reads directly, in parallel, as before.
+      const read = () =>
         searchCatalog({
           ...this.base,
           page: this.page,
           perPage: this.perPage,
-        } as CatalogSearchQuery),
-      );
+        } as CatalogSearchQuery);
+      const result =
+        this.gate === undefined
+          ? await read()
+          : await this.gate(this.base.provider, read);
       this.buffer.push(...result.items.filter(this.visible));
       this.nativeHasMore = result.hasMore;
       this.total = result.total;
@@ -1908,6 +1923,10 @@ export async function browseTitles(
 
   const streams: Stream[] = [];
   const dedupeSets = new Map<string, Set<string>>();
+  // One gate per browse: it serializes only this browse's fan-out streams,
+  // per provider, so a fan-out's worst-case upstream reads stay at today's
+  // one-in-flight-per-side level without touching any other browse or read.
+  const gateRead = createReadGate();
   for (const [seedIndex, seedPlan] of seedPlans.entries()) {
     const dateBound = resolveDateBound(
       query,
@@ -1998,6 +2017,7 @@ export async function browseTitles(
             localFiltered,
             softCeilingFor(fanoutPlan),
             dateStop,
+            gateRead,
           ),
         );
       }
