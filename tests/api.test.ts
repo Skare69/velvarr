@@ -2394,7 +2394,9 @@ test("rotating X-Forwarded-For values cannot escape the global setup-secret cap"
   // and appending proxies keep the client's value first). A fresh value per
   // guess dodges the per-source bucket, so the spray cap shared with
   // sign-in (GLOBAL_LIMIT, 300 per five-minute window) is what bounds an
-  // unauthenticated guesser before the first admin exists.
+  // unauthenticated guesser before the first admin exists. It bounds
+  // guessing, not ownership: a full window still runs the secret compare,
+  // so the owner's correct secret passes (the saturated-cap test below).
   resetLoginBuckets();
   const wrong = {
     ...inspectBody(),
@@ -2431,6 +2433,62 @@ test("rotating X-Forwarded-For values cannot escape the global setup-secret cap"
       429,
     );
     assert.equal(commit.code, "too_many_attempts");
+  } finally {
+    console.warn = originalWarn;
+    resetLoginBuckets();
+  }
+});
+
+test("a saturated setup cap still accepts the owner's correct setup secret", async () => {
+  // Rotating X-Forwarded-For values give each guess its own per-source
+  // bucket, so one host fills the global spray cap — and before the
+  // owner-exemption that 429 refused the owner's correct secret too for
+  // the whole window, a lockout the attacker could renew every window.
+  // The caps bound guessing, never proof of ownership: under a full
+  // window the compare still runs, a wrong secret keeps the refusal
+  // (uncharged), and the correct one passes.
+  resetLoginBuckets();
+  const wrong = {
+    ...inspectBody(),
+    setupSecret: "wrong-secret-wrong-secret-wrong-secret!",
+  };
+  const source = (n: number) => ({
+    "x-forwarded-for": `198.51.${Math.floor(n / 256)}.${n % 256}`,
+  });
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    for (let guess = 0; guess < 300; guess += 1) {
+      await errorShape(
+        await call("POST", "/api/setup/inspect", {
+          headers: source(guess),
+          body: { ...wrong },
+        }),
+        403,
+      );
+    }
+    // The cap still bounds the guesser: further wrong secrets stay
+    // refused with 429, not 403.
+    const stillRefused = await errorShape(
+      await call("POST", "/api/setup/inspect", {
+        headers: source(999),
+        body: { ...wrong },
+      }),
+      429,
+    );
+    assert.equal(stillRefused.code, "too_many_attempts");
+    // The owner's correct secret is not a guess: it passes while every
+    // bucket is full, from a fresh source and with no X-Forwarded-For at
+    // all (the direct-LAN owner's shape).
+    const owner = await call("POST", "/api/setup/inspect", {
+      headers: source(1000),
+      body: inspectBody(),
+    });
+    assert.equal(owner.status, 200);
+    const again = await call("POST", "/api/setup/inspect", {
+      body: inspectBody(),
+    });
+    assert.equal(again.status, 200);
   } finally {
     console.warn = originalWarn;
     resetLoginBuckets();

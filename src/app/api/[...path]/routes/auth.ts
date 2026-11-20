@@ -96,7 +96,9 @@ function clientIp(request: Request): string {
 // budget. Callers that
 // authenticate an admitted Velvarr account pass admitted=true so a
 // rotating-name sprayer filling the global bucket cannot lock the
-// household out; setup paths keep the cap fully (no accounts exist before
+// household out; setup passes admitted=true too, but only after
+// guardedSetupSecret proved the setup secret, so the global cap still
+// guards every unproven setup attempt (no accounts exist before
 // initialization). A request with a valid known-device cookie for the name
 // passes `device`, so its attempts use that device's bucket, not the
 // name's shared one.
@@ -144,10 +146,30 @@ function signedIn(request: Request, grant: SessionGrant, name: string) {
 // answers 429 when the per-source bucket is exhausted; the reservation
 // holds a per-source slot plus a global spray slot in the same synchronous
 // step, so parallel guesses cannot all pass uncounted. A wrong secret
-// keeps both charges; a correct one refunds them like any non-guess.
+// keeps both charges; a correct one refunds them like any non-guess. A
+// full window never refuses ownership: the key is the first XFF entry,
+// which the client supplies, so one host can fill every bucket with
+// rotating values — under a saturated window the compare still runs, a
+// wrong secret rethrows the refusal uncharged, the correct one passes.
 function guardedSetupSecret(request: Request, check: () => void): void {
   const ip = clientIp(request);
-  assertLoginAllowed(ip, false);
+  let refused: AppError | null = null;
+  try {
+    assertLoginAllowed(ip, false);
+  } catch (e) {
+    if (e instanceof AppError && e.code === "too_many_attempts") refused = e;
+    else throw e;
+  }
+  if (refused) {
+    // The compare is one sha256 (verifySetupSecret), so running it under a
+    // saturated window costs nothing and bounds no honest caller.
+    try {
+      check();
+      return;
+    } catch {
+      throw refused;
+    }
+  }
   const refund = reserveLoginAttempt(ip, false);
   try {
     check();
@@ -207,10 +229,13 @@ export async function setupInspect(request: Request): Promise<Response> {
   const body = await readJson(request);
   guardedSetupSecret(request, () => verifySetupSecret(body.setupSecret));
   const fields = setupFields(body);
+  // The setup secret is proven above, so the caller is the operator: like
+  // an admitted sign-in this skips the global spray cap a sprayer may
+  // have just filled; the per-account bucket still applies.
   const selection = await guardedAuthentication(
     fields.username,
     () => verifySetupSelection(fields),
-    false,
+    true,
     clientIp(request),
   );
   return json({
@@ -244,10 +269,13 @@ export async function setupCommit(request: Request): Promise<Response> {
       );
     whisparr = { url: validateBaseUrl(whisparrUrl), apiKey: whisparrApiKey };
   }
+  // The setup secret is proven above, so the caller is the operator: like
+  // an admitted sign-in this skips the global spray cap a sprayer may
+  // have just filled; the per-account bucket still applies.
   const selection = await guardedAuthentication(
     fields.username,
     () => verifySetupSelection(fields),
-    false,
+    true,
     clientIp(request),
   );
   if (
