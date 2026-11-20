@@ -16,7 +16,7 @@
 <meta property="og:url" content="https://velvarr.dev/">
 <link rel="canonical" href="https://velvarr.dev/">
 <link rel="icon" href="icon-192.png">
-<link rel="preload" as="image" href="velvet.webp" fetchpriority="high">
+<link rel="preload" as="image" href="velvet.webp">
 <style>
 html, body { background: oklch(17% 0.022 325); }
 :root {
@@ -70,7 +70,6 @@ code { font-family: var(--mono); font-size: 0.9em; }
 
 /* Sections */
 section { padding: 96px 0; }
-section + section { border-top: 1px solid color-mix(in srgb, var(--edge) 45%, transparent); }
 h2 { font-size: clamp(30px, 3.6vw, 44px); line-height: 1.08; letter-spacing: -0.025em; font-weight: 700; }
 .sub { margin: 16px 0 0; max-width: 40em; color: var(--muted); font-size: 17px; }
 .split { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 64px; align-items: start; }
@@ -83,7 +82,9 @@ h2 { font-size: clamp(30px, 3.6vw, 44px); line-height: 1.08; letter-spacing: -0.
 .term-bar { display: flex; align-items: center; gap: 4px; padding: 6px 6px 6px 8px; border-bottom: 1px solid var(--edge); background: var(--panel); }
 .tab { min-height: 36px; padding: 0 12px; border: 0; border-radius: 5px; background: none; color: var(--muted); font: 600 13px/1 var(--font); cursor: pointer; }
 .tab[aria-selected="true"] { background: var(--accent-soft); color: var(--accent-text); }
-.copy { margin-left: auto; min-height: 36px; padding: 0 12px; border: 1px solid var(--edge); border-radius: 5px; background: var(--raised); color: var(--ink); font: 600 13px/1 var(--font); cursor: pointer; }
+.copy { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; min-height: 36px; padding: 0 12px 0 10px; border: 1px solid var(--edge); border-radius: 5px; background: var(--raised); color: var(--ink); font: 600 13px/1 var(--font); cursor: pointer; }
+/* Icon lives in ::before so the script's "Copied" text swap keeps it. */
+.copy::before { content: ""; flex: none; width: 14px; height: 14px; background: currentColor; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linejoin='round'%3E%3Crect x='5.25' y='5.25' width='8.5' height='8.5' rx='1.5'/%3E%3Cpath d='M10.75 5.25V3.75a1.5 1.5 0 0 0-1.5-1.5h-5a1.5 1.5 0 0 0-1.5 1.5v5a1.5 1.5 0 0 0 1.5 1.5h1.5'/%3E%3C/svg%3E") center / contain no-repeat; }
 .copy:hover { border-color: var(--accent); }
 pre { margin: 0; padding: 20px; overflow-x: auto; font: 13.5px/1.7 var(--mono); color: var(--ink); }
 pre .c { color: var(--muted); }
@@ -113,7 +114,7 @@ footer .age { flex-basis: 100%; margin: 0; font-size: 13px; }
 .eyebrow b { padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
 .eyebrow:hover { border-color: var(--accent); color: var(--ink); }
 h1 { font-size: clamp(min(42px, 11.5vw), 6.4vw, 80px); line-height: 1.0; letter-spacing: -0.035em; font-weight: 700; }
-h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
+h1 em, .shine { font-style: normal; color: var(--ink); display: inline-block; }
 .lede { margin: 24px 0 0; max-width: 33em; font-size: clamp(17px, 1.6vw, 19px); color: var(--muted); }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin-top: 34px; }
 
@@ -125,7 +126,7 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
 .stage .phone { position: absolute; right: -12px; bottom: -40px; width: 21%; border-radius: 26px; border-width: 6px; border-color: oklch(25% 0.03 325); }
 .note { display: flex; align-items: center; gap: 12px; margin: 72px 0 0; padding: 12px 16px; border: 1px solid var(--edge); border-radius: 10px; background: var(--panel); font-size: 14px; line-height: 1.5; color: var(--muted); }
 .note b { margin-right: 6px; color: var(--ink); }
-.note::before { content: ""; flex: none; width: 16px; height: 16px; background: var(--muted); mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round'%3E%3Ccircle cx='8' cy='8' r='6.25'/%3E%3Cpath d='M8 7.25v4M8 4.9v.1'/%3E%3C/svg%3E") center / contain no-repeat; }
+.note::before { content: ""; flex: none; width: 16px; height: 16px; background: var(--accent); mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round'%3E%3Ccircle cx='8' cy='8' r='6.25'/%3E%3Cpath d='M8 7.25v4M8 4.9v.1'/%3E%3C/svg%3E") center / contain no-repeat; }
 
 /* Tour */
 #tour { padding-top: 80px; }
@@ -134,12 +135,14 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
 .feat:nth-child(even) { grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.72fr); }
 .feat:nth-child(even) .say { order: 2; }
 .feat .tall { justify-self: center; width: min(100%, 560px); }
-.feat .kicker, #ai .kicker { font: 600 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-text); }
+.feat .kicker { font: 600 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-text); }
 .feat .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 0; padding: 0; list-style: none; }
 .feat .chips li { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.3rem 0.65rem; border: 1px solid var(--edge); border-radius: 5px; background: var(--raised); font: 600 0.8rem/1.4 var(--font); color: var(--ink); }
 .feat .chips li::before { content: ""; flex: none; width: 0.85rem; height: 0.85rem; background: var(--muted); mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E") center / contain no-repeat; }
 .feat h2 { margin-top: 14px; font-size: clamp(26px, 2.8vw, 36px); }
-.feat p { margin: 14px 0 0; color: var(--muted); font-size: 16px; }
+.feat .say p { margin: 14px 0 0; color: var(--muted); font-size: 16px; }
+.feat .say .works { margin-top: 18px; font-size: 14px; }
+.feat .works b { color: var(--ink); font-weight: 600; }
 .feat[id] { scroll-margin-top: 80px; }
 
 /* Works with */
@@ -160,13 +163,7 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
 .stack .opt .tool b { grid-column: 2; }
 .stack .opt-label { grid-column: 2; font-size: 0.72rem; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
 
-/* AI library matching */
-#ai h2 { margin-top: 14px; }
-#ai .sub { max-width: 65ch; margin: 14px 0 0; color: var(--muted); font-size: 17px; }
-#ai .works { margin: 18px 0 0; color: var(--muted); font-size: 14px; }
-#ai .works b { color: var(--ink); font-weight: 600; }
-.ai-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 56px; align-items: center; }
-.ai-split > .match { order: -1; }
+/* Example card for AI-assisted matching (last tour feature) */
 .match { margin: 0; padding: 24px; border: 1px solid var(--edge); border-radius: 10px; background: var(--panel); }
 .match-ex { margin: 0 0 16px; font-size: 0.72rem; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
 .match-row { display: grid; gap: 4px; padding: 14px 16px; border: 1px solid var(--edge); border-radius: 7px; background: var(--raised); }
@@ -176,7 +173,6 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
 .match-link::before { content: ""; width: 2px; height: 22px; border-radius: 1px; background: var(--accent); }
 .match-note { margin: 16px 0 0; display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink); }
 .match-note::before { content: ""; flex: none; width: 16px; height: 16px; background: var(--muted); mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round'%3E%3Ccircle cx='8' cy='8' r='6.25'/%3E%3Cpath d='M8 7.25v4M8 4.9v.1'/%3E%3C/svg%3E") center / contain no-repeat; }
-@media (max-width: 960px) { .ai-split { grid-template-columns: minmax(0, 1fr); gap: 32px; } .ai-split > .match { order: 0; } }
 
 @media (max-width: 960px) {
   .hero { padding-top: 48px; }
@@ -220,18 +216,20 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
   }
   .shot.phone::after { width: 260%; }
   .shot img { position: relative; z-index: 1; width: calc(100% - 4px); margin: 2px; border-radius: 12px; background: var(--panel); }
-  .shot.phone img { border-radius: 18px; }
+  /* The phone's dark bezel becomes a ring on the image, so the beam runs in the 2 px gap outside it. */
+  .stage .phone { border-width: 1px; border-color: var(--edge); }
+  .shot.phone img { width: calc(100% - 16px); margin: 8px; border-radius: 18px; box-shadow: 0 0 0 6px oklch(25% 0.03 325); }
   @media (max-width: 640px) { .shot:not(.phone) img { border-radius: 7px; } }
-  /* Shine across "Watch it." every 3.6 s: a light band in a background-clip:text gradient slides
+  /* Pink shine across the white "Watch it." every 9 s: a band in a background-clip:text gradient slides
      through the glyphs, then rests. Only the letters show it, so no box or edge can appear around
      the word. The animated background-position costs a per-frame paint of the word's own layer. */
-  h1 em {
-    background: linear-gradient(100deg, var(--accent-text) 40%, color-mix(in srgb, var(--accent-text) 30%, #fff) 50%, var(--accent-text) 60%) no-repeat;
+  h1 em, .shine {
+    background: linear-gradient(100deg, var(--ink) 40%, var(--accent) 50%, var(--ink) 60%) no-repeat;
     background-size: 250% 100%;
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
-    animation: shimmer 3.6s linear infinite;
+    animation: shimmer 9s linear infinite;
   }
   @keyframes beam-rot { from { rotate: 0deg; } to { rotate: 360deg; } }
   @keyframes shimmer { 0% { background-position: 100% 0; } 45%, 100% { background-position: 0 0; } }
@@ -272,7 +270,7 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
         <figure class="shot"><img src="shots/discover.webp" alt="Velvarr Discover page with shelves of new scenes, trending movies and titles recently added to Jellyfin" width="2000" height="1250" decoding="async"></figure>
         <figure class="shot phone"><img src="shots/discover-mobile.webp" alt="Velvarr Discover page on a phone, with the bottom navigation bar" width="780" height="1688" loading="lazy" decoding="async"></figure>
       </div>
-      <p class="note"><span><b>Demo content in every screenshot</b>The screenshots show the real app. The titles and names are made up, and AI made the pictures.</span></p>
+      <p class="note"><span><b>No real people on this page</b>AI made every picture, including the woman behind the headline. The screenshots show the real app with made-up titles and names.</span></p>
     </div>
   </div>
 
@@ -350,6 +348,21 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
       </div>
       <figure class="shot"><img src="shots/detail-movie.webp" alt="Velvarr movie page marked Available, with file details and a Play on Jellyfin button" width="1800" height="1010" loading="lazy" decoding="async"></figure>
     </article>
+    <article class="feat" id="tour-ai-matching">
+      <div class="say">
+        <span class="kicker">AI-assisted matching (optional)</span>
+        <h2>Smarter library matching</h2>
+        <p>When a title in your library has a slightly different name than the one you requested, AI spots the likely match and flags it for you to review. It never marks a title as available on its own. It also sorts similar titles and suggests real tags while you search.</p>
+        <p class="works"><b>Works with</b> Ollama or TypeSafe</p>
+      </div>
+      <figure class="match" aria-label="Example of a flagged near match">
+        <p class="match-ex">Example</p>
+        <div class="match-row"><span>You requested</span><b>Midnight Lobby (2024)</b></div>
+        <p class="match-link">Likely the same title</p>
+        <div class="match-row"><span>In your Jellyfin library</span><b>Midnight Lobby: Director's Cut</b></div>
+        <p class="match-note">Flagged for your review. Nothing changes until you decide.</p>
+      </figure>
+    </article>
     </div>
   </section>
 
@@ -363,24 +376,6 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; }
         <li><a class="tool" href="https://github.com/jellyfin/jellyfin"><img src="logos/jellyfin.png" alt="" width="44" height="44" loading="lazy"><b>Jellyfin</b><span class="desc">Your media server, for sign-in, libraries and playback.</span><span class="gh">on GitHub</span></a></li>
         <li class="opt"><a class="tool" href="https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks"><img src="logos/discord.png" alt="" width="44" height="44" loading="lazy"><span class="opt-label">Optional</span><b>Discord</b><span class="desc">Sends a message when a request goes to Whisparr and when the title is ready to watch.</span><span class="gh">webhooks guide</span></a></li>
       </ul>
-    </div>
-  </section>
-
-  <section id="ai" aria-labelledby="ai-heading">
-    <div class="wrap ai-split">
-      <div>
-        <span class="kicker">AI-assisted matching (optional)</span>
-        <h2 id="ai-heading">Smarter library matching</h2>
-        <p class="sub">When a title in your library has a slightly different name than the one you requested, AI spots the likely match and flags it for you to review. It never marks a title as available on its own. It also sorts similar titles and suggests real tags while you search.</p>
-        <p class="works"><b>Works with</b> Ollama or TypeSafe</p>
-      </div>
-      <figure class="match" aria-label="Example of a flagged near match">
-        <p class="match-ex">Example</p>
-        <div class="match-row"><span>You requested</span><b>Midnight Lobby (2024)</b></div>
-        <p class="match-link">Likely the same title</p>
-        <div class="match-row"><span>In your Jellyfin library</span><b>Midnight Lobby: Director's Cut</b></div>
-        <p class="match-note">Flagged for your review. Nothing changes until you decide.</p>
-      </figure>
     </div>
   </section>
 
@@ -458,7 +453,16 @@ fetch("https://api.github.com/repos/Skare69/velvarr/releases/latest")
       : published.toLocaleDateString("en", { year: "numeric", month: "short", day: "numeric" });
     a.href = rel.html_url;
     a.querySelector("b").textContent = rel.tag_name;
-    a.querySelector("span").textContent = "Released " + when;
+    const label = a.querySelector("span");
+    if (days === 0) {
+      // Same pink shine as "Watch it.", only on a same-day release.
+      const word = document.createElement("em");
+      word.className = "shine";
+      word.textContent = when;
+      label.replaceChildren("Released ", word);
+    } else {
+      label.textContent = "Released " + when;
+    }
     a.querySelector("span").title = published.toLocaleString("en");
   })
   .catch(() => {});
