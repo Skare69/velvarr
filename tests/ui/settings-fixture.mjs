@@ -137,6 +137,9 @@ const server = http.createServer(async (req, res) => {
     for await (const c of req) body += c;
     const request = {
       path,
+      query: Object.fromEntries(
+        new URL(req.url, "http://127.0.0.1").searchParams,
+      ),
       method: req.method,
       body: body ? JSON.parse(body) : null,
       started: Date.now(),
@@ -171,6 +174,20 @@ const server = http.createServer(async (req, res) => {
         updateAvailable: false,
       });
     if (path === "/api/requests") return json(res, 200, { requests: [] });
+    if (path === "/api/libraries")
+      return json(res, 200, {
+        libraries: [{ id: "review-library", name: "Review library" }],
+      });
+    if (path === "/api/library") {
+      const library = mode.library;
+      if (!library)
+        return error(res, 404, "Unexpected test API route: " + path);
+      const url = new URL(req.url, "http://127.0.0.1");
+      const start = Number(url.searchParams.get("start") || 0);
+      const limit = Number(url.searchParams.get("limit") || 24);
+      const items = start === 0 ? library.page0 : library.pageN;
+      return json(res, 200, { items, total: library.total, start, limit });
+    }
     if (path === "/api/admin/integrations") {
       if (req.method === "GET" && mode.holdConfig) await hold(heldConfig);
       if (requestGeneration !== generation)

@@ -165,6 +165,7 @@ export function LibraryView() {
   const [acc, setAcc] = useState<{
     items: LibraryItem[];
     total: number;
+    stalled: boolean;
   } | null>(null);
   const [loading, setLoading] = useState(true);
   const [gridError, setGridError] = useState<string | null>(null);
@@ -187,20 +188,23 @@ export function LibraryView() {
       try {
         const page = await api<LibraryPage>(`/api/library?${qs}`);
         if (seqRef.current !== seq) return;
-        setAcc((prev) => ({
-          // The server merge never repeats an item across pages, but a
-          // library that changed between two reads could: drop repeats.
-          items:
-            mode === "reset" || prev === null
-              ? page.items
-              : [
-                  ...prev.items,
-                  ...page.items.filter(
-                    (it) => !prev.items.some((p) => p.id === it.id),
-                  ),
-                ],
-          total: page.total,
-        }));
+        setAcc((prev) => {
+          if (mode === "reset" || prev === null)
+            return { items: page.items, total: page.total, stalled: false };
+          const added = page.items.filter(
+            (it) => !prev.items.some((p) => p.id === it.id),
+          );
+          return {
+            items: [...prev.items, ...added],
+            total: page.total,
+            // The server merge never repeats an item across pages, but a
+            // library that changed between two reads could: drop repeats.
+            // A page that then adds no items cannot progress — end automatic
+            // pagination, or the sentinel re-fires forever (same guard as
+            // the browse grid).
+            stalled: added.length === 0,
+          };
+        });
       } catch (e) {
         if (seqRef.current !== seq) return;
         setGridError(messageOf(e));
@@ -215,7 +219,7 @@ export function LibraryView() {
     void load(0, "reset");
   }, [load, reloadTick]);
   const items = acc?.items ?? [];
-  const hasMore = acc !== null && acc.items.length < acc.total;
+  const hasMore = acc !== null && !acc.stalled && acc.items.length < acc.total;
   const [sentinelRef, nearEnd] = useNearEnd(items.length > 0);
   useEffect(() => {
     if (!nearEnd || !hasMore || loading || gridError !== null) return;
@@ -386,6 +390,19 @@ export function LibraryView() {
                   className="btn"
                   onClick={() => void load(items.length, "more")}
                 >
+                  Retry
+                </button>
+              </div>
+            )}
+            {!loading && gridError === null && acc?.stalled && (
+              <div className="mt-6 flex items-center justify-center gap-3 text-sm text-muted">
+                {/* The stall means the read window moved (items arrived
+                    above it between two reads), so resuming at the same
+                    offset would repeat it: Retry reloads from the top. */}
+                <span>
+                  More items exist, but the library changed while paging.
+                </span>
+                <button type="button" className="btn" onClick={retry}>
                   Retry
                 </button>
               </div>
