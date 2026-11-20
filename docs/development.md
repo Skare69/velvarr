@@ -20,3 +20,7 @@ put together: the architecture map, the request-to-playback flow, and
 the acquisition life cycle, each tied to its source paths.
 
 [Testing](testing.md) covers the unit/API suite and production-build settings browser regressions.
+
+[`scripts/screenshots/README.md`](../scripts/screenshots/README.md) explains how to
+make the landing-page screenshots in `site/shots/` again from the
+current app (`bun run shots`).

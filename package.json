@@ -17,6 +17,7 @@
     "test:mutation:delta": "node scripts/mutation-delta.mjs",
     "setup": "node scripts/setup.mjs",
     "backup": "node scripts/backup.mjs",
+    "shots": "node scripts/screenshots/shots.mjs",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{ts,tsx,json,mjs}\" \"tests/**/*.{ts,mjs}\" \"scripts/**/*.mjs\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"*.{ts,tsx,json,mjs}\" \"tests/**/*.{ts,mjs}\" \"scripts/**/*.mjs\"",
     "test:ui": "playwright test"
