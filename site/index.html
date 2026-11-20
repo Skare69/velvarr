@@ -166,7 +166,7 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; po
   .stack { grid-template-columns: minmax(0, 1fr); }
   .shot { border-radius: 10px; }
   .stage > .shot:first-child { display: none; }
-  .stage .phone { display: block; position: static; width: 74%; margin: 0 auto; }
+  .stage .phone { display: block; position: relative; right: auto; bottom: auto; width: 74%; margin: 0 auto; }
 }
 @media (prefers-reduced-motion: no-preference) {
   .rise { opacity: 0; transform: translateY(16px); animation: rise 700ms var(--ease) forwards; }
