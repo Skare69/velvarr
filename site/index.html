@@ -110,7 +110,7 @@ footer .age { flex-basis: 100%; margin: 0; font-size: 13px; }
 .eyebrow b { padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
 .eyebrow:hover { border-color: var(--accent); color: var(--ink); }
 h1 { font-size: clamp(42px, 6.4vw, 80px); line-height: 1.0; letter-spacing: -0.035em; font-weight: 700; max-width: 11ch; }
-h1 em { font-style: normal; color: var(--accent-text); }
+h1 em { font-style: normal; color: var(--accent-text); display: inline-block; position: relative; }
 .lede { margin: 24px 0 0; max-width: 33em; font-size: clamp(17px, 1.6vw, 19px); color: var(--muted); }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin-top: 34px; }
 
@@ -187,20 +187,21 @@ h1 em { font-style: normal; color: var(--accent-text); }
     pointer-events: none;
   }
   .stage > .shot:first-child img { position: relative; z-index: 1; width: calc(100% - 4px); margin: 2px; border-radius: 12px; }
-  /* One shimmer pass across "Watch it." every 3.6 s; the band sweeps left to right, then rests.
-     A glyph-shaped band can only move through background-position, which Chromium records as a
-     per-frame paint phase with a document-sized clip; measured raster stays on the word's own
-     layer tiles (about two small tiles per frame), so no page-scale repaint happens. */
-  h1 em {
-    background: linear-gradient(105deg, var(--accent-text) 40%, color-mix(in srgb, var(--accent-text) 25%, #fff) 50%, var(--accent-text) 60%) no-repeat;
-    background-size: 300% 100%;
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
+  /* Sheen passing over "Watch it." every 3.6 s: a soft translucent strip slides with a compositor
+     transform, then rests. A glyph-shaped band would need an animated background-position, which
+     Chromium turns into per-frame paint phases clipped to the whole document (measured 26-34/s
+     across containment and compositing variants), so the band is box-shaped and the word keeps
+     its flat color. */
+  h1 em::after {
+    content: ""; position: absolute; top: 0; bottom: 0; left: -10%; width: 40%;
+    border-radius: 12px;
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent-text) 22%, transparent) 45%, color-mix(in srgb, #fff 24%, transparent) 50%, color-mix(in srgb, var(--accent-text) 22%, transparent) 55%, transparent);
+    filter: blur(4px);
     animation: shimmer 3.6s linear infinite;
+    pointer-events: none;
   }
   @keyframes beam-rot { from { rotate: 0deg; } to { rotate: 360deg; } }
-  @keyframes shimmer { 0% { background-position: 0% 0; } 45%, 100% { background-position: 100% 0; } }
+  @keyframes shimmer { 0% { translate: -100% 0; } 45%, 100% { translate: 350% 0; } }
   @keyframes rise { to { opacity: 1; transform: none; } }
 }
 </style>
