@@ -320,6 +320,42 @@ test("revocation is immediate: explicit revoke, expiry path, and grant change ki
   );
 });
 
+test("expired sessions are swept: on issue and at boot, not only on presentation", () => {
+  const dir = freshDir();
+  storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  const grant = storage.createSession(ownerUser().id, "jf-token-live");
+  const raw = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  raw
+    .prepare("UPDATE sessions SET expires_at = ? WHERE token_hash = ?")
+    .run(Date.now() - 1000, tokenHash(grant.token));
+  raw.close();
+
+  // Issuing another session sweeps the expired row.
+  storage.createSession(ownerUser().id, "jf-token-next");
+  const afterIssue = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  const leftAfterIssue = afterIssue
+    .prepare("SELECT count(*) AS n FROM sessions WHERE token_hash = ?")
+    .get(tokenHash(grant.token)) as { n: number };
+  afterIssue.close();
+  assert.equal(leftAfterIssue.n, 0, "issueSession must sweep expired rows");
+
+  // A second expired row survives until boot: initializeStorage sweeps it.
+  const second = storage.createSession(ownerUser().id, "jf-token-second");
+  const raw2 = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  raw2
+    .prepare("UPDATE sessions SET expires_at = ? WHERE token_hash = ?")
+    .run(Date.now() - 1000, tokenHash(second.token));
+  raw2.close();
+  storage.closeStorage();
+  storage.initializeStorage();
+  const afterBoot = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  const leftAfterBoot = afterBoot
+    .prepare("SELECT count(*) AS n FROM sessions WHERE token_hash = ?")
+    .get(tokenHash(second.token)) as { n: number };
+  afterBoot.close();
+  assert.equal(leftAfterBoot.n, 0, "boot must sweep expired rows");
+});
+
 test("library grants stay conservative: escalation rejected, valid subset accepted, owner protected", () => {
   freshDir();
   const grant = storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");

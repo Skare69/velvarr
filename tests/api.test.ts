@@ -12411,6 +12411,12 @@ test("the known-device cookie stops counting after 30 days", async () => {
   } finally {
     Date.now = realNow;
     resetLoginBuckets();
+    // The +30d jump above makes the next issueSession's expiry sweep delete
+    // every real-clock session row: they are expired per the app's absolute
+    // timestamps. Re-establish the shared cookies the later suites read.
+    member = await loginAs("member");
+    member2 = await loginAs("member2");
+    owner = await loginAs("owner");
   }
 });
 

@@ -179,6 +179,7 @@ type Statements = {
   getSession: StatementSync;
   deleteSession: StatementSync;
   deleteAccountSessions: StatementSync;
+  deleteExpiredSessions: StatementSync;
   insertCatalog: StatementSync;
   updateCatalogTitle: StatementSync;
   getCatalogById: StatementSync;
@@ -624,6 +625,9 @@ function S(): Statements {
       deleteSession: d.prepare("DELETE FROM sessions WHERE token_hash = ?"),
       deleteAccountSessions: d.prepare(
         "DELETE FROM sessions WHERE account_id = ?",
+      ),
+      deleteExpiredSessions: d.prepare(
+        "DELETE FROM sessions WHERE expires_at <= ?",
       ),
       insertCatalog: d.prepare(
         "INSERT INTO catalog_identities (id, provider, kind, external_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -1159,6 +1163,9 @@ function issueSession(account: Account, jellyfinToken: string): SessionGrant {
   open();
   const raw = randomBytes(32).toString("base64url");
   const now = Date.now();
+  // Sweep before the insert so lost-device rows die without their token ever
+  // coming back; the new row's expires_at is always in the future.
+  S().deleteExpiredSessions.run(now);
   const expiresAt = now + SESSION_TTL_MS;
   S().insertSession.run(
     hashToken(raw),
@@ -1651,6 +1658,9 @@ function isUniqueConflict(e: unknown, columns: readonly string[]): boolean {
  * shared work. Call from the server-start hook, never from a request path. */
 export function initializeStorage(): void {
   const d = open();
+  // Runs before the config early-returns: expired rows must not outlive a
+  // boot that touches no Whisparr or approval repair work.
+  S().deleteExpiredSessions.run(Date.now());
   const config = getConfig();
   const whisparr = config?.whisparr;
   if (!config || !whisparr) return;
