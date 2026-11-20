@@ -1774,9 +1774,10 @@ test("migration 16 folds lone ids and keeps case-duplicate rows untouched for ma
   raw.close();
   storage.closeStorage();
 
-  // Reopening runs migration 16 in place: lone ids fold to lowercase, and
-  // the case-duplicate pair keeps both rows exactly as they are — nothing
-  // is cancelled or deleted; the operator repairs it by hand.
+  // Reopening runs migration 16 in place: the lone identity folds to
+  // lowercase, and the colliding identity keeps every row exactly as it
+  // is — nothing is cancelled or deleted; the operator repairs it by
+  // hand.
   assert.equal(storage.isInitialized(), true);
   const active = storage.getActiveRequest(owner.id, SCENE);
   assert.ok(active, "the stored lowercase intent still resolves");
@@ -1805,15 +1806,15 @@ test("migration 16 folds lone ids and keeps case-duplicate rows untouched for ma
     "the duplicate keeps its decision",
   );
   assert.equal(duplicate.decided_at, null, "the duplicate keeps its history");
-  const foldedHistory = check
+  const keptHistory = check
     .prepare(
       "SELECT COUNT(*) AS n FROM requests WHERE external_id = ? AND decision = 'cancelled'",
     )
-    .get(SCENE.id) as { n: number };
+    .get(SCENE.id.toUpperCase()) as { n: number };
   assert.equal(
-    foldedHistory.n,
+    keptHistory.n,
     1,
-    "the uppercase history row folds: no active row collides with it",
+    "the pin moved with the identity-level fold: a case collision keeps every row's spelling, even an inert history row's",
   );
   const identityAcquisitions = check
     .prepare(
@@ -1832,7 +1833,11 @@ test("migration 16 folds lone ids and keeps case-duplicate rows untouched for ma
     )
     .get(loneId, loneId) as { n: number };
   check.close();
-  assert.equal(mixed.n, 2, "only the two colliding rows keep their case");
+  assert.equal(
+    mixed.n,
+    3,
+    "the colliding identity keeps every row's spelling: both duplicate rows and the history row",
+  );
   assert.equal(lone.n, 2, "lone rows fold to lowercase");
   const due = storage.listDueAcquisitions(Date.now() + 60_000);
   assert.equal(
@@ -2158,6 +2163,191 @@ test("migration 16 keeps an acquisition whose spelling a kept active request car
     0,
     "the uppercase cancellation withdraws the acquisition",
   );
+});
+
+test("migration 16 keeps a whole colliding identity, so another account's cancellation cannot strand an approval", () => {
+  const dir = freshDir();
+  storage.bootstrap(deliveryConfig(true), ownerUser(), "jf-owner-token");
+  const owner = storage.getAccount(ownerUser().id) as Account;
+  const [imported] = storage.importAccounts([otherUser()]);
+  assert.ok(imported, "the second account imports");
+
+  // Account A approved the uppercase spelling and its approval created
+  // the only acquisition. Account B holds two pending intents, one per
+  // spelling. A local check folds A's request: its account holds one
+  // active intent and the acquisition partition is single. But B's
+  // colliding pair keeps the acquisition's spelling alive on the request
+  // side, so folding A's request would let B's exact-match cancellation
+  // withdraw the acquisition A's approval still wants.
+  const now = Date.now();
+  const instanceId = storage.getConfig()?.whisparr?.instanceId;
+  assert.ok(instanceId, "bootstrap stores the whisparr instance identity");
+  const approvedRequestId = randomUUID();
+  const bUpperRequestId = randomUUID();
+  const raw = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  raw.exec("PRAGMA user_version = 15");
+  raw
+    .prepare(
+      "INSERT INTO requests (id, account_id, provider, kind, external_id, decision, created_at, decided_at) VALUES (?, ?, 'stashdb', 'scene', ?, 'approved', ?, ?)",
+    )
+    .run(
+      approvedRequestId,
+      owner.id,
+      SCENE.id.toUpperCase(),
+      now - 120_000,
+      now - 90_000,
+    );
+  raw
+    .prepare(
+      "INSERT INTO requests (id, account_id, provider, kind, external_id, decision, created_at, decided_at) VALUES (?, ?, 'stashdb', 'scene', ?, 'pending', ?, NULL)",
+    )
+    .run(bUpperRequestId, imported.id, SCENE.id.toUpperCase(), now - 60_000);
+  raw
+    .prepare(
+      "INSERT INTO requests (id, account_id, provider, kind, external_id, decision, created_at, decided_at) VALUES (?, ?, 'stashdb', 'scene', ?, 'pending', ?, NULL)",
+    )
+    .run(randomUUID(), imported.id, SCENE.id, now - 30_000);
+  raw
+    .prepare(
+      "INSERT INTO acquisitions (id, instance_id, provider, kind, external_id, state, due_at, created_at, updated_at) VALUES (?, ?, 'stashdb', 'scene', ?, 'unsent', ?, ?, ?)",
+    )
+    .run(
+      randomUUID(),
+      instanceId,
+      SCENE.id.toUpperCase(),
+      now - 1000,
+      now - 120_000,
+      now - 120_000,
+    );
+  raw.close();
+  storage.closeStorage();
+
+  assert.equal(storage.isInitialized(), true);
+  const check = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  const approvedRow = check
+    .prepare("SELECT decision FROM requests WHERE external_id = ?")
+    .get(SCENE.id.toUpperCase()) as { decision: string };
+  assert.ok(approvedRow, "the uppercase approved request survives");
+  assert.equal(
+    approvedRow.decision,
+    "approved",
+    "the whole identity keeps its spellings",
+  );
+  check.close();
+
+  // B cancels its uppercase duplicate: the exact-match pending count sees
+  // A's approved intent and blocks the withdrawal, so A's acquisition
+  // stays exactly as before the migration.
+  storage.cancelRequest(imported, bUpperRequestId);
+  const after = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  const acquisitions = after
+    .prepare("SELECT COUNT(*) AS n FROM acquisitions WHERE external_id = ?")
+    .get(SCENE.id.toUpperCase()) as { n: number };
+  after.close();
+  assert.equal(
+    acquisitions.n,
+    1,
+    "the other account's cancellation does not withdraw A's acquisition",
+  );
+});
+
+test("migration 16 keeps a current-instance acquisition whose spelling survives through another instance", () => {
+  const dir = freshDir();
+  storage.bootstrap(deliveryConfig(true), ownerUser(), "jf-owner-token");
+  const owner = storage.getAccount(ownerUser().id) as Account;
+
+  // A retired Whisparr instance holds the identity in two spellings; the
+  // current instance holds only the uppercase acquisition. A local
+  // instance-partition check folds the current acquisition, but its
+  // spelling is kept alive by the retired instance's collision. Folding
+  // it would strand scheduled work: a cancellation matches ids exactly
+  // and would find nothing to withdraw.
+  const now = Date.now();
+  const instanceId = storage.getConfig()?.whisparr?.instanceId;
+  assert.ok(instanceId, "bootstrap stores the whisparr instance identity");
+  const requestId = randomUUID();
+  const raw = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  raw.exec("PRAGMA user_version = 15");
+  raw
+    .prepare(
+      "INSERT INTO requests (id, account_id, provider, kind, external_id, decision, created_at, decided_at) VALUES (?, ?, 'stashdb', 'scene', ?, 'approved', ?, ?)",
+    )
+    .run(
+      requestId,
+      owner.id,
+      SCENE.id.toUpperCase(),
+      now - 120_000,
+      now - 90_000,
+    );
+  raw
+    .prepare(
+      "INSERT INTO acquisitions (id, instance_id, provider, kind, external_id, state, due_at, created_at, updated_at) VALUES (?, ?, 'stashdb', 'scene', ?, 'unsent', ?, ?, ?)",
+    )
+    .run(
+      randomUUID(),
+      instanceId,
+      SCENE.id.toUpperCase(),
+      now - 1000,
+      now - 120_000,
+      now - 120_000,
+    );
+  raw
+    .prepare(
+      "INSERT INTO acquisitions (id, instance_id, provider, kind, external_id, state, created_at, updated_at) VALUES (?, ?, 'stashdb', 'scene', ?, 'unsent', ?, ?)",
+    )
+    .run(
+      randomUUID(),
+      "retired-whisparr",
+      SCENE.id.toUpperCase(),
+      now - 200_000,
+      now - 200_000,
+    );
+  raw
+    .prepare(
+      "INSERT INTO acquisitions (id, instance_id, provider, kind, external_id, state, created_at, updated_at) VALUES (?, ?, 'stashdb', 'scene', ?, 'unsent', ?, ?)",
+    )
+    .run(
+      randomUUID(),
+      "retired-whisparr",
+      SCENE.id,
+      now - 200_000,
+      now - 200_000,
+    );
+  raw.close();
+  storage.closeStorage();
+
+  assert.equal(storage.isInitialized(), true);
+  const check = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  const current = check
+    .prepare(
+      "SELECT external_id, state FROM acquisitions WHERE instance_id = ?",
+    )
+    .get(instanceId) as { external_id: string; state: string };
+  assert.ok(current, "the current-instance acquisition survives");
+  assert.equal(
+    current.external_id,
+    SCENE.id.toUpperCase(),
+    "its spelling survives the retired instance's collision",
+  );
+  check.close();
+
+  // Cancelling the request withdraws the current-instance acquisition by
+  // its exact spelling, as it did before the migration.
+  storage.cancelRequest(owner, requestId);
+  const after = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  const leftOnCurrent = after
+    .prepare("SELECT COUNT(*) AS n FROM acquisitions WHERE instance_id = ?")
+    .get(instanceId) as { n: number };
+  const retired = after
+    .prepare("SELECT COUNT(*) AS n FROM acquisitions WHERE instance_id != ?")
+    .get(instanceId) as { n: number };
+  after.close();
+  assert.equal(
+    leftOnCurrent.n,
+    0,
+    "the cancellation withdraws the current-instance acquisition",
+  );
+  assert.equal(retired.n, 2, "the retired instance's rows are untouched");
 });
 
 test("request lifecycle authorization: role checks, privacy, own-cancellation isolation", () => {

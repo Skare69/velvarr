@@ -476,66 +476,39 @@ const MIGRATIONS: Record<number, string> = {
     -- hold two rows differing only in case: requests_active_intent and
     -- acquisitions_identity compare case-sensitively, so both spellings
     -- cannot fold at once. Cancellation and the eligibility checks match
-    -- ids exactly, so a request and its acquisition must keep one
-    -- spelling together: a request does not fold while an acquisition
-    -- still carries its spelling, and an acquisition does not fold while
-    -- a kept active request carries it. Identities with a case collision
-    -- stay exactly as they were for a manual repair; the migration logs
-    -- the rows it left at startup (warnLeftMixedIds). The operator chose
+    -- ids exactly across accounts and instances, so a partial fold would
+    -- break the links: the fold decides per identity
+    -- (provider, kind, lower(external_id)) over both tables together.
+    -- One spelling across every request and acquisition row of the
+    -- identity: every row folds. Two or more spellings: every row keeps
+    -- its spelling for a manual repair, and the migration logs them at
+    -- startup (warnLeftMixedIds). The snapshot below fixes the pre-fold
+    -- picture so both updates read the same spellings. The operator chose
     -- this over cancelling requests and deleting acquisition rows
     -- (VELV-233, 2026-11-20): an upgrade must not lose history.
+    CREATE TEMP TABLE migration16_spellings AS
+      SELECT provider, kind, external_id FROM requests
+      UNION ALL
+      SELECT provider, kind, external_id FROM acquisitions;
     UPDATE requests SET external_id = lower(external_id)
     WHERE external_id != lower(external_id)
-      AND (
-        -- History rows are inert: nothing looks them up by id again.
-        decision NOT IN ('pending', 'approved')
-        OR (
-          -- The account holds exactly one active intent for this
-          -- identity ...
-          (SELECT COUNT(*) FROM requests r2
-            WHERE r2.account_id = requests.account_id
-              AND r2.provider = requests.provider
-              AND r2.kind = requests.kind
-              AND r2.decision IN ('pending', 'approved')
-              AND lower(r2.external_id) = lower(requests.external_id)) = 1
-          -- ... and no acquisition keeps this spelling alive.
-          AND NOT EXISTS (
-            SELECT 1 FROM acquisitions a
-            WHERE a.provider = requests.provider
-              AND a.kind = requests.kind
-              AND a.external_id = requests.external_id
-              AND (SELECT COUNT(*) FROM acquisitions a2
-                    WHERE a2.instance_id = a.instance_id
-                      AND a2.provider = a.provider
-                      AND a2.kind = a.kind
-                      AND lower(a2.external_id) = lower(a.external_id)) > 1
-          )
-        )
+      AND NOT EXISTS (
+        SELECT 1 FROM migration16_spellings m
+        WHERE m.provider = requests.provider
+          AND m.kind = requests.kind
+          AND lower(m.external_id) = lower(requests.external_id)
+          AND m.external_id != requests.external_id
       );
     UPDATE acquisitions SET external_id = lower(external_id)
     WHERE external_id != lower(external_id)
-      -- The instance partition is single: no acquisition partner shares
-      -- the folded identity ...
-      AND (SELECT COUNT(*) FROM acquisitions a2
-            WHERE a2.instance_id = acquisitions.instance_id
-              AND a2.provider = acquisitions.provider
-              AND a2.kind = acquisitions.kind
-              AND lower(a2.external_id) = lower(acquisitions.external_id)) = 1
-      -- ... and no active request that an active partner holds down
-      -- carries this spelling.
       AND NOT EXISTS (
-        SELECT 1 FROM requests r
-        WHERE r.provider = acquisitions.provider
-          AND r.kind = acquisitions.kind
-          AND r.external_id = acquisitions.external_id
-          AND r.decision IN ('pending', 'approved')
-          AND (SELECT COUNT(*) FROM requests r2
-                WHERE r2.account_id = r.account_id
-                  AND r2.provider = r.provider
-                  AND r2.kind = r.kind
-                  AND r2.decision IN ('pending', 'approved')
-                  AND lower(r2.external_id) = lower(r.external_id)) > 1
+        SELECT 1 FROM migration16_spellings m
+        WHERE m.provider = acquisitions.provider
+          AND m.kind = acquisitions.kind
+          AND lower(m.external_id) = lower(acquisitions.external_id)
+          AND m.external_id != acquisitions.external_id
       );
+    DROP TABLE migration16_spellings;
   `,
 };
 
