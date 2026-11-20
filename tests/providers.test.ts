@@ -2195,6 +2195,24 @@ test("artwork URL gate: https + provider hosts only, derived from live records",
     false,
   );
   assert.equal(isProviderImageUrl("not a url").ok, false);
+  // An explicit port turns an allowlisted host into a different origin, and
+  // the artwork proxy would fetch whatever listens there (VELV-216). The
+  // default port normalizes away, so https on 443 keeps passing.
+  assert.deepEqual(isProviderImageUrl("https://cdn.theporndb.net:8443/x.jpg"), {
+    ok: false,
+    reason: "artwork URLs must not carry an explicit port",
+  });
+  assert.equal(
+    isProviderImageUrl(
+      "https://stashdb.org:8080/images/d695a097-3cf5-41c6-bf00-be5c7bc185b8",
+    ).ok,
+    false,
+  );
+  assert.equal(
+    isProviderImageUrl("https://thumb.theporndb.net:9000/abc=/500x500/smart")
+      .ok,
+    false,
+  );
   // stashdb.org is also the StashDB API host and /images/ its only artwork
   // path; a query string would multiply cache keys past the fetch (VELV-23).
   assert.deepEqual(isProviderImageUrl("https://stashdb.org/graphql"), {
@@ -2400,6 +2418,7 @@ test("property: isProviderImageUrl SSRF invariants over generated URL parts", ()
           assert.equal(parsed.password, "");
           assert.equal(parsed.hash, "");
           assert.equal(parsed.search, "", `accepted query string: ${u}`);
+          assert.equal(parsed.port, "", `accepted explicit port: ${u}`);
           assert.ok(
             ALLOWED_HOSTS.includes(parsed.hostname),
             `accepted off-allowlist host: ${u}`,

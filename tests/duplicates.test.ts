@@ -387,16 +387,29 @@ test("invalid outside hashes cannot become identity evidence", () => {
 });
 
 test("TPDB duplicate posters cannot fetch StashDB or arbitrary ports", async () => {
-  for (const url of [
-    "https://stashdb.org/images/fixture",
-    "https://cdn.theporndb.net:8443/zero.png",
-  ]) {
-    resetMetaCache();
-    candidates = [{ ...row(2), posters: { full: url } }];
-    const result = await duplicateMovies(sourceId, []);
-    assert.deepEqual(result.matches, []);
-    assert.ok(
-      result.errors.some((error) => error.code === "upstream_bad_response"),
-    );
-  }
+  // StashDB artwork never enters the duplicate check: imageHash refuses the
+  // host, so the poster surfaces as an upstream error, not a match.
+  resetMetaCache();
+  candidates = [
+    { ...row(2), posters: { full: "https://stashdb.org/images/fixture" } },
+  ];
+  const stash = await duplicateMovies(sourceId, []);
+  assert.deepEqual(stash.matches, []);
+  assert.ok(
+    stash.errors.some((error) => error.code === "upstream_bad_response"),
+  );
+
+  // An allowlisted host on an explicit port is refused by the shared artwork
+  // gate (VELV-216): the row mapper drops the poster before any fetch, so
+  // the comparison notes the gap instead of reporting an upstream error.
+  resetMetaCache();
+  candidates = [
+    { ...row(2), posters: { full: "https://cdn.theporndb.net:8443/zero.png" } },
+  ];
+  const ported = await duplicateMovies(sourceId, []);
+  assert.deepEqual(ported.matches, []);
+  assert.deepEqual(ported.errors, []);
+  assert.ok(
+    ported.incomplete.some((line) => line.startsWith("no poster to compare")),
+  );
 });

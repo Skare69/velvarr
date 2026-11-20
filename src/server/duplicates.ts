@@ -171,11 +171,10 @@ function expectedError(error: unknown): SourceError {
 
 async function imageHash(url: string): Promise<bigint> {
   const check = isProviderImageUrl(url);
-  if (
-    !check.ok ||
-    new URL(url).hostname === "stashdb.org" ||
-    (new URL(url).protocol === "https:" && new URL(url).port !== "")
-  ) {
+  // The shared artwork gate already refuses off-allowlist hosts and explicit
+  // ports (VELV-216). stashdb.org is refused here because the duplicate check
+  // never hashes StashDB artwork, even though the gate serves /images/.
+  if (!check.ok || new URL(url).hostname === "stashdb.org") {
     throw new AppError(
       502,
       "upstream_bad_response",

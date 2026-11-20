@@ -145,6 +145,15 @@ export function isProviderImageUrl(url: string): ImageUrlCheck {
   if (u.protocol !== "https:" && !loopbackFixture) {
     return { ok: false, reason: "artwork URLs must be https" };
   }
+  // An explicit port turns an allowlisted host into a different origin, and
+  // the artwork proxy would fetch whatever listens there (VELV-216). WHATWG
+  // normalization drops default ports, so https on 443 keeps passing.
+  if (u.port !== "" && !loopbackFixture) {
+    return {
+      ok: false,
+      reason: "artwork URLs must not carry an explicit port",
+    };
+  }
   if (u.username || u.password || u.hash) {
     return { ok: false, reason: "artwork URLs must not carry credentials" };
   }
