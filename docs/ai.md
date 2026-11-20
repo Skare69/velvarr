@@ -29,10 +29,10 @@ Select **Standard matching (no AI)** and **Save** to disable AI calls even when 
 Members can describe a search in plain words on Browse, for example "Vixen scenes from 2019, newest first". Velvarr sends the text to an OpenAI-compatible chat server, and the server writes a draft of the filters. Velvarr checks each tag, performer, and studio against TPDB and StashDB, applies the filters that match, and lists each part that it did not apply, with the reason. The search replaces the current filters. The browser **Back** button restores them.
 
 1. Open **Settings → AI → Natural-language search**, click **Edit**, and select **On**.
-2. Enter the server URL, the model name, and an API key if the server needs one, then click **Save**. Saving checks the connection and shows **Connected** or **Connection failed** with the cause. The saved check reads the model list only: **Connected** means that the server accepted the key and lists this model. It cannot prove that the model returns valid filter drafts. A member search reports that.
+2. Enter the server URL, the model name, and an API key if the server needs one, then click **Save**. Saving checks the connection and shows **Connected** or **Connection failed** with the cause. The saved check reads the server's model information only: **Connected** means that the server accepted the key and serves this model. On Anthropic, the check reads the model entry itself, so an alias such as `claude-sonnet-4-5` passes. On other servers, a model without a tag matches the listed `name:latest` entry, so `llama3.2` passes when the server lists `llama3.2:latest`. It cannot prove that the model returns valid filter drafts. A member search reports that.
 3. Use **Check connection** to test again.
 
-While you edit, the card lists the model names that the server reports for the typed URL; a list that fails to load leaves the field free text. The check before Save is free: Velvarr reads the server's model list and confirms your model, and sends no chat request, so no tokens are billed.
+While you edit, the card lists the model names that the server reports for the typed URL; a list that fails to load leaves the field free text. The check before Save is free: Velvarr reads the server's model information and confirms your model, and sends no chat request, so no tokens are billed.
 
 Except for the Anthropic URL, the server must support the Chat Completions API with a `json_schema` response format. Example URLs:
 

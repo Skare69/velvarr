@@ -4,8 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  checkProseChat,
   requestProseDraft,
   requestTagRepair,
+  type ProseCheckResult,
 } from "../src/server/prose-chat.ts";
 import { proseSystemMessage, type ProseDraft } from "../src/lib/prose-draft.ts";
 import {
@@ -40,6 +42,11 @@ const openai: Providers = {
   ...anthropic,
   proseChatUrl: "https://api.openai.com/v1",
   proseChatModel: "gpt-4o-mini",
+};
+const ollama: Providers = {
+  ...anthropic,
+  proseChatUrl: "https://ollama.local/v1",
+  proseChatModel: "llama3.2",
 };
 const today = "2026-11-20";
 const text = "velvet quokka marathon";
@@ -110,6 +117,45 @@ async function recording(
   }, run);
   return sent;
 }
+
+/** Runs `run` with a fetch stub that records each GET request and answers
+ * with `reply(url)`. Returns the recorded requests. */
+async function recordingGet(
+  reply: (url: string) => Response,
+  run: () => Promise<void>,
+): Promise<{ url: string; headers: Headers }[]> {
+  const sent: { url: string; headers: Headers }[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    sent.push({
+      url: String(input),
+      headers: new Headers(init?.headers),
+    });
+    assert.equal(init?.redirect, "error");
+    return reply(sent[sent.length - 1]!.url);
+  };
+  try {
+    await run();
+  } finally {
+    globalThis.fetch = original;
+  }
+  return sent;
+}
+
+/** Anthropic's list names dated ids and fits 20 rows on the default first
+ * page. None of them is the Messages alias. */
+const anthropicListPage = () =>
+  json({
+    data: Array.from({ length: 20 }, (_, i) => ({
+      type: "model",
+      id: `claude-model-${String(i).padStart(2, "0")}-20250101`,
+    })),
+    has_more: true,
+    last_id: "claude-model-19-20250101",
+  });
+
+const anthropicModelFound = (id: string) =>
+  json({ data: { type: "model", id, display_name: "Claude" } });
 
 test("an Anthropic URL sends one native Messages request with a cached system block", async () => {
   let result: ProseDraft | undefined;
@@ -278,4 +324,78 @@ test("a non-Anthropic URL keeps the Chat Completions request without cache_contr
   ]);
   assert.equal(body.response_format?.type, "json_schema");
   assert.deepEqual(result, draft);
+});
+
+test("the Anthropic check asks for the model itself, so the Messages alias connects", async () => {
+  let result: ProseCheckResult | undefined;
+  const sent = await recordingGet(
+    (url) =>
+      url === "https://api.anthropic.com/v1/models"
+        ? anthropicListPage()
+        : anthropicModelFound("claude-sonnet-4-5-20250929"),
+    async () => {
+      result = await checkProseChat(anthropic);
+    },
+  );
+  assert.deepEqual(result, { connected: true });
+  // The list names only dated ids, so the check reads the model directly;
+  // Anthropic resolves the alias there.
+  assert.deepEqual(
+    sent.map((s) => s.url),
+    ["https://api.anthropic.com/v1/models/claude-sonnet-4-5"],
+  );
+  assert.equal(sent[0]!.headers.get("x-api-key"), key);
+  assert.equal(sent[0]!.headers.get("anthropic-version"), "2023-06-01");
+});
+
+test("the Anthropic check finds a model past the first list page", async () => {
+  const page21: Providers = {
+    ...anthropic,
+    proseChatModel: "claude-model-20-20250101",
+  };
+  let result: ProseCheckResult | undefined;
+  const sent = await recordingGet(
+    (url) =>
+      url === "https://api.anthropic.com/v1/models"
+        ? anthropicListPage()
+        : anthropicModelFound("claude-model-20-20250101"),
+    async () => {
+      result = await checkProseChat(page21);
+    },
+  );
+  // The stored id is the 21st model: the default first page never names it.
+  assert.deepEqual(result, { connected: true });
+  assert.deepEqual(
+    sent.map((s) => s.url),
+    ["https://api.anthropic.com/v1/models/claude-model-20-20250101"],
+  );
+});
+
+test("the Ollama check accepts the bare name when the server lists name:latest", async () => {
+  let result: ProseCheckResult | undefined;
+  const sent = await recordingGet(
+    (url) => {
+      assert.equal(url, "https://ollama.local/v1/models");
+      return json({ data: [{ id: "llama3.2:latest" }, { id: "qwen2.5:7b" }] });
+    },
+    async () => {
+      result = await checkProseChat(ollama);
+    },
+  );
+  assert.deepEqual(result, { connected: true });
+  assert.equal(sent.length, 1);
+});
+
+test("the Ollama check still refuses a bare name whose :latest tag is absent", async () => {
+  let result: ProseCheckResult | undefined;
+  await recordingGet(
+    () => json({ data: [{ id: "llama3.2:7b" }] }),
+    async () => {
+      result = await checkProseChat(ollama);
+    },
+  );
+  assert.deepEqual(result, {
+    connected: false,
+    error: 'The server does not list the model "llama3.2".',
+  });
 });

@@ -478,21 +478,69 @@ export async function requestTagRepair(
   return parseProseRepair(answer, items);
 }
 
-type ProseCheckResult =
+export type ProseCheckResult =
   { connected: true } | { connected: false; error: string };
 
-/** A connection check that costs nothing: `GET {url}/models` proves the
- * server answers and accepts the key, and the model must be in its list. No
- * chat request is sent, so no tokens are billed. Its ceiling: it cannot
- * prove the model returns valid filters; a member search reports that. */
+/** The headers the model-list and model-lookup GETs send: one key serves
+ * one host, so it travels in both header styles. */
+function proseKeyHeaders(apiKey: string | undefined): Record<string, string> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+    headers["x-api-key"] = apiKey;
+    headers["anthropic-version"] = ANTHROPIC_VERSION;
+  }
+  return headers;
+}
+
+/** A connection check that costs nothing: it proves the server answers and
+ * accepts the key, and that it serves the model. On Anthropic it reads the
+ * model itself (`GET {url}/models/{model}`): the list names dated ids, not
+ * the aliases the Messages API accepts, and one page holds only 20 rows.
+ * Every other host reads `GET {url}/models`; a model without a tag also
+ * matches the `name:latest` entry Ollama lists for it. No chat request is
+ * sent, so no tokens are billed. Its ceiling: it cannot prove the model
+ * returns valid filters; a member search reports that. */
 async function checkModelListed(
   url: string,
   model: string,
   apiKey: string | undefined,
 ): Promise<ProseCheckResult> {
+  if (new URL(url).hostname === ANTHROPIC_HOST) {
+    const signal = AbortSignal.timeout(MODELS_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(`${url}/models/${encodeURIComponent(model)}`, {
+        method: "GET",
+        headers: proseKeyHeaders(apiKey),
+        redirect: "error",
+        signal,
+      });
+    } catch {
+      return {
+        connected: false,
+        error: signal.aborted
+          ? "The server did not answer within 15 seconds."
+          : "The server could not be reached.",
+      };
+    }
+    if (res.ok) return { connected: true };
+    if (res.status === 404)
+      return {
+        connected: false,
+        error: `The server does not list the model "${model}".`,
+      };
+    const detail = await serverMessage(res, apiKey);
+    return {
+      connected: false,
+      error: `The server answered HTTP ${res.status}${detail ? `: ${detail}` : "."}`,
+    };
+  }
   const { models, error } = await listProseModels(url, apiKey);
   if (error !== undefined) return { connected: false, error };
   if (models.includes(model)) return { connected: true };
+  if (!model.includes(":") && models.includes(`${model}:latest`))
+    return { connected: true };
   return {
     connected: false,
     error:
@@ -538,12 +586,7 @@ export async function listProseModels(
   url: string,
   apiKey: string | undefined,
 ): Promise<{ models: string[]; error?: string }> {
-  const headers: Record<string, string> = { Accept: "application/json" };
-  if (apiKey) {
-    headers.Authorization = `Bearer ${apiKey}`;
-    headers["x-api-key"] = apiKey;
-    headers["anthropic-version"] = "2023-06-01";
-  }
+  const headers = proseKeyHeaders(apiKey);
   const signal = AbortSignal.timeout(MODELS_TIMEOUT_MS);
   const unreachable = () => ({
     models: [],
