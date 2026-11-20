@@ -109,7 +109,7 @@ footer .age { flex-basis: 100%; margin: 0; font-size: 13px; }
 .eyebrow { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 22px; padding: 5px 12px 5px 6px; border: 1px solid var(--edge); border-radius: 999px; background: color-mix(in srgb, var(--panel) 80%, transparent); font-size: 13px; font-weight: 600; color: var(--muted); text-decoration: none; }
 .eyebrow b { padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
 .eyebrow:hover { border-color: var(--accent); color: var(--ink); }
-h1 { font-size: clamp(42px, 6.4vw, 80px); line-height: 1.0; letter-spacing: -0.035em; font-weight: 700; max-width: 11ch; }
+h1 { font-size: clamp(min(42px, 11.5vw), 6.4vw, 80px); line-height: 1.0; letter-spacing: -0.035em; font-weight: 700; }
 h1 em { font-style: normal; color: var(--accent-text); display: inline-block; position: relative; overflow: clip; }
 .lede { margin: 24px 0 0; max-width: 33em; font-size: clamp(17px, 1.6vw, 19px); color: var(--muted); }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin-top: 34px; }
@@ -174,19 +174,22 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; po
   .stage { animation-delay: 300ms; }
   .hero-art::before { animation: drift 24s ease-in-out infinite alternate; }
   @keyframes drift { to { transform: translate3d(-4%, 3%, 0) scale(1.08); } }
-  /* Border beam on the hero screenshot: a fixed conic gradient on an oversized ::after turns with a
-     compositor transform, and the 2 px gap around the image shows it. The frame is display:none under
-     640 px, which is what omits the beam on phones. Measured at 4x CPU throttle: the beam causes zero
-     steady-state paint or raster work. */
-  .stage > .shot:first-child { position: relative; z-index: 0; }
-  .stage > .shot:first-child::after {
+  /* Border beam on every screenshot: a fixed conic gradient on an oversized ::after turns with a
+     compositor transform, and the 2 px gap around the image shows it. The square must cover the
+     frame's diagonal, so the tall phone frame gets a wider one. Measured at 4x CPU throttle on the
+     hero frame: the beam causes zero steady-state paint or raster work. */
+  .shot { position: relative; z-index: 0; }
+  .shot::after {
     content: ""; position: absolute; z-index: -1;
     left: 50%; top: 50%; width: 160%; aspect-ratio: 1; translate: -50% -50%;
     background: conic-gradient(from 0deg, transparent 0deg, transparent 280deg, var(--accent) 325deg, oklch(88% 0.12 1.08) 345deg, oklch(55% 0.17 1.08) 356deg, transparent 360deg);
     animation: beam-rot 5s linear infinite;
     pointer-events: none;
   }
-  .stage > .shot:first-child img { position: relative; z-index: 1; width: calc(100% - 4px); margin: 2px; border-radius: 12px; }
+  .shot.phone::after { width: 260%; }
+  .shot img { position: relative; z-index: 1; width: calc(100% - 4px); margin: 2px; border-radius: 12px; background: var(--panel); }
+  .shot.phone img { border-radius: 18px; }
+  @media (max-width: 640px) { .shot:not(.phone) img { border-radius: 7px; } }
   /* Sheen passing over "Watch it." every 3.6 s: a soft translucent strip slides with a compositor
      transform, then rests. A glyph-shaped band would need an animated background-position, which
      Chromium turns into per-frame paint phases clipped to the whole document (measured 26-34/s
@@ -230,7 +233,7 @@ h1 em { font-style: normal; color: var(--accent-text); display: inline-block; po
     <div class="hero-art" aria-hidden="true"></div>
     <div class="wrap">
       <a class="eyebrow rise" id="release" href="https://github.com/Skare69/velvarr/releases"><b>Releases</b><span>See the changelog on GitHub</span></a>
-      <h1 class="rise">Discover it. Request it. <em>Watch it.</em></h1>
+      <h1 class="rise">Discover it.<br>Request it.<br><em>Watch it.</em></h1>
       <p class="lede rise">Velvarr is a self-hosted discovery and request app for adult media. TPDB, StashDB, Whisparr and Jellyfin usually run as four separate services. Velvarr is one container that connects to all four: browse TPDB and StashDB, approve requests into Whisparr, and watch in Jellyfin.</p>
       <div class="actions rise">
         <a class="btn btn-accent" href="#install">Install with Docker</a>
