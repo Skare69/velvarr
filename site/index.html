@@ -130,6 +130,8 @@ h1 em { font-style: normal; color: var(--accent-text); }
 .feat:nth-child(even) .say { order: 2; }
 .feat .tall { justify-self: center; width: min(100%, 560px); }
 .feat .kicker { font: 600 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-text); }
+.feat .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 0; padding: 0; list-style: none; }
+.feat .chips li { padding: 5px 12px; border: 1px solid var(--edge); border-radius: 999px; font: 500 12px/1.4 var(--mono); color: var(--muted); }
 .feat h2 { margin-top: 14px; font-size: clamp(26px, 2.8vw, 36px); }
 .feat p { margin: 14px 0 0; color: var(--muted); font-size: 16px; }
 .feat[id] { scroll-margin-top: 80px; }
@@ -220,6 +222,13 @@ h1 em { font-style: normal; color: var(--accent-text); }
         <span class="kicker">Browse</span>
         <h2>Filter by tags, terms, performers and dates</h2>
         <p>Mix provider tags with free-text terms, group tags with "or", exclude what you never want, and match any or all of several performers. Add studios and release dates. The URL holds every filter, so you can share a search as a link.</p>
+        <ul class="chips" aria-label="Browse capabilities">
+          <li>tag groups</li>
+          <li>excluded tags</li>
+          <li>any/all performers</li>
+          <li>date ranges</li>
+          <li>shareable URLs</li>
+        </ul>
       </div>
       <figure class="shot tall"><img src="shots/browse-filters.webp" alt="Velvarr Browse view with the filter drawer open: two performers matched by any, a Lingerie or Velvet tag group, a free-text tag, and a release-date filter" width="1555" height="1800" loading="lazy" decoding="async"></figure>
     </article>
@@ -228,6 +237,13 @@ h1 em { font-style: normal; color: var(--accent-text); }
         <span class="kicker">AI search, optional</span>
         <h2>Describe it, get the filters</h2>
         <p>Type what you want in plain words. A model that you host drafts the filters. Velvarr checks each tag, performer and studio against the providers and lists every part that it did not apply.</p>
+        <ul class="chips" aria-label="AI search capabilities">
+          <li>model-drafted filters</li>
+          <li>provider-verified names</li>
+          <li>lists unapplied parts</li>
+          <li>relative dates</li>
+          <li>Ollama or OpenAI-compatible</li>
+        </ul>
       </div>
       <figure class="shot"><img src="shots/prose.webp" alt="Velvarr natural-language search: a sentence turned into scene type, tag, performer and date filters, with notes for the parts it did not apply" width="1800" height="957" loading="lazy" decoding="async"></figure>
     </article>
@@ -236,6 +252,13 @@ h1 em { font-style: normal; color: var(--accent-text); }
         <span class="kicker">Performers</span>
         <h2>One page per performer, from both sources</h2>
         <p>The header shows bio facts, aliases and links. Below it are the performer's most frequent tags and every movie and scene. When TPDB and StashDB publish a link between two records, Velvarr shows them as one person. Follow a performer to see new releases on Discover.</p>
+        <ul class="chips" aria-label="Performers capabilities">
+          <li>bio facts and aliases</li>
+          <li>linked TPDB+StashDB records</li>
+          <li>frequent tags</li>
+          <li>movies and scenes</li>
+          <li>one follow covers both records</li>
+        </ul>
       </div>
       <figure class="shot"><img src="shots/performer.webp" alt="Velvarr performer page with portrait, facts, follow button, counted tags and a movie grid" width="1800" height="1010" loading="lazy" decoding="async"></figure>
     </article>
@@ -244,6 +267,13 @@ h1 em { font-style: normal; color: var(--accent-text); }
         <span class="kicker">Requests</span>
         <h2>Members request, you approve</h2>
         <p>A household member sends a request. An administrator or moderator approves it, and Velvarr hands it to Whisparr. Each row shows the real state: pending, approved, downloading with its progress, or in the library.</p>
+        <ul class="chips" aria-label="Requests capabilities">
+          <li>member requests</li>
+          <li>admin or moderator approvals</li>
+          <li>auto-approval</li>
+          <li>Whisparr handoff</li>
+          <li>download progress</li>
+        </ul>
       </div>
       <figure class="shot"><img src="shots/requests.webp" alt="Velvarr Requests view with two pending requests that have Approve and Decline buttons, and an approved request that downloads at 62 percent" width="1800" height="1226" loading="lazy" decoding="async"></figure>
     </article>
@@ -252,6 +282,13 @@ h1 em { font-style: normal; color: var(--accent-text); }
         <span class="kicker">Watch</span>
         <h2>Play it in Jellyfin</h2>
         <p>When the file is in the library, the title page shows the file facts and a Play button. Each member signs in with their own Jellyfin account and sees only their own libraries.</p>
+        <ul class="chips" aria-label="Watch capabilities">
+          <li>own Jellyfin accounts</li>
+          <li>per-member libraries</li>
+          <li>file facts</li>
+          <li>Play on Jellyfin</li>
+          <li>in-library status</li>
+        </ul>
       </div>
       <figure class="shot"><img src="shots/detail-movie.webp" alt="Velvarr movie page marked Available, with file facts and a Play on Jellyfin button" width="1800" height="1010" loading="lazy" decoding="async"></figure>
     </article>
