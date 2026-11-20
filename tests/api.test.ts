@@ -39,11 +39,15 @@ import {
 } from "../src/server/discovery.ts";
 import {
   clearDiscoverCache,
+  FOLLOW_CAP_PER_ACCOUNT,
+  FOLLOW_IMAGE_URL_MAX,
+  followPerformer,
   getDiscoverCache,
   getConfig,
   OPEN_REQUEST_CAP,
   putDiscoverCache,
   saveConfig,
+  unfollowPerformer,
 } from "../src/server/storage.ts";
 import { resetSweepCache } from "../src/server/jellyfin.ts";
 import { resetMovieListCache } from "../src/server/whisparr.ts";
@@ -8494,6 +8498,86 @@ test("a merge refusal never leaves the auto-followed survivor behind", async () 
   });
   assert.equal(dropped.status, 204);
   assert.deepEqual(await listedIds(), baseline);
+});
+
+test("a follow whose image url exceeds the pinned limit is refused at the storage root", async () => {
+  const sess = await loginAs("member2");
+  const listedIds = async () => {
+    const res = await call("GET", "/api/follows", { cookie: sess });
+    assert.equal(res.status, 200);
+    const body: { follows: FollowShape[] } = await res.json();
+    return body.follows.map((f) => f.reference.id);
+  };
+  const baseline = await listedIds();
+  // Shaped to pass the provider-artwork gate: the artwork check alone (the
+  // deliberate null-snapshot degradation) must not absorb an overlong url.
+  const long = `https://cdn.theporndb.net/${"a".repeat(FOLLOW_IMAGE_URL_MAX)}`;
+  const created = await call("POST", "/api/follows", {
+    cookie: sess,
+    body: {
+      performer: { provider: "tpdb", kind: "performer", id: randomUUID() },
+      name: "Overlong Snapshot",
+      imageUrl: long,
+    },
+  });
+  assert.equal(created.status, 400);
+  const createdBody = await errorShape(created);
+  assert.equal(createdBody.code, "invalid_field");
+  // The refusal stored nothing: the baseline is untouched.
+  assert.deepEqual(await listedIds(), baseline);
+});
+
+test("follows are capped per account: the follow past the cap is refused and the list stays at the cap", async () => {
+  const sess = await loginAs("member2");
+  const listed = async () => {
+    const res = await call("GET", "/api/follows", { cookie: sess });
+    assert.equal(res.status, 200);
+    const body: { follows: FollowShape[] } = await res.json();
+    return body.follows;
+  };
+  const me = await call("GET", "/api/me", { cookie: sess });
+  assert.equal(me.status, 200);
+  const meBody = (await me.json()) as { account: { id: string } };
+  const accountId = meBody.account.id;
+  const baseline = await listed();
+  // Seed through the storage root up to the cap: the cap is storage law for
+  // every writer; the route refusal below is the wire contract under test.
+  const ref = (i: number) => ({
+    provider: "tpdb" as const,
+    kind: "performer" as const,
+    id: `e1a7c3d9-4f2b-4c8e-a5d6-${String(i).padStart(12, "0")}`,
+  });
+  const seeded: string[] = [];
+  const room = FOLLOW_CAP_PER_ACCOUNT - baseline.length;
+  try {
+    for (let i = 0; i < room; i++) {
+      followPerformer(accountId, ref(i), "Cap Filler", null);
+      seeded.push(ref(i).id);
+    }
+    const refused = await call("POST", "/api/follows", {
+      cookie: sess,
+      body: {
+        performer: ref(FOLLOW_CAP_PER_ACCOUNT),
+        name: "One Too Many",
+      },
+    });
+    assert.equal(refused.status, 409);
+    const refusedBody = await errorShape(refused);
+    assert.equal(refusedBody.code, "follow_cap_reached");
+    // Rows can never exceed the cap, so the full-scan list answers at most
+    // the cap.
+    assert.equal((await listed()).length, FOLLOW_CAP_PER_ACCOUNT);
+  } finally {
+    // Restore the baseline every later test reads: unfollow exactly what
+    // this test seeded (the refusals above stored nothing).
+    for (const id of seeded) {
+      unfollowPerformer(accountId, "tpdb", id);
+    }
+  }
+  assert.deepEqual(
+    (await listed()).map((f) => f.id).sort(),
+    baseline.map((f) => f.id).sort(),
+  );
 });
 
 test("a merge refuses same-provider, unfollowed, and already-merged entries", async () => {

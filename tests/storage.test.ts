@@ -3972,6 +3972,104 @@ test("follow validation refuses non-performer references, unknown providers, non
   assert.deepEqual(storage.listFollows(grant.account.id), []);
 });
 
+test("follow image urls are bounded: 2048 characters store, longer ones are refused", () => {
+  freshDir();
+  const grant = storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  const prefix = "https://cdn.theporndb.net/";
+  const atLimit = `${prefix}${"a".repeat(storage.FOLLOW_IMAGE_URL_MAX - prefix.length)}`;
+  assert.equal(atLimit.length, storage.FOLLOW_IMAGE_URL_MAX);
+  const follow = storage.followPerformer(
+    grant.account.id,
+    FOLLOW_TPDB_A,
+    "Fixture Performer",
+    atLimit,
+  );
+  assert.equal(follow.imageUrl, atLimit);
+  // One character over the pin is refused, whatever the artwork shape.
+  assert.throws(
+    () =>
+      storage.followPerformer(
+        grant.account.id,
+        FOLLOW_TPDB_B,
+        "Fixture Performer",
+        `${atLimit}a`,
+      ),
+    (e: { code: string }) => e.code === "invalid_field",
+  );
+  // The refusal stored nothing.
+  assert.deepEqual(storage.listFollows(grant.account.id), [follow]);
+});
+
+test("an account holds at most FOLLOW_CAP_PER_ACCOUNT follow rows, and unfollowing frees the cap", () => {
+  freshDir();
+  const grant = storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  const ref = (i: number): CatalogReference => ({
+    provider: "tpdb",
+    kind: "performer",
+    id: `e1a7c3d9-4f2b-4c8e-a5d6-${String(i).padStart(12, "0")}`,
+  });
+  for (let i = 0; i < storage.FOLLOW_CAP_PER_ACCOUNT; i++) {
+    storage.followPerformer(
+      grant.account.id,
+      ref(i),
+      "Fixture Performer",
+      null,
+    );
+  }
+  assert.equal(
+    storage.listFollows(grant.account.id).length,
+    storage.FOLLOW_CAP_PER_ACCOUNT,
+  );
+  assert.throws(
+    () =>
+      storage.followPerformer(
+        grant.account.id,
+        ref(storage.FOLLOW_CAP_PER_ACCOUNT),
+        "Fixture Performer",
+        null,
+      ),
+    (e: { status: number; code: string }) =>
+      e.status === 409 && e.code === "follow_cap_reached",
+  );
+  // The cap is live: freeing one row admits exactly one more.
+  storage.unfollowPerformer(grant.account.id, "tpdb", ref(0).id);
+  storage.followPerformer(
+    grant.account.id,
+    ref(storage.FOLLOW_CAP_PER_ACCOUNT),
+    "Fixture Performer",
+    null,
+  );
+  assert.equal(
+    storage.listFollows(grant.account.id).length,
+    storage.FOLLOW_CAP_PER_ACCOUNT,
+  );
+  // A pair press at cap - 1 refuses whole: the counterpart row would pass
+  // the cap, so the transaction rolls the asked-for row back too — never a
+  // half-recorded pair.
+  storage.unfollowPerformer(grant.account.id, "tpdb", ref(1).id);
+  assert.throws(
+    () =>
+      storage.followPerformerPair(
+        grant.account.id,
+        ref(0),
+        "Fixture Performer",
+        null,
+        { reference: ref(1), name: "Fixture Performer", imageUrl: null },
+      ),
+    (e: { code: string }) => e.code === "follow_cap_reached",
+  );
+  assert.equal(
+    storage.listFollows(grant.account.id).length,
+    storage.FOLLOW_CAP_PER_ACCOUNT - 1,
+  );
+  // The freed row admits a plain follow again.
+  storage.followPerformer(grant.account.id, ref(1), "Fixture Performer", null);
+  assert.equal(
+    storage.listFollows(grant.account.id).length,
+    storage.FOLLOW_CAP_PER_ACCOUNT,
+  );
+});
+
 test("listFollowsByProvider is provider-scoped, newest-first, and honours its limit", async () => {
   freshDir();
   const grant = storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");

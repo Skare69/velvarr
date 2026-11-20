@@ -223,6 +223,7 @@ type Statements = {
   insertPerformerFollow: StatementSync;
   getPerformerFollow: StatementSync;
   listPerformerFollows: StatementSync;
+  countPerformerFollows: StatementSync;
   listPerformerFollowsByProvider: StatementSync;
   getPerformerFollowByRef: StatementSync;
   updatePerformerFollowLink: StatementSync;
@@ -889,6 +890,9 @@ function S(): Statements {
       ),
       listPerformerFollows: d.prepare(
         "SELECT * FROM performer_follows WHERE account_id = ? ORDER BY created_at DESC, id DESC",
+      ),
+      countPerformerFollows: d.prepare(
+        "SELECT COUNT(*) AS n FROM performer_follows WHERE account_id = ?",
       ),
       listPerformerFollowsByProvider: d.prepare(
         "SELECT * FROM performer_follows WHERE account_id = ? AND provider = ? ORDER BY created_at DESC, id DESC LIMIT ?",
@@ -1885,6 +1889,17 @@ export function listActiveIntentKeys(accountId: string): Set<string> {
 
 // --- performer follows ---
 
+/** One account may hold at most this many performer-follow rows. A linked
+ * pair is two rows, so a pair press refuses whole when either side would
+ * pass the cap — the transaction rolls both back, never a half-recorded
+ * pair. ponytail: a real household never needs more; the upgrade path is a
+ * raised constant plus a cursor page on the list. */
+export const FOLLOW_CAP_PER_ACCOUNT = 500;
+/** Snapshot image urls never exceed this. The provider row parsers already
+ * slice artwork to 2048 (httpsUrl), so only a request body can offer more;
+ * the storage guard is the shared root every writer answers to. */
+export const FOLLOW_IMAGE_URL_MAX = 2048;
+
 /** Inserts a validated follow row inside the caller's transaction. */
 function insertFollowRow(
   accountId: string,
@@ -1903,6 +1918,22 @@ function insertFollowRow(
       403,
       "account_not_admitted",
       "only admitted accounts may follow performers",
+    );
+  }
+  // Shared write root: the follow route, its pair press, and the merge
+  // auto-follow all funnel through here, so the bound holds for all of them.
+  if (imageUrl !== null && imageUrl.length > FOLLOW_IMAGE_URL_MAX) {
+    throw new AppError(400, "invalid_field", "image url is too long");
+  }
+  // The cap reads the live row count inside the caller's transaction, so a
+  // pair press refuses whole when its counterpart row would pass the cap:
+  // the rollback leaves no half-recorded pair behind.
+  const counted = S().countPerformerFollows.get(accountId) as { n: number };
+  if (Number(counted.n) >= FOLLOW_CAP_PER_ACCOUNT) {
+    throw new AppError(
+      409,
+      "follow_cap_reached",
+      "follow cap reached: unfollow one to follow another",
     );
   }
   const id = randomUUID();

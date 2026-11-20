@@ -717,7 +717,34 @@ test("the followed cache key stays fixed-size with 10 000 follows", async () => 
         follow(0);
         assert.equal(await cachedFollowed("acct-many", []), null);
         const [one] = storedKeys();
-        for (let i = 1; i < 10_000; i++) follow(i);
+        // The per-account follow cap (VELV-246) refuses the remaining
+        // 9 999 through the storage API, so they are seeded raw: the pin
+        // here is the key's fixed size over follow count, a property of
+        // the fingerprint that must hold even if an account somehow
+        // holds more rows than the cap allows.
+        const raw = new DatabaseSync(
+          join(process.env.VELVARR_DATA_DIR!, "velvarr.sqlite"),
+        );
+        const insertMany = raw.prepare(
+          "INSERT INTO performer_follows (id, account_id, provider, external_id, name, image_url, created_at, linked_provider, linked_external_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        );
+        try {
+          for (let i = 1; i < 10_000; i++) {
+            insertMany.run(
+              `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+              "acct-many",
+              "tpdb",
+              `${i.toString(16).padStart(8, "0")}-0000-4000-8000-000000000000`,
+              `Performer ${i}`,
+              null,
+              Date.now(),
+              null,
+              null,
+            );
+          }
+        } finally {
+          raw.close();
+        }
         assert.equal(listFollows("acct-many").length, 10_000);
         assert.equal(await cachedFollowed("acct-many", []), null);
         const many = storedKeys().find((key) => key !== one);
