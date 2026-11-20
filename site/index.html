@@ -102,7 +102,10 @@ footer .age { flex-basis: 100%; margin: 0; font-size: 13px; }
 .hero-art { position: absolute; inset: 0 0 auto auto; width: min(52%, 720px); height: 760px; z-index: -1;
   -webkit-mask-image: linear-gradient(90deg, transparent, #000 45%), linear-gradient(180deg, #000 55%, transparent);
   -webkit-mask-composite: source-in; mask-image: linear-gradient(90deg, transparent, #000 45%), linear-gradient(180deg, #000 55%, transparent); mask-composite: intersect; }
-.hero-art img { width: 100%; height: 100%; object-fit: cover; object-position: 50% 20%; opacity: 0.75; }
+.hero-art::before { content: ""; position: absolute; inset: -12%;
+  background: radial-gradient(40% 36% at 70% 20%, color-mix(in srgb, var(--accent) 55%, transparent), transparent 70%),
+    radial-gradient(36% 42% at 34% 56%, color-mix(in srgb, oklch(55% 0.2 295) 45%, transparent), transparent 70%),
+    radial-gradient(30% 30% at 86% 66%, color-mix(in srgb, var(--accent) 30%, transparent), transparent 70%); }
 .eyebrow { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 22px; padding: 5px 12px 5px 6px; border: 1px solid var(--edge); border-radius: 999px; background: color-mix(in srgb, var(--panel) 80%, transparent); font-size: 13px; font-weight: 600; color: var(--muted); text-decoration: none; }
 .eyebrow b { padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
 .eyebrow:hover { border-color: var(--accent); color: var(--ink); }
@@ -158,6 +161,8 @@ h1 em { font-style: normal; color: var(--accent-text); }
   .rise { opacity: 0; transform: translateY(16px); animation: rise 700ms var(--ease) forwards; }
   .rise:nth-child(2) { animation-delay: 80ms; } .rise:nth-child(3) { animation-delay: 160ms; } .rise:nth-child(4) { animation-delay: 240ms; }
   .stage { animation-delay: 300ms; }
+  .hero-art::before { animation: drift 24s ease-in-out infinite alternate; }
+  @keyframes drift { to { transform: translate3d(-4%, 3%, 0) scale(1.08); } }
   @keyframes rise { to { opacity: 1; transform: none; } }
 }
 </style>
@@ -182,7 +187,7 @@ h1 em { font-style: normal; color: var(--accent-text); }
 
 <main id="main">
   <div class="hero" id="top">
-    <div class="hero-art" aria-hidden="true"><img src="velvet.webp" alt="" fetchpriority="high"></div>
+    <div class="hero-art" aria-hidden="true"></div>
     <div class="wrap">
       <a class="eyebrow rise" id="release" href="https://github.com/Skare69/velvarr/releases"><b>Releases</b><span>See the changelog on GitHub</span></a>
       <h1 class="rise">Discover it. Request it. <em>Watch it.</em></h1>
