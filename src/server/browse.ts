@@ -601,6 +601,15 @@ type ResolvedIncludes = {
    * ceiling such a stream degrades softly — its pages were productive and
    * the matches found are a real partial answer. */
   freeTextNative: boolean;
+  /** The planned fan-out group: one native all-of stream per id, each
+   * carrying `allOf ∪ {id}`, when anchored ids sit beside a small complete
+   * free-text group — neither provider can express all-of plus any-of in
+   * one query, so the group fans out instead of starving into the 422
+   * ceiling. Empty on every other plan: a group above the fan-out cap,
+   * one that misses the native id cap, or an incomplete expansion keeps
+   * the local re-check, and with no anchored ids the any-of pre-filter
+   * runs as before. */
+  fanoutIds: string[];
 };
 
 /** Resolves the native include criteria for one provider side. Anchored
@@ -743,6 +752,7 @@ async function includeIdsForSide(
       localInclude: [...local],
       localFree: [],
       freeTextNative: false,
+      fanoutIds: [],
     };
   }
   if (!expandFree) {
@@ -755,6 +765,7 @@ async function includeIdsForSide(
       localInclude: [...localTerms, ...local],
       localFree: localTerms,
       freeTextNative: false,
+      fanoutIds: [],
     };
   }
   // Every term expands before the decision: the tag listing behind
@@ -779,6 +790,7 @@ async function includeIdsForSide(
     ],
     localFree: criteria.localTermIndexes.map((i) => terms[i]!.term),
     freeTextNative: criteria.freeTextNative,
+    fanoutIds: criteria.fanoutIds,
   };
 }
 
@@ -821,6 +833,36 @@ function before(
     (b.reference.provider === "tpdb" ? 0 : 1);
   if (ra !== 0) return ra < 0;
   return a.reference.id < b.reference.id;
+}
+
+/** One in-flight upstream catalog page read per provider: fan-out
+ * multiplies the streams a single browse opens per side, and the
+ * providers' rate limits for concurrent page reads are unmeasured, so the
+ * gate bounds concurrent upstream reads at today's level (one per side,
+ * two for a two-provider browse). Ordered merges stay correct: the gate
+ * delays a stream's read, never its merge order — the merge already waits
+ * for every live stream's next row before picking a head. Single-stream
+ * sides are uncontended, so nothing changes for them. ponytail: measure
+ * and parallelize if fan-out latency shows up. */
+const providerReadTurns = new Map<CatalogProvider, Promise<unknown>>();
+
+/** Queues `read` behind the provider's last queued turn. The chain is
+ * `prev.then(read, read)` so a prior read's failure cannot block the
+ * queue — the rejection handler runs the next read too. The stored tail
+ * is the settled form of `next` (rejections swallowed), so the chain
+ * never poisons a later reader; the caller's own promise still carries
+ * the error. */
+function gatedRead<T>(
+  provider: CatalogProvider,
+  read: () => Promise<T>,
+): Promise<T> {
+  const prev = providerReadTurns.get(provider) ?? Promise.resolve();
+  const next = prev.then(read, read);
+  providerReadTurns.set(
+    provider,
+    next.catch(() => undefined),
+  );
+  return next;
 }
 
 /** One provider stream: consecutive native pages, visibility-filtered on
@@ -919,11 +961,16 @@ class Stream {
     // macrotask per page so other members' requests interleave.
     await nextMacrotask();
     try {
-      const result = await searchCatalog({
-        ...this.base,
-        page: this.page,
-        perPage: this.perPage,
-      } as CatalogSearchQuery);
+      // The per-provider gate (providerReadTurns) serializes the upstream
+      // page read; a lone stream passes straight through the resolved
+      // chain, so uncontended reads behave exactly as before.
+      const result = await gatedRead(this.base.provider, () =>
+        searchCatalog({
+          ...this.base,
+          page: this.page,
+          perPage: this.perPage,
+        } as CatalogSearchQuery),
+      );
       this.buffer.push(...result.items.filter(this.visible));
       this.nativeHasMore = result.hasMore;
       this.total = result.total;
@@ -1628,6 +1675,10 @@ export async function browseTitles(
     includeIds: string[];
     includeAny: boolean;
     freeTextNative: boolean;
+    /** The side's planned fan-out group (ResolvedIncludes.fanoutIds): when
+     * non-empty, this seedPlan opens one all-of stream per id instead of
+     * its single stream. */
+    fanoutIds: string[];
     excludeIds: string[];
     localFiltered: boolean;
     localInclude: IncludeTerm[];
@@ -1665,6 +1716,7 @@ export async function browseTitles(
           includeIds: [],
           includeAny: false,
           freeTextNative: false,
+          fanoutIds: [],
           excludeIds: [],
           localFiltered:
             hiddenTags.length > 0 ||
@@ -1700,6 +1752,7 @@ export async function browseTitles(
           includeAny:
             tpdbIncludes.allOf.length === 0 && tpdbIncludes.anyOf.length > 0,
           freeTextNative: tpdbIncludes.freeTextNative,
+          fanoutIds: tpdbIncludes.fanoutIds,
           excludeIds: [], // TPDB has no native exclude criterion
           localFiltered:
             hiddenTags.length > 0 ||
@@ -1730,6 +1783,7 @@ export async function browseTitles(
         includeAny:
           tpdbIncludes.allOf.length === 0 && tpdbIncludes.anyOf.length > 0,
         freeTextNative: tpdbIncludes.freeTextNative,
+        fanoutIds: tpdbIncludes.fanoutIds,
         excludeIds: [], // TPDB has no native exclude criterion
         localFiltered:
           hiddenTags.length > 0 ||
@@ -1761,6 +1815,7 @@ export async function browseTitles(
       includeAny:
         stashIncludes.allOf.length === 0 && stashIncludes.anyOf.length > 0,
       freeTextNative: stashIncludes.freeTextNative,
+      fanoutIds: stashIncludes.fanoutIds,
       // One upstream tag criterion: native excludes only when no include is
       // native. Selections without a StashDB id stay local-only below.
       excludeIds: includesNative
@@ -1824,8 +1879,13 @@ export async function browseTitles(
 
   // Fast path: a single fully-native stream passes straight through with the
   // provider's own totals, continuation, and error semantics — one upstream
-  // request for any page depth.
-  const single = seedPlans.length === 1 ? seedPlans[0]! : undefined;
+  // request for any page depth. A fan-out plan is several streams with a
+  // shared dedupe set, so it never takes this path even when no term
+  // re-checks locally.
+  const single =
+    seedPlans.length === 1 && seedPlans[0]!.fanoutIds.length === 0
+      ? seedPlans[0]!
+      : undefined;
   if (
     single !== undefined &&
     !single.localFiltered &&
@@ -1848,7 +1908,7 @@ export async function browseTitles(
 
   const streams: Stream[] = [];
   const dedupeSets = new Map<string, Set<string>>();
-  for (const seedPlan of seedPlans) {
+  for (const [seedIndex, seedPlan] of seedPlans.entries()) {
     const dateBound = resolveDateBound(
       query,
       nativeSort,
@@ -1878,17 +1938,25 @@ export async function browseTitles(
     );
     let visible = base;
     let localFiltered = seedPlan.localFiltered;
-    if (seedPlan.seed.dedupeKey !== undefined) {
-      // Streams sharing a dedupeKey may surface the same title (overlapping
-      // filmographies, parent/child studios): the merge keeps only its
-      // first occurrence across the group. The set records only rows the
-      // base predicate passed, so an excluded row never poisons its twin's
-      // verdict; totals degrade to exhaustion-exact because the native
-      // lists overlap.
-      let set = dedupeSets.get(seedPlan.seed.dedupeKey);
+    if (
+      seedPlan.fanoutIds.length > 0 ||
+      seedPlan.seed.dedupeKey !== undefined
+    ) {
+      // Streams sharing one dedupe set may surface the same title (fan-out
+      // streams of one seedPlan, overlapping filmographies, parent/child
+      // studios): the merge keeps only its first occurrence across the
+      // group. The set records only rows the base predicate passed, so an
+      // excluded row never poisons its twin's verdict; totals degrade to
+      // exhaustion-exact because the native lists overlap. A seedPlan
+      // without its own dedupeKey gets a synthetic one, so all of its
+      // fan-out streams share exactly one set.
+      const dedupeKey =
+        seedPlan.seed.dedupeKey ??
+        `fanout:${seedPlan.seed.provider}:${seedIndex}`;
+      let set = dedupeSets.get(dedupeKey);
       if (set === undefined) {
         set = new Set();
-        dedupeSets.set(seedPlan.seed.dedupeKey, set);
+        dedupeSets.set(dedupeKey, set);
       }
       visible = (d) => {
         const dedupeId = `${d.reference.provider}:${d.reference.id}`;
@@ -1898,6 +1966,42 @@ export async function browseTitles(
         return true;
       };
       localFiltered = true;
+    }
+    if (seedPlan.fanoutIds.length > 0) {
+      // Fan-out: one native stream per id g of the planned free-text
+      // group, each carrying allOf ∪ {id} (includeAny stays false —
+      // includeIds is allOf there), replacing the single stream at this
+      // seedPlan's position; seed order and group id order stay intact.
+      // The streams share the dedupe set above, so a title carrying two
+      // ids of the group arrives in two streams and shows once.
+      const fanoutPlan = {
+        localInclude: seedPlan.localFree,
+        freeTextNative: seedPlan.freeTextNative,
+        // Soft ceiling: every scanned page of a fan-out stream carries
+        // allOf ∧ g, so the pages stay productive even when no term
+        // re-checks locally — a ceiling hit is a named partial answer,
+        // never the hard 422.
+        fanoutNative: true,
+      };
+      for (const fanoutId of seedPlan.fanoutIds) {
+        streams.push(
+          new Stream(
+            nativeQuery(
+              query,
+              { ...seedPlan, includeIds: [...seedPlan.includeIds, fanoutId] },
+              nativeSort,
+              1,
+              query.perPage,
+            ),
+            visible,
+            query.perPage,
+            localFiltered,
+            softCeilingFor(fanoutPlan),
+            dateStop,
+          ),
+        );
+      }
+      continue;
     }
     streams.push(
       new Stream(

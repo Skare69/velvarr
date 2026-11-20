@@ -2,8 +2,9 @@ import type { CatalogProvider, SourceError } from "./contracts.ts";
 
 /** The pure free-text include decisions behind src/server/browse.ts's native
  * tag criteria, extracted from Stryker-disabled regions so mutation testing
- * covers them: which expansions ride the native tag criterion (all-of vs
- * any-of) and which terms stay on the local substring re-check, when a
+ * covers them: which expansions ride the native tag criterion (all-of,
+ * any-of, or a fan-out of one all-of stream per group id) and which terms
+ * stay on the local substring re-check, when a
  * locally split free-text AND degrades softly at the scan ceiling instead of
  * 422ing, and the native tag criterion's own id cap. No IO — the callers
  * keep the tag searches and counterpart lookups. */
@@ -12,6 +13,12 @@ import type { CatalogProvider, SourceError } from "./contracts.ts";
  * tail past it, so callers must never send more (browse re-routes oversized
  * free-text unions to local filtering instead). */
 export const TAG_FILTER_ID_CAP = 25;
+
+/** The largest free-text group that fans out beside anchored ids. A group
+ * within this cap rides as one all-of stream per id (see fanoutIds); a
+ * larger group is a broad facet, not an anchor, and keeps the local
+ * re-check. */
+export const FANOUT_GROUP_CAP = 5;
 
 /** One free-text term's expansion over a provider's published tag listing
  * (the shape expandCatalogTagTerm returns). `complete: false` marks a walk
@@ -32,6 +39,19 @@ export type IncludeCriteria = {
   /** The smallest group's ids, riding alone as an any-of pre-filter — only
    * when no anchored id and no singleton exists. */
   anyOf: string[];
+  /** Non-empty only when anchored or singleton ids sit beside one small
+   * free-text group: the caller then opens one native all-of stream per
+   * id, each carrying `allOf ∪ {id}`, instead of one starved all-of
+   * stream whose pages the local re-check keeps rejecting. Every scanned
+   * page carries every anchored tag plus that id, so pages stay
+   * productive and the caller dedupes the streams' overlap. The group
+   * itself drops out of localTermIndexes — its ids are matched by the
+   * streams' criteria, not re-checked — and freeTextNative goes true so
+   * the ceiling degrades softly like the any-of pre-filter case. A group
+   * qualifies only with 2..FANOUT_GROUP_CAP ids whose combined criterion
+   * still fits the native cap (`allOf.length + ids.length <=
+   * TAG_FILTER_ID_CAP`, which silently ignores the tail past the cap). */
+  fanoutIds: string[];
   /** Indexes into the caller's parallel term list: the terms the visible
    * predicate must still re-check locally. */
   localTermIndexes: number[];
@@ -65,6 +85,7 @@ export function resolveIncludeCriteria(
     return {
       allOf: [...anchoredIds],
       anyOf: [],
+      fanoutIds: [],
       localTermIndexes: [],
       freeTextNative: false,
       provablyEmpty: false,
@@ -81,6 +102,7 @@ export function resolveIncludeCriteria(
     return {
       allOf: [...anchoredIds],
       anyOf: [],
+      fanoutIds: [],
       localTermIndexes: expansions.map((_, i) => i),
       freeTextNative: false,
       provablyEmpty: true,
@@ -93,6 +115,7 @@ export function resolveIncludeCriteria(
     return {
       allOf: [...anchoredIds],
       anyOf: [],
+      fanoutIds: [],
       localTermIndexes: expansions.map((_, i) => i),
       freeTextNative: false,
       provablyEmpty: false,
@@ -107,13 +130,37 @@ export function resolveIncludeCriteria(
   if (singletonIds.length > 0 || anchoredIds.length > 0) {
     const allOf = [...anchoredIds];
     for (const id of singletonIds) if (!allOf.includes(id)) allOf.push(id);
+    // A multi-id group beside the anchored ids used to re-check locally and
+    // starve the all-of stream into the 422 ceiling: the provider returns
+    // every anchored title, few of them also match every typed term. The
+    // smallest group that fits fans out instead (see fanoutIds): one
+    // all-of stream per id, allOf ∪ {id}. A group qualifies only within
+    // FANOUT_GROUP_CAP and only when the combined criterion still fits the
+    // native cap; ties keep the first group in input order; no qualifier
+    // keeps today's local re-check for every group.
+    let fanout = -1;
+    for (let i = 0; i < expansions.length; i++) {
+      const ids = expansions[i]!.ids;
+      if (
+        ids.length < 2 ||
+        ids.length > FANOUT_GROUP_CAP ||
+        allOf.length + ids.length > TAG_FILTER_ID_CAP
+      ) {
+        continue;
+      }
+      if (fanout === -1 || ids.length < expansions[fanout]!.ids.length) {
+        fanout = i;
+      }
+    }
+    const fanoutIds = fanout === -1 ? [] : [...expansions[fanout]!.ids];
     return {
       allOf,
       anyOf: [],
+      fanoutIds,
       localTermIndexes: expansions.flatMap((e, i) =>
-        e.ids.length > 1 ? [i] : [],
+        e.ids.length > 1 && i !== fanout ? [i] : [],
       ),
-      freeTextNative: singletonIds.length > 0,
+      freeTextNative: singletonIds.length > 0 || fanoutIds.length > 0,
       provablyEmpty: false,
     };
   }
@@ -135,6 +182,7 @@ export function resolveIncludeCriteria(
     return {
       allOf: [],
       anyOf: [],
+      fanoutIds: [],
       localTermIndexes: expansions.map((_, i) => i),
       freeTextNative: false,
       provablyEmpty: false,
@@ -143,6 +191,7 @@ export function resolveIncludeCriteria(
   return {
     allOf: [],
     anyOf: [...expansions[smallest]!.ids],
+    fanoutIds: [],
     localTermIndexes: expansions.flatMap((_, i) => (i !== smallest ? [i] : [])),
     freeTextNative: true,
     provablyEmpty: false,
@@ -156,6 +205,10 @@ export function resolveIncludeCriteria(
 export type SoftCeilingPlan = {
   localInclude: readonly unknown[];
   freeTextNative: boolean;
+  /** True when the stream fans out one all-of criterion per fanout id: the
+   * pages were productive like the any-of pre-filter case, so the ceiling
+   * degrades softly even when no term re-checks locally. */
+  fanoutNative?: boolean;
 };
 
 /** The soft ceiling is exactly the documented contract: a multi-term
@@ -166,9 +219,13 @@ export type SoftCeilingPlan = {
  * re-checks locally, uuid-less anchored chips beside a native criterion,
  * and every other local filter keep the hard 422; hidden or exclude
  * starvation on such a stream still degrades (the pages were
- * productive). */
+ * productive). A fan-out stream (fanoutNative) degrades like the any-of
+ * pre-filter case, even when no term re-checks locally. */
 export function softCeilingFor(plan: SoftCeilingPlan): boolean {
-  return plan.localInclude.length > 0 && plan.freeTextNative;
+  return (
+    (plan.localInclude.length > 0 && plan.freeTextNative) ||
+    plan.fanoutNative === true
+  );
 }
 
 /** The outcome when a stream hits the scan-page ceiling with upstream
