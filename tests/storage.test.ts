@@ -1702,7 +1702,7 @@ test("mixed-case provider ids fold at the storage boundary: one active intent, o
   assert.equal(byUpper.media.id, SCENE.id);
 });
 
-test("migration 16 folds stored ids and resolves case-duplicate conflicts", () => {
+test("migration 16 folds lone ids and keeps case-duplicate rows untouched for manual repair", () => {
   const dir = freshDir();
   storage.bootstrap(deliveryConfig(true), ownerUser(), "jf-owner-token");
   const owner = storage.getAccount(ownerUser().id) as Account;
@@ -1710,7 +1710,9 @@ test("migration 16 folds stored ids and resolves case-duplicate conflicts", () =
   // Real rows through the write path: one lowercase request, approved, with
   // its acquisition. The injected rows below recreate the bug's shape from
   // before the write path normalized ids: an OLDER pending duplicate in
-  // uppercase and an OLDER uppercase acquisition for the same identity.
+  // uppercase, an OLDER uppercase acquisition for the same identity, an
+  // uppercase cancelled history row no active row collides with, and a
+  // lone uppercase pair for a different identity.
   const kept = storage.createRequest(owner.id, SCENE);
   storage.decideRequest(owner, kept.id, "approved");
   const now = Date.now();
@@ -1726,6 +1728,38 @@ test("migration 16 folds stored ids and resolves case-duplicate conflicts", () =
       "INSERT INTO requests (id, account_id, provider, kind, external_id, decision, created_at, decided_at) VALUES (?, ?, 'stashdb', 'scene', ?, 'pending', ?, NULL)",
     )
     .run(randomUUID(), owner.id, SCENE.id.toUpperCase(), now - 60_000);
+  // The unique index only spans pending and approved rows, so a cancelled
+  // history row in the same spelling is no collision: migration 16 folds it.
+  raw
+    .prepare(
+      "INSERT INTO requests (id, account_id, provider, kind, external_id, decision, created_at, decided_at) VALUES (?, ?, 'stashdb', 'scene', ?, 'cancelled', ?, ?)",
+    )
+    .run(
+      randomUUID(),
+      owner.id,
+      SCENE.id.toUpperCase(),
+      now - 120_000,
+      now - 90_000,
+    );
+  // due_at set: the legacy row must stay schedulable, not stranded.
+  raw
+    .prepare(
+      "INSERT INTO acquisitions (id, instance_id, provider, kind, external_id, state, due_at, created_at, updated_at) VALUES (?, ?, 'stashdb', 'scene', ?, 'unsent', ?, ?, ?)",
+    )
+    .run(
+      randomUUID(),
+      instanceId,
+      SCENE.id.toUpperCase(),
+      now - 1000,
+      now - 60_000,
+      now - 60_000,
+    );
+  const loneId = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+  raw
+    .prepare(
+      "INSERT INTO requests (id, account_id, provider, kind, external_id, decision, created_at, decided_at) VALUES (?, ?, 'stashdb', 'scene', ?, 'pending', ?, NULL)",
+    )
+    .run(randomUUID(), owner.id, loneId.toUpperCase(), now - 30_000);
   raw
     .prepare(
       "INSERT INTO acquisitions (id, instance_id, provider, kind, external_id, state, created_at, updated_at) VALUES (?, ?, 'stashdb', 'scene', ?, 'unsent', ?, ?)",
@@ -1733,45 +1767,79 @@ test("migration 16 folds stored ids and resolves case-duplicate conflicts", () =
     .run(
       randomUUID(),
       instanceId,
-      SCENE.id.toUpperCase(),
-      now - 60_000,
-      now - 60_000,
+      loneId.toUpperCase(),
+      now - 30_000,
+      now - 30_000,
     );
   raw.close();
   storage.closeStorage();
 
-  // Reopening runs migration 16 in place: an approved intent outranks a
-  // pending one, then newest wins; the acquisition with the strongest
-  // external-contact evidence wins; older duplicates lose as above and
-  // every stored id ends up lowercase.
+  // Reopening runs migration 16 in place: lone ids fold to lowercase, and
+  // the case-duplicate pair keeps both rows exactly as they are — nothing
+  // is cancelled or deleted; the operator repairs it by hand.
   assert.equal(storage.isInitialized(), true);
   const active = storage.getActiveRequest(owner.id, SCENE);
-  assert.ok(active, "the newest active intent survives");
+  assert.ok(active, "the stored lowercase intent still resolves");
   assert.equal(active.id, kept.id);
   assert.equal(active.decision, "approved");
-  const cancelled = visibleRequests(owner).find((r) => r.id !== kept.id);
-  assert.ok(cancelled, "the older duplicate intent is cancelled, not deleted");
-  assert.equal(cancelled.decision, "cancelled");
-  assert.ok(cancelled.decidedAt !== null);
 
-  const due = storage.listDueAcquisitions(Date.now() + 60_000);
-  assert.equal(
-    due.filter((a) => a.media.id === SCENE.id).length,
-    1,
-    "one acquisition row remains for the identity",
-  );
   const check = new DatabaseSync(join(dir, "velvarr.sqlite"));
-  const versionRow = check.prepare("PRAGMA user_version").get() as {
-    user_version: number;
+  const identityRequests = check
+    .prepare("SELECT COUNT(*) AS n FROM requests WHERE lower(external_id) = ?")
+    .get(SCENE.id) as { n: number };
+  assert.equal(
+    identityRequests.n,
+    3,
+    "kept, duplicate and history request rows all survive",
+  );
+  const duplicate = check
+    .prepare("SELECT decision, decided_at FROM requests WHERE external_id = ?")
+    .get(SCENE.id.toUpperCase()) as {
+    decision: string;
+    decided_at: number | null;
   };
+  assert.ok(duplicate, "the case-duplicate request row is not deleted");
+  assert.equal(
+    duplicate.decision,
+    "pending",
+    "the duplicate keeps its decision",
+  );
+  assert.equal(duplicate.decided_at, null, "the duplicate keeps its history");
+  const foldedHistory = check
+    .prepare(
+      "SELECT COUNT(*) AS n FROM requests WHERE external_id = ? AND decision = 'cancelled'",
+    )
+    .get(SCENE.id) as { n: number };
+  assert.equal(
+    foldedHistory.n,
+    1,
+    "the uppercase history row folds: no active row collides with it",
+  );
+  const identityAcquisitions = check
+    .prepare(
+      "SELECT COUNT(*) AS n FROM acquisitions WHERE lower(external_id) = ?",
+    )
+    .get(SCENE.id) as { n: number };
+  assert.equal(identityAcquisitions.n, 2, "both acquisition rows survive");
   const mixed = check
     .prepare(
       "SELECT (SELECT COUNT(*) FROM requests WHERE external_id != lower(external_id)) + (SELECT COUNT(*) FROM acquisitions WHERE external_id != lower(external_id)) AS n",
     )
     .get() as { n: number };
+  const lone = check
+    .prepare(
+      "SELECT (SELECT COUNT(*) FROM requests WHERE external_id = ?) + (SELECT COUNT(*) FROM acquisitions WHERE external_id = ?) AS n",
+    )
+    .get(loneId, loneId) as { n: number };
   check.close();
-  assert.equal(versionRow.user_version, 16);
-  assert.equal(mixed.n, 0, "every stored id is lowercase");
+  assert.equal(mixed.n, 2, "only the two colliding rows keep their case");
+  assert.equal(lone.n, 2, "lone rows fold to lowercase");
+  const due = storage.listDueAcquisitions(Date.now() + 60_000);
+  assert.equal(
+    due.filter((a) => a.media.id.toLowerCase() === SCENE.id).length,
+    2,
+    "both kept acquisition rows stay readable and due",
+  );
 });
 
 test("active intent keys fold ids, so a mixed-case provider row matches the stored spelling", () => {
@@ -1788,16 +1856,17 @@ test("active intent keys fold ids, so a mixed-case provider row matches the stor
   assert.equal(keys.size, 1, "both spellings fold to the one stored intent");
 });
 
-test("migration 16 keeps the approved intent and the contacted acquisition over newer shadows", () => {
+test("migration 16 keeps every row: the contacted acquisition and both shadows survive", () => {
   const dir = freshDir();
   storage.bootstrap(deliveryConfig(true), ownerUser(), "jf-owner-token");
   const owner = storage.getAccount(ownerUser().id) as Account;
 
   // The realistic duplicate order: the single route files lowercase and an
   // admin approves (the acquisition reaches Whisparr and is observed), then
-  // a bulk run files an uppercase pending duplicate. The approval must
-  // survive, and the contacted acquisition must beat the never-dispatched
-  // shadow, or the worker loses its eligible requester and blocks the row.
+  // a bulk run files an uppercase pending duplicate. Migration 16 used to
+  // rank the rows, cancel the losing intent and delete the losing
+  // acquisition; the operator chose the non-destructive fold (VELV-233):
+  // every row keeps its state and the identity waits for a manual repair.
   const approved = storage.createRequest(owner.id, SCENE);
   storage.decideRequest(owner, approved.id, "approved");
   const due = storage.listDueAcquisitions(Date.now() + 60_000);
@@ -1822,11 +1891,12 @@ test("migration 16 keeps the approved intent and the contacted acquisition over 
   const raw = new DatabaseSync(join(dir, "velvarr.sqlite"));
   raw.exec("PRAGMA user_version = 15");
   // A NEWER uppercase pending duplicate...
+  const dupRequestId = randomUUID();
   raw
     .prepare(
       "INSERT INTO requests (id, account_id, provider, kind, external_id, decision, created_at, decided_at) VALUES (?, ?, 'stashdb', 'scene', ?, 'pending', ?, NULL)",
     )
-    .run(randomUUID(), owner.id, SCENE.id.toUpperCase(), now + 60_000);
+    .run(dupRequestId, owner.id, SCENE.id.toUpperCase(), now + 60_000);
   // ...and a NEWER uppercase acquisition that never contacted Whisparr.
   raw
     .prepare(
@@ -1843,38 +1913,74 @@ test("migration 16 keeps the approved intent and the contacted acquisition over 
   storage.closeStorage();
 
   assert.equal(storage.isInitialized(), true);
+  // Both intents stay live, so the folded NOCASE lookup resolves one row of
+  // the pair; the migration must not pick which — nothing is cancelled.
   const active = storage.getActiveRequest(owner.id, SCENE);
-  assert.ok(active, "the approved intent survives");
-  assert.equal(active.id, approved.id);
-  assert.equal(active.decision, "approved");
-  const cancelled = visibleRequests(owner).find((r) => r.id !== approved.id);
+  assert.ok(active, "the folded lookup still resolves a live intent");
   assert.ok(
-    cancelled,
-    "the newer pending duplicate is cancelled, not kept active",
+    active.id === approved.id || active.id === dupRequestId,
+    "the resolved intent is one of the two kept rows",
   );
-  assert.equal(cancelled.decision, "cancelled");
-  assert.ok(cancelled.decidedAt !== null);
+  assert.ok(
+    active.decision === "approved" || active.decision === "pending",
+    "the resolved intent keeps its decision",
+  );
 
-  const acq = storage.getAcquisitionByReference(SCENE);
-  assert.ok(acq, "one acquisition row remains for the identity");
-  assert.equal(
-    acq.state,
-    "monitoring",
-    "the contacted acquisition wins over the never-dispatched shadow",
-  );
-  assert.equal(acq.media.id, SCENE.id);
   const check = new DatabaseSync(join(dir, "velvarr.sqlite"));
-  const versionRow = check.prepare("PRAGMA user_version").get() as {
-    user_version: number;
+  const approvedRow = check
+    .prepare("SELECT decision FROM requests WHERE external_id = ?")
+    .get(SCENE.id) as { decision: string };
+  assert.equal(
+    approvedRow.decision,
+    "approved",
+    "the approved row keeps its decision",
+  );
+  const duplicate = check
+    .prepare("SELECT decision, decided_at FROM requests WHERE external_id = ?")
+    .get(SCENE.id.toUpperCase()) as {
+    decision: string;
+    decided_at: number | null;
   };
+  assert.ok(duplicate, "the newer pending duplicate is not deleted");
+  // The pin moved with the operator's decision: nothing is cancelled, so
+  // both intents stay live until the identity is repaired by hand.
+  assert.equal(duplicate.decision, "pending");
+  assert.equal(duplicate.decided_at, null);
+  const identityAcquisitions = check
+    .prepare(
+      "SELECT COUNT(*) AS n FROM acquisitions WHERE lower(external_id) = ?",
+    )
+    .get(SCENE.id) as { n: number };
+  assert.equal(
+    identityAcquisitions.n,
+    2,
+    "the contacted acquisition and the shadow both survive",
+  );
+  const shadow = check
+    .prepare("SELECT state FROM acquisitions WHERE external_id = ?")
+    .get(SCENE.id.toUpperCase()) as { state: string };
+  assert.ok(shadow, "the uppercase shadow row keeps its spelling");
+  assert.equal(shadow.state, "unsent");
   const mixed = check
     .prepare(
       "SELECT (SELECT COUNT(*) FROM requests WHERE external_id != lower(external_id)) + (SELECT COUNT(*) FROM acquisitions WHERE external_id != lower(external_id)) AS n",
     )
     .get() as { n: number };
+  const versionRow = check.prepare("PRAGMA user_version").get() as {
+    user_version: number;
+  };
   check.close();
   assert.equal(versionRow.user_version, 16);
-  assert.equal(mixed.n, 0, "every stored id is lowercase");
+  assert.equal(
+    mixed.n,
+    2,
+    "the colliding rows keep their case for manual repair",
+  );
+
+  const acq = storage.getAcquisitionByReference(SCENE);
+  assert.ok(acq, "the folded lookup still resolves the contacted row");
+  assert.equal(acq.state, "monitoring");
+  assert.equal(acq.media.id, SCENE.id);
 });
 
 test("request lifecycle authorization: role checks, privacy, own-cancellation isolation", () => {

@@ -471,63 +471,39 @@ const MIGRATIONS: Record<number, string> = {
       CHECK (prose_search IN (0, 1));
   `,
   16: `
-    -- Fold provider ids to lowercase at rest. Ids are hex UUIDs and before
-    -- the write path normalized them, one title could hold two rows
-    -- differing only in case: requests_active_intent and
-    -- acquisitions_identity compare case-sensitively, so the pending cap
-    -- counted the title twice and the worker made two add attempts.
-    -- Resolve the collisions the fold would create first.
-    -- Requests: an approved intent outranks a pending one (the worker
-    -- dispatches an acquisition only while an approved requester exists,
-    -- so keeping the pending side of a pair would strand the title
-    -- blocked), then newest wins. Losers are cancelled and keep their
-    -- history rows.
-    -- Acquisitions: the row with the strongest external-contact evidence
-    -- wins (imported beats a watched Whisparr item beats a maybe-landed
-    -- uncertain beats an in-flight submission beats a recorded failure
-    -- beats never dispatched), ties prefer an observed whisparr_id and a
-    -- recorded submission, then newest. Losers are removed: they are
-    -- shadows of one title whose external truth the survivor tracks.
-    UPDATE requests SET decision = 'cancelled', decided_at =
-      (CAST(strftime('%s', 'now') AS INTEGER) * 1000)
-    WHERE decision IN ('pending', 'approved')
-      AND rowid IN (
+    -- Fold provider ids to lowercase at rest, deleting nothing. Ids are
+    -- hex UUIDs and before the write path normalized them, one title could
+    -- hold two rows differing only in case: requests_active_intent and
+    -- acquisitions_identity compare case-sensitively, so both spellings
+    -- cannot fold at once. A colliding active request pair keeps its
+    -- spelling and its decisions for a manual repair; the migration logs
+    -- those rows at startup (warnLeftMixedIds). The operator chose this
+    -- over cancelling requests and deleting acquisition rows
+    -- (VELV-233, 2026-11-20): an upgrade must not lose history.
+    -- The requests unique index only spans pending and approved rows, so
+    -- history rows always fold; only an active pair of more than one row
+    -- stays untouched.
+    UPDATE requests SET external_id = lower(external_id)
+    WHERE external_id != lower(external_id)
+      AND rowid NOT IN (
         SELECT rowid FROM (
-          SELECT rowid, ROW_NUMBER() OVER (
+          SELECT rowid, COUNT(*) OVER (
             PARTITION BY account_id, provider, kind, lower(external_id)
-            ORDER BY CASE decision WHEN 'approved' THEN 0 ELSE 1 END,
-                     created_at DESC, id DESC
-          ) AS rn
+          ) AS active_n
           FROM requests
           WHERE decision IN ('pending', 'approved')
-        ) WHERE rn > 1
+        ) WHERE active_n > 1
       );
-    DELETE FROM acquisitions
-    WHERE rowid IN (
-      SELECT rowid FROM (
-        SELECT rowid, ROW_NUMBER() OVER (
-          PARTITION BY instance_id, provider, kind, lower(external_id)
-          ORDER BY CASE state
-                     WHEN 'imported' THEN 0
-                     WHEN 'monitoring' THEN 1
-                     WHEN 'downloading' THEN 2
-                     WHEN 'uncertain' THEN 3
-                     WHEN 'submitting' THEN 4
-                     WHEN 'failed' THEN 5
-                     WHEN 'failed_permanent' THEN 6
-                     WHEN 'blocked' THEN 7
-                     ELSE 8
-                   END,
-                   whisparr_id IS NULL, submitted_at IS NULL,
-                   updated_at DESC, id DESC
-        ) AS rn
-        FROM acquisitions
-      ) WHERE rn > 1
-    );
-    UPDATE requests SET external_id = lower(external_id)
-      WHERE external_id != lower(external_id);
     UPDATE acquisitions SET external_id = lower(external_id)
-      WHERE external_id != lower(external_id);
+    WHERE external_id != lower(external_id)
+      AND rowid IN (
+        SELECT rowid FROM (
+          SELECT rowid, COUNT(*) OVER (
+            PARTITION BY instance_id, provider, kind, lower(external_id)
+          ) AS n
+          FROM acquisitions
+        ) WHERE n = 1
+      );
   `,
 };
 
@@ -583,6 +559,33 @@ function hasUserTables(d: DatabaseSync): boolean {
     )
     .get() as { n: number };
   return row.n > 0;
+}
+
+/** Migration 16 keeps rows whose folded id collides with another row, so a
+ * legacy database can hold one title under two spellings. Name them at
+ * migration time: those identities are degraded until repaired by hand. */
+function warnLeftMixedIds(d: DatabaseSync): void {
+  const rows = d
+    .prepare(
+      `SELECT 'request' AS origin, provider, kind, external_id
+         FROM requests WHERE external_id != lower(external_id)
+       UNION ALL
+       SELECT 'acquisition' AS origin, provider, kind, external_id
+         FROM acquisitions WHERE external_id != lower(external_id)`,
+    )
+    .all() as {
+    origin: string;
+    provider: string;
+    kind: string;
+    external_id: string;
+  }[];
+  if (rows.length === 0) return;
+  const listed = rows
+    .map((r) => `${r.origin} ${r.provider}/${r.kind} ${r.external_id}`)
+    .join(", ");
+  console.warn(
+    `velvarr: migration 16 left ${rows.length} row(s) with a case-duplicate provider id untouched for manual repair: ${listed}`,
+  );
 }
 
 function validateAndMigrate(d: DatabaseSync): void {
@@ -647,6 +650,7 @@ function validateAndMigrate(d: DatabaseSync): void {
       failure.cause = e;
       throw failure;
     }
+    if (v === 16) warnLeftMixedIds(d);
   }
 }
 
@@ -2933,8 +2937,9 @@ export function getAcquisitionByReference(
   assertMediaReference(media);
   const instance = instanceId ?? getConfig()?.whisparr?.instanceId;
   if (!instance) return null;
-  // Stored ids are lowercase (createRequest folds, migration 16 folded old
-  // rows): fold the lookup so a mixed-case reference still resolves the row.
+  // Active ids are lowercase (createRequest folds; migration 16 folded old
+  // rows, except an active case-collision pair): fold the lookup so a
+  // mixed-case reference still resolves the row.
   const row = S().getAcquisitionByIdentity.get(
     instance,
     media.provider,
