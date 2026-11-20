@@ -1074,6 +1074,22 @@ scenario(
   },
 );
 scenario(
+  "Natural-language search does not claim a filter draft after a saved check",
+  async (h) => {
+    const { edit, save, badge } = h;
+    const own = await openConfiguredProse(h);
+    await edit(own).click();
+    await save(own).click();
+    await expect(edit(own)).toBeEnabled();
+    // Contract move: quieter checks (71e3799) show success in the chip and
+    // render a line only for a failure, and no state claims a filter draft
+    // the model-list check cannot prove.
+    await expect(badge(own)).toHaveText("Connected");
+    await expect(own.locator("p.judgment-check")).toHaveCount(0);
+    await expect(own.getByText("filter draft")).toHaveCount(0);
+  },
+);
+scenario(
   "Natural-language search and AI matching switch independently and Off preserves chat settings",
   async (h) => {
     const { page, edit, save, control } = h;
