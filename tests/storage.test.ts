@@ -4070,6 +4070,94 @@ test("an account holds at most FOLLOW_CAP_PER_ACCOUNT follow rows, and unfollowi
   );
 });
 
+test("an already-followed counterpart adds no row, so the duplicate check wins over the cap", () => {
+  freshDir();
+  const grant = storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  const ref = (i: number): CatalogReference => ({
+    provider: "tpdb",
+    kind: "performer",
+    id: `e1a7c3d9-4f2b-4c8e-a5d6-${String(i).padStart(12, "0")}`,
+  });
+  // Filler rows to cap - 1, with the stash side followed standalone: the
+  // counterpart row the boundary press names already exists.
+  for (let i = 0; i < storage.FOLLOW_CAP_PER_ACCOUNT - 2; i++) {
+    storage.followPerformer(
+      grant.account.id,
+      ref(i),
+      "Fixture Performer",
+      null,
+    );
+  }
+  storage.followPerformer(
+    grant.account.id,
+    FOLLOW_STASH_A,
+    "Fixture Performer",
+    null,
+  );
+  assert.equal(
+    storage.listFollows(grant.account.id).length,
+    storage.FOLLOW_CAP_PER_ACCOUNT - 1,
+  );
+  // The press takes the account to the cap exactly: the TPDB row is new
+  // (cap - 1 -> cap), and the already-followed counterpart adds no row,
+  // so the press must land, never roll back.
+  const follow = storage.followPerformerPair(
+    grant.account.id,
+    FOLLOW_TPDB_A,
+    "Fixture Performer",
+    null,
+    { reference: FOLLOW_STASH_A, name: "Fixture Performer", imageUrl: null },
+  );
+  assert.deepEqual(follow.linked, {
+    provider: "stashdb",
+    kind: "performer",
+    id: FOLLOW_STASH_A.id,
+  });
+  // Both rows exist: the pair answers as one listed entry (folded), so the
+  // row count reads off the provider-scoped lists — cap - 1 tpdb rows plus
+  // the stash row, exactly the row cap. A rolled-back press would leave
+  // cap - 2 tpdb rows.
+  assert.equal(
+    storage.listFollowsByProvider(
+      grant.account.id,
+      "tpdb",
+      storage.FOLLOW_CAP_PER_ACCOUNT,
+    ).length,
+    storage.FOLLOW_CAP_PER_ACCOUNT - 1,
+  );
+  assert.equal(
+    storage.listFollowsByProvider(
+      grant.account.id,
+      "stashdb",
+      storage.FOLLOW_CAP_PER_ACCOUNT,
+    ).length,
+    1,
+  );
+  // The same precedence on a full account: a re-follow answers
+  // already_following, never follow_cap_reached.
+  assert.throws(
+    () =>
+      storage.followPerformer(
+        grant.account.id,
+        FOLLOW_STASH_A,
+        "Fixture Performer",
+        null,
+      ),
+    (e: { code: string }) => e.code === "already_following",
+  );
+  // A genuinely new row on a full account is still the cap's refusal.
+  assert.throws(
+    () =>
+      storage.followPerformer(
+        grant.account.id,
+        FOLLOW_TPDB_B,
+        "Fixture Performer",
+        null,
+      ),
+    (e: { code: string }) => e.code === "follow_cap_reached",
+  );
+});
+
 test("listFollowsByProvider is provider-scoped, newest-first, and honours its limit", async () => {
   freshDir();
   const grant = storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");

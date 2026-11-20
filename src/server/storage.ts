@@ -1925,16 +1925,28 @@ function insertFollowRow(
   if (imageUrl !== null && imageUrl.length > FOLLOW_IMAGE_URL_MAX) {
     throw new AppError(400, "invalid_field", "image url is too long");
   }
-  // The cap reads the live row count inside the caller's transaction, so a
-  // pair press refuses whole when its counterpart row would pass the cap:
-  // the rollback leaves no half-recorded pair behind.
-  const counted = S().countPerformerFollows.get(accountId) as { n: number };
-  if (Number(counted.n) >= FOLLOW_CAP_PER_ACCOUNT) {
-    throw new AppError(
-      409,
-      "follow_cap_reached",
-      "follow cap reached: unfollow one to follow another",
-    );
+  // A row that already exists adds nothing, so the cap must not refuse a
+  // re-follow: the insert's unique conflict answers already_following
+  // instead. This is the precedence the pair press relies on — its
+  // counterpart may already be followed, and the press must land.
+  const duplicate =
+    S().getPerformerFollowByRef.get(
+      accountId,
+      reference.provider,
+      reference.id,
+    ) !== undefined;
+  if (!duplicate) {
+    // The cap reads the live row count inside the caller's transaction, so
+    // a pair press refuses whole when its genuinely-new counterpart row
+    // would pass the cap: the rollback leaves no half-recorded pair.
+    const counted = S().countPerformerFollows.get(accountId) as { n: number };
+    if (Number(counted.n) >= FOLLOW_CAP_PER_ACCOUNT) {
+      throw new AppError(
+        409,
+        "follow_cap_reached",
+        "follow cap reached: unfollow one to follow another",
+      );
+    }
   }
   const id = randomUUID();
   try {
