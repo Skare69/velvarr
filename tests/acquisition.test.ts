@@ -445,6 +445,51 @@ test("a rejected add is failed once and never blind-retried", async () => {
   assert.equal(third.considered, 0);
 });
 
+test("approving again recovers a terminal failed row and resubmits it", async () => {
+  const owner = boot();
+
+  // One delivery-settings mistake: every add is rejected with a proven 400.
+  const first = storage.createRequest(owner.id, MOVIE_A);
+  storage.decideRequest(owner, first.id, "approved");
+  const id = workId(MOVIE_A);
+  knobs.addStatus = 400;
+  const pass1 = await acquisition.runDueWork();
+  assert.equal(pass1.failed, 1);
+  assert.equal(postCount(), 1);
+  // The next pass observes the rejected identity away: terminal, due NULL.
+  const pass2 = await acquisition.runDueWork(later());
+  assert.equal(pass2.absent, 1);
+  const wedged = probe(id);
+  assert.equal(wedged.state, "failed_permanent");
+  assert.equal(wedged.dueAt, null);
+
+  // A cancel does not recover the row: withdrawUndispatched only removes
+  // undispatched states, and this one never left the building only in the
+  // sense that Whisparr refused it.
+  storage.cancelRequest(owner, first.id);
+  assert.equal(probe(id).state, "failed_permanent");
+
+  // The settings are fixed; the operator approves the title again. That
+  // fresh approval is the recovery: the wedged row reschedules as unsent.
+  const second = storage.createRequest(owner.id, MOVIE_A);
+  storage.decideRequest(owner, second.id, "approved");
+  const recovered = probe(id);
+  assert.equal(recovered.state, "unsent");
+  assert.equal(recovered.lastError, null);
+  assert.ok(recovered.dueAt !== null, "a recovered row is due again");
+  const due = storage
+    .listDueAcquisitions(later(), 100)
+    .filter((a) => a.media.id === MOVIE_A.id);
+  assert.equal(due.length, 1, "re-approval reschedules the one shared row");
+
+  // And the next pass submits the add again.
+  knobs.addStatus = 201;
+  const pass3 = await acquisition.runDueWork();
+  assert.equal(pass3.delivered, 1);
+  assert.equal(postCount(), 2, "the recovered identity is POSTed once more");
+  assert.equal(probe(id).state, "monitoring");
+});
+
 test("an identity the lookup cannot resolve fails with a reason instead of looping as uncertain", async () => {
   const owner = boot();
   approve(owner.id, MOVIE_A);

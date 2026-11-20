@@ -209,6 +209,7 @@ stateDiagram-v2
   downloading --> failed_permanent: proven absence upstream
   failed --> failed_permanent: proven absence upstream
   failed --> imported: file observed
+  failed_permanent --> unsent: approved again
   imported --> [*]: playable in Jellyfin
 ```
 
@@ -240,8 +241,10 @@ stateDiagram-v2
   pass only observes a `failed` row. A later observation moves it to the
   state Whisparr reports (for example `imported` when the file is
   there), and a proven absence ends it `failed_permanent`.
-- **failed_permanent** — terminal: an invalid reference, an identity
-  mismatch, or a proven upstream absence (`recordAbsence`).
+- **failed_permanent** — terminal for the worker: an invalid reference, an
+  identity mismatch, or a proven upstream absence (`recordAbsence`). No pass
+  revisits it; approving the title again is the recovery and reschedules the
+  row as `unsent`.
 
 The diagram shows the main path. Re-observation moves any sent row
 (`monitoring`, `downloading`, `failed`) to the state Whisparr reports,

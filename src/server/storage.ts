@@ -211,6 +211,7 @@ type Statements = {
   completeSubmissionFailed: StatementSync;
   completeSubmissionFailedPermanent: StatementSync;
   requeueBlocked: StatementSync;
+  reactivateFailedPermanent: StatementSync;
   recordObservation: StatementSync;
   recordObservationError: StatementSync;
   recordAbsence: StatementSync;
@@ -758,6 +759,12 @@ function S(): Statements {
       ),
       requeueBlocked: d.prepare(
         "UPDATE acquisitions SET state = 'unsent', due_at = ?, updated_at = ? WHERE instance_id = ? AND state = 'blocked' AND claim_token IS NULL",
+      ),
+      // VELV-210: a terminal failed row is never revisited by a pass (due_at
+      // NULL), so a fresh approval of the same identity is the recovery. Only
+      // the terminal state is rescheduled; live work is never touched.
+      reactivateFailedPermanent: d.prepare(
+        "UPDATE acquisitions SET state = ?, due_at = ?, last_error = NULL, last_error_at = NULL, updated_at = ? WHERE id = ? AND state = 'failed_permanent' AND claim_token IS NULL",
       ),
       recordObservation: d.prepare(
         `UPDATE acquisitions SET state = ?, last_observed_at = ?, due_at = ?,
@@ -2731,7 +2738,7 @@ export function decideRequest(
         // Delivery disabled or unset leaves actionable blocked work, never a
         // pretend success. No Whisparr at all means nothing to deliver to yet.
         const state = whisparr.delivery?.enabled ? "unsent" : "blocked";
-        S().insertAcquisition.run(
+        const inserted = S().insertAcquisition.run(
           randomUUID(),
           whisparr.instanceId,
           row.provider,
@@ -2742,6 +2749,26 @@ export function decideRequest(
           now,
           now,
         );
+        if (inserted.changes === 0) {
+          // The identity already has the shared row. A terminal failed row
+          // wedges it — no pass revisits it and no cancel withdraws it — so
+          // a fresh approval is the deliberate recovery: reschedule the same
+          // row like new work (VELV-210). Any live state stays untouched.
+          const existing = S().getAcquisitionByIdentity.get(
+            whisparr.instanceId,
+            row.provider,
+            row.kind,
+            row.external_id,
+          ) as AcquisitionRow | undefined;
+          if (existing?.state === "failed_permanent") {
+            S().reactivateFailedPermanent.run(
+              state,
+              state === "unsent" ? now : null,
+              now,
+              existing.id,
+            );
+          }
+        }
       }
     }
     return rowToRequest(S().getRequest.get(requestId) as RequestRow);
