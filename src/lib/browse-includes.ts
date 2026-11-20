@@ -228,6 +228,19 @@ export function softCeilingFor(plan: SoftCeilingPlan): boolean {
   );
 }
 
+/** The named partial a scan ceiling ends a stream with: a stream's own
+ * per-stream ceiling under a soft flag (scanCeilingOutcome), or the
+ * browse's spent per-provider request pool (createScanBudget in
+ * server/browse.ts). */
+export function scanCeilingError(provider: CatalogProvider): SourceError {
+  return {
+    provider,
+    code: "scan_ceiling",
+    message:
+      "Reached the upstream page limit while filling this page — results are incomplete; narrow the filters.",
+  };
+}
+
 /** The outcome when a stream hits the scan-page ceiling with upstream
  * continuation left: a hard ceiling throws query_too_broad (the caller
  * raises it), a soft one degrades to the named scan_ceiling partial
@@ -237,13 +250,5 @@ export function scanCeilingOutcome(
   provider: CatalogProvider,
 ): { hard: true } | { hard: false; error: SourceError } {
   if (!softCeiling) return { hard: true };
-  return {
-    hard: false,
-    error: {
-      provider,
-      code: "scan_ceiling",
-      message:
-        "Reached the upstream page limit while filling this page — results are incomplete; narrow the filters.",
-    },
-  };
+  return { hard: false, error: scanCeilingError(provider) };
 }

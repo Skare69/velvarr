@@ -683,6 +683,11 @@ const tpdbFx = {
   pageReads: new Map<string, number>(),
   imageAuth: "unset",
   lastQuery: "",
+  /** VELV-240: the fan-out amplification test adds its five tag rows to
+   * the /tags listing while on, so the uuid->number walk behind the
+   * native fan-out criterion resolves them; every other test keeps the
+   * two-row listing. */
+  amplifyTags: false,
 };
 
 const DUPLICATE_SOURCE = "2a2b3c4d-0000-0000-d001-000000000001";
@@ -728,6 +733,17 @@ const TPDB_MOVIE_MIXED_UPPER = "2A2B3C4D-0000-0000-0000-00000000001C";
 const TPDB_MOVIE_MIXED = TPDB_MOVIE_MIXED_UPPER.toLowerCase();
 const bulkMixedBacklogId = (n: number) =>
   `2a2b3c4d-0000-0000-0ba5-${String(n).padStart(12, "0")}`;
+// VELV-240 worst-case bands: 5 fan-out tag ids (the native fan-out group),
+// 6 tag ids that miss FANOUT_GROUP_CAP and re-check locally, 5 studio
+// entities resolving to site ids 555001..555005, one movie row band.
+const amplificationFanId = (n: number) =>
+  `2a2b3c4d-0000-0000-fa00-${String(n).padStart(12, "0")}`;
+const amplificationOffId = (n: number) =>
+  `2a2b3c4d-0000-0000-0ff6-${String(n).padStart(12, "0")}`;
+const amplificationStudioId = (n: number) =>
+  `2a2b3c4d-0000-0000-517d-${String(n).padStart(12, "0")}`;
+const amplificationMovieId = (n: number) =>
+  `2a2b3c4d-0000-0000-fa11-${String(n).padStart(12, "0")}`;
 
 function tpdbMovieRow(id: string) {
   return {
@@ -968,6 +984,22 @@ async function tpdbHandler(
     // VELV-166: the two rows gain performer credits so a TPDB filmography
     // for the fixture performers returns real credited rows (tpdbCredits
     // maps performers[].id into the details' credits).
+    // VELV-240: the amplification test's five studio filters arrive as
+    // site ids 555001..555005. Every page keeps a provider `next` link and
+    // its one row carries only "Fixture Tag A", so every mapped row fails
+    // the browse's local include re-check and each stream walks toward the
+    // scan ceiling.
+    if ((url.searchParams.get("site_id") ?? "").startsWith("55500")) {
+      tpdbFx.pageReads.set(
+        "/movies",
+        (tpdbFx.pageReads.get("/movies") ?? 0) + 1,
+      );
+      return json(res, 200, {
+        data: [tpdbMovieRow(amplificationMovieId(1))],
+        meta: { total: 10000 },
+        links: { next: "https://fixture.test/next" },
+      });
+    }
     const realTotal = url.searchParams.get("q") !== null;
     return json(res, 200, {
       // Second row feeds the unified facet shelves an unlinked studio tile
@@ -1047,6 +1079,11 @@ async function tpdbHandler(
       links: {},
     });
   }
+  // VELV-240: the amplification test's five studio uuids resolve to
+  // numeric site ids 555001..555005.
+  if (p.startsWith("/sites/2a2b3c4d-0000-0000-517d-")) {
+    return json(res, 200, { data: { id: 555000 + Number(p.slice(-1)) } });
+  }
   if (p === `/sites/${TPDB_STUDIO}`)
     return json(res, 200, { data: tpdbSiteRow(TPDB_STUDIO) });
   if (p === "/tags") {
@@ -1060,8 +1097,15 @@ async function tpdbHandler(
         : [
             { id: 70, uuid: TAG_A, name: "Fixture Tag A" },
             { id: 194, uuid: TAG_B, name: "Fixture Tag B" },
+            ...(tpdbFx.amplifyTags
+              ? Array.from({ length: 5 }, (_, i) => ({
+                  id: 901 + i,
+                  uuid: amplificationFanId(i + 1),
+                  name: `Amplify Fan ${i + 1}`,
+                }))
+              : []),
           ],
-      meta: { total: empty ? 0 : 2 },
+      meta: { total: empty ? 0 : tpdbFx.amplifyTags ? 7 : 2 },
       links: {},
     });
   }
@@ -8896,6 +8940,69 @@ test("a browse scan ceiling carries the query facts in the error details", async
     // The ceiling run cached the endless filmography page for the full
     // TTL; the bulk-ceiling phases after this one count their own upstream
     // reads, so they must start cold.
+    resetMetaCache();
+  }
+});
+
+test("a worst-case fan-out browse stays at the request-level scan cap", async () => {
+  // VELV-240: 5 fan-out ids x 5 studio seeds once opened 25 TPDB streams,
+  // each free to walk MAX_SCAN_PAGES (40) pages — 1000 upstream reads for
+  // one browse charged a single rate token. The fan group rides native (5
+  // ids fit FANOUT_GROUP_CAP, the combined criterion fits
+  // TAG_FILTER_ID_CAP); the 6-id group misses the cap and re-checks
+  // locally against labels no fixture row carries, so every mapped row
+  // drops and each stream walks the provider `next` links. The browse's
+  // per-provider page pool caps the whole request at MAX_SCAN_PAGES reads.
+  resetMetaCache();
+  const studios = Array.from({ length: 5 }, (_, i) => ({
+    name: `Amplify Studio ${i + 1}`,
+    tpdb: amplificationStudioId(i + 1),
+  }));
+  const include = [
+    // The anchored id puts the plan on the fan-out branch (anchoredIds
+    // non-empty): one all-of stream per fan-group id, so the five studio
+    // seeds open 25 TPDB streams.
+    { name: "Fixture Tag A", tpdb: TAG_A },
+    Array.from({ length: 5 }, (_, i) => ({
+      name: `Amplify Fan ${i + 1}`,
+      tpdb: amplificationFanId(i + 1),
+    })),
+    Array.from({ length: 6 }, (_, i) => ({
+      name: `Amplify Off ${i + 1}`,
+      tpdb: amplificationOffId(i + 1),
+    })),
+  ];
+  const query =
+    `studios=${encodeURIComponent(JSON.stringify(studios))}` +
+    `&include=${encodeURIComponent(JSON.stringify(include))}` +
+    "&page=1&perPage=24";
+  tpdbFx.pageReads.delete("/movies");
+  tpdbFx.amplifyTags = true;
+  try {
+    const res = await call("GET", `/api/browse?type=movie&${query}`, {
+      cookie: member,
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as BrowsePageBody;
+    // Every stream ended on the spent pool, so the page is the named
+    // partial answer, never an outage-shaped 502.
+    assert.deepEqual(
+      body.errors.map((e) => ({ provider: e.provider, code: e.code })),
+      [{ provider: "tpdb", code: "scan_ceiling" }],
+    );
+    assert.deepEqual(body.items, []);
+    assert.equal(body.hasMore, false);
+    const reads = tpdbFx.pageReads.get("/movies") ?? 0;
+    assert.ok(
+      reads > 0 && reads <= 40,
+      `worst-case browse read ${reads} TPDB pages; the request-level cap is 40 (MAX_SCAN_PAGES)`,
+    );
+  } finally {
+    tpdbFx.amplifyTags = false;
+    tpdbFx.pageReads.delete("/movies");
+    // The run cached the endless band pages for the full TTL; the bulk
+    // phases after this one count their own upstream reads, so they must
+    // start cold.
     resetMetaCache();
   }
 });

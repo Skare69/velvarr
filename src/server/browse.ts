@@ -11,9 +11,12 @@
 // duration). A TPDB performer filmography has no upstream order at all, so
 // any query it qualifies runs as stable concatenation and claims no order.
 //
-// ponytail: upstream scan ceiling is 40 provider pages per stream per
-// request. Hitting it before a page fills is a visible 422 "query_too_broad",
-// never a fake empty page or fake end — narrow the filters. One exception:
+// ponytail: upstream scan ceiling is 40 provider pages per stream, and —
+// since VELV-240 — 40 per provider per request: every stream of one browse
+// draws from one shared pool (createScanBudget), so entity seeds x fan-out
+// ids cannot multiply a request's reads past the ceiling. Hitting it
+// before a page fills is a visible 422 "query_too_broad", never a fake
+// empty page or fake end — narrow the filters. One exception:
 // a multi-term free-text AND split between a native tag criterion and the
 // local re-check degrades to a named partial page instead
 // (Stream.softCeiling). A second: a side whose free-text expansion is
@@ -48,6 +51,7 @@ import {
 } from "./providers.ts";
 import {
   resolveIncludeCriteria,
+  scanCeilingError,
   scanCeilingOutcome,
   softCeilingFor,
   type TagExpansion,
@@ -92,6 +96,26 @@ import type {
 } from "../lib/contracts.ts";
 
 const MAX_SCAN_PAGES = 40;
+
+/** One pool of MAX_SCAN_PAGES upstream page reads per provider, shared by
+ * every stream of one browse request (VELV-240): fan-out multiplies the
+ * streams a browse opens (ids x entity seeds), so the per-stream ceiling
+ * alone let one request read seeds x ids x 40 pages on the shared
+ * operator keys. Takes are synchronous, so concurrent streams cannot
+ * oversubscribe the pool; a stream refused a page ends soft with the
+ * named scan_ceiling error (scanCeilingError) — the hard query_too_broad
+ * stays a stream's own "40 broad pages" verdict, which is why the
+ * per-stream check runs first in Stream.fetch and a lone stream can never
+ * see the pool refuse it (its own ceiling fires at the same fetch). */
+function createScanBudget(): (provider: CatalogProvider) => boolean {
+  const left = new Map<CatalogProvider, number>();
+  return (provider) => {
+    const have = left.get(provider) ?? MAX_SCAN_PAGES;
+    if (have <= 0) return false;
+    left.set(provider, have - 1);
+    return true;
+  };
+}
 
 // --- pinned public shapes ---
 
@@ -924,6 +948,11 @@ class Stream {
     provider: CatalogProvider,
     read: () => Promise<T>,
   ) => Promise<T>;
+  /** This browse's per-provider page-read pool (createScanBudget), shared
+   * by every stream of the request: a take that fails ends the stream
+   * soft with the named scan_ceiling error. Undefined outside
+   * browseTitles — searchVisibleCatalog keeps its single-stream bound. */
+  private readonly budget?: (provider: CatalogProvider) => boolean;
 
   constructor(
     base: CatalogSearchQuery,
@@ -933,6 +962,7 @@ class Stream {
     softCeiling = false,
     dateStop?: (d: CatalogDetail) => boolean,
     gate?: <T>(provider: CatalogProvider, read: () => Promise<T>) => Promise<T>,
+    budget?: (provider: CatalogProvider) => boolean,
   ) {
     this.base = base;
     this.visible = visible;
@@ -941,6 +971,7 @@ class Stream {
     this.softCeiling = softCeiling;
     this.dateStop = dateStop;
     this.gate = gate;
+    this.budget = budget;
   }
 
   get live(): boolean {
@@ -953,9 +984,12 @@ class Stream {
   }
 
   /** One more upstream page into the buffer. Throws query_too_broad when the
-   * documented ceiling is hit while upstream continuation still exists —
-   * except a softCeiling stream, which degrades to a named scan_ceiling
-   * error instead of throwing. */
+   * documented per-stream ceiling is hit while upstream continuation still
+   * exists — except a softCeiling stream, which degrades to a named
+   * scan_ceiling error instead of throwing. The browse's per-provider page
+   * pool (budget, VELV-240) ends the stream the same soft way when the
+   * request's shared reads are spent — never the hard throw, which is one
+   * stream's own too-broad verdict, not the browse's spent pool. */
   async fetch(): Promise<void> {
     if (!this.live) return;
     this.fetches += 1;
@@ -982,6 +1016,11 @@ class Stream {
       // expression (provider combinator criteria) if this fires often.
       this.exhausted = true;
       this.error = ceiling.error;
+      return;
+    }
+    if (this.budget !== undefined && !this.budget(this.base.provider)) {
+      this.exhausted = true;
+      this.error = scanCeilingError(this.base.provider);
       return;
     }
     this.page += 1;
@@ -1943,6 +1982,10 @@ export async function browseTitles(
   // per provider, so a fan-out's worst-case upstream reads stay at today's
   // one-in-flight-per-side level without touching any other browse or read.
   const gateRead = createReadGate();
+  // One page pool per provider per browse (VELV-240): every stream of this
+  // request draws from it, so the product of entity seeds and fan-out ids
+  // cannot multiply the request's upstream reads past MAX_SCAN_PAGES.
+  const budgetRead = createScanBudget();
   for (const [seedIndex, seedPlan] of seedPlans.entries()) {
     const dateBound = resolveDateBound(
       query,
@@ -2034,6 +2077,7 @@ export async function browseTitles(
             softCeilingFor(fanoutPlan),
             dateStop,
             gateRead,
+            budgetRead,
           ),
         );
       }
@@ -2050,6 +2094,8 @@ export async function browseTitles(
           freeTextNative: seedPlan.freeTextNative,
         }),
         dateStop,
+        undefined,
+        budgetRead,
       ),
     );
   }

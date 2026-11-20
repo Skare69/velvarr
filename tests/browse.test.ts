@@ -2725,9 +2725,10 @@ test("a singleton free-text term beside a multi-match term fans out and degrades
       assert.match(movieUrls.join("\n"), /tag_and=1/);
       assert.match(movieUrls.join("\n"), /tags%5B11%5D=1|tags\[11\]=1/);
       assert.match(movieUrls.join("\n"), /tags%5B12%5D=1|tags\[12\]=1/);
-      // 2 fan-out streams x MAX_SCAN_PAGES (40): the same bounded budget,
-      // doubled by the fan-out.
-      assert.equal(moviesCalled, 80);
+      // Moved pin (VELV-240): the request's per-provider page pool caps the
+      // whole browse at MAX_SCAN_PAGES (40) reads, so the fan-out's two
+      // streams share one 40-read budget instead of doubling it.
+      assert.equal(moviesCalled, 40);
       assert.deepEqual(
         page.items.map((d) => d.reference.id),
         [uuid(2)],
@@ -4379,9 +4380,11 @@ test("a fan-out that never fills degrades to the named scan_ceiling instead of e
       );
       assert.equal(page.totalCountKnown, false);
       assert.equal(page.hasMore, false);
-      // 2 fan-out streams x MAX_SCAN_PAGES (40; module-private in
-      // src/server/browse.ts) = 80 upstream reads.
-      assert.equal(moviesCalled, 80);
+      // Moved pin (VELV-240): the request's per-provider page pool caps the
+      // whole browse at MAX_SCAN_PAGES (40; module-private in
+      // src/server/browse.ts) reads — the two fan-out streams share that
+      // budget instead of each walking its own 40 (80 before).
+      assert.equal(moviesCalled, 40);
     },
   );
 });
