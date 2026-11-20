@@ -202,7 +202,7 @@ h1 em { font-style: normal; color: var(--accent-text); }
     <div class="wrap">
       <a class="eyebrow rise" id="release" href="https://github.com/Skare69/velvarr/releases"><b>Releases</b><span>See the changelog on GitHub</span></a>
       <h1 class="rise">Discover it. Request it. <em>Watch it.</em></h1>
-      <p class="lede rise">Velvarr is a self-hosted discovery and request app for adult media. Browse TPDB and StashDB, approve requests into Whisparr, and watch in Jellyfin.</p>
+      <p class="lede rise">Velvarr is a self-hosted discovery and request app for adult media. TPDB, StashDB, Whisparr and Jellyfin usually run as four separate services. Velvarr joins them in one container: browse TPDB and StashDB, approve requests into Whisparr, and watch in Jellyfin.</p>
       <div class="actions rise">
         <a class="btn btn-accent" href="#install">Install with Docker</a>
         <a href="https://github.com/Skare69/velvarr">View the source on GitHub</a>
@@ -221,7 +221,7 @@ h1 em { font-style: normal; color: var(--accent-text); }
       <div class="say">
         <span class="kicker">Browse</span>
         <h2>Filter by tags, terms, performers and dates</h2>
-        <p>Mix provider tags with free-text terms, group tags with "or", exclude what you never want, and match any or all of several performers. Add studios and release dates. The URL holds every filter, so you can share a search as a link.</p>
+        <p>Group provider tags with "or", exclude the ones you never want, mix in free-text terms, match any or all of several performers, plus studios and release dates. Every filter lives in the URL, so a search is a link you can share.</p>
         <ul class="chips" aria-label="Browse capabilities">
           <li>tag groups</li>
           <li>excluded tags</li>
@@ -236,7 +236,7 @@ h1 em { font-style: normal; color: var(--accent-text); }
       <div class="say">
         <span class="kicker">AI search, optional</span>
         <h2>Describe it, get the filters</h2>
-        <p>Type what you want in plain words. A model that you host drafts the filters. Velvarr checks each tag, performer and studio against the providers and lists every part that it did not apply.</p>
+        <p>Plain-sentence search on a model that you host. It drafts the tag, performer, studio and date filters, and Velvarr checks every tag, performer and studio against the providers. Every part that did not apply is listed, so the filters you keep are real.</p>
         <ul class="chips" aria-label="AI search capabilities">
           <li>model-drafted filters</li>
           <li>provider-verified names</li>
@@ -251,7 +251,7 @@ h1 em { font-style: normal; color: var(--accent-text); }
       <div class="say">
         <span class="kicker">Performers</span>
         <h2>One page per performer, from both sources</h2>
-        <p>The header shows bio facts, aliases and links. Below it are the performer's most frequent tags and every movie and scene. When TPDB and StashDB publish a link between two records, Velvarr shows them as one person. Follow a performer to see new releases on Discover.</p>
+        <p>Bio facts, aliases and links in the header. The most frequent tags and every movie and scene below it. When TPDB and StashDB publish a link between two records, Velvarr shows them as one person. Follow a performer, and Discover lists their new releases.</p>
         <ul class="chips" aria-label="Performers capabilities">
           <li>bio facts and aliases</li>
           <li>linked TPDB+StashDB records</li>
@@ -266,7 +266,7 @@ h1 em { font-style: normal; color: var(--accent-text); }
       <div class="say">
         <span class="kicker">Requests</span>
         <h2>Members request, you approve</h2>
-        <p>A household member sends a request. An administrator or moderator approves it, and Velvarr hands it to Whisparr. Each row shows the real state: pending, approved, downloading with its progress, or in the library.</p>
+        <p>Member requests, approvals by an administrator or moderator, automatic hand-off to Whisparr. Every row shows the real state: pending, approved, downloading with its progress, or in the library, so nobody has to ask where a title is.</p>
         <ul class="chips" aria-label="Requests capabilities">
           <li>member requests</li>
           <li>admin or moderator approvals</li>
@@ -281,7 +281,7 @@ h1 em { font-style: normal; color: var(--accent-text); }
       <div class="say">
         <span class="kicker">Watch</span>
         <h2>Play it in Jellyfin</h2>
-        <p>When the file is in the library, the title page shows the file facts and a Play button. Each member signs in with their own Jellyfin account and sees only their own libraries.</p>
+        <p>The title page carries the file facts and a Play on Jellyfin button once the file is in the library. Each member signs in with their own Jellyfin account and sees only their own libraries. An approved request ends at a Play button.</p>
         <ul class="chips" aria-label="Watch capabilities">
           <li>own Jellyfin accounts</li>
           <li>per-member libraries</li>
