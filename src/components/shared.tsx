@@ -13,7 +13,7 @@ import {
   type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
-import { isDeliverableMedia } from "../lib/contracts.ts";
+import { catalogImageUrl, isDeliverableMedia } from "../lib/contracts.ts";
 import type {
   Account,
   BrowseEntity,
@@ -1015,8 +1015,7 @@ export function imgSrc(
 ): string | undefined {
   if (!url) return undefined;
   if (url.startsWith("/")) return url;
-  const width = w !== undefined ? `&w=${w}` : "";
-  return `/api/catalog/image?url=${encodeURIComponent(url)}${width}`;
+  return catalogImageUrl(url, w);
 }
 
 /** srcset over the proxy's width ladder for one provider URL. Undefined for

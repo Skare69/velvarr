@@ -14,6 +14,7 @@ import type {
   CatalogDetailResponse,
 } from "../../../../lib/contracts.ts";
 import {
+  ARTWORK_VARIANT,
   CATALOG_YEAR_MAX,
   CATALOG_YEAR_MIN,
 } from "../../../../lib/contracts.ts";
@@ -667,12 +668,13 @@ export async function catalogImage(
       onMiss: () => chargeRateBudget(ctx.account.id, "artwork"),
     },
   );
-  // A stored variant is content-addressed (<hash>-<w>.webp): its name is the
-  // ETag and the bytes never change, so the copy is immutable. A no-upscale
+  // A stored variant is content-addressed
+  // (<hash>-<w><marker>.webp): its name is the ETag and the marker moves
+  // with the bytes (VELV-207), so the copy is immutable. A no-upscale
   // passthrough keeps today's per-fetch revalidation.
   const variantEtag =
     isVariant === true && hash !== undefined && width !== undefined
-      ? `"${hash}-${width}"`
+      ? `"${hash}-${width}${ARTWORK_VARIANT}"`
       : undefined;
   const response = imageResponse(
     { bytes, contentType },

@@ -18,6 +18,24 @@ export type CatalogKind = MediaKind | "performer" | "studio";
 export const CATALOG_YEAR_MIN = 1900;
 export const CATALOG_YEAR_MAX = 2100;
 
+/** Generation marker for provider-artwork variants. artwork-store names the
+ * on-disk copies `<hash>-<w>c.webp`, the image proxy ETags them
+ * `"hash-<w>c"`, and catalogImageUrl appends it as `&v=`. Variant bytes for
+ * one (source, width) can change only when this marker moves with them:
+ * bytes that change under an unchanged URL and ETag stay in every browser's
+ * immutable cache until eviction (VELV-207). */
+export const ARTWORK_VARIANT = "c";
+
+/** The same-origin tile URL for a provider image at an optional width rung.
+ * The server ignores `v`; it exists so the browser cache key changes
+ * together with the variant bytes. No width means no marker: without `w`
+ * the proxy serves the untouched source with per-fetch revalidation, and
+ * those bytes never depend on the variant recipe. */
+export function catalogImageUrl(url: string, w?: number): string {
+  const width = w !== undefined ? `&w=${w}&v=${ARTWORK_VARIANT}` : "";
+  return `/api/catalog/image?url=${encodeURIComponent(url)}${width}`;
+}
+
 /** Tags are labels, not entities: exact folded-label equality can pair them.
  * Never use this to infer performer or studio identity. */
 export function normalizeFacetName(value: string): string {

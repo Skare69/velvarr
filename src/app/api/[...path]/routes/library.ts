@@ -127,7 +127,7 @@ export function imageResponse(
   image: { bytes: Uint8Array; contentType: string },
   request: Request,
   maxAgeSeconds: number,
-  /** Content-addressed variant copy (<hash>-<w>.webp): names the ETag and
+  /** Content-addressed variant copy (<hash>-<w>c.webp): names the ETag and
    * adds `immutable`, so the browser never revalidates the bytes. */
   variantEtag?: string,
 ): Response {

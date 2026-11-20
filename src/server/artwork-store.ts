@@ -1,6 +1,6 @@
 // On-disk store for resized provider-artwork variants (VELV-170). Variants
 // are content-addressed by the sha256 of the source bytes:
-// <dataDir>/artwork/<hash[0:2]>/<hash>-<width>.webp. Originals stay
+// <dataDir>/artwork/<hash[0:2]>/<hash>-<width>c.webp. Originals stay
 // memory-only in providers.ts; only regenerable derivatives are persisted,
 // per operator approval (VELV-169, 2026-11-15). This module must stay
 // SQLite-free for the image path, so it never imports storage.ts and reads
@@ -18,6 +18,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { ARTWORK_VARIANT } from "../lib/contracts.ts";
 import sharp from "sharp";
 
 export const ARTWORK_WIDTHS = [200, 400, 600] as const;
@@ -77,7 +78,7 @@ function variantPath(hash: string, width: ArtworkWidth): string {
   return path.join(
     artworkRootDir(),
     hash.slice(0, 2),
-    `${hash}-${width}c.webp`,
+    `${hash}-${width}${ARTWORK_VARIANT}.webp`,
   );
 }
 

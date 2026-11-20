@@ -30,7 +30,7 @@ import {
   artworkStoreStateForTest,
   setArtworkStoreBudgetForTest,
 } from "../src/server/artwork-store.ts";
-import { normalizeFacetName } from "../src/lib/contracts.ts";
+import { catalogImageUrl, normalizeFacetName } from "../src/lib/contracts.ts";
 import type { IntegrationConfig, ProviderCheck } from "../src/lib/contracts.ts";
 import type { DuplicateMoviesResponse } from "../src/lib/contracts.ts";
 import {
@@ -4924,6 +4924,24 @@ test("catalog artwork proxy: query and non-image paths refused; misses charge, c
   assert.equal(apiAfter.status, 200, "dispatch survives a drained art lane");
 });
 
+test("tile URLs carry the artwork variant generation marker (VELV-207)", () => {
+  const target = "https://image.tpdb.example/poster.jpg";
+  // imgSrc in src/components/shared.tsx builds every provider tile through
+  // catalogImageUrl: the v parameter is the variant generation, so a recipe
+  // change also changes the browser cache key. v0.43.0 shipped the
+  // marker-less URL and kept its pre-sharp bytes cached for up to a year.
+  assert.equal(
+    catalogImageUrl(target, 400),
+    `/api/catalog/image?url=${encodeURIComponent(target)}&w=400&v=c`,
+  );
+  // No width rung: the passthrough bytes never depend on the variant
+  // recipe, so the URL keeps the marker-less identity.
+  assert.equal(
+    catalogImageUrl(target),
+    `/api/catalog/image?url=${encodeURIComponent(target)}`,
+  );
+});
+
 test("catalog artwork width: ladder validation, variant headers, no-upscale passthrough, 304", async () => {
   resetRateBuckets();
   // A real resolvable source well above the ladder rung: the 400w request
@@ -4951,9 +4969,13 @@ test("catalog artwork width: ladder validation, variant headers, no-upscale pass
   const meta = await sharp(Buffer.from(await variant.arrayBuffer())).metadata();
   assert.equal(meta.width, 400);
   assert.equal(meta.format, "webp");
-  // The ETag is the variant file name: <sha256(source)>-<width>.
+  // The ETag is the variant file name: <sha256(source)>-<width>c. The
+  // marker rides with the bytes: v0.43.0 ETagged different 400w bytes as
+  // "<sha256>-<width>", and a browser that cached those bytes under
+  // immutable cache-control never asked again (VELV-207).
   const variantEtag = variant.headers.get("etag");
-  assert.match(variantEtag ?? "", /^"[0-9a-f]{64}-400"$/);
+  assert.match(variantEtag ?? "", /^"[0-9a-f]{64}-400c"$/);
+  assert.doesNotMatch(variantEtag ?? "", /^"[0-9a-f]{64}-400"$/);
   assert.equal(
     variant.headers.get("cache-control"),
     "private, max-age=31536000, immutable",
@@ -5143,7 +5165,7 @@ test("catalog artwork width: an evicted variant regenerates over HTTP", async ()
   });
   assert.equal(first.status, 200);
   const etag1 = first.headers.get("etag");
-  assert.match(etag1 ?? "", /^"[0-9a-f]{64}-400"$/);
+  assert.match(etag1 ?? "", /^"[0-9a-f]{64}-400c"$/);
 
   // Cap the store at zero spare bytes: the next variant write sweeps every
   // older entry except the one just written, evicting the first variant.
