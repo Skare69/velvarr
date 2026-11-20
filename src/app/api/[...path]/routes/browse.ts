@@ -111,13 +111,36 @@ async function whisparrFolderOf(
   ctx: AuthContext,
   media: MediaReference,
 ): Promise<string | undefined> {
+  // A best-effort hint must not stretch a badge out to the 15 s list
+  // timeout: a short ceiling bounds a slow Whisparr. The loser read keeps
+  // running and lands in the list cache, so the next badge inside the TTL
+  // hints instantly.
+  const FOLDER_HINT_TIMEOUT_MS = 2_000;
+  const deadline = Promise.withResolvers<never>();
+  const hintTimer = setTimeout(
+    () =>
+      deadline.reject(
+        new AppError(
+          504,
+          "upstream_timeout",
+          `Whisparr folder hint exceeded ${FOLDER_HINT_TIMEOUT_MS} ms.`,
+        ),
+      ),
+    FOLDER_HINT_TIMEOUT_MS,
+  );
   try {
-    return (await findWhisparrPathByIdentity(ctx.config, media)) ?? undefined;
+    const path = await Promise.race([
+      findWhisparrPathByIdentity(ctx.config, media),
+      deadline.promise,
+    ]);
+    return path ?? undefined;
   } catch (e) {
     console.error(
       `[velvarr:availability] Whisparr folder lookup failed: ${e instanceof Error ? e.message : String(e)}`,
     );
     return undefined;
+  } finally {
+    clearTimeout(hintTimer);
   }
 }
 

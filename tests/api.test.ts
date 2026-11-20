@@ -265,6 +265,10 @@ const fx = {
   adminKey: "jf-admin-key-9",
   serverId: SERVER_ID,
   tokenCounter: 0,
+  // VELV-236: set to a release promise to hold the unfiltered Whisparr
+  // movie-list response open; the held request answers 500 on release, so
+  // the loser fetch rejects and its cache entry cleans itself up.
+  holdMovieList: null as Promise<unknown> | null,
   users: [
     {
       id: OWNER_ID,
@@ -625,8 +629,16 @@ async function whisparrHandler(
     const stashId = url.searchParams.get("stashId");
     // Unfiltered list: the library-detail enrichment resolves identity by
     // walking every stored movie and matching paths itself.
-    if (tpdbId === null && stashId === null)
+    if (tpdbId === null && stashId === null) {
+      // A test can hold this response open to prove the availability badge
+      // never waits it out; releasing answers 500 so the loser fetch
+      // rejects and the cache's own failure path cleans up after it.
+      if (fx.holdMovieList !== null) {
+        await fx.holdMovieList;
+        return json(res, 500, {});
+      }
       return json(res, 200, whisparrMovies);
+    }
     return json(
       res,
       200,
@@ -6109,6 +6121,41 @@ test("availability: a title grabbed in Whisparr directly is matched through Whis
     whisparrMovies.pop();
     resetMovieListCache();
     if (differs) await save(before?.url ?? "", before?.pathMappings ?? []);
+  }
+});
+
+test("availability: a held-open Whisparr movie list cannot stall the badge past the hint deadline", async () => {
+  // The folder hint is optional: with the unfiltered list response held
+  // open, the badge must answer inside the short hint deadline (2 s) with
+  // a verdict — never wait out the upstream 15 s list timeout.
+  await boot();
+  const member = await loginAs("member");
+  fx.fail.items = 0;
+  resetMovieListCache();
+  resetSweepCache();
+  const UNKNOWN = "7a1b2c3d-1111-4222-8333-0000000d1a2b";
+  const release = Promise.withResolvers<void>();
+  fx.holdMovieList = release.promise;
+  try {
+    // The elapsed bound is the subject of this test: it asserts real
+    // latency against the platform clock, which deterministic time control
+    // cannot drive across the fixture server's HTTP round trip.
+    const started = Date.now();
+    const res = await call("GET", `/api/availability/tpdb/movie/${UNKNOWN}`, {
+      cookie: member,
+    });
+    const elapsedMs = Date.now() - started;
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { outcome: string };
+    assert.equal(body.outcome, "missing");
+    assert.ok(
+      elapsedMs < 10_000,
+      `availability answered in ${elapsedMs} ms; the folder hint must give up near its 2 s deadline instead of waiting for the held 15 s list fetch`,
+    );
+  } finally {
+    release.resolve();
+    resetMovieListCache();
+    resetSweepCache();
   }
 });
 
