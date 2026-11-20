@@ -2763,6 +2763,32 @@ export function hasEligibleRequester(media: MediaReference): boolean {
   return row.eligible === 1;
 }
 
+/** Last-withdrawal suppression, shared by cancelRequest and the decline
+ * branch of decideRequest: only undispatched work — state 'unsent' or
+ * 'blocked', no claim, no attempt, no submission — and only when no other
+ * active intent remains for this identity. Runs inside the caller's
+ * transaction; a later approval re-inserts the row through INSERT OR
+ * IGNORE. */
+function withdrawIfLastIntent(row: RequestRow): void {
+  const instance = getConfig()?.whisparr?.instanceId;
+  if (instance === undefined) return;
+  const active = S().countActiveRequestsExcept.get(
+    row.provider,
+    row.kind,
+    row.external_id,
+    row.id,
+  ) as { n: number };
+  if (active.n === 0) {
+    const shared = S().getAcquisitionByIdentity.get(
+      instance,
+      row.provider,
+      row.kind,
+      row.external_id,
+    ) as AcquisitionRow | undefined;
+    if (shared !== undefined) S().withdrawUndispatched.run(shared.id);
+  }
+}
+
 /** Approval is transactional with the shared-acquisition attachment: two
  * approvers converge on one acquisition row per instance+identity. The actor
  * is re-read inside the transaction: the session snapshot can predate a
@@ -2811,6 +2837,7 @@ export function decideRequest(
     }
     const now = Date.now();
     S().decideRequest.run(decision, now, requestId);
+    if (decision === "declined") withdrawIfLastIntent(row);
     if (decision === "approved") {
       const whisparr = getConfig()?.whisparr;
       if (whisparr && !whisparr.instanceId) {
@@ -2892,26 +2919,7 @@ export function cancelRequest(
       );
     }
     S().cancelOwnRequest.run(Date.now(), requestId);
-    // Last-withdrawal suppression: only undispatched work, only when no
-    // other active intent remains for this identity.
-    const instance = getConfig()?.whisparr?.instanceId;
-    if (instance !== undefined) {
-      const active = S().countActiveRequestsExcept.get(
-        row.provider,
-        row.kind,
-        row.external_id,
-        requestId,
-      ) as { n: number };
-      if (active.n === 0) {
-        const shared = S().getAcquisitionByIdentity.get(
-          instance,
-          row.provider,
-          row.kind,
-          row.external_id,
-        ) as AcquisitionRow | undefined;
-        if (shared !== undefined) S().withdrawUndispatched.run(shared.id);
-      }
-    }
+    withdrawIfLastIntent(row);
     return rowToRequest(S().getRequest.get(requestId) as RequestRow);
   });
 }

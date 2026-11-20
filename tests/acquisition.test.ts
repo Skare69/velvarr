@@ -1191,6 +1191,38 @@ test("cancellation suppresses only undispatched work; sent and in-flight work su
   assert.equal(probe(freshId).state, "monitoring");
 });
 
+test("declining the last pending request withdraws the undispatched row", async () => {
+  const owner = boot();
+
+  // A's request is approved: the shared acquisition row exists, undispatched.
+  const requestA = storage.createRequest(owner.id, MOVIE_A);
+  storage.decideRequest(owner, requestA.id, "approved");
+  const idA = workId(MOVIE_A);
+
+  // B's pending request keeps the row when A withdraws: B's intent is active.
+  const requestB = storage.createRequest(FRIEND_ID, MOVIE_A);
+  storage.cancelRequest(owner, requestA.id);
+  assert.equal(
+    storage.getAcquisitionByReference(MOVIE_A)?.state,
+    "unsent",
+    "B's pending intent keeps the undispatched row",
+  );
+
+  // Declining B leaves no active intent: the row must go, or every pass
+  // retries it with "no eligible requester remains".
+  storage.decideRequest(owner, requestB.id, "declined");
+  assert.equal(
+    storage.getAcquisitionByReference(MOVIE_A),
+    null,
+    "declining the last pending intent withdraws the undispatched row",
+  );
+  assert.equal(
+    storage.listDueAcquisitions(later(), 100).some((a) => a.id === idA),
+    false,
+    "the withdrawn row is never scheduled again",
+  );
+});
+
 test("a cancel landing between listing and gating skips the row instead of erroring", async (t) => {
   const owner = boot();
   approve(owner.id, MOVIE_A);
