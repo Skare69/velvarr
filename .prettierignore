@@ -1,0 +1,3 @@
+# Local-only file (.git/info/exclude); the repo never tracks it, so the
+# formatter must not gate it.
+scripts/release.mjs
