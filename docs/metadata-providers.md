@@ -1,7 +1,9 @@
 # Metadata provider settings
 
-Administrators manage TPDB, StashDB, AI-assisted matching, and natural-language search in **Settings →
-Metadata providers**. These cards share the layout, status indicators, and edit
+Administrators manage TPDB and StashDB in **Settings →
+Metadata providers**. The AI-assisted matching and natural-language search
+cards sit on their own **AI** tab; the [AI guide](ai.md) covers them. All
+settings cards share the layout, status indicators, and edit
 controls used by [Connections](connections.md).
 
 ## TPDB and StashDB credentials
@@ -44,7 +46,7 @@ or another inconclusive failure never triggers this deletion.
 ## Clear a stored credential
 
 Choose **Clear stored credential** on a TPDB or StashDB card, or while editing
-the TypeSafe key in the AI card. The
+the TypeSafe key in the AI-assisted matching card on the **AI** tab. The
 confirmation's **Keep credential** button leaves the saved value and draft
 unchanged. **Clear credential** removes the stored override and uses the
 corresponding environment value, if present:
@@ -55,53 +57,14 @@ corresponding environment value, if present:
 
 Clearing a TPDB or StashDB credential runs a fresh check of that fallback.
 Environment credentials are not deleted by these controls. For the TypeSafe key
-inside the AI card, use **Check connection** afterwards when a backend remains
-configured.
+inside the AI-assisted matching card, use **Check connection** afterwards when a
+backend remains configured.
 
-## AI-assisted matching
+## AI cards
 
-Choose **Edit** and use the three provider buttons to select the desired mode:
-
-- **Standard matching (no AI)** disables AI matching calls while preserving credentials
-  and Ollama settings for later reuse.
-- **TypeSafe** uses its API key. A blank key preserves the configured credential.
-  AI Save still persists the selected mode and checks that saved configuration.
-- **Ollama** requires a reachable URL and decision model. Only the selected
-  backend's fields are shown.
-
-Save checks configured TypeSafe or Ollama settings after they are persisted. A
-failed check does not erase the successful save notice, and Edit/Cancel retains
-the saved connection result. Standard matching and unconfigured backends do not
-run an AI connection probe.
-
-**Use environment settings** asks for confirmation before clearing the stored AI
-provider, Ollama URL, and model overrides. **Keep AI settings** preserves the
-current draft. The confirmed reset preserves provider credentials and takes the
-AI selection from the environment; check that effective connection afterwards.
-
-See [AI matching and natural-language search](ai.md) for installation,
-networking, tag-suggestion rules, and rollback guidance. AI suggestions continue
-to require administrator review.
-
-## Natural-language search
-
-This independent card configures the OpenAI-compatible chat server used to turn
-Browse searches in plain words into filters. Member search text goes to that
-server. Selecting Standard matching in the AI-assisted matching card does not
-turn natural-language search off.
-
-Choose Edit, select On, and enter the server URL and model. The API key is
-optional; leaving it blank preserves a saved key. Moving to a different server
-origin requires entering that server's key again when a key is stored. Save
-checks configured settings after persistence, keeping a failed connection check
-separate from the successful save notice. Cancel discards the draft.
-
-Saving or confirming **Clear stored credential** checks the saved connection
-when the server remains configured. A failed check keeps the successful save
-notice and shows the new connection failure. A failed save keeps the prior
-diagnosis and does not run a check.
-
-Off disables natural-language searches and preserves the server settings for
-later reuse. Clear stored credential asks for confirmation before deleting the
-key; requests then go without a key. The card shares save/check ordering, focus,
-feedback, and confirmation controls with the other settings cards.
+The **AI-assisted matching** card and the **Natural-language search** card sit
+on their own **AI** tab, not on this one. See
+[AI matching and natural-language search](ai.md) for provider selection,
+Ollama setup, the natural-language server settings, the model list, the free
+check before Save, the member grant, and rollback guidance. AI suggestions
+continue to require administrator review.

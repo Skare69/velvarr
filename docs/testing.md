@@ -92,11 +92,11 @@ providers uses its credential and AI modules.
 | [`src/lib/judgment-editor.ts`](../src/lib/judgment-editor.ts) | AI provider drafts, normalization, save/check outcomes, and available actions | `tests/judgment-editor.test.ts` |
 
 [`src/components/settings-service.tsx`](../src/components/settings-service.tsx)
-supplies both tabs with the same heading/actions layout, status indicator,
+supplies all three tabs with the same heading/actions layout, status indicator,
 editor focus return, configuration reads and saves, save feedback, check buttons,
 confirmation dialogs, and the queue for saves and the checks after a save.
 Checks on load and manual checks bypass that queue and do not disable other cards.
-Both tabs use the same card, status, editor, and dropdown styles in
+All three tabs use the same card, status, editor, and dropdown styles in
 `src/app/globals.css`. The browser suites exercise these shared components through
 each tab.
 
@@ -105,41 +105,47 @@ The UI composition follows the same structure for each tab:
 - [`src/components/connection-settings.tsx`](../src/components/connection-settings.tsx)
   owns the Jellyfin and Whisparr cards.
 - [`src/components/metadata-settings.tsx`](../src/components/metadata-settings.tsx)
-  owns the TPDB, StashDB, AI-assisted matching, and natural-language search cards.
+  owns the TPDB and StashDB cards.
+- [`src/components/ai-settings.tsx`](../src/components/ai-settings.tsx)
+  owns the AI-assisted matching and natural-language search cards.
 - [`src/components/settings.tsx`](../src/components/settings.tsx) owns tab
-  navigation and creates one shared operation queue for both tab components.
-  Both stay mounted when switching tabs so drafts and check results survive.
+  navigation and creates one shared operation queue for the three tab components.
+  All three stay mounted when switching tabs so drafts and check results survive.
 
 Service-specific rules remain in the library modules above: Connections validates
 URLs and Whisparr delivery/mappings; metadata credentials support confirmed
 clearing with environment fallback; the AI editor supports backend selection and
-Ollama fields. The operator guides for [Connections](connections.md) and
-[Metadata providers](metadata-providers.md) describe these behaviors.
+Ollama fields. The operator guides for [Connections](connections.md),
+[Metadata providers](metadata-providers.md), and [AI](ai.md) describe these
+behaviors.
 
 ## Test files and their scope
 
 | File | Scope | Purpose |
 | --- | --- | --- |
 | `tests/ui/connections.spec.mjs` | Connections and cross-tab behavior | Browser cases for Jellyfin/Whisparr editors, draft probes, inline validation, dropdown spacing, and shared settings behavior |
-| `tests/ui/metadata-providers.spec.mjs` | Metadata providers and cross-tab parity | Browser cases for TPDB, StashDB, TypeSafe, Ollama, draft probes, stored-key rejection, natural-language search settings, and matching card/status/action layout across both tabs |
-| `tests/ui/settings-fixture.mjs` | Shared by both tabs | Starts the real production UI with isolated synthetic service responses; not a test suite |
-| `tests/ui/settings-harness.mjs` | Shared by both tabs | Resets state, supplies browser helpers, and checks page errors; not a test suite |
+| `tests/ui/metadata-providers.spec.mjs` | Metadata providers and cross-tab parity | Browser cases for TPDB, StashDB, TypeSafe, Ollama, draft probes, stored-key rejection, natural-language search settings, and matching card/status/action layout across the settings tabs |
+| `tests/ui/settings-fixture.mjs` | Shared by all three tabs | Starts the real production UI with isolated synthetic service responses; not a test suite |
+| `tests/ui/settings-harness.mjs` | Shared by all three tabs | Resets state, supplies browser helpers, and checks page errors; not a test suite |
 | `tests/connection-settings.test.ts` | Connections settings rules | Unit tests for connection drafts, patches, and validation |
 | `tests/connection-card.test.ts` | Connections card lifecycle | Edit/Cancel, unchanged and invalid saves, persistence/probe ordering, failed saves and checks, permission failures, busy guards, and confirmed removal |
-| `tests/api.test.ts` | Both tabs and other application APIs | Server authorization, validation, persistence, and preservation of unrelated settings |
+| `tests/api.test.ts` | All settings tabs and other application APIs | Server authorization, validation, persistence, and preservation of unrelated settings |
 | `tests/provider-settings.test.ts` | Metadata settings rules | Credential save/check/clear decisions and status handling |
 | `tests/settings-service.test.ts` | Shared settings rules | Common status labels, same-tick saves and checks after a save, and recovery after failures |
 | `tests/provider-card.test.ts` | Metadata credential card lifecycle | TPDB/StashDB editor state, save flow, credential clearing, failed and forbidden saves, and editor markup |
-| `tests/judgment-editor.test.ts`, `tests/ollama.test.ts`, `tests/integrations.test.ts` | Metadata providers and integrations | AI editor behavior, Ollama, upstream error classification, and integration requests |
+| `tests/judgment-editor.test.ts`, `tests/ollama.test.ts`, `tests/integrations.test.ts` | AI editor and integrations | AI editor behavior, Ollama, upstream error classification, and integration requests |
 
-Unit tests are organized at two levels for both tabs. `connection-settings.test.ts`
+Unit tests are organized at two levels for all three tabs. `connection-settings.test.ts`
 and `provider-settings.test.ts` test settings rules. `connection-card.test.ts` and
 `provider-card.test.ts` drive the real card lifecycle and save flow used by the UI;
-the provider suite also renders its credential editor markup. The AI card has
-its own lifecycle suite in `judgment-editor.test.ts`. Browser tests cover the
-actual rendered cards, focus, controls, and layout for both tabs.
+the provider suite also renders its credential editor markup. The AI-assisted
+matching card has its own lifecycle suite in `judgment-editor.test.ts`; the
+natural-language search card's browser cases live in
+`tests/ui/metadata-providers.spec.mjs`, and its draft logic has
+`tests/prose-draft.test.ts` and `tests/prose-map.test.ts`. Browser tests cover the
+actual rendered cards, focus, controls, and layout for all three tabs.
 
-## Coverage map for both settings tabs
+## Coverage map for the three settings tabs
 
 | Covered behavior | Automated regression coverage |
 | --- | --- |
@@ -167,7 +173,7 @@ The integration suite also verifies that Jellyfin, Whisparr, and metadata status
 checks convert only allowlisted upstream failures into connection feedback.
 Local URL/configuration, storage/decryption, and unexpected errors keep their
 original error boundary. Browser assertions measure failed-save feedback beside
-Save/Cancel and before destructive actions in both tabs, and verify that changing
+Save/Cancel and before destructive actions in all three tabs, and verify that changing
 AI fields clears an obsolete save error. Opening the AI editor or starting a new
 save clears previous success feedback without dropping the saved diagnosis.
 

@@ -2,12 +2,12 @@
 
 Administrators manage Jellyfin and Whisparr in **Settings → Connections**.
 Each service uses the same compact cards and status indicators as **Metadata
-providers**. See the [metadata providers guide](metadata-providers.md) for those
-credentials and AI settings.
+providers** and **AI**. See the [metadata providers guide](metadata-providers.md)
+for those credentials and the [AI guide](ai.md) for the AI cards.
 
 When Settings opens, Jellyfin, Whisparr, TPDB, and StashDB checks run in parallel.
 These checks and manual checks do not disable other cards. Saves and the checks
-after a save use one queue across both tabs. During a save or its check, the other
+after a save use one queue across all three tabs. During a save or its check, the other
 cards wait.
 
 ## Edit a connection
