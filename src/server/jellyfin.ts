@@ -115,6 +115,13 @@ const IMAGE_MIME_TYPES: Record<string, true> = {
 // Cross-library merge chunk size; bounds per-library paging work.
 const MERGE_CHUNK = 60;
 
+// Merged-walk ceiling in chunks: the deepest request reads at most that many
+// upstream chunks, so one dispatch token can never buy more serial Jellyfin
+// reads than the ceiling (VELV-243), and the refusal lands before the first
+// refill, spending only the per-library first chunks. Deeper browsing
+// scopes to one library, whose pages seek straight to the window.
+const MERGE_MAX_WALK_READS = 120;
+
 const IMAGE_BYTE_LIMIT = 8 * 1024 * 1024;
 
 // Canonicalizes Jellyfin GUIDs: 32- or 36-hex input accepted, lowercase
@@ -619,9 +626,14 @@ function compareByDateCreatedDesc(a: BaseItemDto, b: BaseItemDto): number {
 // duplicates items. Cost is O(start+limit) upstream rows per library; if that
 // ever matters, move the cursor state into a per-request cache. A start at or
 // past the known total stops after the first chunks: no walk can reach a row.
-// Every chunk read fires onUpstreamRead BEFORE its fetch, so the caller can
-// price each chunk against the rate budget (VELV-243): one token no longer
-// buys the whole ~start/60-chunk walk, and an empty bucket refuses mid-walk.
+// A deep window cannot walk unbounded either: a request whose window needs
+// more than MERGE_MAX_WALK_READS chunks refuses before its first refill
+// (VELV-243), so one token can never buy more than that many serial reads
+// and the refusal costs only the per-library first chunks. A start at or
+// past the known total still answers empty the cheap way. Charging per
+// chunk was rejected: the grid's endless scroll would pay a growing share
+// of the walk again on every page. Actual reads stay under the check: the
+// per-library ceils sum to at most ceil((start+limit)/60) + libraries - 1.
 async function mergeAcrossLibraries(
   config: IntegrationConfig,
   userToken: string,
@@ -631,7 +643,6 @@ async function mergeAcrossLibraries(
   limit: number,
   search: string,
   sort?: "dateAdded",
-  onUpstreamRead?: () => void,
 ): Promise<LibraryPage> {
   // Each per-library stream must arrive in the merge comparator's order, so
   // the dateAdded merge re-fetches with the server's DateCreated ordering —
@@ -657,7 +668,6 @@ async function mergeAcrossLibraries(
   let total = 0;
   await Promise.all(
     libraryIds.map(async (libraryId) => {
-      onUpstreamRead?.();
       const first = await fetchItems(config, userToken, user.id, {
         parentId: libraryId,
         startIndex: 0,
@@ -679,8 +689,19 @@ async function mergeAcrossLibraries(
   );
   if (start >= total) return { items: [], total, start, limit };
 
+  // Past the fast path the walk is real. Refuse a window deeper than the
+  // ceiling before the first refill: the walk then costs the caller only
+  // the per-library first chunks, never libraries' worth of serial reads.
+  const walkReads =
+    Math.ceil((start + limit) / MERGE_CHUNK) + libraryIds.length;
+  if (walkReads > MERGE_MAX_WALK_READS)
+    throw new AppError(
+      400,
+      "pagination_too_deep",
+      "That page is past the merged library walk ceiling. Filter by a library to browse deeper.",
+    );
+
   const refill = async (cursor: Cursor): Promise<void> => {
-    onUpstreamRead?.();
     const next = await fetchItems(config, userToken, user.id, {
       parentId: cursor.libraryId,
       startIndex: cursor.fetched,
@@ -738,7 +759,6 @@ export async function listLibraryItems(
     libraryId?: string;
     sort?: "dateAdded";
   },
-  onUpstreamRead?: () => void,
 ): Promise<LibraryPage> {
   requireJellyfinConfig(config);
   const start = Number(query.start);
@@ -816,7 +836,6 @@ export async function listLibraryItems(
     limit,
     search,
     query.sort,
-    onUpstreamRead,
   );
 }
 

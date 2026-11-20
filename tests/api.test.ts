@@ -12887,12 +12887,14 @@ test("rate budget: artwork never charges the bucket; local reads still do", asyn
   await errorShape(across, 429);
 });
 
-test("rate budget: a cross-library deep page pays a token per upstream chunk", async (t) => {
-  // Frozen clock: no refill can land mid-test, so both boundaries are exact.
-  t.mock.timers.enable({ apis: ["Date"] });
-  // The audit's worst case (VELV-243): a start just below the merged total
-  // of two full libraries. A start at or past the total stops after the
-  // first chunks, so this window is the deepest walk a request can cause.
+// The merged walk reads its chunks serially, so one deep request used to
+// walk ~start/60 upstream reads on the single dispatch token (VELV-243).
+// Charging per chunk was tried first and rejected: the grid's endless scroll
+// (library.tsx load(items.length, "more")) then paid a growing share of the
+// walk again on every page and drained the bucket around page 28. The bound
+// is a per-request walk cap instead: past it a page refuses before its
+// first read, and normal scrolling keeps its one token per page.
+function useDeepLibraries(): () => void {
   const movies = Array.from({ length: 5000 }, (_, i) => ({
     Id: `${"3".repeat(28)}${i.toString(16).padStart(4, "0")}`,
     Name: `Deep Movie ${String(i).padStart(5, "0")}`,
@@ -12907,39 +12909,121 @@ test("rate budget: a cross-library deep page pays a token per upstream chunk", a
   const originalGrants = fx.grants.get(OWNER_ID);
   fx.items = [...movies, ...shows];
   fx.grants.set(OWNER_ID, [MOVIES_LIB, SHOWS_LIB]);
+  return () => {
+    fx.items = originalItems;
+    if (originalGrants === undefined) fx.grants.delete(OWNER_ID);
+    else fx.grants.set(OWNER_ID, originalGrants);
+  };
+}
+
+test("rate budget: a merged page past the walk cap refuses before its first refill", async (t) => {
+  // Frozen clock: no refill can land mid-test, so the bucket stays exact.
+  t.mock.timers.enable({ apis: ["Date"] });
+  const restore = useDeepLibraries();
   try {
     const readsBefore = fx.sweepHits;
     const deep = await call("GET", "/api/library?start=9900&limit=24", {
       cookie: owner,
     });
-    assert.equal(deep.status, 200);
-    const body = (await deep.json()) as {
-      items: { id: string }[];
-      total: number;
-    };
-    assert.equal(body.total, 10000);
-    assert.equal(body.items.length, 24);
-    const reads = fx.sweepHits - readsBefore;
-    // Bounded: the walk reads only the 60-row chunks its window consumes
-    // (ceil per library: 5000 and 4924 rows -> 84 + 83 = 167 chunks here),
-    // never the whole libraries and never past the window.
-    assert.ok(reads > 100, `expected the deep walk, saw ${reads} reads`);
+    assert.equal(deep.status, 400);
+    const refused = (await deep.json()) as { error: { code: string } };
+    assert.equal(refused.error.code, "pagination_too_deep");
+    // Fail fast: the refusal stops before the refill loop, so the walk
+    // costs only the per-library first chunks (the validated amplification
+    // of ~167 serial reads is gone) and the bucket only lost the one
+    // dispatch token the request itself costs.
     assert.ok(
-      reads <= 168,
-      `expected <= 168 upstream chunk reads, saw ${reads}`,
+      fx.sweepHits - readsBefore <= 2,
+      `expected at most the initial chunks, saw ${fx.sweepHits - readsBefore}`,
     );
-    // Priced: the dispatch token plus one charge per chunk leaves the
-    // bucket far short of a second walk of this depth, so it refuses
-    // mid-walk instead of running ~167 upstream reads for one token again.
-    const again = await call("GET", "/api/library?start=9900&limit=24", {
+    const after = await call("GET", "/api/library?start=0&limit=24", {
       cookie: owner,
     });
-    const error = await errorShape(again, 429);
-    assert.equal(error.code, "rate_limited");
+    assert.equal(after.status, 200);
   } finally {
-    fx.items = originalItems;
-    if (originalGrants === undefined) fx.grants.delete(OWNER_ID);
-    else fx.grants.set(OWNER_ID, originalGrants);
+    restore();
+  }
+});
+
+test("rate budget: the walk cap boundary is exact; a scoped library keeps deep pages", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const restore = useDeepLibraries();
+  try {
+    const readsBefore = fx.sweepHits;
+    // Last window inside the cap: ceil(7080/60) + 2 libraries = 120.
+    const inside = await call("GET", "/api/library?start=7056&limit=24", {
+      cookie: owner,
+    });
+    assert.equal(inside.status, 200);
+    const insideBody = (await inside.json()) as {
+      items: unknown[];
+      total: number;
+    };
+    assert.equal(insideBody.total, 10000);
+    assert.equal(insideBody.items.length, 24);
+    const walked = fx.sweepHits - readsBefore;
+    assert.ok(walked > 50, `expected the real walk, saw ${walked} reads`);
+    assert.ok(walked <= 120, `expected <= 120 chunk reads, saw ${walked}`);
+    // One row deeper the cap refuses before any refill: initial chunks
+    // only, never the walk.
+    const before = fx.sweepHits;
+    const past = await call("GET", "/api/library?start=7057&limit=24", {
+      cookie: owner,
+    });
+    assert.equal(past.status, 400);
+    const pastBody = (await past.json()) as { error: { code: string } };
+    assert.equal(pastBody.error.code, "pagination_too_deep");
+    assert.ok(
+      fx.sweepHits - before <= 2,
+      `expected at most the initial chunks, saw ${fx.sweepHits - before}`,
+    );
+    // The scoped single-library path seeks straight into the library, so
+    // depth stays unlimited there: the remedy the error names is real.
+    const scoped = await call(
+      "GET",
+      `/api/library?libraryId=${SHOWS_LIB}&start=9000&limit=24`,
+      { cookie: owner },
+    );
+    assert.equal(scoped.status, 200);
+    const scopedBody = (await scoped.json()) as {
+      items: unknown[];
+      total: number;
+    };
+    assert.equal(scopedBody.total, 5000);
+    assert.equal(scopedBody.items.length, 0);
+  } finally {
+    restore();
+  }
+});
+
+test("rate budget: endless grid scroll pays one token a page, not one per chunk", async (t) => {
+  // The grid's scroll pattern (library.tsx load(items.length, "more")):
+  // sequential 24-row pages. Per-chunk charging made the accumulated cost
+  // quadratic and 429'd a member around page 28; the walk cap keeps every
+  // page at its one dispatch token.
+  t.mock.timers.enable({ apis: ["Date"] });
+  const restore = useDeepLibraries();
+  try {
+    const readsBefore = fx.sweepHits;
+    for (let page = 0; page < 30; page++) {
+      const res = await call(
+        "GET",
+        `/api/library?start=${page * 24}&limit=24`,
+        { cookie: owner },
+      );
+      assert.equal(res.status, 200, `scroll page ${page + 1} must pass`);
+    }
+    // The scroll stays cheap in total: 30 pages read a few thousand rows in
+    // 60-row chunks, never libraries' worth per page.
+    const reads = fx.sweepHits - readsBefore;
+    assert.ok(reads <= 240, `expected bounded scroll reads, saw ${reads}`);
+    // The bucket survived the scroll: one more page still passes.
+    const extra = await call("GET", "/api/library?start=720&limit=24", {
+      cookie: owner,
+    });
+    assert.equal(extra.status, 200);
+  } finally {
+    restore();
   }
 });
 
