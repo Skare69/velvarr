@@ -40,7 +40,7 @@ For a large change, open an issue first. Then we can agree on the approach befor
 
 ## AI-assisted contributions
 
-You can use AI tools. Say so in the pull request, and make sure that you understand every line that you submit. The maintainer can close a pull request that looks unchecked.
+You can use AI tools, as the maintainer does (see [How Velvarr is built](README.md#how-velvarr-is-built)). Say so in the pull request. Describe what the change does and how you checked that it works. Your pull request runs the same CI checks as the maintainer's changes, and an agent reviews it before the merge.
 
 ## Report a bug or ask for a feature
 
