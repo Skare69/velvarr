@@ -38,6 +38,10 @@ CI also runs `bun run format:check`, `bun audit`, and the settings browser tests
 
 For a large change, open an issue first. Then we can agree on the approach before you write the code.
 
+## AI-assisted contributions
+
+You can use AI tools. Say so in the pull request, and make sure that you understand every line that you submit. The maintainer can close a pull request that looks unchecked.
+
 ## Report a bug or ask for a feature
 
 Use the [issue forms](https://github.com/Skare69/velvarr/issues/new/choose). For a security problem, read [SECURITY.md](SECURITY.md) and do not open a public issue. For an accessibility barrier, read [ACCESSIBILITY.md](ACCESSIBILITY.md).

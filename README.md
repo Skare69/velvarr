@@ -75,6 +75,18 @@ Movie detail with synthetic metadata:
 - [Development](docs/development.md): the development setup and the checks.
 - [How Velvarr works](docs/how-it-works.md): the architecture, the request-to-playback flow, and the acquisition life cycle.
 
+## How Velvarr is built
+
+AI coding agents write the code, and no human reads it line by line. The maintainer, @Skare69, decides the features, writes the task for each change, and checks the running app. [Ottr](https://github.com/ottr-ai/ottr) runs the agents and the releases.
+
+Automated checks and agent reviews do the code checks:
+
+- Each change passes formatting, type checks, unit and API tests, and a production build before it reaches `main`.
+- Each change that users can see gets a check in a real browser.
+- Each release gets an agent review with mutation testing on the changed files. Architecture reviews also run the full mutation suite and a security audit.
+
+AI-written code makes mistakes like any other code. Human code review is welcome: read [CONTRIBUTING.md](CONTRIBUTING.md), and open an issue or a pull request.
+
 ## Contribute
 
 Build and change Velvarr from source. [CONTRIBUTING.md](CONTRIBUTING.md) tells you how to set up, run the checks, and open a pull request. Report a vulnerability as [SECURITY.md](SECURITY.md) tells you. Report an accessibility barrier as [ACCESSIBILITY.md](ACCESSIBILITY.md) tells you.
