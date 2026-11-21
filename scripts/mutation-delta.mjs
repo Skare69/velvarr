@@ -150,7 +150,12 @@ export default deltaConfig;
 `,
 );
 try {
-  const childEnv = { ...process.env, TMPDIR: mutationTempBase };
+  const childEnv = {
+    ...process.env,
+    TMPDIR: mutationTempBase,
+    TEMP: mutationTempBase,
+    TMP: mutationTempBase,
+  };
   delete childEnv.VELVARR_DATA_DIR;
   const run = spawnSync("stryker", ["run", deltaConfigPath], {
     env: childEnv,

@@ -59,6 +59,13 @@ write a JSON report to the OS temporary directory as
 `velvarr-mutation-<pid>.json`. The console prints the full path. The report remains
 outside the temporary sandbox, so the run's exit cleanup does not remove it.
 
+The delta wrapper restores `TMPDIR`, `TEMP`, and `TMP` for the Stryker process.
+Windows selects its temporary directory from `TEMP` or `TMP`, not `TMPDIR`.
+The lifecycle regression runs the real wrapper with each platform's lookup rule.
+It checks that the JSON report survives both owner exits.
+Before the fix, its `TEMP` case failed with
+`AssertionError [ERR_ASSERTION]: JSON report must survive owner exit`.
+
 ### Delta gate repair over v0.44.0
 
 The failed release check reported

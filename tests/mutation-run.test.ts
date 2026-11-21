@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import {
   existsSync,
@@ -174,3 +174,73 @@ test("one run exit preserves a live peer's distinct parent and files", async (t)
     await Promise.all([first.done, second.done]);
   }
 });
+
+for (const lookup of ["TMPDIR", "TEMP"]) {
+  test(`delta JSON report survives owner exit with ${lookup} lookup`, (t) => {
+    const { base } = fixture(t);
+    const metadata = join(base, "report-path.json");
+    const reportOwner = `
+      import os from "node:os";
+      import { syncBuiltinESMExports } from "node:module";
+      import { writeFileSync } from "node:fs";
+      import { pathToFileURL } from "node:url";
+      os.tmpdir = () => process.env[process.argv[3]];
+      syncBuiltinESMExports();
+      // Install the platform lookup before the config selects its directories.
+      const config = (await import(pathToFileURL(process.argv[1]).href)).default;
+      writeFileSync(config.jsonReporter.fileName, '{"fixture":"retained"}');
+      writeFileSync(process.argv[2], JSON.stringify({
+        report: config.jsonReporter.fileName,
+        sandbox: config.tempDirName,
+      }));
+    `;
+    const wrapperOwner = `
+      import cp from "node:child_process";
+      import os from "node:os";
+      import { syncBuiltinESMExports } from "node:module";
+      const spawnSync = cp.spawnSync;
+      os.tmpdir = () => process.env[process.argv[3]];
+      cp.spawnSync = (command, args, options) => {
+        if (command === "git") {
+          if (args[0] === "describe") return { status: 0, stdout: "v0.44.0\\n" };
+          if (args[0] === "diff") return { status: 0, stdout: "src/lib/discord-settings.ts\\n" };
+        }
+        if (command === "stryker") return spawnSync(process.execPath, [
+          "--input-type=module", "--eval", ${JSON.stringify(reportOwner)},
+          args[1], process.argv[2], process.argv[3],
+        ], { env: options.env, encoding: "utf8" });
+        throw new Error("Unexpected fixture command: " + command);
+      };
+      syncBuiltinESMExports();
+      // Install process fixtures before the wrapper imports its config.
+      await import(process.argv[1]);
+    `;
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        wrapperOwner,
+        new URL("../scripts/mutation-delta.mjs", import.meta.url).href,
+        metadata,
+        lookup,
+      ],
+      {
+        env: { ...process.env, TMPDIR: base, TEMP: base, TMP: base },
+        encoding: "utf8",
+      },
+    );
+    assert.equal(result.signal, null, result.stderr);
+    assert.equal(result.status, 0, result.stderr);
+    const { report, sandbox } = JSON.parse(readFileSync(metadata, "utf8"));
+    assert.equal(existsSync(dirname(sandbox)), false, "owner cleanup must run");
+    assert.equal(
+      existsSync(report),
+      true,
+      "JSON report must survive owner exit",
+    );
+    assert.deepEqual(JSON.parse(readFileSync(report, "utf8")), {
+      fixture: "retained",
+    });
+  });
+}
