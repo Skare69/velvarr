@@ -56,6 +56,8 @@ Clear stored credential requires confirmation. It removes only the saved webhook
 It does not change Include titles.
 Use environment settings clears both saved overrides after confirmation. Each field then uses its environment fallback.
 
+Other integration saves preserve these choices, even when a Jellyfin connection check delays a save.
+
 Check connection checks the typed URL, or the effective webhook if the field is blank.
 It saves no draft changes. Checks use only GET requests to Discord and never post visible channel messages.
 Save, clear, and environment reset also check the effective connection.

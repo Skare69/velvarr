@@ -25,6 +25,7 @@ import {
 import {
   countRequestsByAccount,
   getAccount,
+  getConfig,
   importAccounts,
   listAccounts,
   saveConfig,
@@ -751,7 +752,10 @@ export async function adminUpdateIntegrations(
   ctx: AuthContext,
 ): Promise<Response> {
   const body = await readAdminJson(request, ctx);
-  const discord = nextDiscord(ctx.config.discord, body);
+  let current = getConfig();
+  if (!current)
+    throw new AppError(409, "not_initialized", "Setup has not been completed.");
+  let discord = nextDiscord(current.discord, body);
   // Before any write: the guard compares against the live stored key and
   // must sit directly next to the synchronous provider-only saveConfig.
   guardProviderClear(body);
@@ -765,10 +769,10 @@ export async function adminUpdateIntegrations(
         PROVIDER_SAVE_FIELDS.includes(k) || DISCORD_SAVE_FIELDS.includes(k),
     )
   ) {
-    const providers = nextProviderCredentials(ctx.config.providers, body);
+    const providers = nextProviderCredentials(current.providers, body);
     const patched: IntegrationConfig = {
-      jellyfin: ctx.config.jellyfin,
-      ...(ctx.config.whisparr ? { whisparr: ctx.config.whisparr } : {}),
+      jellyfin: current.jellyfin,
+      ...(current.whisparr ? { whisparr: current.whisparr } : {}),
       ...(providers ? { providers } : {}),
       ...(discord ? { discord } : {}),
     };
@@ -785,29 +789,35 @@ export async function adminUpdateIntegrations(
       ["whisparrUrl", "whisparrApiKey", "delivery", "pathMappings"].includes(k),
     )
   ) {
-    const whisparr = nextWhisparr(ctx.config.whisparr, body);
+    const whisparr = nextWhisparr(current.whisparr, body);
     const patched: IntegrationConfig = {
-      jellyfin: ctx.config.jellyfin,
+      jellyfin: current.jellyfin,
       ...(whisparr ? { whisparr } : {}),
-      ...(ctx.config.providers ? { providers: ctx.config.providers } : {}),
+      ...(current.providers ? { providers: current.providers } : {}),
       ...(discord ? { discord } : {}),
     };
     saveConfig(patched);
     return json(integrationsShape(patched));
   }
-  const jellyfin = await nextJellyfin(ctx.config.jellyfin, body);
-  const whisparr = nextWhisparr(ctx.config.whisparr, body);
-  const providers = nextProviderCredentials(ctx.config.providers, body);
-  const config: IntegrationConfig = {
-    jellyfin,
-    ...(whisparr ? { whisparr } : {}),
-    ...(providers ? { providers } : {}),
-    ...(discord ? { discord } : {}),
-  };
+  const jellyfin = await nextJellyfin(current.jellyfin, body);
   // The Jellyfin probe can hold this request for seconds, and readAdminJson's
   // live-admin check predates it. Re-check so a demotion or disable during
   // the probe cannot land the write with stale rights (VELV-244).
   requireLiveAdmin(ctx);
+  current = getConfig();
+  if (!current)
+    throw new AppError(409, "not_initialized", "Setup has not been completed.");
+  // No await separates this read from the save. Omitted fields stay current.
+  const whisparr = nextWhisparr(current.whisparr, body);
+  const providers = nextProviderCredentials(current.providers, body);
+  discord = nextDiscord(current.discord, body);
+  const config: IntegrationConfig = {
+    // Keep the probed address and key together, but preserve live library ids.
+    jellyfin: { ...jellyfin, libraryIds: current.jellyfin.libraryIds },
+    ...(whisparr ? { whisparr } : {}),
+    ...(providers ? { providers } : {}),
+    ...(discord ? { discord } : {}),
+  };
   saveConfig(config);
   return json(integrationsShape(config));
 }

@@ -14558,3 +14558,123 @@ test("Discord independent overrides, GET-only draft checks, redaction and other 
     saveConfig(original);
   }
 });
+
+for (const scenario of [
+  {
+    name: "title Off",
+    initialTitles: true,
+    patch: { discordIncludeTitles: false },
+    stored: { webhookUrl: DISCORD_SAVED, includeTitles: false },
+    effective: {
+      configured: true,
+      source: "stored",
+      stored: true,
+      includeTitles: false,
+      includeTitlesSource: "stored",
+    },
+  },
+  {
+    name: "webhook clear retains the title override",
+    initialTitles: false,
+    patch: { discordWebhookUrl: "" },
+    stored: { includeTitles: false },
+    effective: {
+      configured: true,
+      source: "environment",
+      stored: true,
+      includeTitles: false,
+      includeTitlesSource: "stored",
+    },
+  },
+  {
+    name: "environment reset clears both overrides",
+    initialTitles: false,
+    patch: { discordWebhookUrl: "", discordIncludeTitles: null },
+    stored: undefined,
+    effective: {
+      configured: true,
+      source: "environment",
+      stored: false,
+      includeTitles: true,
+      includeTitlesSource: "environment",
+    },
+  },
+] as const) {
+  test(`a held Jellyfin PATCH preserves a later Discord change: ${scenario.name}`, async () => {
+    await boot();
+    const admin = await loginAs("owner");
+    const original = getConfig()!;
+    const previousUrl = process.env.VELVARR_DISCORD_WEBHOOK_URL;
+    const previousDetail = process.env.VELVARR_DISCORD_DETAIL;
+    let pending: Promise<Response> | undefined;
+    try {
+      process.env.VELVARR_DISCORD_WEBHOOK_URL = DISCORD_ENV;
+      process.env.VELVARR_DISCORD_DETAIL = "1";
+      saveConfig({
+        ...original,
+        discord: {
+          webhookUrl: DISCORD_SAVED,
+          includeTitles: scenario.initialTitles,
+        },
+      });
+      const movedUrl = new URL("jf", `${jellyfinUrl}/`).toString();
+      assert.notEqual(movedUrl, getConfig()!.jellyfin.url);
+      const arrived = Promise.withResolvers<void>();
+      fx.holdPath = "/System/Info/Public";
+      fx.holdArrived = arrived.resolve;
+      pending = call("PATCH", "/api/admin/integrations", {
+        cookie: admin,
+        body: { jellyfinUrl: movedUrl, jellyfinExternalUrl: movedUrl },
+      });
+      await arrived.promise;
+      assert.ok(
+        fx.holdRelease,
+        "the Jellyfin probe holds before the Discord save",
+      );
+      const later = await call("PATCH", "/api/admin/integrations", {
+        cookie: admin,
+        body: scenario.patch,
+      });
+      assert.equal(later.status, 200);
+      assert.deepEqual(getConfig()!.discord, scenario.stored);
+      const laterBody = (await later.json()) as {
+        discord: DiscordSettingsInfo;
+      };
+      assert.deepEqual(laterBody.discord, scenario.effective);
+
+      fx.holdRelease();
+      const response = await pending;
+      assert.equal(response.status, 200);
+      assert.deepEqual(
+        getConfig()!.discord,
+        scenario.stored,
+        `the later Discord change survives the held Jellyfin PATCH: ${scenario.name}`,
+      );
+      const body = (await response.json()) as {
+        discord: DiscordSettingsInfo;
+        jellyfin: { url: string; externalUrl: string };
+      };
+      assert.deepEqual(body.discord, scenario.effective);
+      assert.equal(getConfig()!.jellyfin.url, movedUrl);
+      assert.equal(getConfig()!.jellyfin.externalUrl, movedUrl);
+      assert.equal(body.jellyfin.url, movedUrl);
+      assert.equal(body.jellyfin.externalUrl, movedUrl);
+    } finally {
+      fx.holdRelease?.();
+      try {
+        if (pending) await pending;
+      } finally {
+        fx.holdPath = null;
+        fx.holdArrived = null;
+        fx.holdRelease = null;
+        if (previousUrl === undefined)
+          delete process.env.VELVARR_DISCORD_WEBHOOK_URL;
+        else process.env.VELVARR_DISCORD_WEBHOOK_URL = previousUrl;
+        if (previousDetail === undefined)
+          delete process.env.VELVARR_DISCORD_DETAIL;
+        else process.env.VELVARR_DISCORD_DETAIL = previousDetail;
+        saveConfig(original);
+      }
+    }
+  });
+}
