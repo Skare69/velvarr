@@ -139,12 +139,6 @@ function signedIn(request: Request, grant: SessionGrant, name: string) {
   return response;
 }
 
-// The setup exempt compare's instance-wide ceiling: even a misconfigured
-// trusted proxy (one that forwards a client-supplied X-Forwarded-For
-// verbatim instead of appending) cannot open more compares than this per
-// window.
-const SETUP_COMPARE_GLOBAL_LIMIT = 30;
-
 // The source address the setup limiter keys on. Next writes the socket
 // address into an ABSENT X-Forwarded-For, and a client or proxy can
 // supply a PRESENT one; the handler cannot tell the two apart, so there
@@ -171,13 +165,14 @@ function limiterSource(request: Request): string {
 // slot plus a global spray slot in the same synchronous step, so parallel
 // guesses cannot all pass uncounted. A wrong secret keeps both charges; a
 // correct one refunds them like any non-guess. A full window never
-// compares for free: the exempt compare pays bounded budgets of its own
-// (see the branch below), so a saturated window cannot turn
+// compares for free: the exempt compare pays this source's own bounded
+// budget (see the branch below), so a saturated window cannot turn
 // wrong-versus-right into an unbounded guessing oracle. With
-// VELVARR_TRUSTED_PROXY=1 every client owns its budgets, so the owner's
-// proof is never refused; without the flag all attempts share one bucket
-// and a flood can deny setup attempts for up to one window (the
-// disclosed residual of direct exposure, limiterSource below).
+// VELVARR_TRUSTED_PROXY=1 every client owns its budget, so only the
+// owner's own wrong guesses can refuse its proof, and only until the
+// window rolls; without the flag all attempts share one bucket and a
+// flood can deny setup attempts for up to one window (the disclosed
+// residual of direct exposure, limiterSource below).
 function guardedSetupSecret(request: Request, check: () => void): void {
   const ip = limiterSource(request);
   let refused: AppError | null = null;
@@ -189,31 +184,22 @@ function guardedSetupSecret(request: Request, check: () => void): void {
   }
   if (refused) {
     // The compare still runs - but never free: it pays this source's
-    // five-per-window compare budget and the global compare ceiling. A
-    // source whose budget is spent by its own wrong guesses is refused
-    // without a compare until the window rolls; a correct secret
-    // refunds its slots. With a trusted proxy every client owns its
-    // budget, so the owner's browser always has one; without the flag
-    // the budget is shared (limiterSource above).
+    // five-per-window compare budget. A source whose budget is spent by
+    // its own wrong guesses is refused without a compare until the
+    // window rolls; a correct secret refunds its slot. With a trusted
+    // proxy every client owns its budget, so no fleet of other sources
+    // can refuse the owner's browser; without the flag the budget is
+    // shared (limiterSource above).
     const compareSource = `setup-compare:${ip}`;
-    const compareGlobal = "setup-compare-global";
     assertLoginAllowed(compareSource, true);
-    assertLoginAllowed(compareGlobal, true, null, SETUP_COMPARE_GLOBAL_LIMIT);
     const refundSource = reserveLoginAttempt(compareSource, true);
-    const refundGlobal = reserveLoginAttempt(
-      compareGlobal,
-      true,
-      null,
-      SETUP_COMPARE_GLOBAL_LIMIT,
-    );
     try {
       check();
       refundSource();
-      refundGlobal();
       return;
     } catch {
       // verifySetupSecret only throws setup_secret_invalid: a wrong
-      // secret keeps both compare charges and rethrows the refusal.
+      // secret keeps the compare charge and rethrows the refusal.
       console.warn(
         `[auth] failed setup-secret attempt: ip=${JSON.stringify(ip)} (cap window saturated)`,
       );

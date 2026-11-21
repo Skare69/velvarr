@@ -2467,11 +2467,11 @@ test("a saturated setup cap keeps compares bounded and accepts the owner's secre
   // entry, the one the proxy appended. Enough sources can still fill the
   // global cap, so the owner's proof must survive a full window - but
   // never as a free compare. Under a saturated window every compare
-  // pays the source's own five-per-window compare budget plus a global
-  // compare ceiling, so 429-versus-200 stays a bounded oracle: a source
-  // that spent its own budget is refused without a compare until the
-  // window rolls, and the owner's browser, which has not been guessing,
-  // always has its compare.
+  // pays the source's own five-per-window compare budget, so
+  // 429-versus-200 stays a bounded oracle per source: a source that
+  // spent its own budget is refused without a compare until the window
+  // rolls, and the owner's browser, which has not been guessing, still
+  // has its own budget no matter how many other sources spent theirs.
   process.env.VELVARR_TRUSTED_PROXY = "1";
   resetLoginBuckets();
   const wrong = {
@@ -2533,8 +2533,23 @@ test("a saturated setup cap keeps compares bounded and accepts the owner's secre
       429,
     );
     assert.equal(spent.code, "too_many_attempts");
+    // A fleet of sources can spend every source's own compare budget -
+    // there is no global compare ceiling to fill - and the owner still
+    // passes from a fresh source. Six more sources burn theirs.
+    for (const fleet of [1002, 1003, 1004, 1005, 1006, 1007]) {
+      const fleetKey = source(fleet)["x-forwarded-for"];
+      for (let guess = 0; guess < 5; guess += 1) {
+        await errorShape(
+          await call("POST", "/api/setup/inspect", {
+            headers: { "x-forwarded-for": fleetKey },
+            body: { ...wrong },
+          }),
+          429,
+        );
+      }
+    }
     const fresh = await call("POST", "/api/setup/inspect", {
-      headers: source(1002),
+      headers: source(1008),
       body: inspectBody(),
     });
     assert.equal(fresh.status, 200);

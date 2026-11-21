@@ -245,9 +245,6 @@ export function assertLoginAllowed(
   name: string,
   admitted = false,
   device: string | null = null,
-  // Wider per-key budget for callers that gate a bounded-but-not-five
-  // bucket (the setup exempt compare's global ceiling).
-  limit = ACCOUNT_LIMIT,
 ): void {
   const now = Date.now();
   const global = buckets.get("global");
@@ -267,7 +264,7 @@ export function assertLoginAllowed(
   if (
     account &&
     now - account.windowStart < WINDOW_MS &&
-    account.count >= limit
+    account.count >= ACCOUNT_LIMIT
   ) {
     throw new AppError(
       429,
@@ -315,14 +312,12 @@ export function reserveLoginAttempt(
   name: string,
   admitted = false,
   device: string | null = null,
-  // Same wider-budget case as assertLoginAllowed's limit.
-  limit = ACCOUNT_LIMIT,
 ): () => void {
   const now = Date.now();
   const globalCharged = !admitted;
   if (globalCharged) consumeBucket("global", GLOBAL_LIMIT, now);
   const key = attemptKey(name, device);
-  consumeBucket(key, limit, now);
+  consumeBucket(key, ACCOUNT_LIMIT, now);
   // ponytail: a refund landing after a window rollover frees one slot in
   // each fresh window (global and account); only non-guess outcomes refund,
   // so no guess ever gets capacity back.
