@@ -104,6 +104,20 @@ full-tree sweep for expiry and budget eviction. The newest file stays
 protected, so it can exceed the budget alone. Large cache trees can delay a
 request during this sweep.
 
+## Metadata provider request rules
+
+Velvarr sends its name, version, and project URL in `User-Agent` for TPDB and
+StashDB API and artwork requests.
+
+Each Velvarr process sends at most 60 requests to `stashdb.org` in any
+60-second window. API and artwork share this budget across API keys. Failed
+dispatch attempts also count. When the budget is full, Velvarr returns
+`503 upstream_rate_limited` before the request leaves the server.
+Private Stash-Box hosts and TPDB do not share this budget.
+
+The [StashDB API rules](https://discourse.stashapp.cc/t/rules-for-api-access/21336)
+warn that violations cause immediate loss of access.
+
 ## From request to playback
 
 The main use case: a user requests a title, an approver lets it through, the

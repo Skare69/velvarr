@@ -2,8 +2,16 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fc from "fast-check";
+import packageJson from "../package.json" with { type: "json" };
 
-import { AppError, requestJsonBytes } from "../src/server/http.ts";
+import {
+  AppError,
+  createStashdbRateLimit,
+  requestBytes,
+  requestJsonBytes,
+  upstreamCheckError,
+} from "../src/server/http.ts";
 
 const REQUESTS = 200;
 // Keep-alive leaves at most the in-flight socket plus a freshly opened
@@ -102,5 +110,171 @@ test("an unexpected content type keeps no sockets open when repeated", async (t)
   assert.ok(
     open <= BOUNDED,
     `${open} sockets still open after ${REQUESTS} content-type rejections; body cancel is missing`,
+  );
+});
+
+test("provider API and artwork requests identify the current Velvarr version", async (t) => {
+  const seen: { ua: string | undefined; hasKey: boolean }[] = [];
+  const { promise, resolve } = Promise.withResolvers<Server>();
+  const server: Server = createServer((req, res) => {
+    seen.push({
+      ua: req.headers["user-agent"],
+      hasKey: req.headers.apikey !== undefined,
+    });
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("{}");
+  });
+  server.listen(0, "127.0.0.1", () => resolve(server));
+  await promise;
+  track(server, t);
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  for (const service of ["stashdb", "tpdb"] as const) {
+    await requestJsonBytes(base, "/graphql", "test-api-key", { service });
+    await requestBytes(base, "/images/fixture", "", { service });
+  }
+  const ua = `Velvarr/${packageJson.version} (+https://github.com/Skare69/velvarr)`;
+  assert.deepEqual(seen, [
+    { ua, hasKey: true },
+    { ua, hasKey: false },
+    { ua, hasKey: false },
+    { ua, hasKey: false },
+  ]);
+});
+
+function rateLimited(error: unknown): boolean {
+  assert.ok(error instanceof AppError);
+  assert.equal(error.status, 503);
+  assert.equal(error.code, "upstream_rate_limited");
+  assert.equal(error.upstreamStatus, undefined);
+  assert.deepEqual(upstreamCheckError(error), {
+    code: error.code,
+    message: error.message,
+  });
+  return true;
+}
+
+test("public StashDB API and artwork share a budget across credentials", async (t) => {
+  let clock = 0;
+  t.mock.method(performance, "now", () => clock);
+  const sent: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    const url = new URL(String(input));
+    sent.push(url.hostname);
+    return new Response("{}", {
+      status: url.pathname === "/failure" ? 503 : 200,
+      headers: { "content-type": "application/json" },
+    });
+  });
+
+  // Invalid requests consume no provider budget.
+  await assert.rejects(
+    requestJsonBytes("https://stashdb.org", "/graphql", "bad", {
+      service: "stashdb",
+    }),
+    { code: "invalid_token" },
+  );
+  const api = () =>
+    requestJsonBytes("https://stashdb.org", "/graphql", "test-api-key", {
+      service: "stashdb",
+    });
+  const art = () =>
+    requestBytes("https://stashdb.org", "/images/fixture", "", {
+      service: "stashdb",
+    });
+  await Promise.all(
+    Array.from({ length: 60 }, (_, i) =>
+      i % 2 === 0
+        ? requestJsonBytes(
+            "https://STASHDB.org",
+            "/graphql",
+            `fixture-key-${i}`,
+            {
+              service: "stashdb",
+            },
+          )
+        : art(),
+    ),
+  );
+  await assert.rejects(api(), rateLimited);
+  await assert.rejects(art(), rateLimited);
+  assert.equal(sent.length, 60, "blocked requests never reach fetch");
+
+  // The public provider policy does not throttle a private Stash-Box or TPDB.
+  for (const base of [
+    "http://127.0.0.1:6789",
+    "https://private-stash.example",
+  ]) {
+    for (let i = 0; i < 61; i++) {
+      await requestJsonBytes(base, "/graphql", "test-api-key", {
+        service: "stashdb",
+      });
+    }
+  }
+  await requestJsonBytes(
+    "https://api.theporndb.net",
+    "/movies",
+    "test-api-key",
+    {
+      service: "tpdb",
+    },
+  );
+  assert.equal(sent.filter((host) => host === "stashdb.org").length, 60);
+
+  clock = 59_999;
+  await assert.rejects(api(), rateLimited);
+  clock = 60_000;
+  // A failed upstream attempt still consumes one dispatch.
+  await assert.rejects(
+    requestJsonBytes("https://stashdb.org", "/failure", "test-api-key", {
+      service: "stashdb",
+    }),
+    { code: "upstream_unavailable", upstreamStatus: 503 },
+  );
+  for (let i = 0; i < 59; i++) await api();
+  await assert.rejects(api(), rateLimited);
+  assert.equal(sent.filter((host) => host === "stashdb.org").length, 120);
+});
+
+test("StashDB budget releases each request only at its window boundary", () => {
+  let clock = 0;
+  const slot = createStashdbRateLimit(() => clock);
+  for (let i = 0; i < 30; i++) slot();
+  clock = 10_000;
+  for (let i = 0; i < 30; i++) slot();
+  clock = 59_999;
+  assert.throws(slot, rateLimited);
+  clock = 60_000;
+  for (let i = 0; i < 30; i++) slot();
+  assert.throws(slot, rateLimited);
+  clock = 69_999;
+  assert.throws(slot, rateLimited);
+  clock = 70_000;
+  for (let i = 0; i < 30; i++) slot();
+  assert.throws(slot, rateLimited);
+});
+
+test("StashDB rate limit agrees with a rolling-window reference", () => {
+  fc.assert(
+    fc.property(
+      fc.array(fc.integer({ min: 0, max: 2_000 }), {
+        minLength: 100,
+        maxLength: 300,
+      }),
+      (deltas) => {
+        let clock = 0;
+        const slot = createStashdbRateLimit(() => clock);
+        let accepted: number[] = [];
+        for (const delta of deltas) {
+          clock += delta;
+          accepted = accepted.filter((time) => time > clock - 60_000);
+          if (accepted.length === 60) {
+            assert.throws(slot, rateLimited);
+          } else {
+            slot();
+            accepted.push(clock);
+          }
+        }
+      },
+    ),
   );
 });

@@ -3,6 +3,8 @@
 
 import { isIP } from "node:net";
 
+import packageJson from "../../package.json" with { type: "json" };
+
 import type {
   CatalogProvider,
   ShelfError,
@@ -42,6 +44,7 @@ const UPSTREAM_CHECK_CODES = new Set([
   "upstream_unavailable",
   "upstream_timeout",
   "upstream_bad_response",
+  "upstream_rate_limited",
 ]);
 
 /** Only known upstream failures are status data. Local validation, storage,
@@ -57,6 +60,35 @@ export function upstreamCheckError(error: unknown): {
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const JSON_LIMIT = 2 * 1024 * 1024;
+
+// https://discourse.stashapp.cc/t/rules-for-api-access/21336
+const USER_AGENT = `Velvarr/${packageJson.version} (+https://github.com/Skare69/velvarr)`;
+const STASHDB_LIMIT = 60;
+const STASHDB_WINDOW_MS = 60_000;
+
+/** One sliding window for actual dispatches, with no queue or reserved slots.
+ * A monotonic clock keeps wall-clock changes from releasing the budget early. */
+export function createStashdbRateLimit(
+  now: () => number = () => performance.now(),
+): () => void {
+  const starts: number[] = [];
+  return () => {
+    const time = now();
+    while (starts.length > 0 && starts[0]! <= time - STASHDB_WINDOW_MS)
+      starts.shift();
+    if (starts.length >= STASHDB_LIMIT) {
+      throw new AppError(
+        503,
+        "upstream_rate_limited",
+        "StashDB allows 60 requests per minute. Velvarr paused new requests. Try again shortly.",
+      );
+    }
+    starts.push(time);
+  };
+}
+
+// ponytail: one process owns this budget. Use a shared store for multiple instances.
+const takeStashdbSlot = createStashdbRateLimit();
 
 /** Sanitized reason for degraded-mode logs. AppError messages are written for
  * operators; raw error text from anything else can echo URLs or config, so
@@ -272,6 +304,7 @@ async function send(
     // token means no credential header at all, which is how allowlisted
     // provider artwork is fetched. (Jellyfin's empty-token case below keeps
     // its own token-less AUTH_BASE semantics.)
+    headers["User-Agent"] = USER_AGENT;
     if (cleanToken !== "") {
       if (service === "tpdb") headers.Authorization = `Bearer ${cleanToken}`;
       else headers.ApiKey = cleanToken;
@@ -289,6 +322,9 @@ async function send(
   }
   // redirect: 'error' — a 3xx from an upstream is a misconfiguration or an
   // attempt to move credentials elsewhere; it is never followed.
+  // Private Stash-Box instances have their own policy. API and artwork on
+  // the public host share one budget, regardless of the caller's API key.
+  if (new URL(target).hostname === "stashdb.org") takeStashdbSlot();
   return fetch(target, init);
 }
 
