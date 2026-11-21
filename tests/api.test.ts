@@ -2468,10 +2468,12 @@ test("a saturated setup cap keeps compares bounded and accepts the owner's secre
   // global cap, so the owner's proof must survive a full window - but
   // never as a free compare. Under a saturated window every compare
   // pays the source's own five-per-window compare budget, so
-  // 429-versus-200 stays a bounded oracle per source: a source that
-  // spent its own budget is refused without a compare until the window
-  // rolls, and the owner's browser, which has not been guessing, still
-  // has its own budget no matter how many other sources spent theirs.
+  // 429-versus-200 stays a bounded oracle per source - ten compares per
+  // source per window in total: five at the gate, five exempt. A source
+  // that spent its own budget is refused without a compare until the
+  // window rolls, and the owner's browser, which has not been guessing,
+  // still has its own budget no matter how many other sources spent
+  // theirs.
   process.env.VELVARR_TRUSTED_PROXY = "1";
   resetLoginBuckets();
   const wrong = {
