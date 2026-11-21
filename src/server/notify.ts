@@ -1,3 +1,11 @@
+import type { IntegrationConfig } from "../lib/contracts.ts";
+import {
+  parseDiscordWebhook,
+  resolveDiscordSettings,
+  type DiscordCheck,
+} from "../lib/discord-settings.ts";
+import { getConfig } from "./storage.ts";
+
 // Opt-in Discord webhook notifier for durable request transitions.
 // Reads its destination on every call, stays completely silent when unset,
 // and never throws into the caller: a notification failure must never roll
@@ -16,30 +24,6 @@ export type RequestNotification = {
   title?: string;
 };
 
-/** Accept only real https Discord webhook URLs (plus plain http on loopback,
- * which is how the local test fixture exercises the send path without any
- * external network) so a misconfigured value cannot leak household activity
- * to an arbitrary remote host. */
-function parseDestination(raw: string): URL | null {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return null;
-  }
-  if (url.protocol === "https:") {
-    if (url.hostname !== "discord.com" && url.hostname !== "discordapp.com")
-      return null;
-  } else if (url.protocol === "http:") {
-    if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname))
-      return null;
-  } else {
-    return null;
-  }
-  // /api/webhooks/{id}/{token} — both segments non-empty.
-  return /^\/api\/webhooks\/[^/]+\/[^/]+/.test(url.pathname) ? url : null;
-}
-
 /** Fire one bounded webhook POST. Resolves without effect when the
  * destination is unset; refuses (with a URL-less warning) when it is not an
  * https Discord webhook; never rejects or lets a failure reach the caller.
@@ -48,17 +32,18 @@ export async function notifyRequestEvent(
   event: RequestNotification,
 ): Promise<void> {
   try {
-    const raw = process.env.VELVARR_DISCORD_WEBHOOK_URL;
+    const { webhookUrl: raw, includeTitles: detail } = resolveDiscordSettings(
+      getConfig()?.discord,
+    );
     if (!raw) return;
-    const url = parseDestination(raw);
+    const url = parseDiscordWebhook(raw);
     if (!url) {
       console.warn(
-        "[notify] VELVARR_DISCORD_WEBHOOK_URL is set but is not an https://discord.com webhook URL; notification skipped",
+        "[notify] Invalid Discord webhook configuration; notification skipped",
       );
       return;
     }
     // Titles and artwork are opt-in: identity-only by default.
-    const detail = process.env.VELVARR_DISCORD_DETAIL === "1";
     const message = `Velvarr ${event.kind}: ${event.media.kind} ${event.media.provider}/${event.media.id}`;
     const body = detail
       ? {
@@ -74,6 +59,7 @@ export async function notifyRequestEvent(
       : { content: message };
     const res = await fetch(url, {
       method: "POST",
+      redirect: "error",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(TIMEOUT_MS),
@@ -84,5 +70,88 @@ export async function notifyRequestEvent(
   } catch {
     // Best-effort by contract: timeouts and network errors are swallowed.
     // Deliberately no logging here — fetch errors would risk echoing the URL.
+  }
+}
+
+/** GET validates the webhook without a visible channel message. */
+export async function checkDiscordConnection(
+  stored?: IntegrationConfig["discord"],
+  override?: string,
+): Promise<DiscordCheck> {
+  const raw = override || resolveDiscordSettings(stored).webhookUrl;
+  const failure = (code: string, message: string): DiscordCheck => ({
+    configured: !!raw,
+    error: { code, message },
+  });
+  if (!raw) return { configured: false };
+  const url = parseDiscordWebhook(raw);
+  if (!url)
+    return failure("invalid_config", "The Discord webhook URL is invalid.");
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      redirect: "error",
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      return failure(
+        "discord_http_error",
+        `Discord returned HTTP ${response.status}.`,
+      );
+    }
+    const reader = response.body?.getReader();
+    if (!reader)
+      return failure(
+        "discord_invalid_response",
+        "Discord returned invalid webhook information.",
+      );
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > 65_536) {
+        await reader.cancel();
+        return failure(
+          "discord_invalid_response",
+          "Discord returned invalid webhook information.",
+        );
+      }
+      chunks.push(value);
+    }
+    let info: unknown;
+    try {
+      info = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    } catch {
+      return failure(
+        "discord_invalid_response",
+        "Discord returned invalid webhook information.",
+      );
+    }
+    if (
+      !info ||
+      typeof info !== "object" ||
+      !("id" in info) ||
+      info.id !== url.pathname.split("/")[3] ||
+      !("type" in info) ||
+      info.type !== 1 ||
+      !("channel_id" in info) ||
+      typeof info.channel_id !== "string" ||
+      !/^[0-9]+$/.test(info.channel_id)
+    )
+      return failure(
+        "discord_invalid_response",
+        "Discord returned invalid webhook information.",
+      );
+    return { configured: true };
+  } catch (error) {
+    const timeout =
+      error instanceof Error &&
+      (error.name === "TimeoutError" || error.name === "AbortError");
+    return timeout
+      ? failure("discord_timeout", "The Discord connection timed out.")
+      : failure("discord_unreachable", "The Discord connection failed.");
   }
 }

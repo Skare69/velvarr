@@ -49,11 +49,12 @@ its rows.
 
 ## Settings browser regressions
 
-The same Playwright suite covers **Connections** and **Metadata providers**.
-`tests/ui/connections.spec.mjs` covers connections and cross-tab behavior;
-`tests/ui/metadata-providers.spec.mjs` covers the credential and AI editors. Both
-reuse the same isolated fixture and test harness, and both run in the existing
-CI gate.
+The Playwright suite covers Connections, Metadata providers, and AI.
+`tests/ui/connections.spec.mjs` covers Jellyfin, Whisparr, and shared behavior.
+`tests/ui/metadata-providers.spec.mjs` covers provider credentials and AI.
+`tests/ui/discord.spec.mjs` covers the Discord card, independent overrides,
+draft checks, confirmation dialogs, and phone layout. All suites use the
+same isolated fixture and test harness.
 
 Build the production application before running these tests:
 
@@ -86,6 +87,7 @@ providers uses its credential and AI modules.
 | --- | --- | --- |
 | [`src/lib/settings-service.ts`](../src/lib/settings-service.ts) | Shared status wording, failure type, and settings operation queue | `tests/settings-service.test.ts` |
 | [`src/lib/connection-settings.ts`](../src/lib/connection-settings.ts) | Jellyfin/Whisparr draft initialization, change detection, field validation, and service-only save patches | `tests/connection-settings.test.ts` |
+| [`src/lib/discord-settings.ts`](../src/lib/discord-settings.ts) | Discord URL validation, independent environment fallback, and secret-free status | `tests/discord-settings.test.ts` |
 | [`src/lib/connection-card.ts`](../src/lib/connection-card.ts) | Jellyfin/Whisparr editor lifecycle, busy state, save/removal flow, and separate draft/saved connection checks | `tests/connection-card.test.ts` |
 | [`src/lib/provider-settings.ts`](../src/lib/provider-settings.ts) | TPDB/StashDB status and credential save/check/clear decisions | `tests/provider-settings.test.ts` |
 | [`src/lib/credential-card.ts`](../src/lib/credential-card.ts) | TPDB/StashDB editor state, draft checks, rejected-key decisions, save flow, and editor markup | `tests/provider-card.test.ts` |
@@ -103,7 +105,7 @@ each tab.
 The UI composition follows the same structure for each tab:
 
 - [`src/components/connection-settings.tsx`](../src/components/connection-settings.tsx)
-  owns the Jellyfin and Whisparr cards.
+  owns the Jellyfin and Whisparr cards and renders the Discord card from `discord-settings.tsx`.
 - [`src/components/metadata-settings.tsx`](../src/components/metadata-settings.tsx)
   owns the TPDB and StashDB cards.
 - [`src/components/ai-settings.tsx`](../src/components/ai-settings.tsx)
@@ -125,6 +127,7 @@ behaviors.
 | --- | --- | --- |
 | `tests/ui/connections.spec.mjs` | Connections and cross-tab behavior | Browser cases for Jellyfin/Whisparr editors, draft probes, inline validation, dropdown spacing, and shared settings behavior |
 | `tests/ui/metadata-providers.spec.mjs` | Metadata providers and cross-tab parity | Browser cases for TPDB, StashDB, TypeSafe, Ollama, draft probes, stored-key rejection, natural-language search settings, and matching card/status/action layout across the settings tabs |
+| `tests/ui/discord.spec.mjs` | Discord settings | Browser cases for hidden webhook fields, independent title overrides, draft checks, late results, confirmed resets, and phone layout |
 | `tests/ui/settings-fixture.mjs` | Shared by all three tabs | Starts the real production UI with isolated synthetic service responses; not a test suite |
 | `tests/ui/settings-harness.mjs` | Shared by all three tabs | Resets state, supplies browser helpers, and checks page errors; not a test suite |
 | `tests/connection-settings.test.ts` | Connections settings rules | Unit tests for connection drafts, patches, and validation |

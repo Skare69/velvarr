@@ -58,6 +58,13 @@ const initial = () => ({
     stashdb: { configured: true, source: "stored" },
     typesafe: { configured: true, source: "stored" },
   },
+  discord: {
+    configured: true,
+    source: "environment",
+    includeTitles: false,
+    includeTitlesSource: "environment",
+    stored: false,
+  },
   proseChat: {
     enabled: false,
     url: "",
@@ -76,7 +83,26 @@ const initial = () => ({
 let config = initial(),
   mode = {},
   requests = [],
-  generation = 0;
+  generation = 0,
+  discordOverrides = {};
+const updateDiscord = () => {
+  const environment = mode.environmentDiscord ?? {
+    configured: true,
+    includeTitles: false,
+  };
+  config.discord = {
+    configured: Boolean(
+      discordOverrides.webhookStored || environment.configured,
+    ),
+    source: discordOverrides.webhookStored ? "stored" : "environment",
+    includeTitles: discordOverrides.includeTitles ?? environment.includeTitles,
+    includeTitlesSource:
+      discordOverrides.includeTitles !== undefined ? "stored" : "environment",
+    stored:
+      Boolean(discordOverrides.webhookStored) ||
+      discordOverrides.includeTitles !== undefined,
+  };
+};
 const heldConfig = new Set(),
   heldPatch = new Set(),
   heldProbe = new Set();
@@ -110,6 +136,7 @@ const server = http.createServer(async (req, res) => {
         generation++;
         config = initial();
         mode = {};
+        discordOverrides = {};
         requests = [];
         release(heldConfig);
         release(heldPatch);
@@ -117,6 +144,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (update.config) config = update.config;
       Object.assign(mode, update);
+      if ("environmentDiscord" in update || !config.discord) updateDiscord();
       if (!mode.holdConfig) release(heldConfig);
       if (!mode.holdPatch) release(heldPatch);
       if (!mode.holdProbe) release(heldProbe);
@@ -242,6 +270,12 @@ const server = http.createServer(async (req, res) => {
               configured: Boolean(b[key] || mode.environmentProviders?.[id]),
               source: b[key] ? "stored" : "environment",
             };
+        if ("discordWebhookUrl" in b)
+          discordOverrides.webhookStored = Boolean(b.discordWebhookUrl);
+        if ("discordIncludeTitles" in b)
+          discordOverrides.includeTitles = b.discordIncludeTitles ?? undefined;
+        if ("discordWebhookUrl" in b || "discordIncludeTitles" in b)
+          updateDiscord();
         if ("judgmentProvider" in b)
           config.judgment = {
             ...config.judgment,
@@ -285,6 +319,29 @@ const server = http.createServer(async (req, res) => {
           "The settings service is temporarily unavailable. Your connection checks are still available.",
         );
       return json(res, 200, config);
+    }
+    if (path === "/api/admin/discord" || path === "/api/admin/discord/test") {
+      const draftTest = path.endsWith("/test");
+      if (probeHeld(path)) await hold(heldProbe);
+      if (requestGeneration !== generation)
+        return error(res, 409, "Obsolete test request.");
+      if (mode.discord403) return error(res, 403, "Administrators only.");
+      if (mode.discordHttpFail)
+        return error(res, 503, "The synthetic Discord check is unavailable.");
+      const configured = Boolean(
+        (draftTest && request.body?.webhookUrl?.trim()) ||
+        config.discord?.configured,
+      );
+      if (!configured) return json(res, 200, { configured: false });
+      if (draftTest ? mode.discordDraftFail : mode.discordFail)
+        return json(res, 200, {
+          configured: true,
+          error: {
+            code: "upstream_auth",
+            message: "The synthetic Discord webhook was rejected.",
+          },
+        });
+      return json(res, 200, { configured: true });
     }
     if (/^\/api\/admin\/(jellyfin|whisparr)\/test$/.test(path)) {
       const service = path.split("/")[3];

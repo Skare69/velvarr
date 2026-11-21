@@ -298,18 +298,6 @@ async function until(cond: () => boolean): Promise<void> {
   }
 }
 
-/** Waits for cond() with a wall-clock ceiling. Needed for real network I/O
- * (a loopback webhook POST): fake timers cannot drive undici sockets, and a
- * fixed spin budget flakes under load. Kept to the notifier tests. */
-async function eventually(cond: () => boolean): Promise<void> {
-  const deadline = Date.now() + 2_000;
-  while (!cond() && Date.now() < deadline) {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    setTimeout(resolve, 5);
-    await promise;
-  }
-}
-
 after(() => {
   acquisition.stopAcquisitionLoop();
   storage.closeStorage();
@@ -710,40 +698,34 @@ test("an adopted item that already has a file is imported at once", async () => 
 test("an adopted-with-file item notifies available exactly once", async () => {
   const owner = boot();
   const webhookBodies: string[] = [];
-  const webhook = createServer((req, res) => {
-    let raw = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk: string) => {
-      raw += chunk;
-    });
-    req.on("end", () => {
-      webhookBodies.push(raw);
-      res.writeHead(200);
-      res.end();
-    });
-  });
-  const listening = Promise.withResolvers<void>();
-  webhook.listen(0, "127.0.0.1", listening.resolve);
-  await listening.promise;
-  process.env.VELVARR_DISCORD_WEBHOOK_URL = `http://127.0.0.1:${
-    (webhook.address() as AddressInfo).port
-  }/api/webhooks/1/fixture-token`;
+  const originalFetch = globalThis.fetch;
+  const originalWebhook = process.env.VELVARR_DISCORD_WEBHOOK_URL;
+  const webhookUrl =
+    "https://discord.com/api/webhooks/1/synthetic-acquisition-token";
+  process.env.VELVARR_DISCORD_WEBHOOK_URL = webhookUrl;
+  globalThis.fetch = async (input, init) => {
+    if (String(input) !== webhookUrl) return originalFetch(input, init);
+    assert.equal(init?.method, "POST");
+    assert.equal(init.redirect, "error");
+    webhookBodies.push(String(init.body));
+    return new Response(null, { status: 204 });
+  };
   try {
     storedItems.set(EXT_A, 1);
     knobs.hasFile = true;
     approve(owner.id, MOVIE_A);
     await acquisition.runDueWork();
-    await eventually(() => webhookBodies.length >= 1);
+    // The intercept records each POST before the asynchronous fetch resolves.
     assert.equal(webhookBodies.length, 1);
     assert.ok(webhookBodies[0]!.includes("available"));
 
     await acquisition.runDueWork(later());
-    await eventually(() => false); // drain any wrongful straggler
     assert.equal(webhookBodies.length, 1, "no second available notification");
   } finally {
-    delete process.env.VELVARR_DISCORD_WEBHOOK_URL;
-    webhook.closeAllConnections();
-    webhook.close();
+    globalThis.fetch = originalFetch;
+    if (originalWebhook === undefined)
+      delete process.env.VELVARR_DISCORD_WEBHOOK_URL;
+    else process.env.VELVARR_DISCORD_WEBHOOK_URL = originalWebhook;
   }
 });
 
@@ -1453,30 +1435,23 @@ test("the installed SIGTERM handler shuts the loop down and exits 0", async (t) 
 test("notifier fires exactly once per real transition and carries no credential", async () => {
   const owner = boot();
   const webhookBodies: string[] = [];
-  const webhook = createServer((req, res) => {
-    let raw = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk: string) => {
-      raw += chunk;
-    });
-    req.on("end", () => {
-      webhookBodies.push(raw);
-      res.writeHead(200);
-      res.end();
-    });
-  });
-  const listening = Promise.withResolvers<void>();
-  webhook.listen(0, "127.0.0.1", listening.resolve);
-  await listening.promise;
-  process.env.VELVARR_DISCORD_WEBHOOK_URL = `http://127.0.0.1:${
-    (webhook.address() as AddressInfo).port
-  }/api/webhooks/1/fixture-token`;
+  const originalFetch = globalThis.fetch;
+  const originalWebhook = process.env.VELVARR_DISCORD_WEBHOOK_URL;
+  const webhookUrl =
+    "https://discord.com/api/webhooks/1/synthetic-acquisition-token";
+  process.env.VELVARR_DISCORD_WEBHOOK_URL = webhookUrl;
+  globalThis.fetch = async (input, init) => {
+    if (String(input) !== webhookUrl) return originalFetch(input, init);
+    assert.equal(init?.method, "POST");
+    assert.equal(init.redirect, "error");
+    webhookBodies.push(String(init.body));
+    return new Response(null, { status: 204 });
+  };
   try {
     approve(owner.id, MOVIE_A);
     const delivered = await acquisition.runDueWork();
     assert.equal(delivered.delivered, 1);
-    // Notification is fire-and-forget: let the POST land before counting.
-    await eventually(() => webhookBodies.length >= 1);
+    // The intercept records each POST before the asynchronous fetch resolves.
     assert.equal(webhookBodies.length, 1, "one notification for the add");
 
     const steady = await acquisition.runDueWork(later());
@@ -1487,10 +1462,6 @@ test("notifier fires exactly once per real transition and carries no credential"
 
     knobs.hasFile = true;
     await acquisition.runDueWork(later());
-    await eventually(() => webhookBodies.length >= 2);
-    // Drain any slow stragglers: a wrongful notification fired during the
-    // steady/downloading passes would have landed by now.
-    await eventually(() => false);
     assert.equal(
       webhookBodies.length,
       2,
@@ -1505,26 +1476,31 @@ test("notifier fires exactly once per real transition and carries no credential"
       "webhook body carries no session token",
     );
   } finally {
-    delete process.env.VELVARR_DISCORD_WEBHOOK_URL;
-    webhook.closeAllConnections();
-    webhook.close();
+    globalThis.fetch = originalFetch;
+    if (originalWebhook === undefined)
+      delete process.env.VELVARR_DISCORD_WEBHOOK_URL;
+    else process.env.VELVARR_DISCORD_WEBHOOK_URL = originalWebhook;
   }
 });
 
 test("a hanging or rejecting notifier neither fails nor delays the pass", async () => {
   const owner = boot();
   let mode: "hang" | "reject" = "hang";
-  const webhook = createServer((_req, res) => {
-    if (mode === "hang") return; // never respond
-    res.writeHead(500);
-    res.end("{}");
-  });
-  const listening = Promise.withResolvers<void>();
-  webhook.listen(0, "127.0.0.1", listening.resolve);
-  await listening.promise;
-  process.env.VELVARR_DISCORD_WEBHOOK_URL = `http://127.0.0.1:${
-    (webhook.address() as AddressInfo).port
-  }/api/webhooks/1/fixture-token`;
+  const originalFetch = globalThis.fetch;
+  const originalWebhook = process.env.VELVARR_DISCORD_WEBHOOK_URL;
+  const webhookUrl =
+    "https://discord.com/api/webhooks/1/synthetic-acquisition-token";
+  const attempts: ("hang" | "reject")[] = [];
+  const hanging = Promise.withResolvers<Response>();
+  process.env.VELVARR_DISCORD_WEBHOOK_URL = webhookUrl;
+  globalThis.fetch = async (input, init) => {
+    if (String(input) !== webhookUrl) return originalFetch(input, init);
+    assert.equal(init?.method, "POST");
+    assert.equal(init.redirect, "error");
+    attempts.push(mode);
+    if (mode === "hang") return hanging.promise;
+    return new Response("{}", { status: 500 });
+  };
   try {
     approve(owner.id, MOVIE_A);
     const start = Date.now();
@@ -1535,6 +1511,11 @@ test("a hanging or rejecting notifier neither fails nor delays the pass", async 
       elapsed < 2_000,
       `hung notifier must not delay the pass (${elapsed}ms)`,
     );
+    assert.deepEqual(
+      attempts,
+      ["hang"],
+      "the hung webhook receives a real attempt",
+    );
 
     mode = "reject";
     approve(owner.id, MOVIE_B);
@@ -1544,9 +1525,16 @@ test("a hanging or rejecting notifier neither fails nor delays the pass", async 
       1,
       "rejecting notifier never fails the work",
     );
+    assert.deepEqual(
+      attempts,
+      ["hang", "reject"],
+      "both webhook paths receive an attempt",
+    );
   } finally {
-    delete process.env.VELVARR_DISCORD_WEBHOOK_URL;
-    webhook.closeAllConnections();
-    webhook.close();
+    hanging.resolve(new Response(null, { status: 204 }));
+    globalThis.fetch = originalFetch;
+    if (originalWebhook === undefined)
+      delete process.env.VELVARR_DISCORD_WEBHOOK_URL;
+    else process.env.VELVARR_DISCORD_WEBHOOK_URL = originalWebhook;
   }
 });

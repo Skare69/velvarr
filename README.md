@@ -57,7 +57,8 @@ docker compose up -d
 - Requests with administrator or moderator approval, crash-safe acquisition into Whisparr, and per-user Jellyfin watch links.
 - Performer follows, per-account preferences, similar titles, and an update notice for new releases.
 - Possible duplicate TPDB movies on the detail page, with evidence and a manual report to copy. Velvarr never submits reports to TPDB.
-- Optional: Discord notifications, [Smarter library matching](docs/ai.md), and natural-language search.
+- Configure optional [Discord notifications](docs/configuration.md#discord-notifications) in Settings → Connections → Discord without a restart.
+- Optional [Smarter library matching](docs/ai.md) and natural-language search.
   AI flags possible Jellyfin matches for administrator review, sorts similar titles, and suggests real search tags.
 
 Movie detail with synthetic metadata:

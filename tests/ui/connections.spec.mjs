@@ -105,6 +105,8 @@ scenario(
     await expect(badge(w)).toHaveText("Unsaved changes");
     await expect(check(jf)).toBeEnabled();
     await expect(check(w)).toBeEnabled();
+    // A save must retain its result when a later configuration read fails.
+    await control({ configFail: true });
     await save(jf).click();
     await expect(edit(jf)).toBeEnabled();
     await expect(badge(jf)).toHaveText("Connected");
@@ -121,16 +123,9 @@ scenario(
       1,
       "unrelated card must not remount after Save",
     );
-    // Contract move: Connections, Metadata providers and AI each read the
-    // configuration once on load (the AI tab has its own component now), so
-    // three GETs before the save and none after it.
-    assert.equal(
-      data.requests.filter(
-        (r) => r.path === "/api/admin/integrations" && r.method === "GET",
-      ).length,
-      3,
-      "Save uses its response, without a failure-prone config reload",
-    );
+    await expect(
+      page.getByText("Connection configuration read failed", { exact: true }),
+    ).toHaveCount(0);
     assert.deepEqual(
       patches.map((r) => r.body),
       [
@@ -142,6 +137,10 @@ scenario(
     );
     await cancel(w).click();
     await expect(edit(w)).toBeFocused();
+    await edit(jf).click();
+    await expect(jf.getByLabel("Jellyfin external URL")).toHaveValue(
+      "https://watch.example.test/new",
+    );
     await edit(w).click();
     await expect(w.getByLabel("Root folder", { exact: true })).toHaveValue(
       "/data/media",
@@ -569,7 +568,8 @@ scenario(
     await edit(w).click();
     assert.deepEqual(
       await page.getByRole("heading", { level: 2 }).allTextContents(),
-      ["Jellyfin", "Whisparr"],
+      // Discord is a connection card, beside Jellyfin and Whisparr.
+      ["Jellyfin", "Whisparr", "Discord"],
     );
     assert.equal(
       await page.locator(".settings-page div[aria-label]:not([role])").count(),

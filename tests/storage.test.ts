@@ -448,6 +448,142 @@ test("malformed whisparr block is rejected and never persisted; valid one round-
   assert.equal(saved?.apiKey, "new-key");
 });
 
+test("Discord settings extend an old config and survive restart encrypted", () => {
+  const dir = freshDir();
+  storage.bootstrap(
+    { ...testConfig(), providers: { tpdbApiToken: "synthetic-tpdb-token" } },
+    ownerUser(),
+    "jf-owner-token",
+  );
+  storage.closeStorage();
+  const original = storage.getConfig();
+  assert.ok(original);
+  assert.equal(original.discord, undefined);
+
+  const token = "synthetic-storage-webhook-token";
+  const discord = {
+    webhookUrl: `https://discord.com/api/webhooks/123456789012345678/${token}`,
+    includeTitles: false,
+  };
+  storage.saveConfig({ ...original, discord });
+  assert.deepEqual(storage.getConfig(), { ...original, discord });
+
+  // Inspect the live WAL before closeStorage checkpoints it.
+  for (const name of ["velvarr.sqlite", "velvarr.sqlite-wal"]) {
+    const bytes = readFileSync(join(dir, name));
+    assert.ok(
+      !bytes.includes(discord.webhookUrl),
+      `${name} exposes the webhook`,
+    );
+    assert.ok(!bytes.includes(token), `${name} exposes the webhook token`);
+  }
+  storage.closeStorage();
+  assert.deepEqual(storage.getConfig(), { ...original, discord });
+  const raw = dbFiles(dir);
+  assert.ok(!raw.includes(discord.webhookUrl));
+  assert.ok(!raw.includes(token));
+});
+
+test("invalid Discord settings fail without changes to stored config", () => {
+  freshDir();
+  storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  const original = storage.getConfig();
+  assert.ok(original);
+  const webhookUrl =
+    "https://discord.com/api/webhooks/123456789012345678/synthetic-validation-token";
+  storage.saveConfig({
+    ...original,
+    discord: { webhookUrl, includeTitles: true },
+  });
+  const saved = storage.getConfig();
+  const invalid: unknown[] = [
+    null,
+    [],
+    "",
+    1,
+    false,
+    { webhookUrl: "" },
+    { webhookUrl: null },
+    { webhookUrl: 123 },
+    { webhookUrl: false },
+    { webhookUrl: [] },
+    { webhookUrl: "not a URL" },
+    { webhookUrl: webhookUrl.replace("https:", "http:") },
+    { webhookUrl: webhookUrl.replace("discord.com", "example.org") },
+    {
+      webhookUrl: webhookUrl.replace("discord.com", "discord.com.example.org"),
+    },
+    { webhookUrl: webhookUrl.replace("discord.com", "discord.com:8443") },
+    { webhookUrl: webhookUrl.replace("discord.com", "user@discord.com") },
+    { webhookUrl: `${webhookUrl}?wait=true` },
+    { webhookUrl: `${webhookUrl}#fragment` },
+    { webhookUrl: `${webhookUrl}/extra` },
+    { webhookUrl: webhookUrl.replace("123456789012345678", "not-numeric") },
+    { webhookUrl: `${webhookUrl}${"x".repeat(2048)}` },
+    { includeTitles: null },
+    { includeTitles: "false" },
+    { includeTitles: 0 },
+    { includeTitles: [] },
+    { includeTitles: {} },
+  ];
+  for (const discord of invalid) {
+    assert.throws(
+      () => storage.saveConfig({ ...original, discord } as IntegrationConfig),
+      (e: AppError) => e.status === 400 && e.code === "invalid_config",
+    );
+    assert.deepEqual(storage.getConfig(), saved);
+  }
+  storage.closeStorage();
+  assert.deepEqual(storage.getConfig(), saved);
+});
+
+test("Discord fields save independently and preserve unrelated configuration", () => {
+  freshDir();
+  storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  const original = storage.getConfig();
+  assert.ok(original);
+  const webhookUrl =
+    "https://discordapp.com/api/webhooks/123456789012345678/synthetic-optional-token/";
+  for (const discord of [
+    {},
+    { includeTitles: false },
+    { includeTitles: true },
+    { webhookUrl },
+  ]) {
+    storage.saveConfig({ ...original, discord });
+    assert.deepEqual(storage.getConfig(), { ...original, discord });
+  }
+  storage.saveConfig(original);
+  assert.deepEqual(storage.getConfig(), original);
+});
+
+test("Discord title overrides accept booleans only", () => {
+  freshDir();
+  storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  const original = storage.getConfig();
+  assert.ok(original);
+  fc.assert(
+    fc.property(fc.jsonValue(), (includeTitles) => {
+      const config = {
+        ...original,
+        discord: { includeTitles },
+      } as IntegrationConfig;
+      if (typeof includeTitles === "boolean") {
+        storage.saveConfig(config);
+        assert.deepEqual(storage.getConfig(), config);
+      } else {
+        const saved = storage.getConfig();
+        assert.throws(
+          () => storage.saveConfig(config),
+          (e: AppError) => e.status === 400 && e.code === "invalid_config",
+        );
+        assert.deepEqual(storage.getConfig(), saved);
+      }
+    }),
+    { seed: 248, numRuns: 100, examples: [[false], [true], [null]] },
+  );
+});
+
 test("natural-language search settings are validated; a valid set round-trips", () => {
   freshDir();
   storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");

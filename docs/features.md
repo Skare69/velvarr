@@ -12,7 +12,8 @@
 - **Similar titles** for movies and scenes, and **Often appears with** for performers.
 - **Possible duplicate movies:** TPDB movie details compare hashes or cast, year, tags, duration, and poster similarity. Copy a manual report with both TPDB links.
 - **Update notice** when a newer GitHub release is available.
-- **Optional:** Discord notifications and [Smarter library matching](ai.md), through [TypeSafe](https://typesafe.ai) or an [Ollama](ai.md#ai-matching-with-ollama) decision model.
+- [Optional Discord notifications](configuration.md#discord-notifications) use Settings → Connections → Discord. Save changes without a restart. Checks never post channel messages.
+- **Optional:** [Smarter library matching](ai.md), through [TypeSafe](https://typesafe.ai) or an [Ollama](ai.md#ai-matching-with-ollama) decision model.
   AI flags possible matches between requested titles and differently named Jellyfin titles for administrator review.
   It also sorts similar titles on detail pages and suggests up to three real tags for search terms.
   It never marks a title as available.

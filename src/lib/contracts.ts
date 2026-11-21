@@ -682,6 +682,7 @@ export function isProseChatModel(value: unknown): value is string {
 export type ProseSearchStatus = "ready" | "not_configured" | "not_granted";
 
 export type IntegrationConfig = {
+  discord?: { webhookUrl?: string; includeTitles?: boolean };
   jellyfin: {
     url: string;
     externalUrl: string;

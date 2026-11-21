@@ -60,6 +60,12 @@ import {
   testProseChat,
 } from "../../../../server/prose-chat.ts";
 import { getWhisparrStatus } from "../../../../server/whisparr.ts";
+import {
+  discordConfiguration,
+  parseDiscordWebhook,
+  type DiscordCheck,
+} from "../../../../lib/discord-settings.ts";
+import { checkDiscordConnection } from "../../../../server/notify.ts";
 
 export function integrationsShape(config: IntegrationConfig) {
   return {
@@ -80,6 +86,7 @@ export function integrationsShape(config: IntegrationConfig) {
       : null,
     judgment: judgmentConfiguration(config.providers),
     proseChat: proseChatConfiguration(config.providers),
+    discord: discordConfiguration(config.discord),
     providers: {
       tpdb: providerShape(config.providers?.tpdbApiToken, "TPDB_API_TOKEN"),
       stashdb: providerShape(
@@ -685,27 +692,85 @@ function guardProviderClear(body: Record<string, unknown>): void {
   }
 }
 
+const DISCORD_SAVE_FIELDS = ["discordWebhookUrl", "discordIncludeTitles"];
+
+function discordWebhookField(
+  body: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = body[key];
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "string" ||
+    value.length > 2048 ||
+    (value !== "" && !parseDiscordWebhook(value))
+  )
+    throw new AppError(400, "invalid_field", "Invalid Discord webhook URL.");
+  return value;
+}
+
+function nextDiscord(
+  current: IntegrationConfig["discord"],
+  body: Record<string, unknown>,
+): IntegrationConfig["discord"] {
+  const webhookUrl = discordWebhookField(body, "discordWebhookUrl");
+  const includeTitles = body.discordIncludeTitles;
+  if (
+    includeTitles !== undefined &&
+    includeTitles !== null &&
+    typeof includeTitles !== "boolean"
+  )
+    throw new AppError(
+      400,
+      "invalid_field",
+      "Include titles must be a boolean or null.",
+    );
+  const discord = { ...current };
+  if (webhookUrl === "") delete discord.webhookUrl;
+  else if (webhookUrl !== undefined) discord.webhookUrl = webhookUrl;
+  if (includeTitles === null) delete discord.includeTitles;
+  else if (includeTitles !== undefined) discord.includeTitles = includeTitles;
+  return Object.keys(discord).length ? discord : undefined;
+}
+
+async function adminDiscordTest(
+  request: Request,
+  ctx: AuthContext,
+): Promise<Response> {
+  const body = await readAdminJson(request, ctx);
+  const webhookUrl = discordWebhookField(body, "webhookUrl");
+  const result: DiscordCheck = await checkDiscordConnection(
+    ctx.config.discord,
+    webhookUrl || undefined,
+  );
+  return json(result);
+}
+
 export async function adminUpdateIntegrations(
   request: Request,
   ctx: AuthContext,
 ): Promise<Response> {
   const body = await readAdminJson(request, ctx);
+  const discord = nextDiscord(ctx.config.discord, body);
   // Before any write: the guard compares against the live stored key and
   // must sit directly next to the synchronous provider-only saveConfig.
   guardProviderClear(body);
-  // Provider-only saves never touch Jellyfin/Whisparr: the provider card
-  // sends just its fields, and re-validating the Jellyfin connection would
-  // make provider keys uneditable whenever Jellyfin is briefly down.
+  // Provider and Discord saves need no Jellyfin/Whisparr probe.
+  // These cards must stay editable when another service is down.
   const bodyKeys = Object.keys(body);
   if (
     bodyKeys.length > 0 &&
-    bodyKeys.every((k) => PROVIDER_SAVE_FIELDS.includes(k))
+    bodyKeys.every(
+      (k) =>
+        PROVIDER_SAVE_FIELDS.includes(k) || DISCORD_SAVE_FIELDS.includes(k),
+    )
   ) {
     const providers = nextProviderCredentials(ctx.config.providers, body);
     const patched: IntegrationConfig = {
       jellyfin: ctx.config.jellyfin,
       ...(ctx.config.whisparr ? { whisparr: ctx.config.whisparr } : {}),
       ...(providers ? { providers } : {}),
+      ...(discord ? { discord } : {}),
     };
     saveConfig(patched);
     return json(integrationsShape(patched));
@@ -725,6 +790,7 @@ export async function adminUpdateIntegrations(
       jellyfin: ctx.config.jellyfin,
       ...(whisparr ? { whisparr } : {}),
       ...(ctx.config.providers ? { providers: ctx.config.providers } : {}),
+      ...(discord ? { discord } : {}),
     };
     saveConfig(patched);
     return json(integrationsShape(patched));
@@ -736,6 +802,7 @@ export async function adminUpdateIntegrations(
     jellyfin,
     ...(whisparr ? { whisparr } : {}),
     ...(providers ? { providers } : {}),
+    ...(discord ? { discord } : {}),
   };
   // The Jellyfin probe can hold this request for seconds, and readAdminJson's
   // live-admin check predates it. Re-check so a demotion or disable during
@@ -971,6 +1038,18 @@ export const routes: RouteDef[] = [
     segments: ["admin", "integrations"],
     auth: "admin",
     run: async (ctx) => json(integrationsShape(ctx.config)),
+  },
+  {
+    method: "GET",
+    segments: ["admin", "discord"],
+    auth: "admin",
+    run: async (ctx) => json(await checkDiscordConnection(ctx.config.discord)),
+  },
+  {
+    method: "POST",
+    segments: ["admin", "discord", "test"],
+    auth: "admin",
+    run: async (ctx, request) => adminDiscordTest(request, ctx),
   },
   {
     method: "GET",

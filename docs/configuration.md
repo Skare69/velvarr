@@ -9,8 +9,8 @@ Put the variables in `.env.local`.
 | `VELVARR_ORIGIN`              | no              | The public origin, for example behind a reverse proxy. Velvarr refuses changes from other origins. An `https:` origin marks the session cookie `Secure`. On plain HTTP, only a loopback address needs no flag; a private IP, a `.local` name, or a dotless name needs `VELVARR_ALLOW_HTTP=1`. |
 | `VELVARR_DATA_DIR`            | no              | Data directory. Default `./data`, and `/data` in the container. |
 | `VELVARR_ALLOW_HTTP`          | no              | `1` allows plain HTTP to private and Docker-network addresses. |
-| `VELVARR_DISCORD_WEBHOOK_URL` | no              | Private Discord webhook (https only). |
-| `VELVARR_DISCORD_DETAIL`      | no              | `1` adds titles to notifications. By default, messages contain only identities. |
+| `VELVARR_DISCORD_WEBHOOK_URL` | no              | Fallback Discord webhook URL. A saved webhook wins. See [Discord notifications](#discord-notifications). |
+| `VELVARR_DISCORD_DETAIL`      | no              | Fallback for Include titles. `1` adds titles. A saved switch value wins, including Off. Default messages contain only identities. |
 | `VELVARR_WHISPARR_LIBRARY_LIMIT_MIB` | no      | Maximum size in MiB of the Whisparr library list (`/api/v3/movie`), as decoded JSON. A whole number from 2 to 256. Default 32, about 5,000 titles. Increase it for a larger library. An invalid value stops the Whisparr path lookups with `bad_whisparr_config`. |
 | `TPDB_API_TOKEN`              | no              | TPDB token for calls made without a token saved in Settings. A saved token wins. |
 | `STASHDB_API_KEY`             | no              | StashDB key for calls made without a key saved in Settings. A saved key wins. |
@@ -37,3 +37,33 @@ Browsers send a cookie to all ports of a host. Thus another app on the same host
 Each failed sign-in writes one log line: `[auth] failed sign-in attempt: account="<name>" ip="<address>"`. The log never contains the password. The address is the first `X-Forwarded-For` entry, or `unknown`. A client can set this header. Trust the address only when your proxy replaces the header.
 
 After 5 wrong passwords for one name in 5 minutes, Velvarr refuses new sign-ins for that name until the 5 minutes end. A browser that signed in correctly before has a known-device cookie (`velvarr_device`, valid for 30 days, sent only to `/api/login`). That browser has its own limit of 5 wrong passwords, so wrong passwords from other clients do not block it. Open sessions continue to work.
+
+## Discord notifications
+
+Open Settings → Connections → Discord as an administrator. Save changes without a restart.
+Velvarr encrypts the saved webhook in its database. The URL field never shows a saved or environment webhook.
+After a save, the field stays blank. A blank field preserves the current webhook.
+
+Include titles defaults to Off, so notifications contain only identities.
+Each field uses its own saved value before its environment fallback:
+
+- The webhook uses the saved URL, then `VELVARR_DISCORD_WEBHOOK_URL`.
+- Include titles uses the saved switch value, then `VELVARR_DISCORD_DETAIL`. Only `1` enables titles through the environment.
+- A saved Off overrides `VELVARR_DISCORD_DETAIL=1`. You can save the switch without a saved webhook.
+
+Clear stored credential requires confirmation. It removes only the saved webhook, so the environment webhook applies if present.
+It does not change Include titles.
+Use environment settings clears both saved overrides after confirmation. Each field then uses its environment fallback.
+
+Check connection checks the typed URL, or the effective webhook if the field is blank.
+It saves no draft changes. Checks use only GET requests to Discord and never post visible channel messages.
+Save, clear, and environment reset also check the effective connection.
+A failed check never clears the webhook.
+
+Use an HTTPS URL on `discord.com` or `discordapp.com`.
+The path must match `/api/webhooks/{numeric-id}/{token}`, with an optional final slash.
+The token accepts only letters, digits, dots, underscores, and hyphens.
+The URL must not exceed 2048 characters.
+Velvarr rejects user info, non-default ports, query strings, fragments, and extra path segments.
+Plain HTTP and loopback URLs do not qualify, even with `VELVARR_ALLOW_HTTP=1`.
+Discord requests disable redirects and use a five-second timeout.

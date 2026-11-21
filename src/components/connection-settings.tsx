@@ -41,6 +41,7 @@ import {
   type ConnectionStateLabel,
   type SettingsOperations,
 } from "./settings-service.tsx";
+import { DiscordSettings } from "./discord-settings.tsx";
 
 type SaveConnection = (body: ConnectionPatch) => Promise<ConnectionsInfo>;
 export function ConnectionsSettings({
@@ -49,6 +50,7 @@ export function ConnectionsSettings({
   runOperation,
 }: SettingsOperations & { onForbidden: () => void }) {
   const [jellyfinEditing, setJellyfinEditing] = useState(false);
+  const [whisparrEditing, setWhisparrEditing] = useState(false);
   const { info, loadError, load, save, unavailable } =
     useSettingsConfiguration<ConnectionsInfo>({ runOperation, onForbidden });
 
@@ -67,7 +69,7 @@ export function ConnectionsSettings({
           service={service}
           primaryAction={service === "jellyfin" || !jellyfinEditing}
           onEditingChange={
-            service === "jellyfin" ? setJellyfinEditing : undefined
+            service === "jellyfin" ? setJellyfinEditing : setWhisparrEditing
           }
           info={info}
           configurationUnavailable={unavailable}
@@ -77,6 +79,12 @@ export function ConnectionsSettings({
           onForbidden={onForbidden}
         />
       ))}
+      <DiscordSettings
+        saving={saving}
+        runOperation={runOperation}
+        onForbidden={onForbidden}
+        primaryAction={!jellyfinEditing && !whisparrEditing}
+      />
     </>
   );
 }

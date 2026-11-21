@@ -58,6 +58,7 @@ import type {
   RequestStatusFilter,
   RequestTypeFilter,
 } from "../lib/decisions.ts";
+import { parseDiscordWebhook } from "../lib/discord-settings.ts";
 
 // Schema identity: application_id spells 'VLVR', user_version is the schema version.
 const APP_ID = 0x564c5652;
@@ -1172,6 +1173,24 @@ function assertConfigShape(config: IntegrationConfig): void {
         400,
         "invalid_config",
         "Whisparr path mappings are incomplete",
+      );
+    }
+  }
+  if (config.discord !== undefined) {
+    const d = config.discord;
+    if (
+      typeof d !== "object" ||
+      d === null ||
+      Array.isArray(d) ||
+      (d.webhookUrl !== undefined &&
+        (typeof d.webhookUrl !== "string" ||
+          !parseDiscordWebhook(d.webhookUrl))) ||
+      (d.includeTitles !== undefined && typeof d.includeTitles !== "boolean")
+    ) {
+      throw new AppError(
+        400,
+        "invalid_config",
+        "Discord configuration is invalid",
       );
     }
   }

@@ -1,233 +1,276 @@
-// Discord notifier tests against a local HTTP fixture only: no real Discord,
-// no external network. Env is pinned per test and restored in a finally, and
-// console output is captured so the destination URL/token can never pass
-// through a log line unnoticed.
-
+// Synthetic HTTPS fetch interception only. No Discord request reaches the network.
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { after, afterEach, beforeEach, test } from "node:test";
+import "./setup.ts";
 import {
-  createServer,
-  type IncomingMessage,
-  type Server,
-  type ServerResponse,
-} from "node:http";
-import type { AddressInfo } from "node:net";
-import { notifyRequestEvent } from "../src/server/notify.ts";
+  checkDiscordConnection,
+  notifyRequestEvent,
+} from "../src/server/notify.ts";
+import {
+  bootstrap,
+  closeStorage,
+  getConfig,
+  isInitialized,
+  saveConfig,
+} from "../src/server/storage.ts";
+import type { IntegrationConfig } from "../src/lib/contracts.ts";
 
-// --- fixture webhook ---------------------------------------------------
-
-const TOKEN = "fixture-token-segment-9f8e7d6c";
-const TITLE = "Private Scene Title";
+const WEBHOOK =
+  "https://discord.com/api/webhooks/1234567890/synthetic-notify-token";
+const STORED =
+  "https://discordapp.com/api/webhooks/1234567890/synthetic-stored-token";
 const EVENT = {
   kind: "acquired" as const,
-  media: {
-    provider: "tpdb",
-    kind: "scene",
-    id: "0f0f0f0f-1111-4222-8333-444455556666",
-  },
-  title: TITLE,
+  media: { provider: "tpdb", kind: "movie", id: "fixture-id" },
+  title: "Private Scene Title",
 };
-
-type Capture = { method: string; body: Record<string, unknown> };
-let requests: Capture[] = [];
-let mode: "ok" | "error" | "hang" = "ok";
-
-async function handle(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
-  let raw = "";
-  req.setEncoding("utf8");
-  for await (const chunk of req) raw += chunk;
-  requests.push({
-    method: req.method ?? "",
-    body: JSON.parse(raw) as Record<string, unknown>,
-  });
-  if (mode === "hang") return; // never responds: exercises the timeout path
-  res.statusCode = mode === "error" ? 500 : 204;
-  res.end();
-}
-
-const server: Server = createServer((req, res) => {
-  void handle(req, res);
+const originalFetch = globalThis.fetch;
+const originalWarn = console.warn;
+const originalUrl = process.env.VELVARR_DISCORD_WEBHOOK_URL;
+const originalDetail = process.env.VELVARR_DISCORD_DETAIL;
+const originalSecretKey = process.env.VELVARR_SECRET_KEY;
+const calls: { url: string; init: RequestInit }[] = [];
+const logs: string[] = [];
+let handler: (init: RequestInit) => Promise<Response>;
+const config: IntegrationConfig = {
+  jellyfin: {
+    url: "http://127.0.0.1:8096",
+    externalUrl: "https://media.example.org",
+    apiKey: "synthetic-jellyfin-key",
+    serverId: "0123456789abcdef0123456789abcdef",
+    libraryIds: [],
+  },
+};
+beforeEach(() => {
+  calls.length = 0;
+  logs.length = 0;
+  delete process.env.VELVARR_DISCORD_WEBHOOK_URL;
+  delete process.env.VELVARR_DISCORD_DETAIL;
+  // Synthetic encryption material for this isolated test database only.
+  process.env.VELVARR_SECRET_KEY = "33".repeat(32);
+  if (isInitialized()) saveConfig(config);
+  else
+    bootstrap(
+      config,
+      {
+        id: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
+        name: "Synthetic Owner",
+        isDisabled: false,
+        enableRemoteAccess: true,
+        enableMediaPlayback: true,
+        isAdministrator: true,
+      },
+      "synthetic-owner-token",
+    );
+  assert.deepEqual(getConfig(), config);
+  console.warn = (...args: unknown[]) => {
+    logs.push(args.join(" "));
+  };
+  handler = async () => new Response(null, { status: 204 });
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    assert.ok(
+      [WEBHOOK, STORED].includes(url),
+      "Unexpected destination must never reach a real network",
+    );
+    assert.equal(init.redirect, "error");
+    assert.ok(init.signal);
+    calls.push({ url, init });
+    return handler(init);
+  };
 });
-await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-const WEBHOOK = `http://127.0.0.1:${
-  (server.address() as AddressInfo).port
-}/api/webhooks/1234567890/${TOKEN}`;
-
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+  console.warn = originalWarn;
+  if (originalUrl === undefined) delete process.env.VELVARR_DISCORD_WEBHOOK_URL;
+  else process.env.VELVARR_DISCORD_WEBHOOK_URL = originalUrl;
+  if (originalDetail === undefined) delete process.env.VELVARR_DISCORD_DETAIL;
+  else process.env.VELVARR_DISCORD_DETAIL = originalDetail;
+  assert.ok(!logs.join(" ").includes("synthetic-"));
+  assert.ok(!logs.join(" ").includes("https://"));
+});
 after(() => {
-  server.closeAllConnections();
-  server.close();
+  closeStorage();
+  if (originalSecretKey === undefined) delete process.env.VELVARR_SECRET_KEY;
+  else process.env.VELVARR_SECRET_KEY = originalSecretKey;
 });
 
-// --- helpers ------------------------------------------------------------
-
-/** Plain-http loopback is the only non-Discord destination the module
- * accepts, precisely so this fixture can exercise the real send path. */
-function pinEnv(webhook: string | undefined, detail?: string): void {
-  if (webhook === undefined) delete process.env.VELVARR_DISCORD_WEBHOOK_URL;
-  else process.env.VELVARR_DISCORD_WEBHOOK_URL = webhook;
-  if (detail === undefined) delete process.env.VELVARR_DISCORD_DETAIL;
-  else process.env.VELVARR_DISCORD_DETAIL = detail;
+function body(index = 0) {
+  const call = calls[index];
+  assert.ok(call, `Expected captured call at index ${index}`);
+  return JSON.parse(String(call.init.body));
 }
 
-async function captureLogs(run: () => Promise<void>): Promise<string[]> {
-  const lines: string[] = [];
-  const warn = console.warn;
-  const error = console.error;
-  console.warn = (...args: unknown[]) => lines.push(args.map(String).join(" "));
-  console.error = console.warn;
-  try {
-    await run();
-  } finally {
-    console.warn = warn;
-    console.error = error;
-  }
-  return lines;
-}
-
-function assertNoDestination(lines: string[]): void {
-  for (const line of lines) {
-    assert.ok(!line.includes(TOKEN), `log leaked token: ${line}`);
-    assert.ok(!line.includes("api/webhooks"), `log leaked URL path: ${line}`);
-  }
-}
-
-// --- tests --------------------------------------------------------------
-
-test("unset env is a silent no-op with zero requests", async () => {
-  requests = [];
-  mode = "ok";
-  try {
-    pinEnv(undefined);
-    await captureLogs(() => notifyRequestEvent(EVENT));
-    assert.equal(requests.length, 0);
-  } finally {
-    pinEnv(undefined);
-  }
-});
-
-test("configured webhook posts once, identity-only, without the title", async () => {
-  requests = [];
-  mode = "ok";
-  try {
-    pinEnv(WEBHOOK);
+test("absent config is silent and bad local URLs never fetch", async () => {
+  await notifyRequestEvent(EVENT);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(logs, []);
+  for (const raw of [
+    "http://127.0.0.1/api/webhooks/123/token",
+    WEBHOOK + "/extra",
+    "https://evil.example/api/webhooks/123/token",
+  ]) {
+    process.env.VELVARR_DISCORD_WEBHOOK_URL = raw;
     await notifyRequestEvent(EVENT);
-    assert.equal(requests.length, 1);
-    const first = requests[0];
-    assert.ok(first, "fixture received one request");
-    assert.equal(first.method, "POST");
-    const content = String(first.body.content ?? "");
-    for (const part of ["acquired", "scene", "tpdb", EVENT.media.id])
-      assert.ok(content.includes(part), `content missing ${part}: ${content}`);
-    assert.equal(first.body.embeds, undefined);
-    assert.ok(!JSON.stringify(first.body).includes(TITLE));
-  } finally {
-    pinEnv(undefined);
+    const result = await checkDiscordConnection();
+    assert.equal(result.error?.code, "invalid_config");
+    assert.ok(!JSON.stringify(result).includes(raw));
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("identity-only notification preserves both event contracts", async () => {
+  process.env.VELVARR_DISCORD_WEBHOOK_URL = WEBHOOK;
+  for (const kind of ["acquired", "available"] as const)
+    await notifyRequestEvent({ ...EVENT, kind });
+  assert.equal(calls.length, 2);
+  const firstCall = calls[0];
+  assert.ok(firstCall, "Expected the first notification request");
+  assert.equal(firstCall.init.method, "POST");
+  assert.deepEqual(body(), {
+    content: "Velvarr acquired: movie tpdb/fixture-id",
+  });
+  assert.deepEqual(body(1), {
+    content: "Velvarr available: movie tpdb/fixture-id",
+  });
+});
+
+test("title mode caps title at 256 and omits absent titles", async () => {
+  process.env.VELVARR_DISCORD_WEBHOOK_URL = WEBHOOK;
+  process.env.VELVARR_DISCORD_DETAIL = "1";
+  await notifyRequestEvent({ ...EVENT, title: "x".repeat(300) });
+  await notifyRequestEvent({ ...EVENT, title: undefined });
+  assert.deepEqual(body(), {
+    embeds: [
+      {
+        title: "x".repeat(256),
+        description: "Velvarr acquired: movie tpdb/fixture-id",
+      },
+    ],
+  });
+  assert.deepEqual(body(1), {
+    embeds: [{ description: "Velvarr acquired: movie tpdb/fixture-id" }],
+  });
+});
+
+test("each event reads the current save and false overrides environment true", async () => {
+  process.env.VELVARR_DISCORD_WEBHOOK_URL = WEBHOOK;
+  process.env.VELVARR_DISCORD_DETAIL = "1";
+  await notifyRequestEvent(EVENT);
+  saveConfig({
+    ...config,
+    discord: { webhookUrl: STORED, includeTitles: false },
+  });
+  await notifyRequestEvent(EVENT);
+  saveConfig({ ...config, discord: { includeTitles: false } });
+  await notifyRequestEvent(EVENT);
+  assert.deepEqual(
+    calls.map((call) => call.url),
+    [WEBHOOK, STORED, WEBHOOK],
+  );
+  assert.equal(body().embeds[0].title, EVENT.title);
+  assert.equal(body(1).content, "Velvarr acquired: movie tpdb/fixture-id");
+  assert.ok(!("embeds" in body(2)));
+});
+
+test("GET checks saved, draft and fallback without persistence or visible messages", async () => {
+  process.env.VELVARR_DISCORD_WEBHOOK_URL = WEBHOOK;
+  handler = async () =>
+    Response.json({
+      id: "1234567890",
+      type: 1,
+      channel_id: "999",
+      token: "synthetic-response-secret",
+    });
+  const saved = { webhookUrl: STORED, includeTitles: false };
+  const before = getConfig();
+  assert.deepEqual(await checkDiscordConnection(saved), { configured: true });
+  assert.deepEqual(await checkDiscordConnection(saved, WEBHOOK), {
+    configured: true,
+  });
+  assert.deepEqual(await checkDiscordConnection(undefined, ""), {
+    configured: true,
+  });
+  assert.deepEqual(
+    calls.map((call) => call.url),
+    [STORED, WEBHOOK, WEBHOOK],
+  );
+  assert.ok(
+    calls.every(
+      (call) => call.init.method === "GET" && call.init.body === undefined,
+    ),
+  );
+  assert.deepEqual(getConfig(), before);
+});
+
+test("checks reject missing config, HTTP failures, malformed and oversized webhook info", async () => {
+  assert.deepEqual(await checkDiscordConnection(), { configured: false });
+  for (const response of [
+    new Response("synthetic-response-secret", { status: 401 }),
+    new Response("not JSON"),
+    Response.json({ id: "wrong", type: 1, channel_id: "999" }),
+    Response.json({ id: "1234567890", type: 2, channel_id: "999" }),
+    Response.json({ id: "1234567890", type: 1 }),
+    new Response("x".repeat(65_537)),
+  ]) {
+    handler = async () => response;
+    const result = await checkDiscordConnection(undefined, WEBHOOK);
+    assert.ok(result.error);
+    assert.ok(!JSON.stringify(result).includes("synthetic"));
+    assert.ok(!JSON.stringify(result).includes(WEBHOOK));
   }
 });
 
-test("detail mode includes the title", async () => {
-  requests = [];
-  mode = "ok";
-  try {
-    pinEnv(WEBHOOK, "1");
-    await notifyRequestEvent(EVENT);
-    assert.equal(requests.length, 1);
-    const sent = requests[0];
-    assert.ok(sent, "fixture received one request");
-    const embeds = sent.body.embeds as
-      { title?: string; description?: string }[] | undefined;
-    const embed = embeds?.[0];
-    assert.equal(embed?.title, TITLE);
-    assert.ok(embed?.description?.includes(EVENT.media.id));
-    assert.equal(sent.body.content, undefined);
-  } finally {
-    pinEnv(undefined);
-  }
+test("HTTP and URL-containing network errors cannot escape notifier or check status", async () => {
+  process.env.VELVARR_DISCORD_WEBHOOK_URL = WEBHOOK;
+  handler = async () => new Response("private upstream body", { status: 500 });
+  await notifyRequestEvent(EVENT);
+  assert.equal(
+    (await checkDiscordConnection()).error?.code,
+    "discord_http_error",
+  );
+  handler = async () => {
+    throw new Error(`Failed to fetch ${WEBHOOK}`);
+  };
+  await notifyRequestEvent(EVENT);
+  assert.deepEqual(await checkDiscordConnection(), {
+    configured: true,
+    error: {
+      code: "discord_unreachable",
+      message: "The Discord connection failed.",
+    },
+  });
 });
 
-test("a 300-character title posts an embed title of at most 256 characters", async () => {
-  requests = [];
-  mode = "ok";
-  try {
-    pinEnv(WEBHOOK, "1");
-    const long = "x".repeat(300);
-    await notifyRequestEvent({ ...EVENT, title: long });
-    assert.equal(requests.length, 1);
-    const sent = requests[0];
-    assert.ok(sent, "fixture received one request");
-    const embeds = sent.body.embeds as
-      { title?: string; description?: string }[] | undefined;
-    const title = embeds?.[0]?.title;
-    assert.ok(typeof title === "string", "embed title present");
-    assert.ok(title.length <= 256, `title length ${title.length} > 256`);
-  } finally {
-    pinEnv(undefined);
-  }
-});
-
-test("non-Discord or non-https destinations are refused without a request", async () => {
-  requests = [];
-  mode = "ok";
-  try {
-    for (const bad of [
-      "https://example.com/api/webhooks/123/tok",
-      "http://discord.com/api/webhooks/123/tok",
-      "ftp://discord.com/api/webhooks/123/tok",
-      "not-a-url",
-    ]) {
-      pinEnv(bad);
-      const lines = await captureLogs(() => notifyRequestEvent(EVENT));
-      assert.equal(requests.length, 0);
-      assert.ok(lines.length > 0, "refusal should warn without the URL");
-      assertNoDestination(lines);
+test(
+  "five-second abort bounds notification and check requests",
+  { timeout: 15_000 },
+  async () => {
+    process.env.VELVARR_DISCORD_WEBHOOK_URL = WEBHOOK;
+    handler = async (init) => {
+      const { promise, reject } = Promise.withResolvers<Response>();
+      init.signal!.addEventListener(
+        "abort",
+        () => reject(init.signal!.reason),
+        { once: true },
+      );
+      return promise;
+    };
+    const start = Date.now();
+    // Native AbortSignal.timeout uses an unref timer outside node:test fake timers.
+    // Keep the process alive while this one integration test awaits its real abort.
+    const keepAlive = setTimeout(() => {}, 14_000);
+    let result;
+    try {
+      [, result] = await Promise.all([
+        notifyRequestEvent(EVENT),
+        checkDiscordConnection(),
+      ]);
+    } finally {
+      clearTimeout(keepAlive);
     }
-  } finally {
-    pinEnv(undefined);
-  }
-});
-
-test("an upstream 500 resolves without throwing and logs no URL", async () => {
-  requests = [];
-  mode = "error";
-  try {
-    pinEnv(WEBHOOK);
-    const lines = await captureLogs(() => notifyRequestEvent(EVENT));
-    assert.equal(requests.length, 1, "no retry after a failed response");
-    assertNoDestination(lines);
-  } finally {
-    pinEnv(undefined);
-  }
-});
-
-test("a hanging webhook resolves at the timeout without throwing", async () => {
-  requests = [];
-  mode = "hang";
-  try {
-    pinEnv(WEBHOOK);
-    const lines = await captureLogs(() => notifyRequestEvent(EVENT));
-    assert.equal(requests.length, 1);
-    assertNoDestination(lines);
-  } finally {
-    pinEnv(undefined);
-  }
-});
-
-test("a network error resolves silently without throwing", async () => {
-  requests = [];
-  mode = "ok";
-  try {
-    const dead: Server = createServer(() => {});
-    await new Promise<void>((resolve) => dead.listen(0, "127.0.0.1", resolve));
-    const port = (dead.address() as AddressInfo).port;
-    await new Promise<void>((resolve) => dead.close(() => resolve()));
-    pinEnv(`http://127.0.0.1:${port}/api/webhooks/1/tok`);
-    const lines = await captureLogs(() => notifyRequestEvent(EVENT));
-    assert.equal(requests.length, 0);
-    assertNoDestination(lines);
-  } finally {
-    pinEnv(undefined);
-  }
-});
+    assert.equal(result.error?.code, "discord_timeout");
+    assert.ok(Date.now() - start >= 4_500);
+    assert.equal(calls.length, 2);
+  },
+);

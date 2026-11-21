@@ -33,6 +33,10 @@ import {
 import { catalogImageUrl, normalizeFacetName } from "../src/lib/contracts.ts";
 import type { IntegrationConfig, ProviderCheck } from "../src/lib/contracts.ts";
 import type { DuplicateMoviesResponse } from "../src/lib/contracts.ts";
+import type {
+  DiscordCheck,
+  DiscordSettingsInfo,
+} from "../src/lib/discord-settings.ts";
 import {
   DISCOVER_CACHE_TTL_MS,
   releasesCacheKey,
@@ -14117,5 +14121,315 @@ test("prose search: the block restores the chat settings, the grant and the fixt
     proseChat = undefined;
     proseChatOther = undefined;
     proseRestore = undefined;
+  }
+});
+
+// These URLs and tokens are synthetic. The fetch fixture matches them exactly.
+const DISCORD_SAVED =
+  "https://discord.com/api/webhooks/123456789/fixture_saved_token";
+const DISCORD_ENV =
+  "https://discordapp.com/api/webhooks/987654321/fixture_env_token";
+const DISCORD_DRAFT =
+  "https://discord.com/api/webhooks/456789123/fixture_draft_token";
+
+test("Discord settings require admin admission and same-origin mutations", async () => {
+  await boot();
+  const admin = await loginAs("owner");
+  const requester = await loginAs("member");
+  const original = getConfig()!;
+  try {
+    for (const [method, path, body] of [
+      ["GET", "/api/admin/discord", undefined],
+      ["POST", "/api/admin/discord/test", {}],
+      ["PATCH", "/api/admin/integrations", { discordIncludeTitles: false }],
+    ] as const) {
+      for (const [cookie, status] of [
+        [undefined, 401],
+        [requester, 403],
+      ] as const) {
+        const response = await call(method, path, { cookie, body });
+        assert.equal(response.status, status);
+        await errorShape(response);
+      }
+      if (method !== "GET") {
+        for (const origin of [null, "https://foreign.example.test"]) {
+          const response = await call(method, path, {
+            cookie: admin,
+            origin,
+            body,
+          });
+          assert.equal(response.status, 403);
+          await errorShape(response);
+        }
+      }
+    }
+    assert.deepEqual(getConfig(), original);
+  } finally {
+    saveConfig(original);
+  }
+});
+
+test("Discord settings validate strict URLs and types without secret echoes", async () => {
+  await boot();
+  const admin = await loginAs("owner");
+  const original = getConfig()!;
+  const invalidUrls: unknown[] = [
+    null,
+    false,
+    12,
+    {},
+    [],
+    "http://discord.com/api/webhooks/123/fixture_secret",
+    "https://discord.com.evil.test/api/webhooks/123/fixture_secret",
+    "https://user:fixture_secret@discord.com/api/webhooks/123/token",
+    "https://discord.com:444/api/webhooks/123/fixture_secret",
+    `${DISCORD_SAVED}?fixture_secret=1`,
+    `${DISCORD_SAVED}#fixture_secret`,
+    `${DISCORD_SAVED}/extra`,
+    "https://discord.com/api/webhooks/notnumeric/fixture_secret",
+    "https://discord.com/api/webhooks/123/fixture%2Fsecret",
+    `https://discord.com/api/webhooks/123/${"x".repeat(2048)}`,
+  ];
+  try {
+    for (const value of invalidUrls) {
+      resetRateBuckets();
+      for (const [method, path, field] of [
+        ["PATCH", "/api/admin/integrations", "discordWebhookUrl"],
+        ["POST", "/api/admin/discord/test", "webhookUrl"],
+      ] as const) {
+        const response = await call(method, path, {
+          cookie: admin,
+          body: { [field]: value },
+        });
+        assert.equal(response.status, 400);
+        const error = await errorShape(response);
+        assert.equal(error.code, "invalid_field");
+        assert.equal(JSON.stringify(error).includes("fixture_secret"), false);
+        assert.equal(
+          JSON.stringify(error).includes("fixture_saved_token"),
+          false,
+        );
+      }
+    }
+    for (const value of [0, 1, "false", [], {}]) {
+      const response = await call("PATCH", "/api/admin/integrations", {
+        cookie: admin,
+        body: { discordIncludeTitles: value },
+      });
+      assert.equal(response.status, 400);
+      assert.equal((await errorShape(response)).code, "invalid_field");
+    }
+    await fc.assert(
+      fc.asyncProperty(fc.stringMatching(/^[a-z]{1,16}$/), async (suffix) => {
+        resetRateBuckets();
+        const response = await call("PATCH", "/api/admin/integrations", {
+          cookie: admin,
+          body: {
+            discordWebhookUrl: `https://discord.com.${suffix}/api/webhooks/123/fixture_secret`,
+          },
+        });
+        assert.equal(response.status, 400);
+        assert.equal((await errorShape(response)).code, "invalid_field");
+      }),
+      { seed: 248, numRuns: 100 },
+    );
+    assert.deepEqual(getConfig(), original);
+  } finally {
+    saveConfig(original);
+  }
+});
+
+test("Discord independent overrides, GET-only draft checks, redaction and other service saves", async () => {
+  await boot();
+  const admin = await loginAs("owner");
+  const original = getConfig()!;
+  const previousUrl = process.env.VELVARR_DISCORD_WEBHOOK_URL;
+  const previousDetail = process.env.VELVARR_DISCORD_DETAIL;
+  const originalFetch = globalThis.fetch;
+  const hits: {
+    url: string;
+    method: string;
+    redirect: RequestRedirect | undefined;
+  }[] = [];
+  let failure: "http" | "network" | "malformed" | undefined;
+  globalThis.fetch = (async (input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (![DISCORD_SAVED, DISCORD_ENV, DISCORD_DRAFT].includes(url))
+      return originalFetch(input, init);
+    hits.push({ url, method: init?.method ?? "GET", redirect: init?.redirect });
+    if (failure === "network") throw new Error(`private fetch failure ${url}`);
+    if (failure === "http")
+      return new Response(`private upstream ${url}`, { status: 401 });
+    if (failure === "malformed") return Response.json({ privateMetadata: url });
+    return Response.json({
+      id: new URL(url).pathname.split("/")[3],
+      type: 1,
+      token: new URL(url).pathname.split("/")[4],
+      channel_id: "123456789",
+      name: "private_name",
+    });
+  }) as typeof fetch;
+  const patch = (body: Record<string, unknown>) =>
+    call("PATCH", "/api/admin/integrations", { cookie: admin, body });
+  const summary = async (response: Response) => {
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    for (const secret of [
+      DISCORD_SAVED,
+      DISCORD_ENV,
+      DISCORD_DRAFT,
+      "fixture_saved_token",
+      "fixture_env_token",
+      "fixture_draft_token",
+    ])
+      assert.equal(text.includes(secret), false);
+    const body = JSON.parse(text) as { discord: DiscordSettingsInfo };
+    return body.discord;
+  };
+  const check = async (
+    path = "/api/admin/discord",
+    body?: Record<string, unknown>,
+  ) => {
+    const response = await call(body ? "POST" : "GET", path, {
+      cookie: admin,
+      body,
+    });
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    for (const secret of [
+      "fixture_saved_token",
+      "fixture_env_token",
+      "fixture_draft_token",
+      "private_channel",
+      "private_name",
+      "private fetch",
+    ])
+      assert.equal(text.includes(secret), false);
+    return JSON.parse(text) as DiscordCheck;
+  };
+  try {
+    process.env.VELVARR_DISCORD_WEBHOOK_URL = DISCORD_ENV;
+    process.env.VELVARR_DISCORD_DETAIL = "1";
+    saveConfig({ ...original, discord: undefined });
+    assert.deepEqual(
+      await summary(
+        await call("GET", "/api/admin/integrations", { cookie: admin }),
+      ),
+      {
+        configured: true,
+        source: "environment",
+        stored: false,
+        includeTitles: true,
+        includeTitlesSource: "environment",
+      },
+    );
+    fx.journal.length = 0;
+    fx.journalOn = true;
+    const titleOnly = await summary(
+      await patch({ discordIncludeTitles: false }),
+    );
+    fx.journalOn = false;
+    assert.equal(titleOnly.includeTitles, false);
+    assert.equal(titleOnly.includeTitlesSource, "stored");
+    assert.equal(titleOnly.source, "environment");
+    assert.deepEqual(getConfig()!.discord, { includeTitles: false });
+    assert.deepEqual(
+      fx.journal.filter(
+        (r) =>
+          r.path === "/Users" ||
+          r.path.startsWith("/System/Info") ||
+          r.path.startsWith("/api/v3/"),
+      ),
+      [],
+    );
+    assert.equal(hits.length, 0, "a save does not probe any Discord endpoint");
+
+    const stored = await summary(
+      await patch({ discordWebhookUrl: DISCORD_SAVED }),
+    );
+    assert.equal(stored.source, "stored");
+    assert.equal(stored.includeTitles, false);
+    const savedDiscord = getConfig()!.discord;
+    for (const body of [
+      { tpdbApiToken: "fixture_provider_value" },
+      { whisparrUrl, whisparrApiKey: whisparrKey },
+      { jellyfinUrl, jellyfinExternalUrl: jellyfinUrl },
+      {
+        jellyfinUrl,
+        jellyfinExternalUrl: jellyfinUrl,
+        whisparrUrl,
+        whisparrApiKey: whisparrKey,
+        tpdbApiToken: "fixture_provider_value",
+      },
+    ]) {
+      await summary(await patch(body));
+      assert.deepEqual(getConfig()!.discord, savedDiscord);
+    }
+    assert.deepEqual(await check(), { configured: true });
+    assert.equal(hits.at(-1)?.url, DISCORD_SAVED);
+    const beforeDraft = getConfig();
+    assert.deepEqual(
+      await check("/api/admin/discord/test", { webhookUrl: DISCORD_DRAFT }),
+      { configured: true },
+    );
+    assert.equal(hits.at(-1)?.url, DISCORD_DRAFT);
+    assert.deepEqual(getConfig(), beforeDraft);
+    for (const body of [{}, { webhookUrl: "" }]) {
+      assert.deepEqual(await check("/api/admin/discord/test", body), {
+        configured: true,
+      });
+      assert.equal(hits.at(-1)?.url, DISCORD_SAVED);
+    }
+    for (const mode of ["http", "network", "malformed"] as const) {
+      failure = mode;
+      const result = await check();
+      assert.ok(result.error?.code);
+      assert.ok(result.error?.message);
+      assert.deepEqual(getConfig(), beforeDraft);
+    }
+    failure = undefined;
+    const titleReset = await summary(
+      await patch({ discordIncludeTitles: null }),
+    );
+    assert.equal(titleReset.source, "stored");
+    assert.equal(titleReset.includeTitlesSource, "environment");
+    assert.equal(titleReset.includeTitles, true);
+    assert.deepEqual(getConfig()!.discord, { webhookUrl: DISCORD_SAVED });
+    const titleOn = await summary(await patch({ discordIncludeTitles: true }));
+    assert.equal(titleOn.includeTitlesSource, "stored");
+    assert.equal(titleOn.includeTitles, true);
+    await summary(await patch({ discordIncludeTitles: false }));
+    const cleared = await summary(await patch({ discordWebhookUrl: "" }));
+    assert.equal(cleared.source, "environment");
+    assert.equal(cleared.includeTitles, false);
+    assert.equal(cleared.includeTitlesSource, "stored");
+    assert.deepEqual(getConfig()!.discord, { includeTitles: false });
+    await check();
+    assert.equal(hits.at(-1)?.url, DISCORD_ENV);
+    await patch({ discordWebhookUrl: DISCORD_SAVED });
+    const reset = await summary(
+      await patch({ discordWebhookUrl: "", discordIncludeTitles: null }),
+    );
+    assert.equal(reset.source, "environment");
+    assert.equal(reset.includeTitles, true);
+    assert.equal(reset.includeTitlesSource, "environment");
+    assert.equal(reset.stored, false);
+    assert.equal(getConfig()!.discord, undefined);
+    delete process.env.VELVARR_DISCORD_WEBHOOK_URL;
+    const absent = await check();
+    assert.deepEqual(absent, { configured: false });
+    assert.ok(hits.length > 0);
+    assert.ok(
+      hits.every((hit) => hit.method === "GET" && hit.redirect === "error"),
+    );
+  } finally {
+    fx.journalOn = false;
+    globalThis.fetch = originalFetch;
+    if (previousUrl === undefined)
+      delete process.env.VELVARR_DISCORD_WEBHOOK_URL;
+    else process.env.VELVARR_DISCORD_WEBHOOK_URL = previousUrl;
+    if (previousDetail === undefined) delete process.env.VELVARR_DISCORD_DETAIL;
+    else process.env.VELVARR_DISCORD_DETAIL = previousDetail;
+    saveConfig(original);
   }
 });
