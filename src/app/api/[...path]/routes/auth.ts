@@ -145,21 +145,20 @@ function signedIn(request: Request, grant: SessionGrant, name: string) {
 // window.
 const SETUP_COMPARE_GLOBAL_LIMIT = 30;
 
-// The source address the setup limiter keys on: one the client cannot
-// choose. Next writes the socket address into an absent X-Forwarded-For
-// before the handler runs, so a request without the header keys on its
-// own peer address (the test harness, which has no Next in front, shares
-// "unknown" for that shape). A request that CARRIES the header supplied
-// it, so without a trusted proxy it names nothing: every such request
-// shares the one "unverified" bucket, and rotating values mint no keys.
-// VELVARR_TRUSTED_PROXY=1 marks the nearest reverse proxy as one that
-// appends to X-Forwarded-For (nginx's proxy_add_x_forwarded_for): the
-// last header entry is then the client address the proxy vouched for,
-// and that is the key.
+// The source address the setup limiter keys on. Next writes the socket
+// address into an ABSENT X-Forwarded-For, and a client or proxy can
+// supply a PRESENT one; the handler cannot tell the two apart, so there
+// is no trustworthy per-client key without configuration. Without
+// VELVARR_TRUSTED_PROXY every setup attempt therefore keys on the one
+// shared "unverified" bucket: spoofed-header rotation mints no keys, and
+// a flood can deny that shared source for at most one window (the
+// disclosed residual of direct exposure). VELVARR_TRUSTED_PROXY=1 marks
+// the nearest reverse proxy as one that appends to X-Forwarded-For
+// (nginx's proxy_add_x_forwarded_for): the last header entry is then the
+// client address the proxy vouched for, and that is the key.
 function limiterSource(request: Request): string {
   const forwarded = request.headers.get("x-forwarded-for");
-  if (forwarded === null) return "unknown";
-  if (process.env.VELVARR_TRUSTED_PROXY === "1")
+  if (process.env.VELVARR_TRUSTED_PROXY === "1" && forwarded !== null)
     return forwarded.split(",").at(-1)?.trim() || "unknown";
   return "unverified";
 }
@@ -172,10 +171,13 @@ function limiterSource(request: Request): string {
 // slot plus a global spray slot in the same synchronous step, so parallel
 // guesses cannot all pass uncounted. A wrong secret keeps both charges; a
 // correct one refunds them like any non-guess. A full window never
-// refuses ownership and never compares for free: the exempt compare pays
-// bounded budgets of its own (see the branch below), so a saturated
-// window cannot turn wrong-versus-right into an unbounded guessing
-// oracle.
+// compares for free: the exempt compare pays bounded budgets of its own
+// (see the branch below), so a saturated window cannot turn
+// wrong-versus-right into an unbounded guessing oracle. With
+// VELVARR_TRUSTED_PROXY=1 every client owns its budgets, so the owner's
+// proof is never refused; without the flag all attempts share one bucket
+// and a flood can deny setup attempts for up to one window (the
+// disclosed residual of direct exposure, limiterSource below).
 function guardedSetupSecret(request: Request, check: () => void): void {
   const ip = limiterSource(request);
   let refused: AppError | null = null;
@@ -186,12 +188,13 @@ function guardedSetupSecret(request: Request, check: () => void): void {
     else throw e;
   }
   if (refused) {
-    // The compare still runs - a source that has not been guessing, the
-    // owner's browser, always has its own compare budget - but it is
-    // never free: it pays this source's five-per-window compare budget
-    // and the global compare ceiling. A source whose own budget is spent
-    // by its wrong guesses is refused without a compare until the window
-    // rolls; a correct secret refunds its slots.
+    // The compare still runs - but never free: it pays this source's
+    // five-per-window compare budget and the global compare ceiling. A
+    // source whose budget is spent by its own wrong guesses is refused
+    // without a compare until the window rolls; a correct secret
+    // refunds its slots. With a trusted proxy every client owns its
+    // budget, so the owner's browser always has one; without the flag
+    // the budget is shared (limiterSource above).
     const compareSource = `setup-compare:${ip}`;
     const compareGlobal = "setup-compare-global";
     assertLoginAllowed(compareSource, true);

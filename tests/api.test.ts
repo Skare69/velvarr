@@ -2388,15 +2388,16 @@ test("setup secret guesses are bounded per source", async () => {
   }
 });
 
-test("rotating X-Forwarded-For values cannot escape the per-source setup cap", async () => {
-  // The setup limiter never keys on a client-supplied X-Forwarded-For
-  // entry. Next writes the socket address into an absent header, so a
-  // request without the header keys on its own peer address. A request
-  // that carries the header names nothing (no trusted proxy is
-  // configured), so all such requests share one "unverified" bucket:
-  // the VELV-247 spray - one host rotating the header to mint fresh
-  // per-source keys - hits the same five-per-window cap as a single
-  // source, and the owner's own attempt is unaffected.
+test("without a trusted proxy, setup attempts share one bounded bucket", async () => {
+  // The handler cannot tell a client-supplied X-Forwarded-For from the
+  // one Next fills with the socket address, so without
+  // VELVARR_TRUSTED_PROXY every setup attempt keys on one shared
+  // "unverified" source. A spoofed-header flood stays bounded - five
+  // gate guesses, then five exempt compares, then refusals without a
+  // compare - but it can deny that one shared source for the rest of
+  // the window, the owner's correct secret included. That residual is
+  // the cost of direct exposure; the saturated-cap test pins the
+  // trusted-proxy topology that removes it.
   resetLoginBuckets();
   const wrong = {
     ...inspectBody(),
@@ -2417,10 +2418,9 @@ test("rotating X-Forwarded-For values cannot escape the per-source setup cap", a
         403,
       );
     }
-    // Each rotated value would have minted a fresh bucket under the old
-    // first-entry key; they all share "unverified" now, so further
-    // guesses are refused whatever the header says.
-    for (const guess of [5, 6, 299]) {
+    // The shared source bucket is full: further guesses are refused and
+    // each pays one of the five exempt compare slots.
+    for (const guess of [5, 6, 7, 8, 9]) {
       await errorShape(
         await call("POST", "/api/setup/inspect", {
           headers: source(guess),
@@ -2429,15 +2429,36 @@ test("rotating X-Forwarded-For values cannot escape the per-source setup cap", a
         429,
       );
     }
-    // The spray never touched the owner's socket-filled source: the
-    // correct secret goes straight through the unsaturated normal path.
-    const owner = await call("POST", "/api/setup/inspect", {
+    // The compare budget is spent: refusal without a compare, whatever
+    // the header says.
+    const budgetGone = await errorShape(
+      await call("POST", "/api/setup/inspect", {
+        headers: source(10),
+        body: { ...wrong },
+      }),
+      429,
+    );
+    assert.equal(budgetGone.code, "too_many_attempts");
+    // The shared key couples attacker and owner: the owner's correct
+    // secret keys on the same shared source and is refused until the
+    // window rolls. Pinned, disclosed residual of direct exposure.
+    const ownerDenied = await errorShape(
+      await call("POST", "/api/setup/inspect", { body: inspectBody() }),
+      429,
+    );
+    assert.equal(ownerDenied.code, "too_many_attempts");
+    // With the trusted proxy configured, the same owner request keys on
+    // the address the proxy appended: fresh source, proof accepted.
+    process.env.VELVARR_TRUSTED_PROXY = "1";
+    const proxied = await call("POST", "/api/setup/inspect", {
+      headers: { "x-forwarded-for": "192.0.2.140" },
       body: inspectBody(),
     });
-    assert.equal(owner.status, 200);
+    assert.equal(proxied.status, 200);
   } finally {
     console.warn = originalWarn;
     resetLoginBuckets();
+    delete process.env.VELVARR_TRUSTED_PROXY;
   }
 });
 
