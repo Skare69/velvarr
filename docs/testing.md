@@ -18,6 +18,41 @@ once. CI runs these two suites; there is no separate connection-only test or
 coverage rerun. The suites check different layers: application logic and API
 behavior versus interactions with the rendered UI.
 
+## Artwork property review
+
+Run the random-seed review without a change to the sample counts:
+
+```sh
+FC_RUNS=20000 bun run test
+```
+
+The artwork URL property keeps all 11 assertions per sample.
+After each successful sample, it moves that sample's index file outside the active store.
+Later samples still check a fresh URL, one upstream fetch, one index entry, and its allocated bytes.
+The process temporary directory retains these files until the existing exit cleanup runs.
+Other API fixtures keep their index entries. Production store sweeps do not change.
+
+Before this change, one diagnostic run at each scale measured these phases:
+
+| Phase (ms) | 2,000 samples | 20,000 samples |
+| --- | ---: | ---: |
+| URL generation and normalization | 60.512 | 867.056 |
+| Index writes without sweeps | 267.653 | 3018.770 |
+| Store sweeps | 18413.971 | 1937137.254 |
+| Directory and store checks | 40796.549 | 4242488.595 |
+| Other work | 6163.056 | 72297.432 |
+| Property total | 65701.741 | 6255809.107 |
+
+Directory and store checks took 67.8% of the 20,000-sample run.
+The anonymous profiler ran the whole API test file and counted 220,000 assertions.
+Both diagnostic runs passed all 210 API tests. These single samples include profiler overhead.
+
+After the fixture change, the full command passed all 1,285 tests in 87,007.152094 ms.
+The artwork property took 48,068.785452 ms, below the 1,200,000 ms limit.
+The command used one 3,600-second tool deadline and reported no failures or cancellations.
+The earlier VELV-255 run took 6,630,338.916801 ms for this property and 6,675 seconds for the suite.
+These are single validation results, not repeated benchmarks.
+
 ## Mutation test temporary data
 
 ```sh

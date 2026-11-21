@@ -12,6 +12,7 @@ import {
   existsSync,
   readdirSync,
   readFileSync,
+  renameSync,
   statSync,
   utimesSync,
 } from "node:fs";
@@ -5574,6 +5575,7 @@ test("catalog artwork proxy: another URL spelling reads the disk variant after a
 });
 
 test("catalog artwork proxy: generated equivalent URL spellings share source and index identity", async () => {
+  const archiveDir = testTempDir("velvarr-artwork-property-index-");
   let sample = 0;
   await fc.assert(
     fc.asyncProperty(
@@ -5616,6 +5618,10 @@ test("catalog artwork proxy: generated equivalent URL spellings share source and
         assert.equal(tpdbFx.calls - callsBefore, 1);
         assert.equal(readdirSync(indexDir).length - indexBefore, 1);
         assert.ok(artworkStoreStateForTest().bytes - storeBefore.bytes >= 4096);
+        // Retain each sample outside the active store after all assertions pass.
+        // Later samples need no prior index, so their scans stay bounded.
+        const indexKey = createHash("sha256").update(canonical).digest("hex");
+        renameSync(join(indexDir, indexKey), join(archiveDir, indexKey));
       },
     ),
     { examples: [[["./"], ""]] },
