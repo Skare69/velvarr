@@ -137,10 +137,13 @@ const config = {
   // its kill rides a same-millisecond Date.now() tie in
   // tests/discovery.test.ts whose random-uuid row ids make the order a coin
   // flip, so either verdict is a fair sample.
-  reporters: ["clear-text", "progress"],
-  // stryker.log (cwd) captures the run including worker deaths, but its
-  // per-mutant detail covers killed mutants only — the survived diffs are
-  // console-only, so capture stdout when hunting survivors.
+  reporters: ["clear-text", "progress", "json"],
+  // Keep structured results outside both the checkout and the removed sandbox.
+  jsonReporter: {
+    fileName: join(mutationTempBase, `velvarr-mutation-${process.pid}.json`),
+  },
+  // stryker.log captures worker failures. The JSON report retains every
+  // mutant's location and status, including survivors and uncovered code.
   fileLogLevel: "trace",
   // break stays at the floor set when the score was measured at 88.23
   // (2026-10-15, when judgment.ts and discovery.ts joined the mutate set

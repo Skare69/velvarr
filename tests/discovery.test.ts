@@ -725,10 +725,12 @@ test("the followed cache key stays fixed-size with 10 000 follows", async () => 
         const raw = new DatabaseSync(
           join(process.env.VELVARR_DATA_DIR!, "velvarr.sqlite"),
         );
-        const insertMany = raw.prepare(
-          "INSERT INTO performer_follows (id, account_id, provider, external_id, name, image_url, created_at, linked_provider, linked_external_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        );
         try {
+          // One durable commit covers the fixture, not one per inserted row.
+          raw.exec("BEGIN");
+          const insertMany = raw.prepare(
+            "INSERT INTO performer_follows (id, account_id, provider, external_id, name, image_url, created_at, linked_provider, linked_external_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          );
           for (let i = 1; i < 10_000; i++) {
             insertMany.run(
               `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
@@ -742,6 +744,10 @@ test("the followed cache key stays fixed-size with 10 000 follows", async () => 
               null,
             );
           }
+          raw.exec("COMMIT");
+        } catch (error) {
+          if (raw.isTransaction) raw.exec("ROLLBACK");
+          throw error;
         } finally {
           raw.close();
         }

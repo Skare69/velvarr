@@ -2743,6 +2743,74 @@ test("a singleton free-text term beside a multi-match term fans out and degrades
   );
 });
 
+test("fan-out streams share 40 reads per provider, not 40 reads across providers", async () => {
+  const tags = [
+    { id: 11, uuid: uuid(101), name: "XYZ Special" },
+    { id: 12, uuid: uuid(102), name: "XYZ Thing" },
+    { id: 13, uuid: uuid(103), name: "ABC Thing" },
+  ];
+  const sceneTags = tags.map((tag) => ({ id: tag.uuid, name: tag.name }));
+  let movieReads = 0;
+  let sceneReads = 0;
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: tags,
+      stashQueryTagRows: sceneTags,
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(1), "Movie", "2024-02-01", tags)],
+          next: "x",
+          total: 10000,
+        },
+      ],
+      scenes: {
+        count: 10000,
+        rows: [stashRow(uuid(1), "Scene", "2024-01-01", sceneTags)],
+      },
+      onMovieRequest: () => {
+        movieReads += 1;
+      },
+      onScenesRequest: () => {
+        sceneReads += 1;
+      },
+    }),
+    async () => {
+      const page = await browseTitles(
+        {
+          type: "all",
+          include: [{ name: "xyz" }, { name: "abc" }],
+          exclude: [],
+          studioMode: "exact",
+          performers: [],
+          studios: [],
+          performerMode: "all",
+          page: 1,
+          perPage: 10,
+        },
+        [],
+      );
+      assert.equal(movieReads, 40);
+      assert.equal(sceneReads, 40);
+      assert.deepEqual(
+        page.items.map((item) => [item.reference.provider, item.reference.id]),
+        [
+          ["tpdb", uuid(1)],
+          ["stashdb", uuid(1)],
+        ],
+      );
+      assert.deepEqual(
+        page.errors.map((error) => [error.provider, error.code]).sort(),
+        [
+          ["stashdb", "scan_ceiling"],
+          ["tpdb", "scan_ceiling"],
+        ],
+      );
+      assert.equal(page.totalCountKnown, false);
+      assert.equal(page.hasMore, false);
+    },
+  );
+});
+
 test("a multi-match free-text AND returns the partial matches beside the ceiling error", async () => {
   const TAG_XYZ_A = { id: 11, uuid: uuid(101), name: "XYZ Special" };
   const TAG_XYZ_B = { id: 12, uuid: uuid(102), name: "XYZ Thing" };
@@ -3161,6 +3229,42 @@ test("an or-group of 25 one-letter terms over a 5000-row listing keeps the dedup
         freeTextNative: true,
         fanoutIds: [],
       });
+    },
+  );
+});
+
+test("an or-group dedupes direct, expanded, and counterpart ids in first-seen order", async () => {
+  const tags = [
+    { id: 11, uuid: uuid(101), name: "Alpha" },
+    { id: 12, uuid: uuid(102), name: "Beta" },
+    { id: 13, uuid: uuid(103), name: "Gamma" },
+  ];
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: tags,
+      moviePages: [],
+      scenes: { count: 0, rows: [] },
+    }),
+    async () => {
+      const resolved = await includeIdsForSide(
+        [
+          [
+            { name: "Alpha", tpdb: uuid(101) },
+            { name: "alpha" },
+            { name: "beta" },
+            { name: "Beta", tpdb: uuid(102) },
+            { name: "Beta", stashdb: uuid(202) },
+            { name: "Gamma", stashdb: uuid(203) },
+            { name: "Gamma", tpdb: uuid(103) },
+            { name: "Gamma", stashdb: uuid(203) },
+          ],
+        ],
+        "tpdb",
+        true,
+      );
+      assert.ok(resolved !== undefined);
+      assert.deepEqual(resolved.anyOf, [uuid(101), uuid(102), uuid(103)]);
+      assert.deepEqual(resolved.localInclude, []);
     },
   );
 });

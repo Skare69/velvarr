@@ -47,6 +47,87 @@ and all assertions. Its database and SQLite WAL can each reach about 32 MB,
 or about 64 MB together. SQLite retains allocated pages after the fixture deletes
 its rows.
 
+The 10,000-follow fixture in `tests/discovery.test.ts` inserts its 9,999 extra
+rows in one explicit transaction. A separate `DatabaseSync` connection uses
+SQLite's default durability settings. Without a transaction, each insert requires
+its own durable commit. This fixture caused the delta gate's initial run to
+exceed five minutes on the Linux worker. The transaction keeps all rows,
+assertions, and durability settings.
+
+Both mutation commands keep the clear-text and progress reporters. They also
+write a JSON report to the OS temporary directory as
+`velvarr-mutation-<pid>.json`. The console prints the full path. The report remains
+outside the temporary sandbox, so the run's exit cleanup does not remove it.
+
+### Delta gate repair over v0.44.0
+
+The failed release check reported
+`ERROR DryRunExecutor Initial test run timed out!`. Its trace stopped in
+`tests/discovery.test.ts`, before any mutant ran.
+
+A standalone diagnostic run passed all ten discovery tests. The 10,000-follow
+fixture alone took 149,637 ms. After the transaction repair, the same fixture
+passed in 179 ms within the focused check. These are single diagnostic samples,
+not a repeatable benchmark.
+
+The focused command passed all 152 tests:
+
+```sh
+node --experimental-strip-types --import ./tests/setup.ts --test \
+  tests/discovery.test.ts tests/browse.test.ts tests/discord-settings.test.ts
+```
+
+The full checks passed `format`, `check`, all 1,280 tests, and `build`.
+The build reported five warnings in unchanged instrumentation and storage code.
+
+The final delta run over `v0.44.0` completed in 27 minutes 24 seconds.
+Its initial run passed all 42 TAP suites in 41 seconds.
+These times are single diagnostic samples, not a benchmark.
+The run kept all 2,818 generated mutants.
+It reported 1,011 Killed, 2 Timeout, 101 Survived, 25 NoCoverage, and 1,679 Ignored.
+The mutation score was 88.94%. The covered-code score was 90.93%.
+The existing full-gate `break: 88.2` and delta report-only `break: null` policies stay unchanged.
+The JSON report is `/tmp/velvarr-mutation-18209.json`.
+The changed-line inventory is `/tmp/velv-254-final-changed-mutants.json.txt`.
+
+Changed lines had 75 Killed, 4 Survived, 1 NoCoverage, and 53 Ignored mutants.
+The table records every undetected changed-line mutant and the regression for #421.
+All six ledger entries refer to `src/lib/discord-settings.ts`.
+The type-only change in `src/lib/contracts.ts` has no changed-line executable mutant.
+
+| ID | Final full-run status | Source lines | Replacement | Assessment |
+| --- | --- | --- | --- | --- |
+| #410 | Survived | 20 | `/^https:\/\/(?:discord\.com\|discordapp\.com)(?::443)?\/api\/webhooks\/[0-9]+\/[A-Za-z0-9._-]+\/?/i` | Equivalent. The strict pathname regex and raw-path equality still reject every added suffix outside the original grammar. See the suffix analysis below. |
+| #421 | Killed | 28–29 | `/^\/api\/webhooks\/[0-9]+\/[A-Za-z0-9._-]+\/?$/.test(url.pathname) \|\| url.pathname === raw.slice(raw.indexOf("/api/"))` | Not equivalent. The `official exact webhook endpoints only` regression rejects `https://discord.com/api/Webhooks/123/synthetic-token`. The mutant accepts it through equality. |
+| #422 | Survived | 28 | `/\/api\/webhooks\/[0-9]+\/[A-Za-z0-9._-]+\/?$/` | Equivalent. The raw regex permits no path prefix before `/api/`. Equality rejects normalization. Tokens `.` and `..` remove required path segments. |
+| #423 | Survived | 28 | `/^\/api\/webhooks\/[0-9]+\/[A-Za-z0-9._-]+\/?/` | Equivalent. The raw regex permits no extra suffix. Equality rejects normalization. Tokens `.` and `..` leave no required token to match. |
+| #429 | Survived | 29 | `true` | Equivalent. The raw grammar excludes escapes, backslashes, whitespace, queries, and fragments. Only `.` and `..` normalize the path. The pathname regex rejects both. |
+| #433 | NoCoverage | 32–34 | `{}` | Equivalent. The bounded raw grammar supplies an absolute HTTPS URL, a fixed valid host, optional port 443, and an ASCII path. `new URL(raw)` cannot throw. |
+
+For #410, equality compares the whole raw path with `url.pathname`.
+Query and fragment suffixes fail equality, even when they contain no text.
+Percent escapes either remain in the pathname and fail its regex, or change the path and fail equality.
+Dot-segment removal and backslash conversion fail equality.
+Extra path segments fail the pathname regex.
+The CR/LF guard rejects both characters before URL parsing.
+Tab removal, other stripped whitespace, and Unicode encoding fail equality.
+Suffixes that merely extend the token or add its optional slash already satisfy the original grammar.
+Thus, removal of the raw end anchor cannot change the result.
+
+For #429, scheme and host case normalization do not change the path.
+Path case does not normalize, and the pathname regex requires lowercase `/api/webhooks/`.
+All other permitted token characters retain their path spelling.
+Thus, every pathname that passes the regex already equals the raw path.
+
+The five equivalence decisions use source analysis.
+A replay of #421 failed with `not ok 1 - official exact webhook endpoints only`.
+The failure showed the mixed-case URL instead of the expected `null`.
+The pristine parser passed all six Discord tests.
+The final full delta run reports #421 as Killed by that regression.
+
+The repair adds no credential or production access. All webhook data uses
+synthetic fixtures, so the tests need no live secret.
+
 ## Settings browser regressions
 
 The Playwright suite covers Connections, Metadata providers, and AI.

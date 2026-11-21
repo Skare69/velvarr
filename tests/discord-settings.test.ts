@@ -42,6 +42,8 @@ test("official exact webhook endpoints only", () => {
   }
   for (const raw of [
     "http://127.0.0.1/api/webhooks/123/token",
+    "https://discord.com/api/Webhooks/123/synthetic-token",
+    "https://discord.com/api/WEBHOOKS/123/synthetic-token",
     webhook + "/extra",
     webhook + "?x=1",
     webhook + "#fragment",
@@ -60,6 +62,40 @@ test("official exact webhook endpoints only", () => {
     assert.equal(parseDiscordWebhook(raw), null, raw);
   const prefix = "https://discord.com/api/webhooks/1/";
   assert.ok(parseDiscordWebhook(prefix + "a".repeat(2048 - prefix.length)));
+});
+
+test("webhook tokens reject URL dot segments but retain other dot tokens", () => {
+  const prefix = "https://discord.com/api/webhooks/123/";
+  for (const token of [".", ".."]) {
+    assert.equal(parseDiscordWebhook(prefix + token), null);
+    assert.equal(parseDiscordWebhook(prefix + token + "/"), null);
+  }
+  for (const token of ["...", ".synthetic", "synthetic."]) {
+    const raw = prefix + token;
+    assert.equal(parseDiscordWebhook(raw)?.href, raw);
+  }
+});
+
+test("an empty stored webhook disables only the webhook environment fallback", () => {
+  process.env.VELVARR_DISCORD_WEBHOOK_URL = webhook;
+  process.env.VELVARR_DISCORD_DETAIL = "1";
+  assert.deepEqual(resolveDiscordSettings({ webhookUrl: "" }), {
+    webhookUrl: "",
+    includeTitles: true,
+  });
+  assert.deepEqual(discordConfiguration({ webhookUrl: "" }), {
+    configured: false,
+    source: "stored",
+    includeTitles: true,
+    includeTitlesSource: "environment",
+    stored: true,
+  });
+  delete process.env.VELVARR_DISCORD_WEBHOOK_URL;
+  delete process.env.VELVARR_DISCORD_DETAIL;
+  assert.deepEqual(resolveDiscordSettings(), {
+    webhookUrl: "",
+    includeTitles: false,
+  });
 });
 
 test("old config and independent stored overrides remain secret-free", () => {
