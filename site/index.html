@@ -17,6 +17,14 @@
 <link rel="canonical" href="https://velvarr.dev/">
 <link rel="icon" href="icon-192.png">
 <link rel="preload" as="image" href="velvet.webp">
+<script>
+let animationStorageFailed = false;
+try {
+  document.documentElement.classList.toggle("animations-paused", localStorage.getItem("velvarr-animations-paused") === "true");
+} catch {
+  animationStorageFailed = true;
+}
+</script>
 <style>
 html, body { background: oklch(17% 0.022 325); }
 :root {
@@ -53,7 +61,7 @@ code { font-family: var(--mono); font-size: 0.9em; }
 
 /* Header */
 .top { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--canvas) 82%, transparent); backdrop-filter: blur(12px); border-bottom: 1px solid color-mix(in srgb, var(--edge) 50%, transparent); }
-.top .wrap { display: flex; align-items: center; gap: 24px; height: 64px; }
+.top > div.wrap { display: flex; align-items: center; gap: 24px; height: 64px; }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
 .brand img { width: 30px; height: 30px; }
 .top nav { margin-left: auto; display: flex; align-items: center; gap: 22px; }
@@ -66,6 +74,9 @@ code { font-family: var(--mono); font-size: 0.9em; }
 .btn-quiet { background: var(--raised); color: var(--ink); border-color: var(--edge); }
 .btn-quiet:hover { border-color: var(--accent); color: var(--ink); }
 .top .btn { min-height: 36px; padding: 0 14px; font-size: 14px; }
+.top .btn[aria-pressed="true"] { border-color: var(--accent); }
+.status { margin: 0; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+.status:not(:empty) { padding-block: 8px; }
 .btn svg { width: 18px; height: 18px; flex: none; }
 
 /* Sections */
@@ -86,6 +97,7 @@ h2 { font-size: clamp(30px, 3.6vw, 44px); line-height: 1.08; letter-spacing: -0.
 .copy { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; min-height: 36px; padding: 0 12px 0 10px; border: 1px solid var(--edge); border-radius: 5px; background: var(--raised); color: var(--ink); font: 600 13px/1 var(--font); cursor: pointer; }
 /* Icon lives in ::before so the script's "Copied" text swap keeps it. */
 .copy::before { content: ""; flex: none; width: 14px; height: 14px; background: currentColor; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linejoin='round'%3E%3Crect x='5.25' y='5.25' width='8.5' height='8.5' rx='1.5'/%3E%3Cpath d='M10.75 5.25V3.75a1.5 1.5 0 0 0-1.5-1.5h-5a1.5 1.5 0 0 0-1.5 1.5v5a1.5 1.5 0 0 0 1.5 1.5h1.5'/%3E%3C/svg%3E") center / contain no-repeat; }
+.copy[data-copied]::before { mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E"); }
 .copy:hover { border-color: var(--accent); }
 pre { margin: 0; padding: 20px; overflow-x: auto; font: 13.5px/1.7 var(--mono); color: var(--ink); }
 pre .c { color: var(--muted); }
@@ -187,6 +199,9 @@ h1 em, .shine { font-style: normal; color: var(--ink); display: inline-block; }
 }
 @media (max-width: 640px) {
   .top nav a:not(.btn) { display: none; }
+  .top > div.wrap { flex-wrap: wrap; height: auto; gap: 10px; padding-block: 10px; }
+  .top nav { width: 100%; gap: 8px; justify-content: space-between; }
+  .term-bar { flex-wrap: wrap; }
   .actions .btn { flex: 1 1 100%; justify-content: center; }
   .stack { grid-template-columns: minmax(0, 1fr); }
   .shot { border-radius: 10px; }
@@ -236,6 +251,11 @@ h1 em, .shine { font-style: normal; color: var(--ink); display: inline-block; }
   @keyframes shimmer { 0% { background-position: 100% 0; } 45%, 100% { background-position: 0 0; } }
   @keyframes rise { to { opacity: 1; transform: none; } }
 }
+html.animations-paused .hero-art::before,
+html.animations-paused .hero-art::after,
+html.animations-paused .shot::after,
+html.animations-paused h1 em,
+html.animations-paused .shine { animation-play-state: paused; }
 </style>
 </head>
 <body>
@@ -248,12 +268,14 @@ h1 em, .shine { font-style: normal; color: var(--ink); display: inline-block; }
       <a href="#tour">Tour</a>
       <a href="#install">Install</a>
       <a href="https://github.com/Skare69/velvarr/tree/main/docs">Docs</a>
+      <button class="btn btn-quiet" type="button" id="pause-animations" aria-pressed="false">Pause animations</button>
       <a class="btn btn-quiet" href="https://github.com/Skare69/velvarr">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
         GitHub
       </a>
     </nav>
   </div>
+  <p class="wrap status" id="animation-status" role="status"></p>
 </header>
 
 <main id="main">
@@ -416,6 +438,7 @@ $setup = [Convert]::ToBase64String($s).TrimEnd('=').Replace('+', '-').Replace('/
 Set-Content .env.local "VELVARR_SECRET_KEY=$key`nVELVARR_SETUP_SECRET=$setup" -Encoding ascii
 docker compose up -d</code></pre>
         </div>
+        <p class="status" id="copy-status" role="status"></p>
         <ol class="then">
           <li>Open <code>http://127.0.0.1:6699</code>.</li>
           <li>Enter <code>VELVARR_SETUP_SECRET</code> from <code>.env.local</code> to create the owner account.</li>
@@ -444,6 +467,22 @@ docker compose up -d</code></pre>
 </footer>
 
 <script>
+const pauseAnimations = document.getElementById("pause-animations");
+const animationStatus = document.getElementById("animation-status");
+const storageMessage = "This choice applies only to this page. Your browser cannot save it.";
+pauseAnimations.setAttribute("aria-pressed", document.documentElement.classList.contains("animations-paused"));
+if (animationStorageFailed) animationStatus.textContent = storageMessage;
+pauseAnimations.addEventListener("click", () => {
+  const paused = document.documentElement.classList.toggle("animations-paused");
+  pauseAnimations.setAttribute("aria-pressed", paused);
+  try {
+    localStorage.setItem("velvarr-animations-paused", String(paused));
+    animationStatus.textContent = "";
+  } catch {
+    animationStatus.textContent = storageMessage;
+  }
+});
+
 // Latest release from the GitHub API; on failure the eyebrow keeps its plain "Releases" link.
 fetch("https://api.github.com/repos/Skare69/velvarr/releases/latest")
   .then(r => r.ok ? r.json() : Promise.reject(r.status))
@@ -492,11 +531,33 @@ function select(tab) {
 
 // Copy the visible command block.
 const copy = document.getElementById("copy");
+const copyStatus = document.getElementById("copy-status");
+let copyTimer;
+let copyAttempt = 0;
+let lastCopyMessage = "";
 copy.addEventListener("click", async () => {
+  const attempt = ++copyAttempt;
+  clearTimeout(copyTimer);
+  copyStatus.textContent = "";
+  copy.textContent = "Copy";
+  copy.removeAttribute("data-copied");
   const pre = document.querySelector('pre[role="tabpanel"]:not([hidden])');
-  try { await navigator.clipboard.writeText(pre.innerText); copy.textContent = "Copied"; }
-  catch { copy.textContent = "Select and copy"; }
-  setTimeout(() => (copy.textContent = "Copy"), 1800);
+  let copied = false;
+  try { await navigator.clipboard.writeText(pre.innerText); copied = true; }
+  catch { /* Clipboard access can be denied or unavailable. */ }
+  if (attempt !== copyAttempt) return;
+  clearTimeout(copyTimer);
+  copy.textContent = copied ? "Copied" : "Select and copy";
+  copy.toggleAttribute("data-copied", copied);
+  let message = copied ? "Copied" : "Copy failed. Select the commands and copy them manually.";
+  if (message === lastCopyMessage) message += "\u00a0";
+  lastCopyMessage = message;
+  copyStatus.textContent = message;
+  copyTimer = setTimeout(() => {
+    copy.textContent = "Copy";
+    copy.removeAttribute("data-copied");
+    copyStatus.textContent = "";
+  }, copied ? 1800 : 8000);
 });
 
 </script>
