@@ -107,7 +107,7 @@ The UI composition follows the same structure for each tab:
 - [`src/components/metadata-settings.tsx`](../src/components/metadata-settings.tsx)
   owns the TPDB and StashDB cards.
 - [`src/components/ai-settings.tsx`](../src/components/ai-settings.tsx)
-  owns the AI-assisted matching and natural-language search cards.
+  owns the Smarter library matching and natural-language search cards.
 - [`src/components/settings.tsx`](../src/components/settings.tsx) owns tab
   navigation and creates one shared operation queue for the three tab components.
   All three stay mounted when switching tabs so drafts and check results survive.

@@ -1,7 +1,7 @@
 # Metadata provider settings
 
 Administrators manage TPDB and StashDB in **Settings →
-Metadata providers**. The AI-assisted matching and natural-language search
+Metadata providers**. The Smarter library matching and natural-language search
 cards sit on their own **AI** tab; the [AI guide](ai.md) covers them. All
 settings cards share the layout, status indicators, and edit
 controls used by [Connections](connections.md).
@@ -46,7 +46,7 @@ or another inconclusive failure never triggers this deletion.
 ## Clear a stored credential
 
 Choose **Clear stored credential** on a TPDB or StashDB card, or while editing
-the TypeSafe key in the AI-assisted matching card on the **AI** tab. The
+the TypeSafe key in the Smarter library matching card on the **AI** tab. The
 confirmation's **Keep credential** button leaves the saved value and draft
 unchanged. **Clear credential** removes the stored override and uses the
 corresponding environment value, if present:
@@ -57,14 +57,14 @@ corresponding environment value, if present:
 
 Clearing a TPDB or StashDB credential runs a fresh check of that fallback.
 Environment credentials are not deleted by these controls. For the TypeSafe key
-inside the AI-assisted matching card, use **Check connection** afterwards when a
+inside the Smarter library matching card, use **Check connection** afterwards when a
 backend remains configured.
 
 ## AI cards
 
-The **AI-assisted matching** card and the **Natural-language search** card sit
+The **Smarter library matching** card and the **Natural-language search** card sit
 on their own **AI** tab, not on this one. See
 [AI matching and natural-language search](ai.md) for provider selection,
 Ollama setup, the natural-language server settings, the model list, the free
-check before Save, the member grant, and rollback guidance. AI suggestions
-continue to require administrator review.
+check before Save, the member grant, and rollback guidance.
+Possible library matches require administrator review.

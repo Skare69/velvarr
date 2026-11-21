@@ -1,4 +1,4 @@
-/** The AI-assisted matching card's draft/save/check lifecycle, React-free so
+/** The library matching card's draft/save/check lifecycle, React-free so
  * the rules that keep feedback honest are directly testable.
  *
  * Two outcomes stay apart on purpose. `notice` reports the last save (or its
@@ -23,7 +23,7 @@ export type JudgmentConfig = JudgmentSettings & {
 };
 
 /** Use the same effective selection after a save and a configuration read.
- * An absent backend is standard matching, unless a stored choice or error
+ * An absent backend uses exact names only, unless a stored choice or error
  * needs to remain visible so the operator can correct it. */
 export function judgmentEditorSettings(
   config: JudgmentConfig,
@@ -78,7 +78,7 @@ export type JudgmentEditorAction =
 
 export const SAVED_NOTICE = "Settings saved.";
 /** The save notice when the effective provider is "none": no probe runs. */
-export const SAVED_OFF_NOTICE = "Settings saved. AI-assisted matching is off.";
+export const SAVED_OFF_NOTICE = "Settings saved. Exact names only is active.";
 
 export function initJudgmentEditor(): JudgmentEditor {
   const settings: JudgmentSettings = {

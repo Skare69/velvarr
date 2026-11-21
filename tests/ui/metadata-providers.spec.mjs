@@ -42,7 +42,10 @@ async function showMetadata(page) {
 async function showAi(page) {
   await page.getByRole("button", { name: "AI", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "AI-assisted matching", exact: true }),
+    page.getByRole("heading", {
+      name: "Smarter library matching",
+      exact: true,
+    }),
   ).toBeVisible();
 }
 async function openMetadata(h, mode = {}) {
@@ -277,6 +280,49 @@ scenario(
 );
 
 scenario(
+  "Smarter library matching explains its effects and privacy with Exact names only",
+  async (h) => {
+    const { page, edit } = h;
+    await h.fresh();
+    await showAi(page);
+    const ai = aiCard(page);
+    await expect(ai.locator("form")).toHaveCount(0);
+    for (const exactNamesOnly of [false, true]) {
+      if (exactNamesOnly) {
+        await edit(ai).click();
+        await selectAi(ai, "none");
+        await expect(
+          ai.getByText(
+            "Only exact names match, without calls to an AI service.",
+          ),
+        ).toBeVisible();
+      }
+      for (const explanation of [
+        /possible matches between requested titles and differently named titles in your Jellyfin library for administrator review/,
+        /sorts similar titles on detail pages/,
+        /suggests up to three real tags for search terms/,
+        /AI never marks a title as available/,
+        /Titles with different years never match/,
+        /Titles and catalog details go to the selected AI service for matching and similar-title sorting/,
+        /Tag suggestions also send member search terms after you save the TypeSafe key or Ollama choice in Settings/,
+        /Hosted TypeSafe is a third party/,
+        /A local Ollama server keeps this data on your network/,
+        /Natural-language search has its own card/,
+        /Exact names only does not turn it off/,
+      ]) {
+        await expect(ai.getByText(explanation)).toBeVisible();
+      }
+      await expect(
+        page.getByRole("heading", {
+          name: "Natural-language search",
+          exact: true,
+        }),
+      ).toBeVisible();
+    }
+  },
+);
+
+scenario(
   "No-AI mode preserves credentials and later TypeSafe selection checks saved settings",
   async (h) => {
     const { page, edit, save, badge, control } = h;
@@ -291,7 +337,7 @@ scenario(
     await save(ai).click();
     await expect(edit(ai)).toBeEnabled();
     await expect(
-      ai.getByText("Standard matching (no AI)", { exact: true }),
+      ai.getByText("Exact names only", { exact: true }),
     ).toBeVisible();
     const disabled = await control({});
     expect(disabled.config.providers).toEqual(before.providers);
@@ -504,7 +550,7 @@ scenario(
     expect(await page.locator("button:not([type])").count()).toBe(0);
     expect(
       await page.getByRole("heading", { level: 2 }).allTextContents(),
-    ).toEqual(["AI-assisted matching", "Natural-language search"]);
+    ).toEqual(["Smarter library matching", "Natural-language search"]);
     const ids = await page
       .locator("[id]")
       .evaluateAll((nodes) => nodes.map((node) => node.id));
@@ -1255,7 +1301,7 @@ scenario(
     await page
       .getByRole("button", { name: "Connections", exact: true })
       .click();
-    await control({ holdPatch: true });
+    const queuedStart = (await control({ holdPatch: true })).requests.length;
     await save(jf).click();
     await showAi(page);
     await expect(save(own)).toBeDisabled();
@@ -1267,12 +1313,21 @@ scenario(
     await save(own).click();
     await expect(edit(own)).toBeEnabled();
     const state = await control({});
-    const operations = state.requests.filter(
-      (r) =>
-        r.method === "PATCH" ||
-        r.path.startsWith("/api/admin/prose/") ||
-        r.path === "/api/admin/jellyfin",
-    );
+    // Model-list reads bypass the save queue.
+    const operations = state.requests
+      .slice(queuedStart)
+      .filter(
+        (r) =>
+          r.method === "PATCH" ||
+          r.path === "/api/admin/prose/check" ||
+          r.path === "/api/admin/jellyfin",
+      );
+    expect(operations.map((r) => [r.method, r.path])).toEqual([
+      ["PATCH", "/api/admin/integrations"],
+      ["GET", "/api/admin/jellyfin"],
+      ["PATCH", "/api/admin/integrations"],
+      ["POST", "/api/admin/prose/check"],
+    ]);
     for (let i = 1; i < operations.length; i++)
       expect(operations[i].started).toBeGreaterThanOrEqual(
         operations[i - 1].finished,

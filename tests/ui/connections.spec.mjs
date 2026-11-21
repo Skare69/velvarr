@@ -68,7 +68,7 @@ scenario(
     await page.getByRole("button", { name: "AI", exact: true }).click();
     expect(
       await page.getByRole("heading", { level: 2 }).allTextContents(),
-    ).toEqual(["AI-assisted matching", "Natural-language search"]);
+    ).toEqual(["Smarter library matching", "Natural-language search"]);
     await page
       .getByRole("button", { name: "Metadata providers", exact: true })
       .click();

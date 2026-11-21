@@ -1,4 +1,4 @@
-// The AI-assisted matching card's lifecycle (src/lib/judgment-editor.ts).
+// The library matching card's lifecycle (src/lib/judgment-editor.ts).
 // The save notice and the connection probe are separate outcomes: the probe
 // describes the *saved* settings, so a draft edit keeps it, a new save
 // drops it, and a failed probe after a save never turns the save into an
@@ -139,7 +139,7 @@ test("saving provider none says matching is off; an edit clears that too", () =>
     { type: "loaded", settings: ollama },
     { type: "saved", settings: off },
   );
-  assert.equal(e.notice, "Settings saved. AI-assisted matching is off.");
+  assert.equal(e.notice, "Settings saved. Exact names only is active.");
   const edited = reduceJudgmentEditor(e, {
     type: "edit",
     patch: { provider: "typesafe" },
@@ -258,7 +258,7 @@ test("saving a cleared default backend agrees with the configuration sync", () =
   const e = run({ type: "saved", settings: saved });
   assert.equal(e.saved.provider, "none");
   assert.deepEqual(e.saved, judgmentEditorSettings(config));
-  assert.equal(e.notice, "Settings saved. AI-assisted matching is off.");
+  assert.equal(e.notice, "Settings saved. Exact names only is active.");
   assert.equal(e.check, null);
   assert.equal(
     providerSettingsActions(e, { ...idle, configured: false }).check,

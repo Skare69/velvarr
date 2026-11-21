@@ -39,7 +39,7 @@ import type {
   SaveProviderSettings,
 } from "./metadata-settings.tsx";
 
-/** The AI tab: AI-assisted matching and natural-language search. It reads
+/** The AI tab: library matching and natural-language search. It reads
  * the same settings response as the Metadata providers tab, on its own. */
 export function AiSettings({
   saving,
@@ -144,7 +144,7 @@ function JudgmentCard({
   const displayedProvider = editing ? provider : savedProvider;
   const standard = displayedProvider === "none";
   const providerName = standard
-    ? "Standard matching"
+    ? "Exact names only"
     : displayedProvider === "ollama"
       ? "Ollama"
       : "TypeSafe";
@@ -225,7 +225,7 @@ function JudgmentCard({
               : {}),
           },
       standard
-        ? "Standard matching saved. AI-assisted matching is disabled."
+        ? "Exact names only saved. AI matching is off."
         : "Settings saved.",
       !standard,
     );
@@ -271,7 +271,7 @@ function JudgmentCard({
         <span className={config && !standard ? "text-muted" : "chip"}>
           {config
             ? standard
-              ? "Standard matching (no AI)"
+              ? "Exact names only"
               : providerName
             : "Loading configuration…"}
         </span>
@@ -332,7 +332,8 @@ function JudgmentCard({
     <section className="panel p-5" aria-labelledby="judgment-heading">
       <SettingsServiceHeading
         id="judgment-heading"
-        title="AI-assisted matching"
+        title="Smarter library matching"
+        description="AI flags possible matches between requested titles and differently named titles in your Jellyfin library for administrator review. It also sorts similar titles on detail pages and suggests up to three real tags for search terms."
         status={status}
         action={
           !editing && (
@@ -354,19 +355,32 @@ function JudgmentCard({
           )
         }
       />
+      <p className="mt-3 text-sm text-muted">
+        AI never marks a title as available. Titles with different years never
+        match.
+      </p>
+      <p className="mt-3 text-sm text-muted">
+        Titles and catalog details go to the selected AI service for matching
+        and similar-title sorting. Tag suggestions also send member search terms
+        after you save the TypeSafe key or Ollama choice in Settings.
+      </p>
+      <p className="mt-3 text-sm text-muted">
+        Hosted TypeSafe is a third party. A local Ollama server keeps this data
+        on your network.
+      </p>
       {!editing &&
         (standard ? (
           <>
             <p className="mt-3 text-sm text-muted">
-              Use standard matching without calling an AI service.
+              Only exact names match, without calls to an AI service.
             </p>
           </>
         ) : (
           details
         ))}
       <p className="mt-3 text-sm text-muted">
-        Natural-language search has its own card. 'Standard matching (no AI)'
-        does not turn it off.
+        Natural-language search has its own card. Exact names only does not turn
+        it off.
       </p>
       {editing && (
         <form
@@ -387,7 +401,7 @@ function JudgmentCard({
             >
               {(
                 [
-                  ["none", "Standard matching"],
+                  ["none", "Exact names only"],
                   ["typesafe", "TypeSafe"],
                   ["ollama", "Ollama"],
                 ] as const
@@ -409,7 +423,7 @@ function JudgmentCard({
             </div>
             {standard ? (
               <p className="text-sm text-muted">
-                Use standard matching without calling an AI service.
+                Only exact names match, without calls to an AI service.
               </p>
             ) : (
               <>
@@ -438,7 +452,7 @@ function JudgmentCard({
                       }
                     />
                     <p className="text-sm text-muted">
-                      Optional. Without a key, standard matching remains active.
+                      Optional. Without a key, Exact names only remains active.
                     </p>
                   </>
                 ) : (
@@ -484,10 +498,6 @@ function JudgmentCard({
                     </p>
                   </>
                 )}
-                <p className="text-sm text-muted">
-                  Tag suggestions send search terms to {providerName}. Matches
-                  still require administrator review.
-                </p>
               </>
             )}
             <div className="settings-service-buttons settings-card-actions">
@@ -558,7 +568,7 @@ function JudgmentCard({
               }
             >
               The stored key is deleted from storage. Environment settings
-              apply; without a key, standard matching remains active.
+              apply. Without a key, Exact names only remains active.
             </SettingsConfirmationDialog>
             <SettingsConfirmationDialog
               dialogRef={useEnvRef}
@@ -610,8 +620,8 @@ const PROSE_PRESETS = [
 ] as const;
 
 /** Natural-language search on Browse: the admin points it at an
- * OpenAI-compatible chat server. A separate switch from AI-assisted
- * matching; the key is write-only and shows only as Stored/Not configured. */
+ * OpenAI-compatible chat server. Its switch is separate from library
+ * matching. The key is write-only and shows only as Stored/Not configured. */
 function ProseSearchCard({
   config,
   configurationUnavailable,
@@ -880,7 +890,7 @@ function ProseSearchCard({
       </p>
       <p className="mt-2 text-sm text-muted">
         Member search text goes to this server. This switch is separate from
-        AI-assisted matching.
+        Smarter library matching.
       </p>
       {!editing && config && (
         <p className="mt-3 text-sm text-muted">

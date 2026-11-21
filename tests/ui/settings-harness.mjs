@@ -88,7 +88,7 @@ export async function expectSaveFeedbackNearActions(card) {
 
 export async function selectAi(card, value) {
   const labels = {
-    none: "Standard matching",
+    none: "Exact names only",
     typesafe: "TypeSafe",
     ollama: "Ollama",
   };
@@ -99,7 +99,7 @@ export async function selectAi(card, value) {
 }
 export function aiOption(card, value) {
   const labels = {
-    none: "Standard matching",
+    none: "Exact names only",
     typesafe: "TypeSafe",
     ollama: "Ollama",
   };

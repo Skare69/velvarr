@@ -18,8 +18,8 @@ Put the variables in `.env.local`.
 | `STASHDB_BASE_URL`            | no              | StashDB API root override. Default `https://stashdb.org`. |
 | `TYPESAFE_BASE_URL`           | no              | TypeSafe cloud API root override. Unset uses the TypeSafe default. |
 | `TYPESAFE_DEFAULT_MODEL`      | no              | TypeSafe decision model override. Unset uses the TypeSafe default. |
-| `TYPESAFE_API_KEY`            | no              | TypeSafe key for AI-assisted matching. A key saved in Settings wins. Tag suggestions need a key saved in Settings. |
-| `VELVARR_JUDGMENT_PROVIDER`   | no              | `typesafe` (default), `ollama`, or `none` to disable AI. A choice saved in Settings wins. Tag suggestions need a choice saved in Settings. |
+| `TYPESAFE_API_KEY`            | no              | TypeSafe key for Smarter library matching. A key saved in Settings wins. Tag suggestions need a key saved in Settings. |
+| `VELVARR_JUDGMENT_PROVIDER`   | no              | `typesafe` (default), `ollama`, or `none` to disable this card's AI calls. A choice saved in Settings wins. Tag suggestions need a saved TypeSafe key or a saved Ollama choice in Settings. |
 | `OLLAMA_BASE_URL`             | no              | Ollama API root. Default `http://localhost:11434`. |
 | `OLLAMA_MODEL`                | no              | Ollama decision model. Default `nimble`. |
 | `VELVARR_UPDATE_CHECK`        | no              | `0` disables the release check. Otherwise, the server asks `api.github.com` at most once an hour after a success and at most once a minute while it fails (a 403/429 `retry-after` or `x-ratelimit-reset` extends the wait); while a check fails, the last known answer stays up. |

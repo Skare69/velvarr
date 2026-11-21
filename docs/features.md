@@ -12,7 +12,10 @@
 - **Similar titles** for movies and scenes, and **Often appears with** for performers.
 - **Possible duplicate movies:** TPDB movie details compare hashes or cast, year, tags, duration, and poster similarity. Copy a manual report with both TPDB links.
 - **Update notice** when a newer GitHub release is available.
-- **Optional:** Discord notifications, and AI-assisted title matching through [TypeSafe](https://typesafe.ai) or an [Ollama](ai.md#ai-matching-with-ollama) decision model. AI only flags a near match for administrator review. It never marks a title as available.
+- **Optional:** Discord notifications and [Smarter library matching](ai.md), through [TypeSafe](https://typesafe.ai) or an [Ollama](ai.md#ai-matching-with-ollama) decision model.
+  AI flags possible matches between requested titles and differently named Jellyfin titles for administrator review.
+  It also sorts similar titles on detail pages and suggests up to three real tags for search terms.
+  It never marks a title as available.
 - **Optional natural-language search** on Browse: a member describes a search in plain words, and an [OpenAI-compatible chat server](ai.md#natural-language-search) that you set up writes a draft of the filters. Velvarr checks each tag, performer, and studio against the providers before it applies a filter, and lists each part that it did not apply.
 
 ## Browse date ranges
