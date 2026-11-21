@@ -139,20 +139,45 @@ function signedIn(request: Request, grant: SessionGrant, name: string) {
   return response;
 }
 
+// The setup exempt compare's instance-wide ceiling: even a misconfigured
+// trusted proxy (one that forwards a client-supplied X-Forwarded-For
+// verbatim instead of appending) cannot open more compares than this per
+// window.
+const SETUP_COMPARE_GLOBAL_LIMIT = 30;
+
+// The source address the setup limiter keys on: one the client cannot
+// choose. Next writes the socket address into an absent X-Forwarded-For
+// before the handler runs, so a request without the header keys on its
+// own peer address (the test harness, which has no Next in front, shares
+// "unknown" for that shape). A request that CARRIES the header supplied
+// it, so without a trusted proxy it names nothing: every such request
+// shares the one "unverified" bucket, and rotating values mint no keys.
+// VELVARR_TRUSTED_PROXY=1 marks the nearest reverse proxy as one that
+// appends to X-Forwarded-For (nginx's proxy_add_x_forwarded_for): the
+// last header entry is then the client address the proxy vouched for,
+// and that is the key.
+function limiterSource(request: Request): string {
+  const forwarded = request.headers.get("x-forwarded-for");
+  if (forwarded === null) return "unknown";
+  if (process.env.VELVARR_TRUSTED_PROXY === "1")
+    return forwarded.split(",").at(-1)?.trim() || "unknown";
+  return "unverified";
+}
+
 // The setup secret is the only credential on a not-yet-bootstrapped
 // instance, so a wrong guess must cost what a wrong password costs: the
-// same login limiter, keyed by the reported source address instead of an
-// account name (no accounts exist before setup). The read-only gate
-// answers 429 when the per-source bucket is exhausted; the reservation
-// holds a per-source slot plus a global spray slot in the same synchronous
-// step, so parallel guesses cannot all pass uncounted. A wrong secret
-// keeps both charges; a correct one refunds them like any non-guess. A
-// full window never refuses ownership: the key is the first XFF entry,
-// which the client supplies, so one host can fill every bucket with
-// rotating values — under a saturated window the compare still runs, a
-// wrong secret rethrows the refusal uncharged, the correct one passes.
+// same login limiter, keyed by limiterSource instead of an account name
+// (no accounts exist before setup). The read-only gate answers 429 when
+// the per-source bucket is exhausted; the reservation holds a per-source
+// slot plus a global spray slot in the same synchronous step, so parallel
+// guesses cannot all pass uncounted. A wrong secret keeps both charges; a
+// correct one refunds them like any non-guess. A full window never
+// refuses ownership and never compares for free: the exempt compare pays
+// bounded budgets of its own (see the branch below), so a saturated
+// window cannot turn wrong-versus-right into an unbounded guessing
+// oracle.
 function guardedSetupSecret(request: Request, check: () => void): void {
-  const ip = clientIp(request);
+  const ip = limiterSource(request);
   let refused: AppError | null = null;
   try {
     assertLoginAllowed(ip, false);
@@ -161,12 +186,34 @@ function guardedSetupSecret(request: Request, check: () => void): void {
     else throw e;
   }
   if (refused) {
-    // The compare is one sha256 (verifySetupSecret), so running it under a
-    // saturated window costs nothing and bounds no honest caller.
+    // The compare still runs - a source that has not been guessing, the
+    // owner's browser, always has its own compare budget - but it is
+    // never free: it pays this source's five-per-window compare budget
+    // and the global compare ceiling. A source whose own budget is spent
+    // by its wrong guesses is refused without a compare until the window
+    // rolls; a correct secret refunds its slots.
+    const compareSource = `setup-compare:${ip}`;
+    const compareGlobal = "setup-compare-global";
+    assertLoginAllowed(compareSource, true);
+    assertLoginAllowed(compareGlobal, true, null, SETUP_COMPARE_GLOBAL_LIMIT);
+    const refundSource = reserveLoginAttempt(compareSource, true);
+    const refundGlobal = reserveLoginAttempt(
+      compareGlobal,
+      true,
+      null,
+      SETUP_COMPARE_GLOBAL_LIMIT,
+    );
     try {
       check();
+      refundSource();
+      refundGlobal();
       return;
     } catch {
+      // verifySetupSecret only throws setup_secret_invalid: a wrong
+      // secret keeps both compare charges and rethrows the refusal.
+      console.warn(
+        `[auth] failed setup-secret attempt: ip=${JSON.stringify(ip)} (cap window saturated)`,
+      );
       throw refused;
     }
   }

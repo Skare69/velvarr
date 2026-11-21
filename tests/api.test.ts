@@ -2388,15 +2388,15 @@ test("setup secret guesses are bounded per source", async () => {
   }
 });
 
-test("rotating X-Forwarded-For values cannot escape the global setup-secret cap", async () => {
-  // The per-source key is the first X-Forwarded-For entry, which the client
-  // controls (Next fills the header from the socket only when it is absent,
-  // and appending proxies keep the client's value first). A fresh value per
-  // guess dodges the per-source bucket, so the spray cap shared with
-  // sign-in (GLOBAL_LIMIT, 300 per five-minute window) is what bounds an
-  // unauthenticated guesser before the first admin exists. It bounds
-  // guessing, not ownership: a full window still runs the secret compare,
-  // so the owner's correct secret passes (the saturated-cap test below).
+test("rotating X-Forwarded-For values cannot escape the per-source setup cap", async () => {
+  // The setup limiter never keys on a client-supplied X-Forwarded-For
+  // entry. Next writes the socket address into an absent header, so a
+  // request without the header keys on its own peer address. A request
+  // that carries the header names nothing (no trusted proxy is
+  // configured), so all such requests share one "unverified" bucket:
+  // the VELV-247 spray - one host rotating the header to mint fresh
+  // per-source keys - hits the same five-per-window cap as a single
+  // source, and the owner's own attempt is unaffected.
   resetLoginBuckets();
   const wrong = {
     ...inspectBody(),
@@ -2408,7 +2408,7 @@ test("rotating X-Forwarded-For values cannot escape the global setup-secret cap"
   const originalWarn = console.warn;
   console.warn = () => {};
   try {
-    for (let guess = 0; guess < 300; guess += 1) {
+    for (let guess = 0; guess < 5; guess += 1) {
       await errorShape(
         await call("POST", "/api/setup/inspect", {
           headers: source(guess),
@@ -2417,36 +2417,41 @@ test("rotating X-Forwarded-For values cannot escape the global setup-secret cap"
         403,
       );
     }
-    const inspect = await errorShape(
-      await call("POST", "/api/setup/inspect", {
-        headers: source(300),
-        body: { ...wrong },
-      }),
-      429,
-    );
-    assert.equal(inspect.code, "too_many_attempts");
-    const commit = await errorShape(
-      await call("POST", "/api/setup", {
-        headers: source(301),
-        body: { ...wrong, libraryIds: [MOVIES_LIB] },
-      }),
-      429,
-    );
-    assert.equal(commit.code, "too_many_attempts");
+    // Each rotated value would have minted a fresh bucket under the old
+    // first-entry key; they all share "unverified" now, so further
+    // guesses are refused whatever the header says.
+    for (const guess of [5, 6, 299]) {
+      await errorShape(
+        await call("POST", "/api/setup/inspect", {
+          headers: source(guess),
+          body: { ...wrong },
+        }),
+        429,
+      );
+    }
+    // The spray never touched the owner's socket-filled source: the
+    // correct secret goes straight through the unsaturated normal path.
+    const owner = await call("POST", "/api/setup/inspect", {
+      body: inspectBody(),
+    });
+    assert.equal(owner.status, 200);
   } finally {
     console.warn = originalWarn;
     resetLoginBuckets();
   }
 });
 
-test("a saturated setup cap still accepts the owner's correct setup secret", async () => {
-  // Rotating X-Forwarded-For values give each guess its own per-source
-  // bucket, so one host fills the global spray cap — and before the
-  // owner-exemption that 429 refused the owner's correct secret too for
-  // the whole window, a lockout the attacker could renew every window.
-  // The caps bound guessing, never proof of ownership: under a full
-  // window the compare still runs, a wrong secret keeps the refusal
-  // (uncharged), and the correct one passes.
+test("a saturated setup cap keeps compares bounded and accepts the owner's secret", async () => {
+  // Behind a trusted proxy the limiter keys on the last X-Forwarded-For
+  // entry, the one the proxy appended. Enough sources can still fill the
+  // global cap, so the owner's proof must survive a full window - but
+  // never as a free compare. Under a saturated window every compare
+  // pays the source's own five-per-window compare budget plus a global
+  // compare ceiling, so 429-versus-200 stays a bounded oracle: a source
+  // that spent its own budget is refused without a compare until the
+  // window rolls, and the owner's browser, which has not been guessing,
+  // always has its compare.
+  process.env.VELVARR_TRUSTED_PROXY = "1";
   resetLoginBuckets();
   const wrong = {
     ...inspectBody(),
@@ -2467,31 +2472,55 @@ test("a saturated setup cap still accepts the owner's correct setup secret", asy
         403,
       );
     }
-    // The cap still bounds the guesser: further wrong secrets stay
-    // refused with 429, not 403.
-    const stillRefused = await errorShape(
+    // Saturated: the global cap refuses a fresh source before any
+    // compare runs.
+    const saturated = await errorShape(
       await call("POST", "/api/setup/inspect", {
         headers: source(999),
         body: { ...wrong },
       }),
       429,
     );
-    assert.equal(stillRefused.code, "too_many_attempts");
-    // The owner's correct secret is not a guess: it passes while every
-    // bucket is full, from a fresh source and with no X-Forwarded-For at
-    // all (the direct-LAN owner's shape).
+    assert.equal(saturated.code, "too_many_attempts");
+    // The owner's proof survives the full window: the compare runs on
+    // the owner's untouched compare budget and refunds its slot.
     const owner = await call("POST", "/api/setup/inspect", {
       headers: source(1000),
       body: inspectBody(),
     });
     assert.equal(owner.status, 200);
-    const again = await call("POST", "/api/setup/inspect", {
+    // A source that guesses inside the saturated window pays its own
+    // compare budget: five compares, then refusal without a compare.
+    const sprayKey = source(1001)["x-forwarded-for"];
+    for (let guess = 0; guess < 5; guess += 1) {
+      await errorShape(
+        await call("POST", "/api/setup/inspect", {
+          headers: { "x-forwarded-for": sprayKey },
+          body: { ...wrong },
+        }),
+        429,
+      );
+    }
+    // The spent budget holds even for the correct secret from that same
+    // source - self-inflicted by its own wrong guesses, gone when the
+    // window rolls. A fresh source still proves ownership.
+    const spent = await errorShape(
+      await call("POST", "/api/setup/inspect", {
+        headers: { "x-forwarded-for": sprayKey },
+        body: inspectBody(),
+      }),
+      429,
+    );
+    assert.equal(spent.code, "too_many_attempts");
+    const fresh = await call("POST", "/api/setup/inspect", {
+      headers: source(1002),
       body: inspectBody(),
     });
-    assert.equal(again.status, 200);
+    assert.equal(fresh.status, 200);
   } finally {
     console.warn = originalWarn;
     resetLoginBuckets();
+    delete process.env.VELVARR_TRUSTED_PROXY;
   }
 });
 
