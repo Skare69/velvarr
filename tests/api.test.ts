@@ -1614,9 +1614,23 @@ function cookieOf(response: Response): string {
 }
 
 async function loginAs(name: string): Promise<string> {
-  const res = await call("POST", "/api/login", {
-    body: { username: name, password: `pass-${name}` },
-  });
+  const attempt = () =>
+    call("POST", "/api/login", {
+      body: { username: name, password: `pass-${name}` },
+    });
+  let res = await attempt();
+  // CI run 45055559291 failed one login with 502 upstream_unavailable
+  // ("Jellyfin could not be reached."): the upstream fetch threw, so the
+  // fixture never returned a status. The runner was saturated — four test
+  // files on four vCPUs, directly after the 50 000-row pagination test —
+  // while the keep-alive defaults probe clean and six stressed runs pass.
+  // That points at runner timing, not app code. One retry rides out the
+  // transient; a real outage fails every login, so the second response is
+  // still asserted below.
+  if (res.status === 502) {
+    await res.text();
+    res = await attempt();
+  }
   const text = await res.text();
   assert.equal(
     res.status,
