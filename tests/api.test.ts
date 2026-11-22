@@ -6887,14 +6887,14 @@ test("discover: mixed new releases, honest trending, facets, grants, not-configu
   const studiosShelf = byId.get("studios");
   const genresShelf = byId.get("genres");
   for (const shelf of [studiosShelf, genresShelf]) {
-    assert.equal(shelf?.kind, "facets", shelf?.id);
-    assert.equal(shelf?.source, "velvarr", shelf?.id);
+    assert.equal(shelf?.kind, "facets", String(shelf?.id));
+    assert.equal(shelf?.source, "velvarr", String(shelf?.id));
     // The headline arrows lead to the facet directory overview.
     assert.deepEqual(shelf?.browse, {
       view: "facets",
       params: { kind: shelf?.id },
     });
-    assert.equal(shelf?.error, undefined, shelf?.id);
+    assert.equal(shelf?.error, undefined, String(shelf?.id));
     assert.ok((shelf?.items?.length ?? 0) > 0, `${shelf?.id} carries items`);
   }
   // Projects each tile to the pinned wire fields and compares as an
@@ -10052,13 +10052,17 @@ test("global search: six isolated categories, auth, blank q 400", async () => {
     outStashPerformers,
     outStashStudios,
   ]) {
-    assert.ok(category?.error, category?.id);
-    assert.match(category?.error?.code ?? "", /unavailable/, category?.id);
-    assert.deepEqual(category?.items, [], category?.id);
+    assert.ok(category?.error, String(category?.id));
+    assert.match(
+      category?.error?.code ?? "",
+      /unavailable/,
+      String(category?.id),
+    );
+    assert.deepEqual(category?.items, [], String(category?.id));
   }
   for (const category of [outMovies, outPerformers, outStudios]) {
-    assert.equal(category?.error, undefined, category?.id);
-    assert.ok((category?.items.length ?? 0) > 0, category?.id);
+    assert.equal(category?.error, undefined, String(category?.id));
+    assert.ok((category?.items.length ?? 0) > 0, String(category?.id));
   }
   // A failed source carries no count at all — no total, no attestation.
   for (const category of [
@@ -10066,9 +10070,9 @@ test("global search: six isolated categories, auth, blank q 400", async () => {
     outStashPerformers,
     outStashStudios,
   ]) {
-    assert.equal(category?.totalCountKnown, false, category?.id);
-    assert.equal(category?.total, undefined, category?.id);
-    assert.equal(category?.hasMore, false, category?.id);
+    assert.equal(category?.totalCountKnown, false, String(category?.id));
+    assert.equal(category?.total, undefined, String(category?.id));
+    assert.equal(category?.hasMore, false, String(category?.id));
   }
 });
 
