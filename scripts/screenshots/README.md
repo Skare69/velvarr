@@ -56,8 +56,10 @@ the full list with a short description of each picture:
 - People: `performer-aria-vale`, `performer-dane-mercer`,
   `performer-sasha-bloom`, `avatar-admin`
 
-Use only safe-for-work images that you have the right to publish. The
-first set came from ComfyUI (DreamShaper XL Turbo).
+Use only images that you have the right to publish. Lingerie, swimwear
+and rear views are allowed. Nudity and sexual acts are not, because the
+page has no age check. Only adults may appear. The current set came from
+ComfyUI (DreamShaper XL Turbo).
 
 ## Run
 
