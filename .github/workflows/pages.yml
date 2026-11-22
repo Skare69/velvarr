@@ -1,11 +1,17 @@
 name: Pages
 
 # Deploys the static landing page in site/ to GitHub Pages (https://velvarr.dev).
+# The release badge gets the newest v* tag and its date from git at deploy time,
+# so visitors never call the GitHub API (its 60 requests/hour limit per IP).
 on:
   push:
     branches: [main]
     paths: ["site/**", ".github/workflows/pages.yml"]
   workflow_dispatch:
+  # A new release changes the badge: deploy main again. A release event runs on
+  # the tag ref, which the Pages environment does not deploy, so dispatch on main.
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -15,10 +21,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  redeploy:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - run: gh workflow run pages.yml --ref main --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   deploy:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       pages: write
       id-token: write
     environment:
@@ -26,6 +43,16 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Stamp the latest release into the badge
+        run: |
+          tag=$(git tag --list 'v*' --sort=-v:refname | head -n 1)
+          test -n "$tag"
+          published=$(git log -1 --format=%cI "$tag")
+          sed -i "s|data-tag=\"\" data-published=\"\"|data-tag=\"$tag\" data-published=\"$published\"|" site/index.html
+          grep -q "data-tag=\"$tag\"" site/index.html
+          echo "Badge: $tag, $published"
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:

@@ -282,7 +282,7 @@ html.animations-paused .shine { animation-play-state: paused; }
   <div class="hero" id="top">
     <div class="hero-art" aria-hidden="true"></div>
     <div class="wrap">
-      <a class="eyebrow rise" id="release" href="https://github.com/Skare69/velvarr/releases"><b>Releases</b><span>See the changelog on GitHub</span></a>
+      <a class="eyebrow rise" id="release" href="https://github.com/Skare69/velvarr/releases" data-tag="" data-published=""><b>Releases</b><span>See the changelog on GitHub</span></a>
       <h1 class="rise">Discover it.<br>Request it.<br><em>Watch it.</em></h1>
       <p class="lede rise">Velvarr runs on your own server. Browse new adult movies and scenes from TPDB and StashDB, and request what you want. Velvarr hands each request to Whisparr, and when the title is in your library, you watch it in Jellyfin.</p>
       <div class="actions rise">
@@ -483,20 +483,21 @@ pauseAnimations.addEventListener("click", () => {
   }
 });
 
-// Latest release from the GitHub API; on failure the eyebrow keeps its plain "Releases" link.
-fetch("https://api.github.com/repos/Skare69/velvarr/releases/latest")
-  .then(r => r.ok ? r.json() : Promise.reject(r.status))
-  .then(rel => {
-    const a = document.getElementById("release");
-    const published = new Date(rel.published_at);
+// The Pages deploy writes the newest release tag and its date into the badge
+// (pages.yml). Without them (a local preview) the badge keeps its plain link.
+{
+  const a = document.getElementById("release");
+  const { tag, published: at } = a.dataset;
+  if (tag && at) {
+    const published = new Date(at);
     // Calendar days in the visitor's time zone; round absorbs the DST hour.
     const midnight = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
     const days = Math.round((midnight(new Date()) - midnight(published)) / 864e5);
     const when = days >= 0 && days <= 7
       ? new Intl.RelativeTimeFormat("en", { numeric: "auto" }).format(-days, "day")
       : published.toLocaleDateString("en", { year: "numeric", month: "short", day: "numeric" });
-    a.href = rel.html_url;
-    a.querySelector("b").textContent = rel.tag_name;
+    a.href = `https://github.com/Skare69/velvarr/releases/tag/${tag}`;
+    a.querySelector("b").textContent = tag;
     const label = a.querySelector("span");
     if (days === 0) {
       // Same pink shine as "Watch it.", only on a same-day release.
@@ -507,9 +508,9 @@ fetch("https://api.github.com/repos/Skare69/velvarr/releases/latest")
     } else {
       label.textContent = "Released " + when;
     }
-    a.querySelector("span").title = published.toLocaleString("en");
-  })
-  .catch(() => {});
+    label.title = published.toLocaleString("en");
+  }
+}
 
 // OS tabs for the install commands.
 const tabs = [...document.querySelectorAll(".tab")];
