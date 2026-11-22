@@ -7,7 +7,7 @@ WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
-# Build stage: Next standalone output compiled by Node 24.21.0. No env secrets required.
+# Build stage: Next standalone output compiled by Node 26.13.1. No env secrets required.
 FROM node:26.13.1-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc AS build
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
