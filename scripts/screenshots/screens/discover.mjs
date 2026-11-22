@@ -16,7 +16,8 @@ import {
 const today = new Date(NOW).toISOString().slice(0, 10);
 
 // Stub order and fields follow shelfStubs() in routes/discover.ts. The titles
-// are the landing-page ones; stub and built shelf share one base, as there.
+// must equal DISCOVER_SHELVES in src/lib/contracts.ts of the release, because
+// the shots show the real UI; stub and built shelf share one base, as there.
 const BASES = [
   {
     id: "new-releases",
@@ -36,7 +37,7 @@ const BASES = [
   },
   {
     id: "trending",
-    title: "Trending movies",
+    title: "Trending",
     source: "tpdb",
     kind: "catalog",
     browse: {
@@ -46,7 +47,7 @@ const BASES = [
   },
   {
     id: "jellyfin-recent",
-    title: "Recently added to Jellyfin",
+    title: "Recently added",
     source: "jellyfin",
     kind: "library",
     browse: { view: "library", params: { sort: "dateAdded" } },
@@ -170,11 +171,7 @@ export default {
     return undefined;
   },
   async prepare(page) {
-    for (const title of [
-      "New releases",
-      "Trending movies",
-      "Recently added to Jellyfin",
-    ])
+    for (const { title } of BASES.slice(0, 3))
       await page
         .locator(`[aria-label="${title} rail"] .discovery-tile`)
         .first()
