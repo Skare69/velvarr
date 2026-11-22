@@ -15,6 +15,7 @@ import {
   type RepairItem,
 } from "../src/lib/prose-repair.ts";
 import { AppError } from "../src/server/http.ts";
+import { wireJson } from "./fixture.ts";
 import type { IntegrationConfig } from "../src/lib/contracts.ts";
 
 type Providers = NonNullable<IntegrationConfig["providers"]>;
@@ -109,7 +110,7 @@ async function recording(
     sent.push({
       url: String(input),
       headers: new Headers(init?.headers),
-      body: JSON.parse(String(init?.body)) as SentBody,
+      body: wireJson(init) as SentBody,
     });
     assert.equal(init?.method, "POST");
     assert.equal(init?.redirect, "error");

@@ -14,6 +14,7 @@ import {
 } from "../src/server/judgment.ts";
 import { nextProviderCredentials } from "../src/app/api/[...path]/routes/admin.ts";
 import { validateBaseUrl } from "../src/server/http.ts";
+import { wireJson } from "./fixture.ts";
 import type { IntegrationConfig } from "../src/lib/contracts.ts";
 
 type Providers = NonNullable<IntegrationConfig["providers"]>;
@@ -49,7 +50,7 @@ test("Ollama uses System One with no cloud credential, preserving the same-work 
       assert.equal(String(input), "http://localhost:11434/v1/systemone");
       assert.equal(new Headers(init?.headers).has("authorization"), false);
       assert.equal(init?.redirect, "error");
-      const payload = JSON.parse(String(init?.body));
+      const payload = wireJson(init);
       assert.equal(payload.model, "nimble");
       assert.deepEqual(payload.state, { requested, candidate });
       assert.equal(payload.questions.sameWork.type, "noul");
@@ -230,7 +231,7 @@ test("local tag suggestions reduce oversized lists through bounded real choices"
   await withFetch(
     async (_, init) => {
       calls++;
-      const payload = JSON.parse(String(init?.body));
+      const payload = wireJson(init);
       const names = Object.keys(payload.questions.pick.criteria).filter(
         (n) => n !== "none",
       );
@@ -286,7 +287,7 @@ test("local ranking reorders the same shortlist and refuses incomplete answers",
   await withFetch(
     async (_, init) => {
       calls++;
-      const payload = JSON.parse(String(init?.body));
+      const payload = wireJson(init);
       assert.deepEqual(Object.keys(payload.questions), ["c0", "c1"]);
       assert.ok(
         Object.values(payload.questions).every(
@@ -320,10 +321,7 @@ test("connection verification uses a harmless decision and reports unsupported s
   await withFetch(
     async (_, init) => {
       calls++;
-      assert.equal(
-        JSON.parse(String(init?.body)).state,
-        "The service is running.",
-      );
+      assert.equal(wireJson(init).state, "The service is running.");
       return calls === 1
         ? response({ ready: { type: "noul", noul: 0.99 } })
         : new Response("not found", { status: 404 });
@@ -566,7 +564,7 @@ test("one 30 s budget covers every local tag batch: one abort ends the reduction
           controller.abort();
           throw new Error("aborted mid-reduction");
         }
-        const names = JSON.parse(String(init?.body)).state.tags;
+        const names = wireJson(init).state.tags;
         return response({
           pick: {
             type: "choice",
@@ -737,7 +735,7 @@ test("a malformed probe answer reports the provider-specific decision error", as
   let asked = "";
   await withFetch(
     async (_, init) => {
-      const payload = JSON.parse(String(init?.body));
+      const payload = wireJson(init);
       assert.equal(payload.questions.ready.type, "noul");
       assert.equal(
         payload.questions.ready.instructions,
@@ -952,7 +950,7 @@ test("a 25-tag list needs exactly one bounded choice request", async () => {
   await withFetch(
     async (_, init) => {
       calls++;
-      const payload = JSON.parse(String(init?.body));
+      const payload = wireJson(init);
       const names: string[] = payload.state.tags;
       assert.match(payload.questions.pick.instructions, /plain-language term/);
       assert.match(payload.questions.pick.instructions, /choose none\./);
@@ -991,7 +989,7 @@ test("26 tags batch 25-plus-1 and combine the chosen real tags", async () => {
   }));
   await withFetch(
     async (_, init) => {
-      const payload = JSON.parse(String(init?.body));
+      const payload = wireJson(init);
       const names: string[] = payload.state.tags;
       calls.push({ tags: names, type: payload.questions.pick.type });
       return response({
@@ -1071,7 +1069,7 @@ test("the cloud backend trims its environment settings and carries the credentia
         async (input, init) => {
           url = String(input);
           auth = new Headers(init?.headers).get("authorization");
-          model = JSON.parse(String(init?.body)).model;
+          model = wireJson(init).model;
           return response({
             pick: {
               type: "choice",
@@ -1137,7 +1135,7 @@ test("a 50-tag list batches as two 25-tag choice requests", async () => {
   }));
   await withFetch(
     async (_, init) => {
-      const names: string[] = JSON.parse(String(init?.body)).state.tags;
+      const names: string[] = wireJson(init).state.tags;
       sizes.push(names.length);
       return response({
         pick: {
@@ -1210,7 +1208,7 @@ test("the ranking cap of twelve sends one score question per candidate", async (
   await withFetch(
     async (_, init) => {
       calls++;
-      const payload = JSON.parse(String(init?.body));
+      const payload = wireJson(init);
       assert.equal(payload.state.candidates.length, 12);
       const questions = Object.values<Record<string, unknown>>(
         payload.questions,

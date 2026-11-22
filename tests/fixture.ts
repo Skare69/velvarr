@@ -7,6 +7,7 @@
 
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import { zstdDecompressSync } from "node:zlib";
 
 import { AppError } from "../src/server/http.ts";
 import type { Account, IntegrationConfig } from "../src/lib/contracts.ts";
@@ -89,6 +90,32 @@ export function pathOf(url: string): string {
 
 export function queryOf(url: string): URLSearchParams {
   return new URLSearchParams(url.split("?")[1] ?? "");
+}
+
+/** The JSON a TypeSafe SDK request puts on the wire — a wire-shaped
+ * JSON.parse. SDK 0.7 compresses request bodies of 1024 bytes or more with
+ * zstd, so a stub at the judgment boundary must decode bytes as well as
+ * plain JSON strings. Any other body shape is one this repo never sends:
+ * fail loudly instead of parsing the wrong thing. */
+export function wireJson(init?: RequestInit) {
+  const body = init?.body;
+  if (typeof body === "string") return JSON.parse(body);
+  if (body instanceof Uint8Array) {
+    const compressed =
+      body[0] === 0x28 &&
+      body[1] === 0xb5 &&
+      body[2] === 0x2f &&
+      body[3] === 0xfd;
+    const text = new TextDecoder().decode(
+      compressed ? zstdDecompressSync(body) : body,
+    );
+    return JSON.parse(text);
+  }
+  throw new Error(
+    `unsupported TypeSafe wire body: ${
+      body === undefined ? "missing" : String(body?.constructor?.name)
+    }`,
+  );
 }
 
 /** Predicate for assert.rejects: pins status AND code, so a refactor that

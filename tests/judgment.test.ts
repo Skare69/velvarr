@@ -8,6 +8,7 @@ import {
   sameWork,
   suggestTags,
 } from "../src/server/judgment.ts";
+import { wireJson } from "./fixture.ts";
 
 /** The judgment must be inert without a key: sameWork answers false and no
  * network call is possible. Runs first, before any test sets a key. */
@@ -251,7 +252,7 @@ test("sameWork asks the model and applies the probability gate", async () => {
     );
   let bodies: unknown[] = [];
   globalThis.fetch = async (_url, init) => {
-    bodies.push(JSON.parse(String(init?.body)));
+    bodies.push(wireJson(init));
     return reply(0.93);
   };
   try {

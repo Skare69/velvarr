@@ -27,6 +27,7 @@ import {
   queryOf,
   sendJson,
   startFixture,
+  wireJson,
   type Fixture,
   type FixtureHandler,
 } from "./fixture.ts";
@@ -289,13 +290,13 @@ function setEnv(
 
 /** Intercepts every non-loopback fetch (the TypeSafe boundary only); loopback
  * provider traffic is forwarded to the fixture. Records each request body. */
-function stubTypeSafe(respond: () => Response, calls: string[]): () => void {
+function stubTypeSafe(respond: () => Response, calls: unknown[]): () => void {
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
     if (String(input).startsWith("http://127.0.0.1:")) {
       return realFetch(input, init);
     }
-    calls.push(String(init?.body ?? ""));
+    calls.push(wireJson(init));
     return respond();
   };
   return () => {
@@ -594,7 +595,7 @@ test("a failed counterpart tag listing names the provider and keeps the source-s
 test("rank=jev without a key makes no paid call and keeps the tag order", async () => {
   await withFx(async () => {
     delete process.env.TYPESAFE_API_KEY;
-    const calls: string[] = [];
+    const calls: unknown[] = [];
     const restore = stubTypeSafe(() => {
       throw new Error("no call may happen without a key");
     }, calls);
@@ -624,7 +625,7 @@ test("a successful jev rerank reorders the exact same candidates in one metadata
       c3: scoreAnswer(0.9),
       c4: scoreAnswer(1.9),
     };
-    const calls: string[] = [];
+    const calls: unknown[] = [];
     const restore = stubTypeSafe(
       () =>
         new Response(JSON.stringify({ answers }), {
@@ -654,13 +655,13 @@ test("a successful jev rerank reorders the exact same candidates in one metadata
       // state carries catalog metadata only — never references, urls, or
       // account data.
       assert.equal(calls.length, 1);
-      const payload: {
+      const payload = calls[0] as {
         state: {
           source: Record<string, unknown>;
           candidates: Record<string, unknown>[];
         };
         questions: Record<string, { type: string }>;
-      } = JSON.parse(calls[0]!);
+      };
       assert.deepEqual(Object.keys(payload.questions).sort(), [
         "c0",
         "c1",
@@ -732,7 +733,7 @@ test("outage, incomplete, and out-of-range jev answers all preserve the determin
         ),
     ];
     for (const respond of attempts) {
-      const calls: string[] = [];
+      const calls: unknown[] = [];
       const restore = stubTypeSafe(respond, calls);
       try {
         const result = await relatedTitles(movieRef(SOURCE_ID), [], {
@@ -756,7 +757,7 @@ test("canRefine mirrors backend configuredness and shortlist size without a paid
   await withFx(async () => {
     // A configured backend advertises the refine affordance even without
     // rank=jev, and advertising it spends no judgment call.
-    const calls: string[] = [];
+    const calls: unknown[] = [];
     const restore = stubTypeSafe(() => {
       throw new Error("no judgment call without rank=jev");
     }, calls);
