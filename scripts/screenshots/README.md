@@ -1,13 +1,15 @@
 # Landing-page screenshots
 
 The landing page (`site/index.html`) shows seven app screenshots in
-`site/shots/`. This script makes them again from the current app, so
-the page can show a newer version without manual capture work.
+`site/shots/`. This script makes them again from the latest release, so
+the page shows the same UI and version as the release that it links.
 
 ## Concept
 
-- The script captures the real UI. It starts a production build with
-  `next start` on a temporary data directory.
+- The script captures the real UI. It starts a production build of the
+  latest release with `next start` on a temporary data directory. It
+  stops when the build is not at the newest `v*` tag, because `main` can
+  show a newer UI than the release.
 - The script makes up all of the data. Chromium sends each `/api/*`
   call to the demo answers in `demo.mjs` and in the screen file in
   `screens/`. The app gets no real server, provider, or Jellyfin data.
@@ -66,8 +68,19 @@ first set came from ComfyUI (DreamShaper XL Turbo).
 3. If Playwright has no Chromium, install it with
    `bunx playwright install chromium`. To use an installed Chrome, set
    `PLAYWRIGHT_CHANNEL=chrome`.
-4. Build the app: `bun run build`.
-5. Make the screenshots: `bun run shots`.
+4. Make a checkout of the latest release outside the repo, and build it:
+
+   ```sh
+   git fetch --tags origin
+   tag=$(git tag --list 'v*' --sort=-v:refname | head -1)
+   git worktree add --detach ../velvarr-release "$tag"
+   (cd ../velvarr-release && bun install --frozen-lockfile && bun run build)
+   ```
+
+5. In this checkout, make the screenshots from that build:
+   `bun run shots -- --app ../velvarr-release`. The script, the demo
+   data and the art come from this checkout. The UI comes from the build.
+6. Remove the release checkout: `git worktree remove ../velvarr-release`.
 
 Options (put them after `--`, for example `bun run shots -- --only prose`):
 
@@ -77,6 +90,10 @@ Options (put them after `--`, for example `bun run shots -- --only prose`):
   `site/shots`).
 - `--port <port>`: the port for `next start` (the default is 16760).
 - `--allow-font-fallback`: continue without Segoe UI (test runs only).
+- `--app <dir>`: the release checkout with the build (the default is
+  this checkout).
+- `--allow-untagged`: continue when the build is not at the latest
+  release (test runs only).
 
 ## Check the result
 

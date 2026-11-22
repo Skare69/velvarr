@@ -51,13 +51,18 @@ const PROSE_RESULT = {
   ],
 };
 
-/** GET /api/browse: one complete page of the demo scenes for any filter. */
+// The drafted filters exclude Poolside, so the grid must not show those scenes.
+const RESULTS = SCENES.map((s) => s.detail).filter(
+  (d) => !d.tags.some((t) => t.id === TAGS.poolside.id),
+);
+
+/** GET /api/browse: one complete page of the matching demo scenes. */
 const browsePage = (query) => ({
-  items: SCENES.map((s) => s.detail),
+  items: RESULTS,
   page: Number(query.get("page") ?? 1),
   perPage: Number(query.get("perPage") ?? 24),
   hasMore: false,
-  total: SCENES.length,
+  total: RESULTS.length,
   totalCountKnown: true,
   errors: [],
   notices: [],
@@ -94,6 +99,8 @@ export default {
     await input.press("Enter");
     await page.getByText(NOT_APPLIED).waitFor();
     await page.locator(".filter-chips").getByText("Clear all").waitFor();
-    await page.locator('p[role="status"]', { hasText: "10 titles" }).waitFor();
+    await page
+      .locator('p[role="status"]', { hasText: `${RESULTS.length} titles` })
+      .waitFor();
   },
 };

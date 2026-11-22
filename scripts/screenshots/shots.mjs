@@ -8,7 +8,7 @@
 // in Chromium with every /api/* call answered from scripts/screenshots/demo.mjs
 // and the screen's own handler, then writes the WebP at the exact size the
 // landing page declares for it.
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:net";
 import {
   existsSync,
@@ -42,6 +42,9 @@ const { values: args } = parseArgs({
     only: { type: "string" },
     port: { type: "string", default: "16760" },
     "allow-font-fallback": { type: "boolean", default: false },
+    // The checkout whose build the shots show: the latest release, not main.
+    app: { type: "string", default: "." },
+    "allow-untagged": { type: "boolean", default: false },
   },
 });
 
@@ -50,8 +53,21 @@ const fail = (message) => {
   process.exit(1);
 };
 
-if (!existsSync(".next/BUILD_ID"))
-  fail("no production build. Run `bun run build` first.");
+const appDir = resolve(args.app);
+if (!existsSync(join(appDir, ".next/BUILD_ID")))
+  fail(`no production build in ${appDir}. Run \`bun run build\` there first.`);
+
+// The landing page links the latest release, so the shots must show its UI.
+const git = (...a) =>
+  execFileSync("git", ["-C", appDir, ...a], { encoding: "utf8" }).trim();
+const latest = git("tag", "--list", "v*", "--sort=-v:refname").split("\n")[0];
+const headTags = git("tag", "--points-at", "HEAD", "--list", "v*").split("\n");
+if (!headTags.includes(latest) && !args["allow-untagged"])
+  fail(
+    `${appDir} is not at the latest release ${latest}. Check out ${latest} ` +
+      "(`git fetch --tags` first), build it, and pass --app <dir>. " +
+      "Use --allow-untagged for a test run.",
+  );
 
 const artDir = resolve(args.art);
 const artFiles = new Map();
@@ -117,6 +133,7 @@ const server = spawn(
   ],
   {
     stdio: ["ignore", "pipe", "inherit"],
+    cwd: appDir,
     env: {
       ...process.env,
       NEXT_TELEMETRY_DISABLED: "1",
@@ -272,6 +289,8 @@ async function shoot(browser, name) {
     hasTouch: Boolean(screen.mobile),
     reducedMotion: "reduce",
     colorScheme: "dark",
+    // The landing page is English; the host Chrome would otherwise use the OS locale.
+    locale: "en-US",
   });
   const page = await context.newPage();
   await page.clock.setFixedTime(NOW);
