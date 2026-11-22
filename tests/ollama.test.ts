@@ -1208,6 +1208,11 @@ test("the ranking cap of twelve sends one score question per candidate", async (
   await withFetch(
     async (_, init) => {
       calls++;
+      // Twelve candidates puts this body above the SDK's 1 KiB compression
+      // threshold, so a plain string body pins the local wire staying
+      // uncompressed (judgmentBackend passes `compression: false` to the
+      // SDK for Ollama).
+      assert.equal(typeof init?.body, "string");
       const payload = wireJson(init);
       assert.equal(payload.state.candidates.length, 12);
       const questions = Object.values<Record<string, unknown>>(

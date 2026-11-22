@@ -159,6 +159,11 @@ function judgmentBackend(options?: JudgmentOptions) {
         retry: { maxRetries: 0 },
         ...(local
           ? {
+              // Ollama is a plain JSON server; SDK 0.7 would otherwise
+              // compress bodies of 1 KiB or more with zstd, a wire change
+              // Ollama is not known to accept. Keep the local wire as it
+              // was before 0.7.
+              compression: false,
               // The SDK requires a placeholder key; local Ollama receives no credential.
               fetch: (input, init) => {
                 const headers = new Headers(init?.headers);
