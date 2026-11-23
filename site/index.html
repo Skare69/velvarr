@@ -74,7 +74,23 @@ code { font-family: var(--mono); font-size: 0.9em; }
 .btn-quiet { background: var(--raised); color: var(--ink); border-color: var(--edge); }
 .btn-quiet:hover { border-color: var(--accent); color: var(--ink); }
 .top .btn { min-height: 36px; padding: 0 14px; font-size: 14px; }
-.top .btn[aria-pressed="true"] { border-color: var(--accent); }
+/* Pause button: icon only, with a still arc of the screenshot beam on its border. Hover and the
+   paused state tint the whole edge, and the pause glyph turns into a play glyph. */
+.top .pause-btn {
+  width: 36px; padding: 0; justify-content: center; border-radius: 8px; border: 1.5px solid transparent;
+  background:
+    linear-gradient(var(--raised), var(--raised)) padding-box,
+    conic-gradient(from 200deg, var(--edge) 0deg 240deg, var(--accent) 300deg, oklch(88% 0.12 1.08) 330deg, oklch(55% 0.17 1.08) 352deg, var(--edge) 360deg) border-box;
+}
+.top .pause-btn:hover, .top .pause-btn[aria-pressed="true"] {
+  border-color: transparent;
+  background:
+    linear-gradient(var(--raised), var(--raised)) padding-box,
+    conic-gradient(from 200deg, var(--accent-soft) 0deg 240deg, var(--accent) 300deg, oklch(88% 0.12 1.08) 330deg, oklch(55% 0.17 1.08) 352deg, var(--accent-soft) 360deg) border-box;
+}
+.top .pause-btn svg { width: 16px; height: 16px; }
+.pause-btn .i-play, .pause-btn[aria-pressed="true"] .i-pause { display: none; }
+.pause-btn[aria-pressed="true"] .i-play { display: block; }
 .status { margin: 0; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
 .status:not(:empty) { padding-block: 8px; }
 .btn svg { width: 18px; height: 18px; flex: none; }
@@ -94,11 +110,12 @@ h2 { font-size: clamp(30px, 3.6vw, 44px); line-height: 1.08; letter-spacing: -0.
 .tabs { display: flex; gap: 4px; }
 .tab { min-height: 36px; padding: 0 12px; border: 0; border-radius: 5px; background: none; color: var(--muted); font: 600 13px/1 var(--font); cursor: pointer; }
 .tab[aria-selected="true"] { background: var(--accent-soft); color: var(--accent-text); }
-.copy { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; min-height: 36px; padding: 0 12px 0 10px; border: 1px solid var(--edge); border-radius: 5px; background: var(--raised); color: var(--ink); font: 600 13px/1 var(--font); cursor: pointer; }
+/* Copy is the install card's one action, so it takes the primary magenta fill. */
+.copy { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; min-height: 36px; padding: 0 12px 0 10px; border: 1px solid transparent; border-radius: 5px; background: var(--accent); color: var(--accent-ink); font: 600 13px/1 var(--font); cursor: pointer; }
 /* Icon lives in ::before so the script's "Copied" text swap keeps it. */
 .copy::before { content: ""; flex: none; width: 14px; height: 14px; background: currentColor; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linejoin='round'%3E%3Crect x='5.25' y='5.25' width='8.5' height='8.5' rx='1.5'/%3E%3Cpath d='M10.75 5.25V3.75a1.5 1.5 0 0 0-1.5-1.5h-5a1.5 1.5 0 0 0-1.5 1.5v5a1.5 1.5 0 0 0 1.5 1.5h1.5'/%3E%3C/svg%3E") center / contain no-repeat; }
 .copy[data-copied]::before { mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E"); }
-.copy:hover { border-color: var(--accent); }
+.copy:hover { background: var(--accent-hover); }
 pre { margin: 0; padding: 20px; overflow-x: auto; font: 13.5px/1.7 var(--mono); color: var(--ink); }
 pre .c { color: var(--muted); }
 .then { margin: 20px 0 0; padding: 0 0 0 20px; color: var(--muted); font-size: 15px; }
@@ -112,17 +129,28 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px 32px; align-items: cent
 footer nav { display: flex; flex-wrap: wrap; gap: 8px 22px; }
 footer .age { flex-basis: 100%; margin: 0; font-size: 13px; }
 
+/* Screenshot lightbox: one native modal dialog. Light dismiss, Esc and the close button close it. */
+.zoom { display: block; cursor: zoom-in; }
+.zoom:focus-visible { outline-offset: -4px; border-radius: 12px; }
+.lightbox { padding: 0; border: 0; background: none; max-width: 96vw; max-height: 96vh; overflow: visible; overscroll-behavior: contain; }
+.lightbox::backdrop { background: rgb(0 0 0 / 0.8); overflow: hidden; overscroll-behavior: contain; }
+.lightbox img { display: block; width: auto; height: auto; max-width: 96vw; max-height: 92vh; border-radius: 10px; background: var(--panel); }
+.lightbox-close { position: absolute; top: 10px; right: 10px; width: 40px; min-height: 40px; padding: 0; justify-content: center; }
+.lightbox-close svg { width: 18px; height: 18px; }
+
 /* Hero */
 .hero { position: relative; isolation: isolate; overflow: clip; padding: 88px 0 0; }
-/* The velvet picture stays still; the light layers drift and breathe on top of it in screen blend. */
-.hero-art { position: absolute; inset: 0 0 auto auto; width: min(52%, 720px); height: 760px; z-index: -1;
+/* The velvet photo stays still on the right; the light layers breathe in place on the left, behind the
+   headline, in screen blend. .hero-art spans the hero so the glows are not clipped by the photo's masks. */
+.hero-art { position: absolute; inset: 0 0 auto; height: 760px; z-index: -1; }
+.hero-photo { position: absolute; inset: 0 0 0 auto; width: min(52%, 720px);
   background: linear-gradient(color-mix(in srgb, var(--canvas) 25%, transparent) 0 0), url("velvet.webp") 50% 20% / cover no-repeat;
   -webkit-mask-image: linear-gradient(90deg, transparent, #000 45%), linear-gradient(180deg, #000 55%, transparent);
   -webkit-mask-composite: source-in; mask-image: linear-gradient(90deg, transparent, #000 45%), linear-gradient(180deg, #000 55%, transparent); mask-composite: intersect; }
-.hero-art::before, .hero-art::after { content: ""; position: absolute; inset: -12%; mix-blend-mode: screen; transform-origin: 70% 30%; }
-.hero-art::before { background: radial-gradient(40% 36% at 70% 20%, color-mix(in srgb, var(--accent) 55%, transparent), transparent 70%),
-    radial-gradient(30% 30% at 86% 66%, color-mix(in srgb, var(--accent) 30%, transparent), transparent 70%); }
-.hero-art::after { background: radial-gradient(36% 42% at 34% 56%, color-mix(in srgb, oklch(55% 0.2 295) 45%, transparent), transparent 70%); }
+.hero-art::before, .hero-art::after { content: ""; position: absolute; inset: -12%; mix-blend-mode: screen; transform-origin: 25% 35%; }
+.hero-art::before { background: radial-gradient(40% 30% at 14% 24%, color-mix(in srgb, var(--accent) 55%, transparent), transparent 70%),
+    radial-gradient(26% 24% at 4% 60%, color-mix(in srgb, var(--accent) 27.5%, transparent), transparent 70%); }
+.hero-art::after { background: radial-gradient(32% 32% at 24% 50%, color-mix(in srgb, oklch(55% 0.2 295) 45%, transparent), transparent 70%); }
 .eyebrow { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 22px; padding: 5px 12px 5px 6px; border: 1px solid var(--edge); border-radius: 999px; background: color-mix(in srgb, var(--panel) 80%, transparent); font-size: 13px; font-weight: 600; color: var(--muted); text-decoration: none; }
 .eyebrow b { padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
 .eyebrow:hover { border-color: var(--accent); color: var(--ink); }
@@ -189,7 +217,8 @@ h1 em, .shine { font-style: normal; color: var(--ink); display: inline-block; }
 
 @media (max-width: 960px) {
   .hero { padding-top: 48px; }
-  .hero-art { width: 100%; height: 520px; opacity: 0.5; -webkit-mask-image: linear-gradient(180deg, #000 10%, transparent); mask-image: linear-gradient(180deg, #000 10%, transparent); }
+  .hero-art { height: 520px; opacity: 0.8; }
+  .hero-photo { width: 100%; opacity: 0.6; -webkit-mask-image: linear-gradient(180deg, #000 10%, transparent); mask-image: linear-gradient(180deg, #000 10%, transparent); }
   .split, .feat, .feat:nth-child(even) { grid-template-columns: minmax(0, 1fr); gap: 28px; }
   .feat:nth-child(even) .say { order: 0; }
   .feat + .feat { margin-top: 72px; }
@@ -212,12 +241,11 @@ h1 em, .shine { font-style: normal; color: var(--ink); display: inline-block; }
   .rise { opacity: 0; transform: translateY(16px); animation: rise 700ms var(--ease) forwards; }
   .rise:nth-child(2) { animation-delay: 80ms; } .rise:nth-child(3) { animation-delay: 160ms; } .rise:nth-child(4) { animation-delay: 240ms; }
   .stage { animation-delay: 300ms; }
-  /* Magenta and violet glows drift apart at unmatched speeds and breathe on a third loop, so the motion never lines up. */
-  .hero-art::before { animation: drift-a 16s ease-in-out infinite alternate, breathe 10s ease-in-out infinite; }
-  .hero-art::after { animation: drift-b 20.8s ease-in-out infinite alternate, breathe 10s ease-in-out infinite; }
-  @keyframes drift-a { to { transform: translate3d(-10%, 7%, 0) scale(1.1); } }
-  @keyframes drift-b { to { transform: translate3d(9%, -6%, 0) scale(0.94); } }
-  @keyframes breathe { 0%, 100% { scale: 1; opacity: 0.75; } 50% { scale: 1.14; opacity: 1; } }
+  /* The glows stay in place and only breathe: a slight grow and fade. The two layers use unmatched loops,
+     so they never pulse together. */
+  .hero-art::before { animation: breathe 10s ease-in-out infinite; }
+  .hero-art::after { animation: breathe 13s ease-in-out infinite; }
+  @keyframes breathe { 0%, 100% { scale: 1; opacity: 0.8; } 50% { scale: 1.08; opacity: 1; } }
   /* Border beam on every screenshot: a fixed conic gradient on an oversized ::after turns with a
      compositor transform, and the 2 px gap around the image shows it. The square must cover the
      frame's diagonal, so the tall phone frame gets a wider one. Measured at 4x CPU throttle on the
@@ -232,6 +260,17 @@ h1 em, .shine { font-style: normal; color: var(--ink); display: inline-block; }
   }
   .shot.phone::after { width: 260%; }
   .shot img { position: relative; z-index: 1; width: calc(100% - 4px); margin: 2px; border-radius: 12px; background: var(--panel); }
+  /* The same beam on the AI matching card: the conic ::before turns behind an inner panel ::after, so it
+     shows in a 2 px gap inside the card's edge. */
+  .match { position: relative; z-index: 0; overflow: hidden; }
+  .match::before {
+    content: ""; position: absolute; z-index: -2;
+    left: 50%; top: 50%; width: 160%; aspect-ratio: 1; translate: -50% -50%;
+    background: conic-gradient(from 0deg, transparent 0deg, transparent 280deg, var(--accent) 325deg, oklch(88% 0.12 1.08) 345deg, oklch(55% 0.17 1.08) 356deg, transparent 360deg);
+    animation: beam-rot 20s linear infinite;
+    pointer-events: none;
+  }
+  .match::after { content: ""; position: absolute; z-index: -1; inset: 2px; border-radius: 8px; background: var(--panel); pointer-events: none; }
   /* The phone's dark bezel becomes a ring on the image, so the beam runs in the 2 px gap outside it. */
   .stage .phone { border-width: 1px; border-color: var(--edge); }
   .shot.phone img { width: calc(100% - 16px); margin: 8px; border-radius: 18px; box-shadow: 0 0 0 6px oklch(25% 0.03 325); }
@@ -254,6 +293,7 @@ h1 em, .shine { font-style: normal; color: var(--ink); display: inline-block; }
 html.animations-paused .hero-art::before,
 html.animations-paused .hero-art::after,
 html.animations-paused .shot::after,
+html.animations-paused .match::before,
 html.animations-paused h1 em,
 html.animations-paused .shine { animation-play-state: paused; }
 </style>
@@ -268,7 +308,7 @@ html.animations-paused .shine { animation-play-state: paused; }
       <a href="#tour">Tour</a>
       <a href="#install">Install</a>
       <a href="https://github.com/Skare69/velvarr/tree/main/docs">Docs</a>
-      <button class="btn btn-quiet" type="button" id="pause-animations" aria-pressed="false">Pause animations</button>
+      <button class="btn btn-quiet pause-btn" type="button" id="pause-animations" aria-pressed="false" aria-label="Pause animations" title="Pause animations"><svg class="i-pause" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="4" y="3" width="3" height="10" rx="1"/><rect x="9" y="3" width="3" height="10" rx="1"/></svg><svg class="i-play" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5 3.2v9.6a.6.6 0 0 0 .9.5l7.6-4.8a.6.6 0 0 0 0-1L5.9 2.7a.6.6 0 0 0-.9.5z"/></svg></button>
       <a class="btn btn-quiet" href="https://github.com/Skare69/velvarr">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
         GitHub
@@ -280,7 +320,7 @@ html.animations-paused .shine { animation-play-state: paused; }
 
 <main id="main">
   <div class="hero" id="top">
-    <div class="hero-art" aria-hidden="true"></div>
+    <div class="hero-art" aria-hidden="true"><div class="hero-photo"></div></div>
     <div class="wrap">
       <a class="eyebrow rise" id="release" href="https://github.com/Skare69/velvarr/releases" data-tag="" data-published=""><b>Releases</b><span>See the changelog on GitHub</span></a>
       <h1 class="rise">Discover it.<br>Request it.<br><em>Watch it.</em></h1>
@@ -376,7 +416,7 @@ html.animations-paused .shine { animation-play-state: paused; }
         <span class="kicker">AI-assisted matching (optional)</span>
         <h2>Smarter library matching</h2>
         <p>When a title in your library has a slightly different name than the one you requested, AI spots the likely match and flags it for you to review. It never marks a title as available on its own. It also sorts similar titles and suggests real tags while you search.</p>
-        <p class="works"><b>Works with</b> Ollama or TypeSafe</p>
+        <p class="works"><b>Works with</b> <a href="https://ollama.com/">Ollama</a> or <a href="https://typesafe.ai">TypeSafe</a></p>
       </div>
       <figure class="match" aria-label="Example of a flagged near match">
         <p class="match-ex">Example</p>
@@ -466,7 +506,34 @@ docker compose up -d</code></pre>
   </div>
 </footer>
 
+<dialog class="lightbox" id="lightbox" closedby="any" aria-label="Enlarged screenshot">
+  <form method="dialog"><button class="btn btn-quiet lightbox-close" aria-label="Close"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></form>
+  <img alt="">
+</dialog>
+
 <script>
+// Each screenshot links to its full-size file; with JS the link opens the lightbox instead.
+const lightbox = document.getElementById("lightbox");
+const lightboxImg = lightbox.querySelector("img");
+for (const img of document.querySelectorAll(".shot img")) {
+  const link = document.createElement("a");
+  link.className = "zoom";
+  link.href = img.getAttribute("src");
+  link.setAttribute("aria-haspopup", "dialog");
+  img.before(link);
+  link.append(img);
+  link.addEventListener("click", (e) => {
+    e.preventDefault();
+    lightboxImg.src = img.currentSrc || img.src;
+    lightboxImg.alt = img.alt;
+    lightbox.showModal();
+  });
+}
+// closedby="any" covers light dismiss where supported; older Safari gets the same from a backdrop click.
+if (!("closedBy" in HTMLDialogElement.prototype)) {
+  lightbox.addEventListener("click", (e) => { if (e.target === lightbox) lightbox.close(); });
+}
+
 const pauseAnimations = document.getElementById("pause-animations");
 const animationStatus = document.getElementById("animation-status");
 const storageMessage = "This choice applies only to this page. Your browser cannot save it.";
