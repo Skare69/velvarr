@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -10,6 +11,9 @@ import {
 } from "react";
 import { useSearchParams } from "next/navigation";
 import "./catalog.css";
+// The bulk dialog and its inline error text share views.css with the
+// performer page's BulkRequest.
+import "./views.css";
 import { isFreeText, TagPicker } from "./tag-picker.tsx";
 import {
   api,
@@ -56,6 +60,16 @@ import { filterName, hasName, seedName, seedPerformerPick } from "../lib/names";
 import { NotConfiguredLine } from "./discover";
 import { CatalogDetailView, detailTarget } from "./catalog-detail.tsx";
 import { ProseSearchField } from "./prose-search";
+import { REQUESTS_CHANGED } from "../lib/approvals";
+// The "Request all" plan and runner are React-free so node --test pins the
+// cap, the skip rules and the request_limit stop directly.
+import {
+  planRequestAll,
+  REQUEST_ALL_CAP,
+  requestAllKey,
+  runRequestAll,
+  type RequestAllResult,
+} from "../lib/request-all";
 // Endless scroll appends pages through this dedupe-append (lib stays
 // React-free so node --test can exercise it directly).
 import { mergePageItems } from "../lib/browse-items.ts";
@@ -1249,6 +1263,25 @@ export function TitlesView() {
   // code gets its own wording and no Retry.
   const [scanLimited, setScanLimited] = useState(false);
   const seqRef = useRef(0);
+  // "Request all": keys settled by earlier presses (requested or already
+  // requested) leave the next plan; a run counter drops a run's answer when
+  // the grid restarted under it.
+  const [requestDone, setRequestDone] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const [requestBusy, setRequestBusy] = useState(false);
+  const [requestResult, setRequestResult] = useState<
+    (RequestAllResult & { over: number; undeliverable: number }) | null
+  >(null);
+  const [requestError, setRequestError] = useState<string | null>(null);
+  // Each RequestableCard keeps its own status; a bumped count in its key
+  // remounts only the cards a run touched, so they re-check.
+  const [cardEpoch, setCardEpoch] = useState<ReadonlyMap<string, number>>(
+    () => new Map(),
+  );
+  const requestRunRef = useRef(0);
+  const requestDialogRef = useRef<HTMLDialogElement>(null);
+  const requestTitleId = useId();
 
   /* Grid columns come from the rendered CSS tracks, so the page size is
    * whole rows: nine columns means 27 items, not 24. The probe is always
@@ -1384,8 +1417,15 @@ export function TitlesView() {
     [basePath],
   );
 
-  // Any filter, perPage or reload change restarts the grid at page 1.
+  // Any filter, perPage or reload change restarts the grid at page 1, and
+  // with it the "Request all" state: a new grid gets a fresh plan.
   useEffect(() => {
+    requestRunRef.current += 1;
+    setRequestDone(new Set());
+    setRequestBusy(false);
+    setRequestResult(null);
+    setRequestError(null);
+    setCardEpoch(new Map());
     void load(1, "reset");
   }, [load, reload]);
 
@@ -1562,6 +1602,72 @@ export function TitlesView() {
 
   const target = detailTarget(params);
   const retry = () => setReload((n) => n + 1);
+
+  // The displayed cards: whole rows only. "Request all" plans from exactly
+  // these, so a title trimmed off the last row is never requested unseen.
+  const shown = acc === null ? [] : wholeRows(acc.items, cols, acc.hasMore);
+  const requestPlan = planRequestAll(shown, requestDone);
+  const shownTotal =
+    acc !== null && acc.errors.length === 0 && acc.totalCountKnown
+      ? acc.total
+      : undefined;
+  const showRequestAll = requestPlan.batch.length > 0 || requestBusy;
+  const cardKey = (r: CatalogReference) => {
+    const epoch = cardEpoch.get(requestAllKey(r));
+    return epoch === undefined
+      ? `${r.provider}:${r.id}`
+      : `${r.provider}:${r.id}:${epoch}`;
+  };
+
+  const runRequests = async () => {
+    requestDialogRef.current?.close();
+    const run = requestRunRef.current;
+    const { batch, over, undeliverable } = requestPlan;
+    const attempted: string[] = [];
+    setRequestBusy(true);
+    setRequestError(null);
+    setRequestResult(null);
+    try {
+      const res = await runRequestAll(batch, (media) => {
+        attempted.push(requestAllKey(media));
+        return api<{ autoApproved?: boolean }>("/api/requests", {
+          method: "POST",
+          body: JSON.stringify({ media }),
+        });
+      });
+      if (requestRunRef.current !== run) return;
+      setRequestDone((prev) => new Set([...prev, ...res.settled]));
+      setRequestResult({ ...res, over, undeliverable });
+    } catch (e) {
+      if (requestRunRef.current !== run) return;
+      setRequestError(messageOf(e));
+    } finally {
+      // Any post may have landed, even in a run that threw or went stale.
+      window.dispatchEvent(new Event(REQUESTS_CHANGED));
+      if (requestRunRef.current === run) {
+        setCardEpoch((prev) => {
+          const next = new Map(prev);
+          for (const k of attempted) next.set(k, (next.get(k) ?? 0) + 1);
+          return next;
+        });
+        setRequestBusy(false);
+      }
+    }
+  };
+
+  // Only counts the run observed; zero-valued extras stay unsaid.
+  const requestCounts = requestResult
+    ? [
+        `${requestResult.requested} requested`,
+        requestResult.autoApproved > 0
+          ? `${requestResult.autoApproved} auto-approved`
+          : null,
+        requestResult.existing > 0
+          ? `${requestResult.existing} already requested`
+          : null,
+        requestResult.failed > 0 ? `${requestResult.failed} failed` : null,
+      ].filter(Boolean)
+    : [];
 
   // Active filters, grouped by kind: each group shows its name once, and
   // every chip inside is one remove button whose label names the full filter.
@@ -1844,26 +1950,114 @@ export function TitlesView() {
                       is known before scrolling. Shown only when the service
                       attests a real total and no source error stands: a
                       capped total has no honest number, and a standing
-                      error may hide rows the exact number would deny. */}
-                  {acc.errors.length === 0 &&
-                    acc.totalCountKnown &&
-                    acc.total != null && (
-                      <p className="mb-3 text-sm text-muted" role="status">
-                        {new Intl.NumberFormat().format(acc.total)}{" "}
-                        {acc.total === 1 ? "title" : "titles"}
+                      error may hide rows the exact number would deny.
+                      "Request all" sits beside it, over the grid it acts
+                      on. */}
+                  {(shownTotal != null ||
+                    showRequestAll ||
+                    requestResult !== null ||
+                    requestError !== null) && (
+                    <div className="mb-3">
+                      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                        {shownTotal != null && (
+                          <p className="m-0 text-sm text-muted" role="status">
+                            {new Intl.NumberFormat().format(shownTotal)}{" "}
+                            {shownTotal === 1 ? "title" : "titles"}
+                          </p>
+                        )}
+                        {showRequestAll && (
+                          <button
+                            type="button"
+                            className="btn btn-accent ml-auto"
+                            disabled={requestBusy}
+                            aria-busy={requestBusy || undefined}
+                            onClick={() => {
+                              setRequestError(null);
+                              requestDialogRef.current?.showModal();
+                            }}
+                          >
+                            <Icon name="plus" />
+                            {requestBusy
+                              ? "Requesting…"
+                              : `Request all (${requestPlan.batch.length})`}
+                          </button>
+                        )}
+                      </div>
+                      {requestCounts.length > 0 && requestResult && (
+                        <p className="mt-2 text-sm" role="status">
+                          {requestCounts.join(" · ")}
+                          {requestResult.over > 0 &&
+                          requestResult.stopped === null
+                            ? ` — ${requestResult.over} more loaded titles were not included; press again for the next ${REQUEST_ALL_CAP}.`
+                            : "."}
+                        </p>
+                      )}
+                      {requestResult?.stopped && (
+                        <p className="bulk-error mt-2 text-sm" role="alert">
+                          {requestResult.stopped.message}
+                          {requestResult.notSent > 0
+                            ? ` ${requestResult.notSent} not sent.`
+                            : ""}
+                        </p>
+                      )}
+                      {requestError && (
+                        <p className="bulk-error mt-2 text-sm" role="alert">
+                          The requests did not run: {requestError}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  <dialog
+                    ref={requestDialogRef}
+                    className="bulk-dialog"
+                    aria-labelledby={requestTitleId}
+                  >
+                    <div className="p-5">
+                      <h3 id={requestTitleId} className="font-semibold">
+                        Request {requestPlan.batch.length}{" "}
+                        {requestPlan.batch.length === 1 ? "title" : "titles"}?
+                      </h3>
+                      <p className="mt-2 text-sm text-muted">
+                        Velvarr files a request for each requestable title
+                        loaded on this page, at most {REQUEST_ALL_CAP} per
+                        press. Titles you already requested are skipped.
+                        {requestPlan.over > 0 &&
+                          ` ${requestPlan.over} more loaded ${requestPlan.over === 1 ? "title stays" : "titles stay"} for the next press.`}
+                        {requestPlan.undeliverable > 0 &&
+                          ` ${requestPlan.undeliverable} TPDB ${requestPlan.undeliverable === 1 ? "scene is" : "scenes are"} skipped: Whisparr cannot acquire them.`}
                       </p>
-                    )}
+                      <div className="mt-4 flex justify-end gap-2">
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => requestDialogRef.current?.close()}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-accent"
+                          disabled={
+                            requestBusy || requestPlan.batch.length === 0
+                          }
+                          onClick={() => void runRequests()}
+                        >
+                          File the requests
+                        </button>
+                      </div>
+                    </div>
+                  </dialog>
                   <div className={POSTER_GRID}>
-                    {wholeRows(acc.items, cols, acc.hasMore).map((it) =>
+                    {shown.map((it) =>
                       it.reference.kind === "scene" ? (
                         <SceneCard
-                          key={`${it.reference.provider}:${it.reference.id}`}
+                          key={cardKey(it.reference)}
                           item={it}
                           onOpen={openDetail}
                         />
                       ) : (
                         <MovieCard
-                          key={`${it.reference.provider}:${it.reference.id}`}
+                          key={cardKey(it.reference)}
                           item={it}
                           onOpen={openDetail}
                         />
