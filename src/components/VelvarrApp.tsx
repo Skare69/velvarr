@@ -8,6 +8,7 @@ import {
   useState,
   type ChangeEvent,
   type FormEvent,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import { useSearchParams } from "next/navigation";
 import type {
@@ -1039,6 +1040,7 @@ function Shell() {
         : "discover";
   const isAdmin = session.account.role === "admin";
   const navigation = useRef<HTMLDialogElement>(null);
+  const moreButton = useRef<HTMLButtonElement>(null);
   const accountMenu = useRef<HTMLDetailsElement>(null);
   // Desktop sidebar collapse, remembered on this device. Read after mount:
   // the server render has no localStorage, so the first paint is expanded.
@@ -1056,7 +1058,6 @@ function Shell() {
   // open, but a save remounts them (the reload clears acc, and "N hidden"
   // renders only while tags are hidden), so open records the focused node
   // and close restores it or its fresh replacement.
-  const prefsFromMenu = useRef(false);
   const prefsOpener = useRef<Element | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
@@ -1064,7 +1065,6 @@ function Shell() {
   // URL keeps every filter — the removed ?view=preferences dropped them.
   useEffect(() => {
     const open = () => {
-      prefsFromMenu.current = false;
       prefsOpener.current = document.activeElement;
       setPrefsOpen(true);
     };
@@ -1103,18 +1103,27 @@ function Shell() {
       icon: "performer",
       group: "browse",
     },
+    { id: "facets", label: "Studios", icon: "studio", group: "browse" },
     { id: "library", label: "Library", icon: "library", group: "manage" },
     { id: "requests", label: "Requests", icon: "requests", group: "manage" },
+    {
+      id: "preferences",
+      label: "Preferences",
+      icon: "filter",
+      group: "manage",
+    },
     { id: "admin", label: "Users", icon: "users", group: "admin" },
     { id: "settings", label: "Settings", icon: "settings", group: "admin" },
   ] as const;
   const visibleNav = nav.filter((item) => item.group !== "admin" || isAdmin);
-  const go = (next: View) => {
-    setParamsClearing(
-      setP,
-      { view: next === "discover" ? null : next },
-      { push: true },
-    );
+  const followNavLink = (event: ReactMouseEvent<HTMLAnchorElement>) => {
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)
+      return;
+    event.preventDefault();
+    const target = new URL(event.currentTarget.href);
+    setParamsClearing(setP, Object.fromEntries(target.searchParams), {
+      push: true,
+    });
     navigation.current?.close();
     window.scrollTo({ top: 0 });
   };
@@ -1131,47 +1140,66 @@ function Shell() {
       {index > 0 && visibleNav[index - 1]?.group !== item.group && (
         <div className="nav-section" />
       )}
-      <a
-        href={item.id === "discover" ? "/" : `/?view=${item.id}`}
-        className="nav-btn"
-        aria-current={view === item.id ? "page" : undefined}
-        title={collapsed ? item.label : undefined}
-        onClick={(event) => {
-          if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)
-            return;
-          event.preventDefault();
-          go(item.id);
-        }}
-      >
-        <Icon name={item.icon} />
-        <span className="nav-label">{item.label}</span>
-        {item.id === "requests" &&
-          (pendingApprovals === "unavailable" || pendingApprovals > 0) && (
-            <span
-              className="nav-badge"
-              aria-label={
-                pendingApprovals === "unavailable"
-                  ? "Approval count unavailable"
-                  : `${pendingApprovals} request${pendingApprovals === 1 ? "" : "s"} awaiting approval`
-              }
-            >
-              {pendingApprovals === "unavailable" ? "?" : pendingApprovals}
-            </span>
-          )}
-      </a>
+      {item.id === "preferences" ? (
+        <button
+          type="button"
+          className="nav-btn"
+          aria-haspopup="dialog"
+          title={collapsed ? item.label : undefined}
+          onClick={(event) => {
+            // The shortcut hides with the More sheet; return focus to More.
+            if (navigation.current?.open) {
+              navigation.current.close();
+              prefsOpener.current = moreButton.current;
+            } else {
+              prefsOpener.current = event.currentTarget;
+            }
+            setPrefsOpen(true);
+          }}
+        >
+          <Icon name={item.icon} />
+          <span className="nav-label">{item.label}</span>
+        </button>
+      ) : (
+        <a
+          href={
+            item.id === "facets"
+              ? "/?view=facets&kind=studios"
+              : item.id === "discover"
+                ? "/"
+                : `/?view=${item.id}`
+          }
+          className="nav-btn"
+          aria-current={
+            view === item.id &&
+            (item.id !== "facets" || params.get("kind") === "studios")
+              ? "page"
+              : undefined
+          }
+          title={collapsed ? item.label : undefined}
+          onClick={followNavLink}
+        >
+          <Icon name={item.icon} />
+          <span className="nav-label">{item.label}</span>
+          {item.id === "requests" &&
+            (pendingApprovals === "unavailable" || pendingApprovals > 0) && (
+              <span
+                className="nav-badge"
+                aria-label={
+                  pendingApprovals === "unavailable"
+                    ? "Approval count unavailable"
+                    : `${pendingApprovals} request${pendingApprovals === 1 ? "" : "s"} awaiting approval`
+                }
+              >
+                {pendingApprovals === "unavailable" ? "?" : pendingApprovals}
+              </span>
+            )}
+        </a>
+      )}
     </div>
   ));
   const brand = (
-    <a
-      className="brand"
-      href="/"
-      onClick={(event) => {
-        if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)
-          return;
-        event.preventDefault();
-        go("discover");
-      }}
-    >
+    <a className="brand" href="/" onClick={followNavLink}>
       <span className="brand-mark">
         <img src="/velvarr-logo.png" alt="" />
       </span>
@@ -1236,7 +1264,8 @@ function Shell() {
               className="btn"
               onClick={() => {
                 if (accountMenu.current) accountMenu.current.open = false;
-                prefsFromMenu.current = true;
+                prefsOpener.current =
+                  accountMenu.current?.querySelector("summary") ?? null;
                 setPrefsOpen(true);
               }}
             >
@@ -1268,23 +1297,17 @@ function Shell() {
       </main>
       <nav className="mobile-bottom-nav" aria-label="Quick navigation">
         {visibleNav
-          .filter((item) => item.group === "browse" || item.id === "requests")
+          .filter(
+            (item) =>
+              (item.group === "browse" && item.id !== "facets") ||
+              item.id === "requests",
+          )
           .map((item) => (
             <a
               key={item.id}
               href={item.id === "discover" ? "/" : `/?view=${item.id}`}
               aria-current={view === item.id ? "page" : undefined}
-              onClick={(event) => {
-                if (
-                  event.ctrlKey ||
-                  event.metaKey ||
-                  event.shiftKey ||
-                  event.altKey
-                )
-                  return;
-                event.preventDefault();
-                go(item.id);
-              }}
+              onClick={followNavLink}
             >
               <Icon name={item.icon} />
               {item.label}
@@ -1293,6 +1316,7 @@ function Shell() {
         {/* Seerr's phone layout: the pages the bar has no room for live
             behind More, one entry point instead of a second (hamburger) one. */}
         <button
+          ref={moreButton}
           type="button"
           aria-haspopup="dialog"
           aria-expanded={menuOpen}
@@ -1344,13 +1368,6 @@ function Shell() {
         onClose={() => {
           setPrefsOpen(false);
           const summary = accountMenu.current?.querySelector("summary");
-          if (prefsFromMenu.current) {
-            // The menu's Preferences button hid with the account menu before
-            // showModal, so the browser has no live element to return focus
-            // to; put it back on the menu's visible opener.
-            summary?.focus();
-            return;
-          }
           // A save unmounts Browse's openers (the reload clears acc, and the
           // "N hidden" button only renders while tags are hidden), so the
           // node the native close steps would restore to can be detached.

@@ -8,7 +8,8 @@
 - **Crash-safe acquisition into Whisparr:** Velvarr records each attempt before the network call, so a restart never loses or duplicates an add.
 - **Jellyfin availability** for each user, and watch links without credentials.
 - **Performer follows** across both providers, with a Following view and a Discover rail.
-- **Preferences:** hidden tags and Discover shelf order for each account.
+- **Studios:** open Studios from the sidebar or the mobile More menu to browse studios in recent releases.
+- **Preferences:** open Preferences from the sidebar, the mobile More menu, or the account menu to edit hidden tags and Discover shelf order while keeping your place.
 - **Similar titles** for movies and scenes, and **Often appears with** for performers.
 - **Possible duplicate movies:** TPDB movie details compare hashes or cast, year, tags, duration, and poster similarity. Copy a manual report with both TPDB links.
 - **Update notice** when a newer GitHub release is available.
