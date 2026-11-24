@@ -46,15 +46,24 @@ import { searchCatalog } from "../../../../server/providers.ts";
 // the UI because it is already staff) — the request is decided approved
 // immediately so shared acquisition work is enqueued; otherwise it stays
 // pending for a moderator. No Whisparr call happens anywhere on this path.
+// `autoApproved: true` marks only an approval the grant policy made: an
+// admin's own request is approved by that admin's authority, a human
+// decision, so it carries no auto label.
 export async function createRequestRoute(
   request: Request,
   ctx: AuthContext,
 ): Promise<Response> {
   const media = mediaFromBody(await readJson(request));
   const record = createRequest(ctx.account.id, media);
-  const approved = autoApprove(ctx.account.id, record);
-  if (approved) {
-    return json({ request: approved, autoApproved: true }, 201);
+  const approval = autoApprove(ctx.account.id, record);
+  if (approval) {
+    return json(
+      {
+        request: approval.record,
+        ...(approval.byPolicy ? { autoApproved: true } : {}),
+      },
+      201,
+    );
   }
   return json({ request: record }, 201);
 }
@@ -63,15 +72,19 @@ export async function createRequestRoute(
  * and a bulk scan's provider pages both await before this runs. So the gate
  * reads the stored account, with no await before decideRequest, which checks
  * it again in its transaction. A revoked grant leaves the new request pending
- * for a moderator, also for a moderator whose role alone could approve. */
+ * for a moderator, also for a moderator whose role alone could approve.
+ * `byPolicy` is true only when the autoApprove grant made the approval with
+ * no human decision: an admin approves by role, also with a stale grant. */
 function autoApprove(
   accountId: string,
   record: RequestRecord,
-): RequestRecord | null {
+): { record: RequestRecord; byPolicy: boolean } | null {
   const current = getAccount(accountId);
   if (!current?.enabled) return null;
-  if (!current.autoApprove && current.role !== "admin") return null;
-  return decideRequest(current, record.id, "approved");
+  const admin = current.role === "admin";
+  if (!current.autoApprove && !admin) return null;
+  const approved = decideRequest(current, record.id, "approved");
+  return { record: approved, byPolicy: !admin };
 }
 
 /** Approved rows carry the SHARED acquisition state for their identity, so a
@@ -297,7 +310,7 @@ export async function bulkRequestRoute(
     try {
       const record = createRequest(ctx.account.id, media);
       requested += 1;
-      if (autoApprove(ctx.account.id, record)) autoApproved += 1;
+      if (autoApprove(ctx.account.id, record)?.byPolicy) autoApproved += 1;
     } catch (err) {
       if (err instanceof AppError && err.code === "request_exists") {
         skipped += 1;

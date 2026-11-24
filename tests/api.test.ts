@@ -11176,7 +11176,10 @@ test("admin user rows carry live request counts and avatar tags only when upstre
   // Two intents filed through the real request API move the owner's count
   // from 0 to exactly 2. The owner is an ADMIN: no autoApprove grant is
   // possible for that account (the UI locks it), and the role alone must
-  // auto-approve its own requests — each POST is born approved.
+  // auto-approve its own requests — each POST is born approved. That
+  // approval is the admin's own decision, not the grant policy, so the
+  // response carries no `autoApproved` flag (the UI shows "Auto-approved"
+  // only for policy approvals with no human involved).
   for (const id of [TPDB_MOVIE7, TPDB_MOVIE8]) {
     const filed = await call("POST", "/api/requests", {
       cookie: owner,
@@ -11187,7 +11190,7 @@ test("admin user rows carry live request counts and avatar tags only when upstre
       autoApproved?: boolean;
       request: { decision: string };
     };
-    assert.equal(filedBody.autoApproved, true);
+    assert.equal(filedBody.autoApproved, undefined);
     assert.equal(filedBody.request.decision, "approved");
   }
   const rows = await rowsOf();
