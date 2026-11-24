@@ -11,7 +11,7 @@
 - **Studios:** open Studios from the sidebar or the mobile More menu to browse studios in recent releases.
 - **Preferences:** open Preferences from the sidebar, the mobile More menu, or the account menu to edit hidden tags and Discover shelf order while keeping your place.
 - **Similar titles** for movies and scenes, and **Often appears with** for performers.
-- **Possible duplicate movies:** TPDB movie details compare hashes or cast, year, tags, duration, and poster similarity. Copy a manual report with both TPDB links.
+- **Possible duplicate movies:** TPDB movie details compare hashes or cast, year, tags, duration, and poster similarity. Copy a manual report with both TPDB links. A user with the merge grant can merge the pair in Velvarr.
 - **Update notice** when a newer GitHub release is available.
 - [Optional Discord notifications](configuration.md#discord-notifications) use Settings → Connections → Discord. Save changes without a restart. Checks never post channel messages.
 - **Optional:** [Smarter library matching](ai.md), through [TypeSafe](https://typesafe.ai) or an [Ollama](ai.md#ai-matching-with-ollama) decision model.
@@ -67,4 +67,11 @@ Titles and studios can differ, so translated releases can qualify.
 
 Hidden-tag preferences suppress candidates. A complete check without matches shows no notice.
 For a possible duplicate, select **Copy report** and submit the text on TPDB yourself.
-TPDB links require website sign-in. Velvarr never submits the report, merges records, or hides either record.
+TPDB links require website sign-in. Velvarr never submits a report to TPDB.
+
+## Merge duplicate TPDB movies in Velvarr
+
+A user with the **Merge duplicates** grant sees **Merge in Velvarr** on the duplicate notice. Administrators always have the grant. Open **Users**, edit the account, and select the grant to give it.
+The picker lists both records. It suggests the record with a file in the library, otherwise the older release. The merge is Velvarr-wide: every user then sees one entry.
+The merged-away record disappears from lists. Its detail address shows the kept record. Requests and library rows keep their stored ids and show the kept record at read time.
+Select **Unmerge** on the notice or in the **Merged entries** section of the detail page. An unmerge restores the old view everywhere. Velvarr never matches by name; a merge records the user's assertion only.

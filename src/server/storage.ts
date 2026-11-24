@@ -63,7 +63,7 @@ import { parseDiscordWebhook } from "../lib/discord-settings.ts";
 
 // Schema identity: application_id spells 'VLVR', user_version is the schema version.
 const APP_ID = 0x564c5652;
-const SCHEMA_VERSION = 16;
+const SCHEMA_VERSION = 17;
 // ponytail: fixed 7-day session TTL; make it an env knob only if an operator asks.
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const BUSY_TIMEOUT_MS = 5000;
@@ -102,6 +102,7 @@ type AccountRow = {
   is_owner: number;
   auto_approve: number;
   prose_search: number;
+  merge_duplicates: number;
   hidden_tags: string;
   discover_order: string;
   created_at: number;
@@ -240,6 +241,12 @@ type Statements = {
   pruneDiscoverCache: StatementSync;
   capDiscoverCache: StatementSync;
   clearDiscoverCache: StatementSync;
+  insertMovieMerge: StatementSync;
+  repointMovieMerges: StatementSync;
+  deleteMovieMerge: StatementSync;
+  getMovieMerge: StatementSync;
+  listMovieMergesForPrimary: StatementSync;
+  listAllMovieMerges: StatementSync;
 };
 
 const MIGRATIONS: Record<number, string> = {
@@ -514,6 +521,21 @@ const MIGRATIONS: Record<number, string> = {
       );
     DROP TABLE migration16_spellings;
   `,
+  17: `
+    -- Additive: the per-account "merge duplicates" grant and the
+    -- Velvarr-wide movie merge links. Ids are stored lowercase (migration
+    -- 16's fold rule). primary_id is never itself a merged_id (no chains):
+    -- recordMovieMerge enforces that invariant before it inserts.
+    ALTER TABLE accounts ADD COLUMN merge_duplicates INTEGER NOT NULL DEFAULT 0
+      CHECK (merge_duplicates IN (0, 1));
+    CREATE TABLE movie_merges (
+      merged_id TEXT PRIMARY KEY,
+      primary_id TEXT NOT NULL,
+      created_by TEXT NOT NULL REFERENCES accounts (id),
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX movie_merges_primary ON movie_merges (primary_id);
+  `,
 };
 
 let db: DatabaseSync | null = null;
@@ -681,7 +703,7 @@ function S(): Statements {
       ),
       updateAccountName: d.prepare("UPDATE accounts SET name = ? WHERE id = ?"),
       updateAccountGrants: d.prepare(
-        "UPDATE accounts SET enabled = ?, role = ?, library_ids = ?, auto_approve = ?, prose_search = ? WHERE id = ?",
+        "UPDATE accounts SET enabled = ?, role = ?, library_ids = ?, auto_approve = ?, prose_search = ?, merge_duplicates = ? WHERE id = ?",
       ),
       getAccount: d.prepare("SELECT * FROM accounts WHERE id = ?"),
       listAccounts: d.prepare(
@@ -937,6 +959,24 @@ function S(): Statements {
         "DELETE FROM discover_cache WHERE key NOT IN (SELECT key FROM discover_cache ORDER BY fetched_at DESC, key DESC LIMIT ?)",
       ),
       clearDiscoverCache: d.prepare("DELETE FROM discover_cache"),
+      insertMovieMerge: d.prepare(
+        "INSERT INTO movie_merges (merged_id, primary_id, created_by, created_at) VALUES (?, ?, ?, ?)",
+      ),
+      // A merged-away id that was itself a primary re-points its rows to the
+      // new primary, so no row ever chains.
+      repointMovieMerges: d.prepare(
+        "UPDATE movie_merges SET primary_id = ? WHERE primary_id = ?",
+      ),
+      deleteMovieMerge: d.prepare(
+        "DELETE FROM movie_merges WHERE merged_id = ?",
+      ),
+      getMovieMerge: d.prepare(
+        "SELECT merged_id, primary_id, created_by, created_at FROM movie_merges WHERE merged_id = ?",
+      ),
+      listMovieMergesForPrimary: d.prepare(
+        "SELECT merged_id FROM movie_merges WHERE primary_id = ? ORDER BY merged_id",
+      ),
+      listAllMovieMerges: d.prepare("SELECT merged_id FROM movie_merges"),
     };
   }
   return stmts;
@@ -1008,6 +1048,7 @@ function rowToAccount(row: AccountRow): Account {
     isOwner: row.is_owner === 1,
     autoApprove: row.auto_approve === 1,
     proseSearch: row.prose_search === 1,
+    mergeDuplicates: row.merge_duplicates === 1,
     joinedAt: row.created_at,
   };
 }
@@ -1442,6 +1483,7 @@ export function bootstrap(
       isOwner: true,
       autoApprove: false,
       proseSearch: false,
+      mergeDuplicates: false,
       joinedAt: Date.now(),
     };
     S().insertAccount.run(
@@ -1542,6 +1584,7 @@ export function updateAccount(
     libraryIds: string[];
     autoApprove?: boolean;
     proseSearch?: boolean;
+    mergeDuplicates?: boolean;
   },
 ): Account {
   if (
@@ -1551,7 +1594,9 @@ export function updateAccount(
     (changes.autoApprove !== undefined &&
       typeof changes.autoApprove !== "boolean") ||
     (changes.proseSearch !== undefined &&
-      typeof changes.proseSearch !== "boolean")
+      typeof changes.proseSearch !== "boolean") ||
+    (changes.mergeDuplicates !== undefined &&
+      typeof changes.mergeDuplicates !== "boolean")
   ) {
     throw new AppError(
       400,
@@ -1587,10 +1632,11 @@ export function updateAccount(
       "library grants must be a subset of configured libraries",
     );
   }
-  // Preserve-on-omission PATCH: an absent autoApprove or proseSearch keeps
-  // the stored grant.
+  // Preserve-on-omission PATCH: an absent autoApprove, proseSearch or
+  // mergeDuplicates keeps the stored grant.
   const autoApprove = changes.autoApprove ?? existing.autoApprove;
   const proseSearch = changes.proseSearch ?? existing.proseSearch;
+  const mergeDuplicates = changes.mergeDuplicates ?? existing.mergeDuplicates;
   const d = open();
   inTransaction(d, () => {
     S().updateAccountGrants.run(
@@ -1599,6 +1645,7 @@ export function updateAccount(
       JSON.stringify(changes.libraryIds),
       autoApprove ? 1 : 0,
       proseSearch ? 1 : 0,
+      mergeDuplicates ? 1 : 0,
       id,
     );
     const changed =
@@ -1606,6 +1653,7 @@ export function updateAccount(
       existing.role !== changes.role ||
       existing.autoApprove !== autoApprove ||
       existing.proseSearch !== proseSearch ||
+      existing.mergeDuplicates !== mergeDuplicates ||
       existing.libraryIds.length !== changes.libraryIds.length ||
       existing.libraryIds.some((l, i) => l !== changes.libraryIds[i]);
     if (changed) S().deleteAccountSessions.run(id);
@@ -3340,6 +3388,100 @@ export function recoverAbandonedWork(): void {
     S().recoverSubmitting.run(now, now, now);
     S().releaseAllClaims.run(now);
   });
+}
+
+// --- Movie merges ---------------------------------------------------------
+//
+// Velvarr-wide links that fold one TPDB movie record into another at read
+// time. Stored rows keep their stored ids, so an undo restores them. Ids
+// are stored lowercase (migration 16's fold rule) and every lookup folds
+// its input the same way. primary_id is never itself a merged_id: one hop,
+// one indexed lookup per read, no cycle guard.
+
+/** Links `mergedId` into `primaryId` Velvarr-wide. Refuses a self merge, a
+ *  record that is already merged away, and a target that is itself merged
+ *  away (no chains). When the merged-away id was itself the primary of
+ *  existing rows, those rows re-point to the new primary in the same
+ *  transaction. */
+export function recordMovieMerge(
+  mergedId: string,
+  primaryId: string,
+  createdBy: string,
+): void {
+  const merged = mergedId.toLowerCase();
+  const primary = primaryId.toLowerCase();
+  if (merged === primary) {
+    throw new AppError(400, "self_merge", "A record cannot merge into itself.");
+  }
+  const d = open();
+  inTransaction(d, () => {
+    if (S().getMovieMerge.get(merged)) {
+      throw new AppError(
+        400,
+        "already_merged",
+        "This record is already merged away.",
+      );
+    }
+    if (S().getMovieMerge.get(primary)) {
+      throw new AppError(
+        400,
+        "primary_merged",
+        "The target record is itself merged away; undo that merge first.",
+      );
+    }
+    S().repointMovieMerges.run(primary, merged);
+    S().insertMovieMerge.run(merged, primary, createdBy, Date.now());
+  });
+}
+
+/** Deletes the one link row; every stored reference reads the old way again.
+ *  Returns false when no link exists. */
+export function removeMovieMerge(mergedId: string): boolean {
+  return Number(S().deleteMovieMerge.run(mergedId.toLowerCase()).changes) > 0;
+}
+
+/** The one merge link whose merged-away id is `mergedId`, or null. */
+export function getMovieMerge(mergedId: string): {
+  mergedId: string;
+  primaryId: string;
+  createdAt: number;
+  createdBy: string;
+} | null {
+  const row = S().getMovieMerge.get(mergedId.toLowerCase()) as
+    | {
+        merged_id: string;
+        primary_id: string;
+        created_by: string;
+        created_at: number;
+      }
+    | undefined;
+  return row
+    ? {
+        mergedId: row.merged_id,
+        primaryId: row.primary_id,
+        createdAt: row.created_at,
+        createdBy: row.created_by,
+      }
+    : null;
+}
+
+/** Merged-away ids pointing at `primaryId`, sorted. */
+export function listMovieMergesFor(primaryId: string): string[] {
+  return (
+    S().listMovieMergesForPrimary.all(primaryId.toLowerCase()) as {
+      merged_id: string;
+    }[]
+  ).map((row) => row.merged_id);
+}
+
+/** Every merged-away id, lowercase. The table holds one row per user merge,
+ *  so a full scan is the cheap shape. */
+export function mergedMovieIdSet(): Set<string> {
+  return new Set(
+    (S().listAllMovieMerges.all() as { merged_id: string }[]).map(
+      (row) => row.merged_id,
+    ),
+  );
 }
 
 export function closeStorage(): void {

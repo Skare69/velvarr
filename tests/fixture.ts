@@ -166,6 +166,7 @@ export function account(libraryIds: string[]): Account {
     isOwner: false,
     autoApprove: false,
     proseSearch: false,
+    mergeDuplicates: false,
     joinedAt: 0,
   };
 }

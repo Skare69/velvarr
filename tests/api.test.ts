@@ -1,6 +1,6 @@
 // API regression tests: privilege, CSRF, session, library denial, outage honesty.
 // Runs handlers directly against local fixture servers. No real network, no real providers.
-import { test, before, after, beforeEach } from "node:test";
+import { test, describe, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   createServer,
@@ -189,6 +189,12 @@ const TPDB_MOVIE8 = "2a2b3c4d-0000-0000-0000-000000000008";
 // Second row on the /movies snapshot: carries TPDB_STUDIO2 and the
 // counterpart-less genre for the unified facet shelves.
 const TPDB_MOVIE9 = "2a2b3c4d-0000-0000-0000-000000000009";
+// The movie-merge band: three tpdb movie details the handler serves, kept
+// apart from every other test's ids so no stored row, intent or link
+// collides with the merge tests' state.
+const TPDB_MERGE_A = "2a2b3c4d-0000-0000-0e57-000000000001";
+const TPDB_MERGE_B = "2a2b3c4d-0000-0000-0e57-000000000002";
+const TPDB_MERGE_C = "2a2b3c4d-0000-0000-0e57-000000000003";
 const TPDB_PERFORMER3 = "2a2b3c4d-0000-0000-0000-00000000000d";
 const TPDB_PERFORMER = "2a2b3c4d-0000-0000-0000-00000000000f";
 const TPDB_PERFORMER2 = "2a2b3c4d-0000-0000-0000-00000000000e";
@@ -1101,7 +1107,12 @@ async function tpdbHandler(
   }
   if (auth !== `Bearer ${tpdbToken}`) return json(res, 401, {});
   if (duplicateFixture) {
-    if (p === `/movies/${DUPLICATE_SOURCE}`) {
+    // The movie-merge test's source id serves the fixture source too: its
+    // plain detail row has no performer, which would skip the metadata rule.
+    if (
+      p === `/movies/${DUPLICATE_SOURCE}` ||
+      p === `/movies/${TPDB_MERGE_B}`
+    ) {
       return json(res, 200, { data: duplicateFixture.source });
     }
     if (p === "/movies") {
@@ -1440,6 +1451,14 @@ async function tpdbHandler(
     return json(res, 200, { data: tpdbMovieRow(TPDB_MOVIE_AVAIL) });
   if (p === `/movies/${TPDB_MOVIE_SCAN}`)
     return json(res, 200, { data: tpdbMovieRow(TPDB_MOVIE_SCAN) });
+  // The merge tests' three records: mergeMovies reads both details before
+  // it stores a link, so every id the tests pair must be fetchable here.
+  if (p === `/movies/${TPDB_MERGE_A}`)
+    return json(res, 200, { data: tpdbMovieRow(TPDB_MERGE_A) });
+  if (p === `/movies/${TPDB_MERGE_B}`)
+    return json(res, 200, { data: tpdbMovieRow(TPDB_MERGE_B) });
+  if (p === `/movies/${TPDB_MERGE_C}`)
+    return json(res, 200, { data: tpdbMovieRow(TPDB_MERGE_C) });
   json(res, 404, {});
 }
 
@@ -5171,6 +5190,520 @@ test("catalog detail: validation before upstream, absence vs outage, own request
     }),
     500,
   );
+});
+
+describe("tpdb movie merge", () => {
+  // boot() arms the provider env so a filtered run can sign in. Same
+  // discipline as the logout test: capture the environment before the first
+  // boot and restore it after the block, because later tests assert StashDB
+  // unconfigured from the environment.
+  const providerEnvKeys = [
+    "TPDB_API_TOKEN",
+    "TPDB_BASE_URL",
+    "STASHDB_API_KEY",
+    "STASHDB_BASE_URL",
+  ] as const;
+  let savedProviderEnv: [string, string | undefined][] | undefined;
+  const bootArmed = async (): Promise<void> => {
+    savedProviderEnv ??= providerEnvKeys.map((key) => [
+      key,
+      process.env[key],
+    ]) as [string, string | undefined][];
+    await boot();
+  };
+  after(() => {
+    for (const [key, value] of savedProviderEnv ?? []) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  const mergeRef = (id: string) => ({ provider: "tpdb", kind: "movie", id });
+
+  const postMerge = (
+    cookie: string,
+    mergedId: string,
+    primaryId: string,
+  ): Promise<Response> =>
+    call("POST", `/api/catalog/tpdb/movie/${mergedId}/merge`, {
+      cookie,
+      body: { primary: mergeRef(primaryId) },
+    });
+
+  const unmerge = (cookie: string, mergedId: string): Promise<Response> =>
+    call("DELETE", `/api/catalog/tpdb/movie/${mergedId}/merge`, { cookie });
+
+  const detailOf = async (
+    cookie: string,
+    id: string,
+  ): Promise<{
+    detail: { reference: { id: string }; mergedFromIds?: string[] };
+  }> => {
+    const res = await call(`GET`, `/api/catalog/tpdb/movie/${id}`, { cookie });
+    assert.equal(res.status, 200, await res.clone().text());
+    return (await res.json()) as {
+      detail: { reference: { id: string }; mergedFromIds?: string[] };
+    };
+  };
+
+  type MergeAccount = {
+    id: string;
+    enabled: boolean;
+    role: string;
+    libraryIds: string[];
+    autoApprove: boolean;
+    proseSearch: boolean;
+    mergeDuplicates: boolean;
+  };
+
+  const accountOf = async (
+    adminCookie: string,
+    id: string,
+  ): Promise<MergeAccount> => {
+    const listed = await call("GET", "/api/admin/users", {
+      cookie: adminCookie,
+    });
+    assert.equal(listed.status, 200, await listed.clone().text());
+    const { accounts } = (await listed.json()) as { accounts: MergeAccount[] };
+    const account = accounts.find((a) => a.id === id);
+    assert.ok(account, `account ${id} is listed`);
+    return account;
+  };
+
+  /** Sets the nogrants account's merge grant, keeping its other fields. A
+   * real change revokes that account's sessions, so the shared cookie is
+   * renewed here — every later shared-nogrants call site stays valid. */
+  const setMergeGrant = async (
+    adminCookie: string,
+    value: boolean,
+  ): Promise<string> => {
+    const current = await accountOf(adminCookie, NOGRANT_ID);
+    const res = await call("PATCH", `/api/admin/users/${NOGRANT_ID}`, {
+      cookie: adminCookie,
+      body: {
+        enabled: current.enabled,
+        role: current.role,
+        libraryIds: current.libraryIds,
+        autoApprove: current.autoApprove,
+        proseSearch: current.proseSearch,
+        mergeDuplicates: value,
+      },
+    });
+    assert.equal(res.status, 200, await res.clone().text());
+    const { account } = (await res.json()) as { account: MergeAccount };
+    assert.equal(account.mergeDuplicates, value, "the PATCH echoes the grant");
+    nogrants = await loginAs("nogrants");
+    return nogrants;
+  };
+
+  test("POST merge links two tpdb movies and answers exactly the pair", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    const created = await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B);
+    assert.equal(created.status, 201, await created.clone().text());
+    assert.deepEqual(await created.json(), {
+      mergedId: TPDB_MERGE_A,
+      primaryId: TPDB_MERGE_B,
+    });
+    assert.equal((await unmerge(admin, TPDB_MERGE_A)).status, 200);
+  });
+
+  test(
+    "a merged-away id resolves to the primary's detail, and the primary's " +
+      "detail names it in mergedFromIds",
+    async () => {
+      await bootArmed();
+      const admin = await loginAs("owner");
+      assert.equal(
+        (await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B)).status,
+        201,
+      );
+      try {
+        const away = await detailOf(admin, TPDB_MERGE_A);
+        assert.equal(away.detail.reference.id, TPDB_MERGE_B);
+        assert.deepEqual(away.detail.mergedFromIds, [TPDB_MERGE_A]);
+
+        const primary = await detailOf(admin, TPDB_MERGE_B);
+        assert.equal(primary.detail.reference.id, TPDB_MERGE_B);
+        assert.deepEqual(primary.detail.mergedFromIds, [TPDB_MERGE_A]);
+      } finally {
+        await unmerge(admin, TPDB_MERGE_A);
+      }
+    },
+  );
+
+  test("DELETE merge removes the link and the merged-away id resolves itself again", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    assert.equal(
+      (await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B)).status,
+      201,
+    );
+    const removed = await unmerge(admin, TPDB_MERGE_A);
+    assert.equal(removed.status, 200);
+    assert.deepEqual(await removed.json(), { removed: true });
+
+    const body = await detailOf(admin, TPDB_MERGE_A);
+    assert.equal(body.detail.reference.id, TPDB_MERGE_A);
+    assert.equal(body.detail.mergedFromIds, undefined);
+  });
+
+  test("the merge grant gates the routes: forbidden without it, allowed with it, admins need no grant", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    try {
+      const denied = await setMergeGrant(admin, false);
+      const refused = await postMerge(denied, TPDB_MERGE_A, TPDB_MERGE_B);
+      assert.equal(refused.status, 403);
+      assert.equal((await errorShape(refused, 403)).code, "forbidden");
+
+      const granted = await setMergeGrant(admin, true);
+      const allowed = await postMerge(granted, TPDB_MERGE_A, TPDB_MERGE_B);
+      assert.equal(allowed.status, 201, await allowed.clone().text());
+      assert.equal((await unmerge(granted, TPDB_MERGE_A)).status, 200);
+
+      // The grant is off again at this point: the admin role merges alone.
+      const byRole = await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B);
+      assert.equal(byRole.status, 201, await byRole.clone().text());
+      assert.equal((await unmerge(admin, TPDB_MERGE_A)).status, 200);
+    } finally {
+      await setMergeGrant(admin, false);
+    }
+  });
+
+  test("merging a movie into itself is refused with self_merge and stores nothing", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    const res = await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_A);
+    assert.equal(res.status, 400);
+    assert.equal((await errorShape(res, 400)).code, "self_merge");
+    const body = await detailOf(admin, TPDB_MERGE_A);
+    assert.equal(body.detail.reference.id, TPDB_MERGE_A);
+    assert.equal(body.detail.mergedFromIds, undefined);
+  });
+
+  test("a second POST of an already merged pair is refused with already_merged", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    assert.equal(
+      (await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B)).status,
+      201,
+    );
+    try {
+      const again = await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B);
+      assert.equal(again.status, 400);
+      assert.equal((await errorShape(again, 400)).code, "already_merged");
+    } finally {
+      await unmerge(admin, TPDB_MERGE_A);
+    }
+  });
+
+  test("choosing a merged-away record as the primary is refused with primary_merged", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    assert.equal(
+      (await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B)).status,
+      201,
+    );
+    try {
+      const res = await postMerge(admin, TPDB_MERGE_C, TPDB_MERGE_A);
+      assert.equal(res.status, 400);
+      assert.equal((await errorShape(res, 400)).code, "primary_merged");
+    } finally {
+      await unmerge(admin, TPDB_MERGE_A);
+    }
+  });
+
+  test("a merge primary that is not a tpdb movie is refused: malformed refs are invalid_field, well-formed non-movies are invalid_reference", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    // StashDB hosts no movies: the body ref parser refuses the shape before
+    // the merge rule can name it, so this is the parser's invalid_field.
+    const otherProvider = await call(
+      "POST",
+      `/api/catalog/tpdb/movie/${TPDB_MERGE_A}/merge`,
+      {
+        cookie: admin,
+        body: {
+          primary: { provider: "stashdb", kind: "movie", id: STASH_SCENE },
+        },
+      },
+    );
+    assert.equal(otherProvider.status, 400);
+    assert.equal((await errorShape(otherProvider, 400)).code, "invalid_field");
+    // A well-formed media ref that is not a tpdb movie names the merge rule.
+    const otherKind = await call(
+      "POST",
+      `/api/catalog/tpdb/movie/${TPDB_MERGE_A}/merge`,
+      {
+        cookie: admin,
+        body: { primary: { provider: "tpdb", kind: "scene", id: TPDB_MOVIE2 } },
+      },
+    );
+    assert.equal(otherKind.status, 400);
+    assert.equal((await errorShape(otherKind, 400)).code, "invalid_reference");
+    // Neither refusal stored a link.
+    const body = await detailOf(admin, TPDB_MERGE_A);
+    assert.equal(body.detail.reference.id, TPDB_MERGE_A);
+    assert.equal(body.detail.mergedFromIds, undefined);
+  });
+
+  test("the requests list resolves a merged-away media reference at read time and undo restores the stored id", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    const requester = await loginAs("member");
+    const created = await call("POST", "/api/requests", {
+      cookie: requester,
+      body: { media: mergeRef(TPDB_MERGE_A) },
+    });
+    assert.equal(created.status, 201, await created.clone().text());
+    const createdBody = (await created.json()) as { request: { id: string } };
+    const requestId = createdBody.request.id;
+    let merged = false;
+    try {
+      assert.equal(
+        (await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B)).status,
+        201,
+      );
+      merged = true;
+      const listRow = async (): Promise<{
+        media: { provider: string; kind: string; id: string };
+        decision: string;
+      }> => {
+        const page = await call("GET", "/api/requests", { cookie: requester });
+        assert.equal(page.status, 200);
+        const { requests } = (await page.json()) as {
+          requests: {
+            id: string;
+            media: { provider: string; kind: string; id: string };
+            decision: string;
+          }[];
+        };
+        const row = requests.find((r) => r.id === requestId);
+        assert.ok(row, "the request row is listed");
+        return row;
+      };
+      // The stored id resolves to the primary while the link exists.
+      const row = await listRow();
+      assert.deepEqual(row.media, {
+        provider: "tpdb",
+        kind: "movie",
+        id: TPDB_MERGE_B,
+      });
+      assert.equal(row.decision, "pending");
+
+      assert.equal((await unmerge(admin, TPDB_MERGE_A)).status, 200);
+      merged = false;
+      // The stored row never changed: undo reads the original id again.
+      const restored = await listRow();
+      assert.deepEqual(restored.media, {
+        provider: "tpdb",
+        kind: "movie",
+        id: TPDB_MERGE_A,
+      });
+    } finally {
+      if (merged) await unmerge(admin, TPDB_MERGE_A);
+      // Later tests pin member's request rows to exact sets, and a decided
+      // row still lists, so the filed row leaves no trace: the same direct
+      // cleanup the request-badge test performs on its seeded rows.
+      if (requestId) dropRequests([requestId]);
+    }
+  });
+
+  test("a library item's catalog reference resolves through the merge and undo restores it", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    // Whisparr + path mappings feed the library catalog enrichment.
+    const saveWhisparr = await call("PATCH", "/api/admin/integrations", {
+      cookie: admin,
+      body: {
+        jellyfinUrl,
+        jellyfinExternalUrl: jellyfinUrl,
+        whisparrUrl,
+        whisparrApiKey: whisparrKey,
+        pathMappings: [
+          { whisparrPrefix: "/data/whisparr", jellyfinPrefix: "/media" },
+        ],
+      },
+    });
+    assert.equal(saveWhisparr.status, 200, await saveWhisparr.clone().text());
+    const originalEntry = whisparrMovies[0]!;
+    let merged = false;
+    try {
+      // The item's Whisparr identity is the merged-away record. Forget the
+      // shared 30 s movie-list cache: earlier tests leave future-stamped
+      // snapshots in it (their clock mocks run ahead of real time), and a
+      // hit here would answer from a list that predates this swap.
+      whisparrMovies[0] = {
+        ...originalEntry,
+        tpdbId: TPDB_MERGE_A,
+        foreignId: `tpdbId:${TPDB_MERGE_A}`,
+      };
+      resetMovieListCache();
+      assert.equal(
+        (await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B)).status,
+        201,
+      );
+      merged = true;
+      const resolved = await call("GET", `/api/library/${ITEM_MOVIE}`, {
+        cookie: admin,
+      });
+      assert.equal(resolved.status, 200, await resolved.clone().text());
+      const resolvedBody = (await resolved.json()) as {
+        catalog?: { provider: string; kind: string; id: string };
+      };
+      assert.deepEqual(resolvedBody.catalog, {
+        provider: "tpdb",
+        kind: "movie",
+        id: TPDB_MERGE_B,
+      });
+
+      assert.equal((await unmerge(admin, TPDB_MERGE_A)).status, 200);
+      merged = false;
+      // Read the restored fixture, not this test's earlier cached list.
+      resetMovieListCache();
+      const restored = await call("GET", `/api/library/${ITEM_MOVIE}`, {
+        cookie: admin,
+      });
+      assert.equal(restored.status, 200);
+      const restoredBody = (await restored.json()) as {
+        catalog?: { provider: string; kind: string; id: string };
+      };
+      assert.deepEqual(restoredBody.catalog, {
+        provider: "tpdb",
+        kind: "movie",
+        id: TPDB_MERGE_A,
+      });
+    } finally {
+      // Leave the fixture row, the merge state and the shared collection
+      // cache exactly as later tests expect them: the cache forgets this
+      // test's lists, then one read re-resolves the original identity.
+      whisparrMovies[0] = originalEntry;
+      if (merged) await unmerge(admin, TPDB_MERGE_A);
+      resetMovieListCache();
+      await call("GET", `/api/library/${ITEM_MOVIE}`, { cookie: admin });
+      await call("PATCH", "/api/admin/integrations", {
+        cookie: admin,
+        body: {
+          jellyfinUrl,
+          jellyfinExternalUrl: jellyfinUrl,
+          whisparrUrl: "",
+        },
+      });
+    }
+  });
+
+  test("a merged-away movie drops from the tpdb listing while the primary stays", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    const viewer = await loginAs("member");
+    clearDiscoverCache();
+    resetMetaCache();
+    extraTpdbMovies = [tpdbMovieRow(TPDB_MERGE_A), tpdbMovieRow(TPDB_MERGE_B)];
+    let merged = false;
+    try {
+      assert.equal(
+        (await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B)).status,
+        201,
+      );
+      merged = true;
+      clearDiscoverCache();
+      resetMetaCache();
+      const res = await call(
+        "GET",
+        "/api/catalog/search?provider=tpdb&kind=movie",
+        { cookie: viewer },
+      );
+      assert.equal(res.status, 200, await res.clone().text());
+      const page = (await res.json()) as {
+        items: { reference: { id: string } }[];
+      };
+      const ids = page.items.map((item) => item.reference.id);
+      assert.ok(
+        !ids.includes(TPDB_MERGE_A),
+        "the merged-away id must not be listed",
+      );
+      assert.ok(ids.includes(TPDB_MERGE_B), "the primary must stay listed");
+    } finally {
+      extraTpdbMovies = [];
+      if (merged) await unmerge(admin, TPDB_MERGE_A);
+      clearDiscoverCache();
+      resetMetaCache();
+    }
+  });
+
+  test("a duplicates match that is merged away carries mergedInto and stays listed", async (t) => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    // The poster-distance evidence downloads the candidate's artwork; the
+    // same fixture redirect the duplicates suite uses.
+    const realFetch = globalThis.fetch;
+    t.mock.method(
+      globalThis,
+      "fetch",
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        return realFetch(
+          url === "https://cdn.theporndb.net/duplicate-poster.png"
+            ? `${tpdbUrl}/duplicate-poster.png`
+            : input,
+          init,
+        );
+      },
+    );
+    artworkSources.set(
+      "/duplicate-poster.png",
+      await sharp({
+        create: { width: 32, height: 48, channels: 3, background: "#506070" },
+      })
+        .png()
+        .toBuffer(),
+    );
+    // The check's own snapshot: the primary is the source, the merged-away
+    // record its candidate — same title, cast, tags, duration, poster.
+    duplicateFixture = {
+      source: duplicateMovieRow(TPDB_MERGE_B),
+      candidates: [duplicateMovieRow(TPDB_MERGE_A)],
+      failMetadata: false,
+      hashReads: 0,
+    };
+    let merged = false;
+    try {
+      assert.equal(
+        (await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B)).status,
+        201,
+      );
+      merged = true;
+      resetMetaCache();
+      const res = await call(
+        "GET",
+        `/api/catalog/tpdb/movie/${TPDB_MERGE_B}/duplicates`,
+        { cookie: admin },
+      );
+      const result = (await res.json()) as DuplicateMoviesResponse;
+      // The merge filter stays out of the check's candidate path: the
+      // merged-away record still shows as a match, naming its primary so
+      // the notice can offer Unmerge.
+      const match = result.matches.find((m) => m.reference.id === TPDB_MERGE_A);
+      assert.ok(match, "the merged-away candidate stays listed");
+      assert.equal(match.mergedInto, TPDB_MERGE_B);
+    } finally {
+      // The poster download above hit the tpdb fixture's image branch and
+      // left its auth probe set; the artwork test below pins "unset".
+      tpdbFx.imageAuth = "unset";
+      duplicateFixture = undefined;
+      resetMetaCache();
+      if (merged) await unmerge(admin, TPDB_MERGE_A);
+    }
+  });
+
+  test("DELETE merge of an id with no link is 404 not_found", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    const res = await unmerge(admin, TPDB_MERGE_C);
+    assert.equal(res.status, 404);
+    assert.equal((await errorShape(res, 404)).code, "not_found");
+  });
 });
 
 test("catalog artwork proxy: provider-only, no credentials, cacheable with revalidation", async () => {

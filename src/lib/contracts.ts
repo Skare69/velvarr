@@ -267,6 +267,9 @@ export type CatalogDetail = {
    * entity (performers). Absent when it supplies none. */
   person?: CatalogPerson;
   sourceUrl?: string;
+  /** TPDB movie detail only: ids merged into this record inside Velvarr.
+   * Present when the list is non-empty — never an empty array. */
+  mergedFromIds?: string[];
 };
 
 /** Application-owned durable catalog summary. `id` is a Velvarr UUID, distinct
@@ -457,6 +460,9 @@ export type DuplicateMovieMatch = {
     tagOverlap?: number;
     posterDistance?: number;
   };
+  /** Present when the candidate is already merged away inside Velvarr: the
+   * id of the record it merged into. The pair stays visible for undo. */
+  mergedInto?: string;
 };
 
 /** A bounded check, not a complete scan of the TPDB catalog. */
@@ -739,6 +745,8 @@ export type Account = {
   autoApprove: boolean;
   /** Explicit natural-language search grant; admins can always search. */
   proseSearch: boolean;
+  /** Explicit duplicate-merge grant; admins can always merge. */
+  mergeDuplicates: boolean;
   /** Unix milliseconds the account row was created (Jellyfin import time). */
   joinedAt: number;
 };

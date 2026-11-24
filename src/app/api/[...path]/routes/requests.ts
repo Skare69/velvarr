@@ -38,6 +38,7 @@ import {
   type RequestPageQuery,
 } from "../../../../server/storage.ts";
 import { AppError } from "../../../../server/http.ts";
+import { resolveMovieReference } from "../../../../server/movie-merge.ts";
 import { searchCatalog } from "../../../../server/providers.ts";
 
 // Creates one user's request intent from a server-validated MediaReference.
@@ -112,7 +113,17 @@ export function listRequestItems(
       acquisition: acquisitionView(a),
     };
   });
-  return { requests, nextCursor: page.nextCursor };
+  // Read-time resolution only: a stored row whose TPDB movie was merged away
+  // shows the primary id here, while the stored row keeps its id so an undo
+  // restores the old read. The acquisition lookup above stays keyed on the
+  // stored reference; decisions keep their stored snapshots.
+  return {
+    requests: requests.map((r) => ({
+      ...r,
+      media: resolveMovieReference(r.media),
+    })),
+    nextCursor: page.nextCursor,
+  };
 }
 
 function queryChoice<T extends string>(

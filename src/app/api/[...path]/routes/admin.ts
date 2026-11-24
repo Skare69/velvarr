@@ -183,6 +183,7 @@ export async function adminUpdateUser(
   const libraryIds = fieldIds(body, "libraryIds");
   const autoApprove = optionalBool(body, "autoApprove");
   const proseSearch = optionalBool(body, "proseSearch");
+  const mergeDuplicates = optionalBool(body, "mergeDuplicates");
   const configured = new Set(ctx.config.jellyfin.libraryIds);
   if (libraryIds.some((libraryId) => !configured.has(libraryId))) {
     throw new AppError(400, "invalid_field", "Unknown library selected.");
@@ -200,6 +201,7 @@ export async function adminUpdateUser(
     libraryIds,
     ...(autoApprove !== undefined ? { autoApprove } : {}),
     ...(proseSearch !== undefined ? { proseSearch } : {}),
+    ...(mergeDuplicates !== undefined ? { mergeDuplicates } : {}),
   });
   return json({ account });
 }

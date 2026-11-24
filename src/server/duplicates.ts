@@ -8,6 +8,7 @@ import type {
 } from "../lib/contracts.ts";
 import { hiddenTitleMatcher } from "./catalog-visibility.ts";
 import { AppError, sourceError, upstreamCheckError } from "./http.ts";
+import { getMovieMerge } from "./storage.ts";
 import {
   isProviderImageUrl,
   isUuid,
@@ -404,7 +405,13 @@ export async function duplicateMovies(
     result.incomplete.push(
       `posters compared for ${postersCompared} of ${metadata.length} candidates`,
     );
-  result.matches = [...matches.values()];
+  // A candidate already merged away stays in the list (undo needs it
+  // visible) and names its primary; the filter stays out of the check's own
+  // candidate path so the pair is never silently dropped here.
+  result.matches = [...matches.values()].map((item) => {
+    const link = getMovieMerge(item.reference.id.toLowerCase());
+    return link ? { ...item, mergedInto: link.primaryId } : item;
+  });
   result.incomplete = [...new Set(result.incomplete)];
   result.errors = result.errors.filter(
     (error, i, all) =>

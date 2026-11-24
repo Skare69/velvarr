@@ -10,6 +10,7 @@ import {
   listLibraryItems,
 } from "../../../../server/jellyfin.ts";
 import { findWhisparrItemByPath } from "../../../../server/whisparr.ts";
+import { resolveMovieReference } from "../../../../server/movie-merge.ts";
 
 export async function libraries(ctx: AuthContext): Promise<Response> {
   const views = await listLibraries(ctx.config, ctx.token);
@@ -63,7 +64,16 @@ export async function libraryPage(
     ...(libraryId !== undefined ? { libraryId } : {}),
     ...(sortParam === "dateAdded" ? { sort: "dateAdded" as const } : {}),
   });
-  return json(page);
+  // A catalog reference merged away resolves to the primary at read time;
+  // an absent catalog stays absent.
+  return json({
+    ...page,
+    items: page.items.map((it) =>
+      it.catalog === undefined
+        ? it
+        : { ...it, catalog: resolveMovieReference(it.catalog) },
+    ),
+  });
 }
 
 export async function libraryItem(
@@ -106,7 +116,9 @@ export async function libraryItem(
     // Same rule as the grid's withSceneIdentity: a Whisparr-declared scene
     // upgrades the Jellyfin kind; ambiguous or failed lookups keep it.
     item: catalog?.kind === "scene" ? { ...item, kind: "scene" } : item,
-    catalog,
+    // Read-time resolution: a merged-away TPDB movie catalog reference shows
+    // the primary id; an absent catalog stays absent.
+    catalog: catalog === undefined ? undefined : resolveMovieReference(catalog),
     catalogNote,
     catalogIssue,
   });

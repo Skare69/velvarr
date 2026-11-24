@@ -91,6 +91,7 @@ function accountFixture(): Account {
     isOwner: true,
     autoApprove: false,
     proseSearch: false,
+    mergeDuplicates: false,
     joinedAt: 0,
   };
 }
@@ -132,6 +133,13 @@ const DROP_MIGRATION_14 = MIGRATION_14_INDEXES.map(
 // A rewind below version 15 must shed migration 15's column, or replaying its
 // ADD COLUMN fails as a duplicate.
 const DROP_MIGRATION_15 = "ALTER TABLE accounts DROP COLUMN prose_search;";
+// A rewind below version 17 must shed migration 17's merge link table and
+// grant column, or replaying them fails as duplicates.
+const DROP_MIGRATION_17 = `
+  DROP INDEX IF EXISTS movie_merges_primary;
+  DROP TABLE IF EXISTS movie_merges;
+  ALTER TABLE accounts DROP COLUMN merge_duplicates;
+`;
 
 test("import is lazy: no data dir or sqlite file is created", () => {
   const dir = freshDir();
@@ -1415,7 +1423,7 @@ test("v1 database migrates in place preserving config, accounts, sessions, and g
   ).user_version;
   raw.close();
   // Schema 16 folds stored provider ids to lowercase.
-  assert.equal(version, 16, "v1 database must migrate to the current schema");
+  assert.equal(version, 17, "v1 database must migrate to the current schema");
   assert.equal(owner.proseSearch, false, "migrated accounts start ungranted");
   // A v1 database never contained the removal tables (current migration 5
   // creates none), so nothing here can assert about them; the schema-10 test
@@ -1602,11 +1610,13 @@ test("a schema-10 database migrates to 11: every removal object is dropped, rows
     )
     .run(ownerUser().id, ownerUser().id, MOVIE.id, now);
   // The rewind must shed what migrations after 10 add: migration 12's
-  // discover_cache and migration 14's indexes exist in the bootstrapped
-  // database but never existed at version 10, and replaying them must succeed.
+  // discover_cache, migration 14's indexes, migration 15's grant column and
+  // migration 17's merge links exist in the bootstrapped database but never
+  // existed at version 10, and replaying them must succeed.
   raw.exec("DROP TABLE IF EXISTS discover_cache;");
   raw.exec(DROP_MIGRATION_14);
   raw.exec(DROP_MIGRATION_15);
+  raw.exec(DROP_MIGRATION_17);
   raw.exec("PRAGMA user_version = 10");
   raw.close();
   storage.closeStorage();
@@ -1640,7 +1650,7 @@ test("a schema-10 database migrates to 11: every removal object is dropped, rows
   );
   assert.equal(
     versionRow.user_version,
-    16,
+    17,
     "schema 10 database must migrate to the current schema",
   );
   assert.ok(
@@ -1858,6 +1868,7 @@ test("migration 16 folds lone ids and keeps case-duplicate rows untouched for ma
   const instanceId = storage.getConfig()?.whisparr?.instanceId;
   assert.ok(instanceId, "bootstrap stores the whisparr instance identity");
   const raw = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  raw.exec(DROP_MIGRATION_17);
   raw.exec("PRAGMA user_version = 15");
   raw
     .prepare(
@@ -2030,6 +2041,7 @@ test("migration 16 keeps every row: the contacted acquisition and both shadows s
   const instanceId = storage.getConfig()?.whisparr?.instanceId;
   assert.ok(instanceId, "bootstrap stores the whisparr instance identity");
   const raw = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  raw.exec(DROP_MIGRATION_17);
   raw.exec("PRAGMA user_version = 15");
   // A NEWER uppercase pending duplicate...
   const dupRequestId = randomUUID();
@@ -2111,7 +2123,7 @@ test("migration 16 keeps every row: the contacted acquisition and both shadows s
     user_version: number;
   };
   check.close();
-  assert.equal(versionRow.user_version, 16);
+  assert.equal(versionRow.user_version, 17);
   assert.equal(
     mixed.n,
     2,
@@ -2141,6 +2153,7 @@ test("migration 16 keeps an uppercase request spelling its acquisition still car
   assert.ok(instanceId, "bootstrap stores the whisparr instance identity");
   const ownerRequestId = randomUUID();
   const raw = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  raw.exec(DROP_MIGRATION_17);
   raw.exec("PRAGMA user_version = 15");
   raw
     .prepare(
@@ -2235,6 +2248,7 @@ test("migration 16 keeps an acquisition whose spelling a kept active request car
   const approvedRequestId = randomUUID();
   const pendingRequestId = randomUUID();
   const raw = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  raw.exec(DROP_MIGRATION_17);
   raw.exec("PRAGMA user_version = 15");
   raw
     .prepare(
@@ -2321,6 +2335,7 @@ test("migration 16 keeps a whole colliding identity, so another account's cancel
   const approvedRequestId = randomUUID();
   const bUpperRequestId = randomUUID();
   const raw = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  raw.exec(DROP_MIGRATION_17);
   raw.exec("PRAGMA user_version = 15");
   raw
     .prepare(
@@ -2403,6 +2418,7 @@ test("migration 16 keeps a current-instance acquisition whose spelling survives 
   assert.ok(instanceId, "bootstrap stores the whisparr instance identity");
   const requestId = randomUUID();
   const raw = new DatabaseSync(join(dir, "velvarr.sqlite"));
+  raw.exec(DROP_MIGRATION_17);
   raw.exec("PRAGMA user_version = 15");
   raw
     .prepare(
@@ -3775,7 +3791,7 @@ test("migration 13 admits failed_permanent and preserves acquisition rows", () =
     const versionRow = raw.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(versionRow.user_version, 16);
+    assert.equal(versionRow.user_version, 17);
     // The fabricated row survives the rebuild intact.
     const row = raw
       .prepare(
@@ -4758,6 +4774,10 @@ test("schema 9 preferences survive the schema 10 upgrade: hidden tags kept, orde
       WHERE is_owner = 1;
     DROP TABLE IF EXISTS discover_cache;
     ${DROP_MIGRATION_14}
+    -- The rebuilt accounts table has no merge_duplicates column to drop;
+    -- only migration 17's table and index exist here.
+    DROP INDEX IF EXISTS movie_merges_primary;
+    DROP TABLE IF EXISTS movie_merges;
     PRAGMA user_version = 9;
   `);
   raw.close();
@@ -5348,6 +5368,7 @@ test("migration 14 adds the request indexes to a schema 13 database and keeps ev
   const v13 = new DatabaseSync(file);
   for (const name of indexes) v13.exec(`DROP INDEX ${name}`);
   v13.exec(DROP_MIGRATION_15);
+  v13.exec(DROP_MIGRATION_17);
   v13.exec("PRAGMA user_version = 13");
   const before = v13.prepare("SELECT * FROM requests ORDER BY id").all();
   v13.close();
@@ -5359,7 +5380,7 @@ test("migration 14 adds the request indexes to a schema 13 database and keeps ev
     const version = raw.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 16);
+    assert.equal(version.user_version, 17);
     const present = (
       raw
         .prepare(
@@ -5390,6 +5411,7 @@ test("migration 15 adds the natural-language search grant to a schema 14 databas
   const file = join(dir, "velvarr.sqlite");
   const v14 = new DatabaseSync(file);
   v14.exec(DROP_MIGRATION_15);
+  v14.exec(DROP_MIGRATION_17);
   v14.exec("PRAGMA user_version = 14");
   v14.close();
 
@@ -5404,7 +5426,7 @@ test("migration 15 adds the natural-language search grant to a schema 14 databas
     const version = raw.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 16);
+    assert.equal(version.user_version, 17);
     const column = (
       raw.prepare("PRAGMA table_info(accounts)").all() as {
         name: string;
@@ -5433,4 +5455,83 @@ test("migration 15 adds the natural-language search grant to a schema 14 databas
     proseSearch: true,
   });
   assert.equal(granted.proseSearch, true);
+});
+
+test("migration 17 adds the merge grant and movie merge links to a schema 16 database, off with an empty table", () => {
+  const dir = freshDir();
+  storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  const [other] = storage.importAccounts([otherUser()]);
+  assert.ok(other);
+  storage.closeStorage();
+
+  // Schema 16 is schema 17 without the movie_merges table and the
+  // accounts.merge_duplicates column.
+  const file = join(dir, "velvarr.sqlite");
+  const v16 = new DatabaseSync(file);
+  v16.exec(DROP_MIGRATION_17);
+  v16.exec("PRAGMA user_version = 16");
+  v16.close();
+
+  const owner = storage.getAccount(ownerUser().id);
+  assert.ok(owner, "the owner row survives the upgrade");
+  assert.equal(owner.mergeDuplicates, false);
+  assert.equal(owner.isOwner, true);
+  assert.equal(storage.getAccount(other.id)?.mergeDuplicates, false);
+  assert.equal(storage.mergedMovieIdSet().size, 0);
+  assert.equal(storage.getMovieMerge("some-id"), null);
+
+  const raw = new DatabaseSync(file);
+  try {
+    const version = raw.prepare("PRAGMA user_version").get() as {
+      user_version: number;
+    };
+    assert.equal(version.user_version, 17);
+    const column = (
+      raw.prepare("PRAGMA table_info(accounts)").all() as {
+        name: string;
+        notnull: number;
+        dflt_value: string | null;
+      }[]
+    ).find((c) => c.name === "merge_duplicates");
+    assert.ok(column, "migration 17 adds accounts.merge_duplicates");
+    assert.equal(column.notnull, 1);
+    assert.equal(column.dflt_value, "0");
+    // The CHECK admits only 0 and 1.
+    assert.throws(() =>
+      raw
+        .prepare("UPDATE accounts SET merge_duplicates = 2 WHERE id = ?")
+        .run(other.id),
+    );
+    const table = raw
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'movie_merges'",
+      )
+      .get() as { sql: string } | undefined;
+    assert.ok(table, "migration 17 creates movie_merges");
+    assert.match(table.sql, /merged_id TEXT PRIMARY KEY/);
+    assert.match(table.sql, /primary_id TEXT NOT NULL/);
+  } finally {
+    raw.close();
+  }
+
+  // A recorded link reads back through the same functions the routes use,
+  // and the undo deletes it.
+  storage.recordMovieMerge(
+    "11111111-1111-4111-8111-111111111111",
+    "22222222-2222-4222-8222-222222222222",
+    owner.id,
+  );
+  const link = storage.getMovieMerge(
+    "11111111-1111-4111-8111-111111111111",
+  );
+  assert.ok(link, "the link row is stored");
+  assert.equal(link.primaryId, "22222222-2222-4222-8222-222222222222");
+  assert.equal(storage.listMovieMergesFor("22222222-2222-4222-8222-222222222222").length, 1);
+  assert.ok(
+    storage.removeMovieMerge("11111111-1111-4111-8111-111111111111"),
+  );
+  assert.equal(
+    storage.getMovieMerge("11111111-1111-4111-8111-111111111111"),
+    null,
+  );
 });

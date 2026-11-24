@@ -329,6 +329,47 @@ export function performerField(
   }
 }
 
+/** One keyed media reference off a JSON body. Mirrors performerField but for
+ * the requestable movie/scene kinds (providers tpdb/stashdb, like
+ * mediaFromBody); the key names the field so a multi-ref body (merge)
+ * reports which side was malformed. No deliverability gate here — the
+ * merge route narrows to TPDB movies itself. */
+export function mediaField(
+  body: Record<string, unknown>,
+  key: string,
+): MediaReference {
+  const media = body[key];
+  if (media === null || typeof media !== "object" || Array.isArray(media)) {
+    throw new AppError(400, "invalid_field", `Invalid ${key} reference.`);
+  }
+  const m = media as Record<string, unknown>;
+  if (
+    typeof m.provider !== "string" ||
+    typeof m.kind !== "string" ||
+    typeof m.id !== "string"
+  ) {
+    throw new AppError(400, "invalid_field", `Invalid ${key} reference.`);
+  }
+  try {
+    const reference = parseCatalogReference(m.provider, m.kind, m.id);
+    if (reference.kind !== "movie" && reference.kind !== "scene") {
+      throw new AppError(400, "invalid_field", `Invalid ${key} reference.`);
+    }
+    return {
+      provider: reference.provider,
+      kind: reference.kind,
+      id: reference.id,
+    };
+  } catch (e) {
+    // A malformed ref in a JSON body is one invalid_field error, whichever
+    // check catches it; parseCatalogReference names it invalid_reference.
+    if (e instanceof AppError && e.code === "invalid_reference") {
+      throw new AppError(400, "invalid_field", `Invalid ${key} reference.`);
+    }
+    throw e;
+  }
+}
+
 // Shared provider-independent scalar validation for catalog search. The
 // per-provider builders below explicitly reject filter combinations their
 // provider cannot express — never silently ignored downstream.

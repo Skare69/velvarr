@@ -7,6 +7,7 @@ import {
   parseMediaReference,
   readJson,
   fieldText,
+  mediaField,
   type CatalogSearchParams,
 } from "../parse.ts";
 import type {
@@ -31,7 +32,15 @@ import {
   listFollows,
   getActiveRequest,
   upsertCatalogRecord,
+  getMovieMerge,
+  listMovieMergesFor,
 } from "../../../../server/storage.ts";
+import {
+  canMergeDuplicates,
+  mergeMovies,
+  resolveMovieReference,
+  unmergeMovie,
+} from "../../../../server/movie-merge.ts";
 import {
   chargeRateBudget,
   type AuthContext,
@@ -130,6 +139,64 @@ async function mergeRoute(
     );
   }
   return json(await submitTpdbMovieMerge(source, target, notes));
+}
+
+// The grant check sits before any parsing or upstream work: a session
+// without the per-account grant (or an admin role) learns nothing about the
+// route's inputs. Same grant shape as the natural-language search one.
+function mergeGate(ctx: AuthContext): void {
+  if (!canMergeDuplicates(ctx.account)) {
+    throw new AppError(
+      403,
+      "forbidden",
+      "Duplicate merge is not turned on for this account.",
+    );
+  }
+}
+
+function requireTpdbMovie(provider: string, kind: string): void {
+  if (provider !== "tpdb" || kind !== "movie") {
+    throw new AppError(
+      400,
+      "invalid_reference",
+      "Duplicate merge supports TPDB movies only.",
+    );
+  }
+}
+
+// POST /api/catalog/tpdb/movie/:id/velvarr-merge — :id is the merged-away
+// record and body.primary the survivor. TPDB must return both details before
+// the link is stored; the link is Velvarr-wide, so both routes sit behind
+// the grant. Distinct from the admin's TPDB submission above: this records
+// Velvarr's own merge link and touches no TPDB data.
+export async function velvarrMergeRoute(
+  ctx: AuthContext,
+  request: Request,
+  provider: string,
+  kind: string,
+  id: string,
+): Promise<Response> {
+  mergeGate(ctx);
+  const reference = parseCatalogReference(provider, kind, id);
+  requireTpdbMovie(reference.provider, reference.kind);
+  const primary = mediaField(await readJson(request), "primary");
+  requireTpdbMovie(primary.provider, primary.kind);
+  return json(await mergeMovies(reference.id, primary.id, ctx.account.id), 201);
+}
+
+// DELETE /api/catalog/tpdb/movie/:id/velvarr-merge — removes the link whose
+// merged_id is :id; an unknown link is a 404, never a silent success.
+export async function velvarrUnmergeRoute(
+  ctx: AuthContext,
+  provider: string,
+  kind: string,
+  id: string,
+): Promise<Response> {
+  mergeGate(ctx);
+  const reference = parseCatalogReference(provider, kind, id);
+  requireTpdbMovie(reference.provider, reference.kind);
+  await unmergeMovie(reference.id);
+  return json({ removed: true });
 }
 function isTpdbDateOperation(v: string): v is ReleaseDateOperation {
   return ["<", "<=", "=", ">", ">="].includes(v);
@@ -816,6 +883,20 @@ export const routes: RouteDef[] = [
     auth: "admin",
     run: async (_ctx, request, p) =>
       mergeRoute(request, p.provider!, p.kind!, p.id!),
+  },
+  {
+    method: "POST",
+    segments: ["catalog", ":provider", ":kind", ":id", "velvarr-merge"],
+    auth: "session",
+    run: async (ctx, request, p) =>
+      velvarrMergeRoute(ctx, request, p.provider!, p.kind!, p.id!),
+  },
+  {
+    method: "DELETE",
+    segments: ["catalog", ":provider", ":kind", ":id", "velvarr-merge"],
+    auth: "session",
+    run: async (ctx, _request, p) =>
+      velvarrUnmergeRoute(ctx, p.provider!, p.kind!, p.id!),
   },
   {
     method: "GET",

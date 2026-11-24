@@ -114,7 +114,7 @@ export type { ArtworkWidth } from "./artwork-store.ts";
 // --- credentials and bases: stored admin UI credentials win, the environment
 // is the fallback; read at call time so a save or clear takes effect without
 // a restart. Values are never logged, echoed, or placed in URLs. ---
-import { getConfig } from "./storage.ts";
+import { getConfig, mergedMovieIdSet } from "./storage.ts";
 
 // Metadata-provider cache: TPDB/StashDB reads only. Short-TTL freshness with
 // stale-on-error fallback, so an upstream blip serves the last good payload
@@ -1542,13 +1542,23 @@ export async function searchCatalog(
       const body = await tpdbGet<TpdbListBody>(
         `/performers/${id}/${query.kind}s${tpdbQuery({ page, per_page: perPage })}`,
       );
-      return parseTpdbPage(
+      const parsed = parseTpdbPage(
         query.kind,
         body,
         (row) => tpdbMediaDetail(query.kind, row, recordTagPair),
         page,
         perPage,
       );
+      if (query.kind === "movie") {
+        // Merged-away TPDB movies vanish from every listing, filmographies
+        // included; the primary still appears because both records exist
+        // upstream. Detail resolution happens in the route, never here.
+        const mergedIds = mergedMovieIdSet();
+        parsed.items = parsed.items.filter(
+          (d) => !mergedIds.has(d.reference.id.toLowerCase()),
+        );
+      }
+      return parsed;
     }
     if (query.direction !== undefined && query.sort === undefined) {
       throw new AppError(
@@ -1604,6 +1614,14 @@ export async function searchCatalog(
       page,
       perPage,
     );
+    if (query.kind === "movie") {
+      // Same listing rule as the filmography branch above: one set read per
+      // page, filtered after dedupe; the scene path stays byte-identical.
+      const mergedIds = mergedMovieIdSet();
+      result.items = result.items.filter(
+        (d) => !mergedIds.has(d.reference.id.toLowerCase()),
+      );
+    }
     return sort !== undefined ? { ...result, sort } : result;
   }
 
