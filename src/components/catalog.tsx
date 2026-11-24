@@ -1754,6 +1754,36 @@ export function TitlesView() {
         requestResult.failed > 0 ? `${requestResult.failed} failed` : null,
       ].filter(Boolean)
     : [];
+  // The run's outcome lines: beside the button over a filled grid, and over
+  // the empty note when the run emptied a request-state filtered grid.
+  const requestFeedback =
+    (requestCounts.length > 0 && requestResult) ||
+    requestResult?.stopped ||
+    requestError ? (
+      <>
+        {requestCounts.length > 0 && requestResult && (
+          <p className="mt-2 text-sm" role="status">
+            {requestCounts.join(" · ")}
+            {requestResult.over > 0 && requestResult.stopped === null
+              ? ` — ${requestResult.over} more loaded titles were not included; press again for the next ${REQUEST_ALL_CAP}.`
+              : "."}
+          </p>
+        )}
+        {requestResult?.stopped && (
+          <p className="bulk-error mt-2 text-sm" role="alert">
+            {requestResult.stopped.message}
+            {requestResult.notSent > 0
+              ? ` ${requestResult.notSent} not sent.`
+              : ""}
+          </p>
+        )}
+        {requestError && (
+          <p className="bulk-error mt-2 text-sm" role="alert">
+            The requests did not run: {requestError}
+          </p>
+        )}
+      </>
+    ) : null;
 
   // Active filters, grouped by kind: each group shows its name once, and
   // every chip inside is one remove button whose label names the full filter.
@@ -2035,15 +2065,23 @@ export function TitlesView() {
                 </div>
               )}
               {acc.items.length === 0 ? (
-                // Empty is only claimed when no source failed: the error
-                // panels above carry the failures.
-                acc.errors.length === 0 && (
-                  <div className="panel p-8 text-center text-sm text-muted">
-                    {filterCount > 0
-                      ? "No titles match your filters. Remove a filter, or check excluded and personal hidden tags."
-                      : "Nothing here yet."}
-                  </div>
-                )
+                <>
+                  {/* A Request all that settled every title of a
+                      Requested = No grid reloads it empty: its outcome
+                      stays said here. */}
+                  {requestFeedback !== null && (
+                    <div className="mb-3">{requestFeedback}</div>
+                  )}
+                  {/* Empty is only claimed when no source failed: the
+                      error panels above carry the failures. */}
+                  {acc.errors.length === 0 && (
+                    <div className="panel p-8 text-center text-sm text-muted">
+                      {filterCount > 0
+                        ? "No titles match your filters. Remove a filter, or check excluded and personal hidden tags."
+                        : "Nothing here yet."}
+                    </div>
+                  )}
+                </>
               ) : (
                 <>
                   {/* The count leads the results, so the size of the answer
@@ -2083,28 +2121,7 @@ export function TitlesView() {
                           </button>
                         )}
                       </div>
-                      {requestCounts.length > 0 && requestResult && (
-                        <p className="mt-2 text-sm" role="status">
-                          {requestCounts.join(" · ")}
-                          {requestResult.over > 0 &&
-                          requestResult.stopped === null
-                            ? ` — ${requestResult.over} more loaded titles were not included; press again for the next ${REQUEST_ALL_CAP}.`
-                            : "."}
-                        </p>
-                      )}
-                      {requestResult?.stopped && (
-                        <p className="bulk-error mt-2 text-sm" role="alert">
-                          {requestResult.stopped.message}
-                          {requestResult.notSent > 0
-                            ? ` ${requestResult.notSent} not sent.`
-                            : ""}
-                        </p>
-                      )}
-                      {requestError && (
-                        <p className="bulk-error mt-2 text-sm" role="alert">
-                          The requests did not run: {requestError}
-                        </p>
-                      )}
+                      {requestFeedback}
                     </div>
                   )}
                   <dialog

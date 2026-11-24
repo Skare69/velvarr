@@ -36,3 +36,23 @@ scenario(
     await expect(card("Alpha Movie")).toHaveCount(0);
   },
 );
+
+scenario(
+  "Request all that empties a Requested = No grid keeps its result line",
+  async ({ page, control }) => {
+    await control({
+      reset: true,
+      browse: { titles: titles.slice(0, 2), pageSize: 4 },
+    });
+    await page.goto("/?view=titles&requested=no");
+    await expect(
+      page.getByRole("link", { name: "View details for Bravo Movie" }),
+    ).toBeVisible();
+
+    await page.getByRole("button", { name: "Request all (2)" }).click();
+    await page.getByRole("button", { name: "File the requests" }).click();
+    // Both titles leave the filtered grid; the run's count stays said.
+    await expect(page.getByText(/No titles match your filters/)).toBeVisible();
+    await expect(page.getByText("2 requested.")).toBeVisible();
+  },
+);
