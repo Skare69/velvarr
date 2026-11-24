@@ -74,6 +74,16 @@ function artworkRootDir(): string {
 // age out by the store TTL.
 const COVER_HEIGHT_RATIO = 1.5;
 
+// Provider artwork is upstream data: a few KB of PNG can declare hundreds of
+// megapixels. Same bounds as the duplicate check's decode (duplicates.ts
+// posterDhash).
+const ARTWORK_INPUT_PIXEL_LIMIT = 40_000_000;
+const ARTWORK_RENDER_TIMEOUT_SECONDS = 5;
+
+function decodeArtwork(bytes: Uint8Array) {
+  return sharp(bytes, { limitInputPixels: ARTWORK_INPUT_PIXEL_LIMIT });
+}
+
 function variantPath(hash: string, width: ArtworkWidth): string {
   return path.join(
     artworkRootDir(),
@@ -306,8 +316,9 @@ export function rememberArtworkVariant(url: string, hash: string): void {
 
 /** Return the WebP variant of `source` at `width`, reading it from the disk
  * store when present, generating and storing it otherwise. Sources too small
- * to downscale (measured on the EXIF-oriented axis) and sources sharp cannot
- * read come back unchanged (no file, source contentType); a stored variant
+ * to downscale (measured on the EXIF-oriented axis), SVG sources, and
+ * sources sharp cannot read (or that exceed the decode bounds) come back
+ * unchanged (no file, source contentType); a stored variant
  * always comes back as image/webp and upright: WebP output drops the EXIF
  * orientation tag, so the pixels are pre-rotated at generation time. */
 export async function artworkVariantFor(
@@ -323,7 +334,7 @@ export async function artworkVariantFor(
 
   let meta;
   try {
-    meta = await sharp(source.bytes).metadata();
+    meta = await decodeArtwork(source.bytes).metadata();
   } catch (err) {
     return passthroughDegrade(source, hash, width, err);
   }
@@ -334,7 +345,11 @@ export async function artworkVariantFor(
   const orientedWidth = meta.autoOrient?.width ?? meta.width;
   const orientedHeight = meta.autoOrient?.height ?? meta.height;
   const height = Math.round(width * COVER_HEIGHT_RATIO);
+  // SVG passes through as is: the browser scales vectors itself, and librsvg
+  // ignores the render timeout (a 53 KB filter-heavy 6000×6000 SVG rendered
+  // for 200 s before sharp's 5 s timeout fired, VELV-238).
   if (
+    meta.format === "svg" ||
     (orientedWidth !== undefined && orientedWidth <= width) ||
     (orientedHeight !== undefined && orientedHeight <= height)
   ) {
@@ -348,10 +363,11 @@ export async function artworkVariantFor(
 
   let variant: Buffer;
   try {
-    variant = await sharp(source.bytes)
+    variant = await decodeArtwork(source.bytes)
       .autoOrient()
       .resize({ width, height, fit: "outside", withoutEnlargement: true })
       .webp({ quality: 80 })
+      .timeout({ seconds: ARTWORK_RENDER_TIMEOUT_SECONDS })
       .toBuffer();
   } catch (err) {
     return passthroughDegrade(source, hash, width, err);

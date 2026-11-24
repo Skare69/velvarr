@@ -2769,6 +2769,44 @@ test("artwork no-upscale: a 185px source at w=400 returns the exact source bytes
   }
 });
 
+test("artwork variant: a small-byte, huge-pixel PNG passes through without a render", async () => {
+  // Decompression bomb: well under 1 MB of PNG declares 6400×6400 (41 MP),
+  // over the 40 MP decode limit. The source must come back untouched and no
+  // variant may be rendered or stored.
+  const bomb = await sharp({
+    create: { width: 6400, height: 6400, channels: 3, background: "#808080" },
+  })
+    .png({ compressionLevel: 9 })
+    .toBuffer();
+  assert.ok(bomb.length < 1_000_000, `fixture is ${bomb.length} bytes`);
+  const hash = createHash("sha256").update(bomb).digest("hex");
+  const variant = await artworkVariantFor(
+    { bytes: new Uint8Array(bomb), contentType: "image/png" },
+    400,
+  );
+  assert.equal(variant.isVariant, false);
+  assert.equal(variant.contentType, "image/png");
+  assert.ok(Buffer.from(variant.bytes).equals(bomb));
+  assert.equal(existsSync(artworkStorePath(hash, 400)), false);
+});
+
+test("artwork variant: an SVG source passes through instead of being rasterized", async () => {
+  // librsvg ignores sharp's render timeout, so a filter-heavy SVG could pin
+  // a core for minutes. The browser scales the vector itself.
+  const svg = Buffer.from(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="3000"><rect width="100%" height="100%" fill="red"/></svg>',
+  );
+  const hash = createHash("sha256").update(svg).digest("hex");
+  const variant = await artworkVariantFor(
+    { bytes: new Uint8Array(svg), contentType: "image/svg+xml" },
+    400,
+  );
+  assert.equal(variant.isVariant, false);
+  assert.equal(variant.contentType, "image/svg+xml");
+  assert.ok(Buffer.from(variant.bytes).equals(svg));
+  assert.equal(existsSync(artworkStorePath(hash, 400)), false);
+});
+
 test("artwork variant: an EXIF-rotated source comes out upright, not sideways", async () => {
   // WebP output drops the EXIF orientation tag, so the variant pixels must
   // be pre-rotated: orientation 6 shows the 1000×500 landscape as a
