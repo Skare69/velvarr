@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import fc from "fast-check";
 import {
+  bulkRequestCounts,
   planRequestAll,
   REQUEST_ALL_CAP,
   requestAllKey,
@@ -189,4 +190,35 @@ test("property: the plan accounts for every item and respects the cap", () => {
     ),
     { seed: 42, numRuns: 100 },
   );
+});
+
+test("the bulk count line names auto-approvals only when the grant policy made some", () => {
+  // An admin's bulk pass: every request is approved by the admin's role, so
+  // the server reports autoApproved 0 and no auto label may appear.
+  assert.deepEqual(
+    bulkRequestCounts({
+      requested: 3,
+      autoApproved: 0,
+      skipped: 0,
+      failed: [],
+    }),
+    ["3 requested", "0 failed"],
+  );
+  // A grant holder's pass: the policy approved them, so the count shows.
+  assert.deepEqual(
+    bulkRequestCounts({
+      requested: 2,
+      autoApproved: 2,
+      skipped: 1,
+      failed: [],
+    }),
+    [
+      "2 requested",
+      "2 auto-approved",
+      "1 skipped (already requested)",
+      "0 failed",
+    ],
+  );
+  // A capacity stop body carries no counters: nothing is invented.
+  assert.deepEqual(bulkRequestCounts({}), []);
 });

@@ -19,6 +19,28 @@ export function requestAllKey(ref: {
   return `${ref.provider}:${ref.kind}:${ref.id.toLowerCase()}`;
 }
 
+/** The count line of a performer bulk pass. Only fields the response
+ * contained are rendered — a missing count is never shown as 0. A zero
+ * auto-approved count is hidden: an admin's own approvals are not policy
+ * approvals, so the server counts them as 0, and "0 auto-approved" would
+ * label an approval nobody's policy made. */
+export function bulkRequestCounts(result: {
+  requested?: number;
+  skipped?: number;
+  autoApproved?: number;
+  failed?: readonly unknown[];
+}): string[] {
+  const parts: string[] = [];
+  if (typeof result.requested === "number")
+    parts.push(`${result.requested} requested`);
+  if (typeof result.autoApproved === "number" && result.autoApproved > 0)
+    parts.push(`${result.autoApproved} auto-approved`);
+  if (typeof result.skipped === "number" && result.skipped > 0)
+    parts.push(`${result.skipped} skipped (already requested)`);
+  if (result.failed) parts.push(`${result.failed.length} failed`);
+  return parts;
+}
+
 export type RequestAllPlan = {
   /** First `cap` eligible refs, in display order. */
   batch: MediaReference[];

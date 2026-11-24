@@ -54,6 +54,7 @@ import { linkLabel } from "../lib/links";
 import { mergePerformerDetails } from "../lib/performer-merge";
 
 import { REQUESTS_CHANGED } from "../lib/approvals";
+import { bulkRequestCounts } from "../lib/request-all";
 import "./views.css";
 
 // Displayed totals: locale digit grouping, one format on every count.
@@ -371,20 +372,7 @@ function BulkRequest({
     }
   };
 
-  const counts = result
-    ? [
-        typeof result.requested === "number"
-          ? `${result.requested} requested`
-          : null,
-        typeof result.autoApproved === "number"
-          ? `${result.autoApproved} auto-approved`
-          : null,
-        typeof result.skipped === "number" && result.skipped > 0
-          ? `${result.skipped} skipped (already requested)`
-          : null,
-        result.failed ? `${result.failed.length} failed` : null,
-      ].filter(Boolean)
-    : [];
+  const counts = result ? bulkRequestCounts(result) : [];
 
   // Each page can render one BulkRequest per listing side; the id must be
   // unique or IDREF resolution points every dialog at the first title.
