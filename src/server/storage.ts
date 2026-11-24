@@ -24,6 +24,7 @@ import type {
   AttemptOutcome,
   AcquisitionObservation,
   AcquisitionRecord,
+  AcquisitionState,
   CatalogCredit,
   CatalogDetail,
   CatalogKind,
@@ -204,6 +205,7 @@ type Statements = {
   repairImportedFacts: StatementSync;
   getAcquisition: StatementSync;
   getAcquisitionByIdentity: StatementSync;
+  listAcquisitionStates: StatementSync;
   latestAcquisitionForReference: StatementSync;
   listDueAcquisitions: StatementSync;
   claimAcquisition: StatementSync;
@@ -800,6 +802,9 @@ function S(): Statements {
       getAcquisition: d.prepare("SELECT * FROM acquisitions WHERE id = ?"),
       getAcquisitionByIdentity: d.prepare(
         "SELECT * FROM acquisitions WHERE instance_id = ? AND provider = ? AND kind = ? AND external_id = ?",
+      ),
+      listAcquisitionStates: d.prepare(
+        "SELECT provider, kind, external_id, state FROM acquisitions WHERE instance_id = ?",
       ),
       latestAcquisitionForReference: d.prepare(
         "SELECT * FROM acquisitions WHERE provider = ? AND kind = ? AND external_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1",
@@ -3014,6 +3019,26 @@ export function getAcquisitionByReference(
     media.id.toLowerCase(),
   ) as AcquisitionRow | undefined;
   return row ? rowToAcquisition(row) : null;
+}
+
+/** Every acquisition state on the configured instance, keyed by intentKey —
+ * one read per browse, so the request-state filter never queries per row.
+ * No configured instance → empty map (no acquisition can exist). */
+export function listAcquisitionStates(
+  instanceId?: string,
+): Map<string, AcquisitionState> {
+  const instance = instanceId ?? getConfig()?.whisparr?.instanceId;
+  if (!instance) return new Map();
+  const rows = S().listAcquisitionStates.all(instance) as Pick<
+    AcquisitionRow,
+    "provider" | "kind" | "external_id" | "state"
+  >[];
+  return new Map(
+    rows.map((row) => [
+      intentKey(row.provider, row.kind, row.external_id),
+      row.state as AcquisitionState,
+    ]),
+  );
 }
 
 /** One acquisition by id, or null. */

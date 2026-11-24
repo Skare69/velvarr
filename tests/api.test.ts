@@ -14297,6 +14297,95 @@ test("prose search: the block restores the chat settings, the grant and the fixt
   }
 });
 
+// VELV-300: the Requested/Received browse filters read Velvarr's own records
+// on the exact provider reference. Three injected movies with ids no other
+// test touches keep the state this test's alone.
+test("browse Requested/Received filters follow the account's requests and imported acquisitions", async () => {
+  await boot();
+  const owner = await loginAs("owner");
+  const member2 = await loginAs("member2");
+  const velvId = (n: number) =>
+    `3e3f4041-0000-0000-0000-${String(n).padStart(12, "0")}`;
+  const REQUESTED = velvId(301);
+  const IMPORTED = velvId(302);
+  const PLAIN = velvId(303);
+  extraTpdbMovies = [REQUESTED, IMPORTED, PLAIN].map((id) => ({
+    ...tpdbMovieRow(id),
+    // No tags: an earlier test's hidden list can never hide these rows.
+    tags: [],
+  }));
+  resetMetaCache();
+  try {
+    // member2's own request (pending, or approved by a standing grant —
+    // either counts as requested).
+    const filed = await call("POST", "/api/requests", {
+      cookie: member2,
+      body: { media: { provider: "tpdb", kind: "movie", id: REQUESTED } },
+    });
+    assert.equal(filed.status, 201);
+    // Another account's request, approved by role, imported by Whisparr:
+    // the shared acquisition makes it requested AND received for member2.
+    const ownerFiled = await call("POST", "/api/requests", {
+      cookie: owner,
+      body: { media: { provider: "tpdb", kind: "movie", id: IMPORTED } },
+    });
+    assert.equal(ownerFiled.status, 201);
+    const acq = getAcquisitionByReference({
+      provider: "tpdb",
+      kind: "movie",
+      id: IMPORTED,
+    });
+    assert.ok(acq, "the approved request opened an acquisition");
+    recordAcquisitionObservation(acq.id, {
+      state: "imported",
+      item: {
+        whisparrId: 300,
+        path: "/data/whisparr/velv300.mkv",
+        title: "Imported Movie",
+      },
+    });
+
+    const idsFor = async (qs: string): Promise<Set<string>> => {
+      const res = await call("GET", `/api/browse?type=movie&${qs}`, {
+        cookie: member2,
+      });
+      assert.equal(res.status, 200, qs);
+      const page = (await res.json()) as BrowsePageBody;
+      assert.deepEqual(page.errors, [], qs);
+      const mine = new Set([REQUESTED, IMPORTED, PLAIN]);
+      return new Set(
+        page.items
+          .map((item) => refOf(item)?.id)
+          .filter((id): id is string => id !== undefined && mine.has(id)),
+      );
+    };
+    assert.deepEqual(
+      await idsFor("requested=yes"),
+      new Set([REQUESTED, IMPORTED]),
+    );
+    assert.deepEqual(await idsFor("requested=no"), new Set([PLAIN]));
+    assert.deepEqual(await idsFor("received=yes"), new Set([IMPORTED]));
+    assert.deepEqual(await idsFor("received=no"), new Set([REQUESTED, PLAIN]));
+    assert.deepEqual(
+      await idsFor("requested=yes&received=no"),
+      new Set([REQUESTED]),
+    );
+    // No filter: all three, unchanged.
+    assert.deepEqual(await idsFor(""), new Set([REQUESTED, IMPORTED, PLAIN]));
+
+    const bogus = await call("GET", "/api/browse?requested=bogus", {
+      cookie: member2,
+    });
+    assert.equal(bogus.status, 400);
+    const err = await errorShape(bogus);
+    assert.equal(err.code, "invalid_query");
+    assert.match(err.message, /requested must be one of: yes, no\./);
+  } finally {
+    extraTpdbMovies = [];
+    resetMetaCache();
+  }
+});
+
 // These URLs and tokens are synthetic. The fetch fixture matches them exactly.
 const DISCORD_SAVED =
   "https://discord.com/api/webhooks/123456789/fixture_saved_token";

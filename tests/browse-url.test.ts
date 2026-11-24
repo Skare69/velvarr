@@ -43,12 +43,14 @@ const state = (
   ...overrides,
 });
 
-test("BROWSE_KEYS is the 21 canonical browse keys; the four legacy scalars stay listed", () => {
+test("BROWSE_KEYS is the 23 canonical browse keys; the four legacy scalars stay listed", () => {
   // Contract move (VELV-166): performers/studios became JSON-array keys
   // beside performerMode/yearTo. The four scalar keys stay listed so
   // clearBrowseKeys still deletes them — only the server's legacy parse
   // and legacyBrowsePatch read them. Contract move: the drawer's release
   // date range added the inclusive upper bound `dateTo`.
+  // Contract move (VELV-300): the request-state filters added `requested`
+  // and `received`.
   assert.deepEqual([...BROWSE_KEYS].sort(), [
     "date",
     "dateTo",
@@ -63,6 +65,8 @@ test("BROWSE_KEYS is the 21 canonical browse keys; the four legacy scalars stay 
     "performerTpdb",
     "performers",
     "q",
+    "received",
+    "requested",
     "sort",
     "studioMode",
     "studioStashdb",
@@ -96,6 +100,8 @@ test("clearBrowseKeys nulls every key; keep spares exactly the named keys", () =
     "performerTpdb",
     "performers",
     "q",
+    "received",
+    "requested",
     "sort",
     "studioMode",
     "studioStashdb",
@@ -598,6 +604,8 @@ test("countActiveFilters counts scalars and arrays, skips the carriers and the n
     }),
     0,
   );
+  // The request-state filters count one each.
+  assert.equal(countActiveFilters({ requested: "no", received: "yes" }), 2);
 });
 
 // Mirror test: every patch this module emits must parse into a query the

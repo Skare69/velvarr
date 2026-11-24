@@ -45,6 +45,8 @@ export const BROWSE_KEYS = [
   "performerTpdb",
   "performerStashdb",
   "performerStarred",
+  "requested",
+  "received",
   "studioMode",
   "year",
   "yearTo",

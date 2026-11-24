@@ -1149,6 +1149,8 @@ function browsePath(f: {
   performerMode: PerformerMode;
   performerStarred: boolean;
   studioMode: string;
+  requested: string;
+  received: string;
   year: string;
   yearTo: string;
   date: string;
@@ -1169,6 +1171,8 @@ function browsePath(f: {
   if (f.performerMode === "any") qs.set("performerMode", "any");
   if (f.performerStarred) qs.set("performerStarred", "1");
   if (f.studioMode) qs.set("studioMode", f.studioMode);
+  if (f.requested) qs.set("requested", f.requested);
+  if (f.received) qs.set("received", f.received);
   // The range's upper bound travels only beside a start year — a yearTo
   // without a year would 400.
   if (f.year) {
@@ -1234,6 +1238,13 @@ export function TitlesView() {
   const performerStarred = params.get("performerStarred") === "1";
   const studioMode =
     params.get("studioMode") === "withChildren" ? "withChildren" : "";
+  // Request-state filters: only yes/no travel; anything else reads as any.
+  const requestedRaw = params.get("requested");
+  const requested =
+    requestedRaw === "yes" || requestedRaw === "no" ? requestedRaw : "";
+  const receivedRaw = params.get("received");
+  const received =
+    receivedRaw === "yes" || receivedRaw === "no" ? receivedRaw : "";
   const year = params.get("year") ?? "";
   const yearTo = params.get("yearTo") ?? "";
   // date + date_operation commit as one pair; half a pair is never sent.
@@ -1372,6 +1383,8 @@ export function TitlesView() {
         performerMode,
         performerStarred,
         studioMode,
+        requested,
+        received,
         year,
         yearTo,
         date,
@@ -1391,6 +1404,8 @@ export function TitlesView() {
       performerMode,
       performerStarred,
       studioMode,
+      requested,
+      received,
       year,
       yearTo,
       date,
@@ -1607,6 +1622,14 @@ export function TitlesView() {
       setP({ studioMode: m === "withChildren" ? m : null }, { push: true }),
     [setP],
   );
+  const onRequested = useCallback(
+    (v: "" | "yes" | "no") => setP({ requested: v || null }, { push: true }),
+    [setP],
+  );
+  const onReceived = useCallback(
+    (v: "" | "yes" | "no") => setP({ received: v || null }, { push: true }),
+    [setP],
+  );
   const clearFilters = useCallback(() => {
     // The tab and paging survive a clear — every constraint goes, and the
     // facet display label goes with them.
@@ -1626,6 +1649,8 @@ export function TitlesView() {
     date,
     performerStarred,
     studioMode,
+    requested,
+    received,
     sort,
     performers,
     studios,
@@ -1779,6 +1804,20 @@ export function TitlesView() {
   );
   if (studioMode === "withChildren")
     chip("Studio", "studioMode", "with child studios", () => onStudioMode(""));
+  if (requested)
+    chip(
+      "Request status",
+      "requested",
+      requested === "yes" ? "Requested" : "Not requested",
+      () => onRequested(""),
+    );
+  if (received)
+    chip(
+      "Request status",
+      "received",
+      received === "yes" ? "Received" : "Not received",
+      () => onReceived(""),
+    );
   include.forEach((tag, i) => {
     const group = Array.isArray(tag);
     chip(
@@ -2322,6 +2361,67 @@ export function TitlesView() {
             </button>{" "}
             always apply; Clear all keeps them.
           </p>
+        </div>
+        <div
+          className="cat-group"
+          role="group"
+          aria-labelledby="titles-g-request"
+        >
+          <div className="cat-group-head">
+            <h3 className="cat-group-title" id="titles-g-request">
+              Request status
+            </h3>
+            <InfoTip id="titles-request-info" label="Request status">
+              <p>
+                Requested means you have an open request for the title or
+                Velvarr is already getting it. Received means Whisparr imported
+                it through Velvarr; titles added to the library outside Velvarr
+                are not known here.
+              </p>
+            </InfoTip>
+          </div>
+          {(
+            [
+              ["requested", "Requested", requested, onRequested],
+              ["received", "Received", received, onReceived],
+            ] as const
+          ).map(([key, label, value, onPick]) => (
+            <div key={key}>
+              <span className="label" id={`titles-${key}-label`}>
+                {label}
+              </span>
+              <div
+                role="group"
+                aria-labelledby={`titles-${key}-label`}
+                className="segmented"
+              >
+                {(
+                  [
+                    ["", "Any"],
+                    ["yes", "Yes"],
+                    ["no", "No"],
+                  ] as const
+                ).map(([v, text]) => (
+                  <button
+                    key={text}
+                    type="button"
+                    aria-pressed={value === v}
+                    onClick={() => onPick(v)}
+                  >
+                    {text}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+          {/* The server applies these after provider pages arrive, with a
+              soft scan ceiling — the note keeps the totals honest. */}
+          {(requested || received) && (
+            <p className="cat-note">
+              These filters check Velvarr&rsquo;s records after results arrive,
+              so totals are approximate and a long scan can stop early.
+            </p>
+          )}
         </div>
         <div
           className="cat-group"

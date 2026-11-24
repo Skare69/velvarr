@@ -944,6 +944,9 @@ export async function mapProseDraft(
     performerStashdb: null,
     performerStarred: performerStarred ? "1" : null,
     studioMode: studioMode === "withChildren" ? "withChildren" : null,
+    // Prose never sets the request-state filters; a prose search replaces them too.
+    requested: null,
+    received: null,
     year: year !== undefined ? String(year.lo) : null,
     yearTo: year !== undefined && year.hi !== year.lo ? String(year.hi) : null,
     date: date?.date ?? null,

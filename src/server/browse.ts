@@ -23,8 +23,9 @@
 // provably empty (complete freshness-bounded listing, no match, no
 // uuid-less rows) answers exact zero before any scan. A third: a page past
 // the deepest page the ceiling can fill is refused before any read
-// (refuseUnscannablePage). Raise MAX_SCAN_PAGES only when real browsing
-// measurably needs it.
+// (refuseUnscannablePage). A fourth: the Requested/Received filter is
+// sparse, so its ceiling hit is a named partial too. Raise MAX_SCAN_PAGES
+// only when real browsing measurably needs it.
 
 // Stryker disable all — the mutation window re-opens below the parse/adapters
 // block and covers the pure merge/plan logic only (mergeStreams, nativeQuery,
@@ -145,11 +146,38 @@ export type BrowseQuery = {
   /** Inclusive release-date upper bound (`YYYY-MM-DD`). Requires `date` + `>=`.
    * Release-date order selects the native bound. Both bounds also check locally. */
   dateTo?: string;
+  /** Velvarr's own request state, checked locally against the exact
+   * provider reference: true keeps only matching titles, false drops them,
+   * absent means any. Titles added to the library outside Velvarr are not
+   * known and never count as received. */
+  requested?: boolean;
+  received?: boolean;
   sort?: CatalogSortKey;
   direction?: CatalogSortDirection;
   page: number;
   perPage: number;
 };
+
+/** One title's state in Velvarr's own records (see BrowseQuery.requested). */
+export type MediaState = { requested: boolean; received: boolean };
+export type MediaStateLookup = (d: CatalogDetail) => MediaState;
+
+/** The local Requested/Received predicate, or undefined when neither filter
+ * is set (no local work, the fast path stays open). */
+export function requestStatePredicate(
+  query: Pick<BrowseQuery, "requested" | "received">,
+  lookup: MediaStateLookup,
+): ((d: CatalogDetail) => boolean) | undefined {
+  const { requested, received } = query;
+  if (requested === undefined && received === undefined) return undefined;
+  return (d) => {
+    const state = lookup(d);
+    return (
+      (requested === undefined || state.requested === requested) &&
+      (received === undefined || state.received === received)
+    );
+  };
+}
 
 export type BrowsePage = {
   items: CatalogDetail[];
@@ -401,6 +429,12 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
     ["1"],
     "performerStarred",
   );
+  const requested = parseEnum(
+    params.get("requested"),
+    ["yes", "no"],
+    "requested",
+  );
+  const received = parseEnum(params.get("received"), ["yes", "no"], "received");
   // The new entry arrays and the old scalar keys never share a request:
   // two spellings of one filter would silently AND disjoint entry sets.
   const performerEntries = parseEntityEntries(
@@ -499,6 +533,8 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
       ? { date, dateOperation }
       : {}),
     ...(dateTo !== "" ? { dateTo } : {}),
+    ...(requested !== undefined ? { requested: requested === "yes" } : {}),
+    ...(received !== undefined ? { received: received === "yes" } : {}),
     ...(sort !== undefined ? { sort } : {}),
     ...(direction !== undefined ? { direction } : {}),
     page,
@@ -1689,7 +1725,27 @@ export async function browseTitles(
   query: BrowseQuery,
   hiddenTags: CatalogTagSelection[],
   starredPerformerIds: string[] = [],
+  mediaState?: MediaStateLookup,
 ): Promise<BrowsePage> {
+  if (
+    (query.requested !== undefined || query.received !== undefined) &&
+    mediaState === undefined
+  ) {
+    // A caller bug, never a silent pass: dropping the filter would show
+    // titles the user asked to hide.
+    throw new Error(
+      "browseTitles: requested/received needs a mediaState lookup.",
+    );
+  }
+  // ponytail: Requested/Received is a local predicate over provider pages,
+  // so a sparse match scans up to the ceiling and ends as a named partial.
+  // Upgrade path: answer requested=yes from Velvarr's own request list
+  // instead of scanning provider pages.
+  const statusFilter =
+    mediaState !== undefined
+      ? requestStatePredicate(query, mediaState)
+      : undefined;
+  const statusFiltered = statusFilter !== undefined;
   const plan = planBrowseSides(query);
   const notices = buildNotices(query, plan);
   if (query.performerStarred === true && starredPerformerIds.length === 0) {
@@ -1959,6 +2015,7 @@ export async function browseTitles(
   if (
     single !== undefined &&
     !single.localFiltered &&
+    !statusFiltered &&
     unresolved.length === 0
   ) {
     const page = await searchCatalog(
@@ -2005,7 +2062,7 @@ export async function browseTitles(
           : released > stop.bound;
       };
     }
-    const base = visiblePredicate(
+    const tagBase = visiblePredicate(
       hiddenTags,
       query.exclude,
       seedPlan.localInclude,
@@ -2014,8 +2071,14 @@ export async function browseTitles(
       query.dateTo,
       query.dateTo !== undefined ? query.date : undefined,
     );
+    // The status filter joins base, so a dedupe set below still records
+    // only rows that pass every predicate.
+    const base =
+      statusFilter !== undefined
+        ? (d: CatalogDetail) => tagBase(d) && statusFilter(d)
+        : tagBase;
     let visible = base;
-    let localFiltered = seedPlan.localFiltered;
+    let localFiltered = seedPlan.localFiltered || statusFiltered;
     if (
       seedPlan.fanoutIds.length > 0 ||
       seedPlan.seed.dedupeKey !== undefined
@@ -2074,7 +2137,7 @@ export async function browseTitles(
             visible,
             query.perPage,
             localFiltered,
-            softCeilingFor(fanoutPlan),
+            softCeilingFor(fanoutPlan) || statusFiltered,
             dateStop,
             gateRead,
             budgetRead,
@@ -2092,7 +2155,7 @@ export async function browseTitles(
         softCeilingFor({
           localInclude: seedPlan.localFree,
           freeTextNative: seedPlan.freeTextNative,
-        }),
+        }) || statusFiltered,
         dateStop,
         undefined,
         budgetRead,

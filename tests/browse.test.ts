@@ -57,7 +57,11 @@ import {
   tagMatcher,
 } from "../src/server/catalog-visibility.ts";
 import fc from "fast-check";
-import type { BrowsePage, BrowseQuery } from "../src/server/browse.ts";
+import type {
+  BrowsePage,
+  BrowseQuery,
+  MediaStateLookup,
+} from "../src/server/browse.ts";
 import type {
   BrowseEntity,
   CatalogDetail,
@@ -7751,5 +7755,216 @@ test("property: entity and include queries round-trip through the URL form (seed
       },
     ),
     { seed: 42, numRuns: 150 },
+  );
+});
+
+// --- VELV-300: Requested / Received filters (Velvarr's own records) ---
+
+test("parseBrowseQuery reads requested/received as yes/no and refuses other values", () => {
+  const parsed = parseBrowseQuery(
+    new URLSearchParams("requested=yes&received=no"),
+  );
+  assert.equal(parsed.requested, true);
+  assert.equal(parsed.received, false);
+  const none = parseBrowseQuery(new URLSearchParams("requested=&received="));
+  assert.equal("requested" in none, false);
+  assert.equal("received" in none, false);
+  for (const qs of ["requested=maybe", "received=1", "requested=YES"]) {
+    assert.throws(
+      () => parseBrowseQuery(new URLSearchParams(qs)),
+      appError(400, "invalid_query"),
+      qs,
+    );
+  }
+  assert.throws(
+    () => parseBrowseQuery(new URLSearchParams("requested=maybe")),
+    /requested must be one of: yes, no\./,
+  );
+});
+
+/** A lookup over fixed `provider:id` sets, standing in for the route's
+ * active-request + acquisition read. */
+function stateLookup(
+  requested: string[],
+  received: string[],
+): MediaStateLookup {
+  return (d) => {
+    const key = `${d.reference.provider}:${d.reference.id}`;
+    return {
+      requested: requested.includes(key),
+      received: received.includes(key),
+    };
+  };
+}
+
+test("browseTitles keeps or drops titles by Requested/Received, AND-combined", async () => {
+  // Three movies, three scenes. Requested: movie 1, scenes 4 and 5;
+  // received: movie 1 and scene 5 (received implies requested in the app).
+  const lookup = stateLookup(
+    [`tpdb:${uuid(1)}`, `stashdb:${uuid(4)}`, `stashdb:${uuid(5)}`],
+    [`tpdb:${uuid(1)}`, `stashdb:${uuid(5)}`],
+  );
+  const cases: [Partial<BrowseQuery>, string[]][] = [
+    [
+      { requested: true },
+      [`stashdb:${uuid(4)}`, `stashdb:${uuid(5)}`, `tpdb:${uuid(1)}`],
+    ],
+    [
+      { requested: false },
+      [`stashdb:${uuid(6)}`, `tpdb:${uuid(2)}`, `tpdb:${uuid(3)}`],
+    ],
+    [{ received: true }, [`stashdb:${uuid(5)}`, `tpdb:${uuid(1)}`]],
+    [
+      { received: false },
+      [
+        `stashdb:${uuid(4)}`,
+        `stashdb:${uuid(6)}`,
+        `tpdb:${uuid(2)}`,
+        `tpdb:${uuid(3)}`,
+      ],
+    ],
+    [{ requested: true, received: false }, [`stashdb:${uuid(4)}`]],
+    [{ requested: false, received: true }, []],
+  ];
+  for (const [filter, expected] of cases) {
+    resetMetaCache();
+    await runBrowse(
+      scriptedUpstream({
+        tagRows: [],
+        moviePages: [
+          {
+            rows: [
+              tpdbRow(uuid(1), "Movie 1", "2024-03-01"),
+              tpdbRow(uuid(2), "Movie 2", "2024-02-01"),
+              tpdbRow(uuid(3), "Movie 3", "2024-01-01"),
+            ],
+            next: null,
+            total: 3,
+          },
+        ],
+        scenes: {
+          count: 3,
+          rows: [
+            stashRow(uuid(4), "Scene 4", "2023-03-01"),
+            stashRow(uuid(5), "Scene 5", "2023-02-01"),
+            stashRow(uuid(6), "Scene 6", "2023-01-01"),
+          ],
+        },
+      }),
+      async () => {
+        const page = await browseTitles(
+          planQuery({ ...filter, perPage: 10 }),
+          [],
+          [],
+          lookup,
+        );
+        assert.deepEqual(
+          page.items
+            .map((d) => `${d.reference.provider}:${d.reference.id}`)
+            .sort(),
+          expected,
+          JSON.stringify(filter),
+        );
+        assert.deepEqual(page.errors, []);
+        assert.equal(page.hasMore, false);
+      },
+    );
+  }
+});
+
+test("a Requested filter forces local filtering on a single native stream (no fast path)", async () => {
+  const run = async (
+    filter: Partial<BrowseQuery>,
+    lookup?: MediaStateLookup,
+  ): Promise<{ page: BrowsePage; sceneCalls: number }> => {
+    resetMetaCache();
+    let sceneCalls = 0;
+    let page: BrowsePage | undefined;
+    await runBrowse(
+      scriptedUpstream({
+        tagRows: [],
+        moviePages: [],
+        scenes: {
+          count: 3,
+          rows: [
+            stashRow(uuid(4), "Scene 4", "2023-03-01"),
+            stashRow(uuid(5), "Scene 5", "2023-02-01"),
+            stashRow(uuid(6), "Scene 6", "2023-01-01"),
+          ],
+        },
+        onScenesRequest: () => {
+          sceneCalls += 1;
+        },
+      }),
+      async () => {
+        page = await browseTitles(
+          planQuery({ type: "scene", perPage: 10, ...filter }),
+          [],
+          [],
+          lookup,
+        );
+      },
+    );
+    return { page: page!, sceneCalls };
+  };
+  // Baseline: no filter is the fast path — provider rows and total as-is.
+  const plain = await run({});
+  assert.equal(plain.page.items.length, 3);
+  assert.equal(plain.page.total, 3);
+  assert.equal(plain.page.totalCountKnown, true);
+  // The same lone native stream with the filter keeps only the requested row.
+  const filtered = await run(
+    { requested: true },
+    stateLookup([`stashdb:${uuid(5)}`], []),
+  );
+  assert.deepEqual(
+    filtered.page.items.map((d) => d.reference.id),
+    [uuid(5)],
+  );
+  assert.equal(filtered.page.total, 1);
+  assert.equal(filtered.sceneCalls, 1);
+});
+
+test("a Requested/Received filter without a state lookup is a caller error, never a silent pass", async () => {
+  for (const filter of [{ requested: true }, { received: false }]) {
+    await assert.rejects(
+      browseTitles(planQuery(filter), []),
+      /requested\/received needs a mediaState lookup/,
+    );
+  }
+});
+
+test("a sparse Requested filter that hits the scan ceiling is a named partial, not the hard 422", async () => {
+  let moviesCalled = 0;
+  await runBrowse(
+    scriptedUpstream({
+      tagRows: [],
+      moviePages: [
+        {
+          rows: [tpdbRow(uuid(9), "Never requested", "2024-01-01")],
+          next: "x",
+          total: 10000,
+        },
+      ],
+      scenes: { count: 0, rows: [] },
+      onMovieRequest: () => {
+        moviesCalled += 1;
+      },
+    }),
+    async () => {
+      const page = await browseTitles(
+        planQuery({ type: "movie", requested: true, perPage: 10 }),
+        [],
+        [],
+        stateLookup([], []),
+      );
+      assert.equal(moviesCalled, 40);
+      assert.deepEqual(page.items, []);
+      assert.equal(page.totalCountKnown, false);
+      assert.deepEqual(
+        page.errors.map((e) => [e.provider, e.code]),
+        [["tpdb", "scan_ceiling"]],
+      );
+    },
   );
 });

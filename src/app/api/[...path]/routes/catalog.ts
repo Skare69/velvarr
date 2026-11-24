@@ -23,6 +23,9 @@ import {
   acquisitionView,
   getContentPreferences,
   getPerformerLink,
+  intentKey,
+  listAcquisitionStates,
+  listActiveIntentKeys,
   listFollows,
   getActiveRequest,
   upsertCatalogRecord,
@@ -55,6 +58,8 @@ import {
   parseBrowseQuery,
   searchBrowseTags,
   searchVisibleCatalog,
+  type BrowseQuery,
+  type MediaStateLookup,
 } from "../../../../server/browse.ts";
 import {
   performerTags,
@@ -496,8 +501,40 @@ export async function browseRoute(
           ),
         ]
       : [];
-  const page = await browseTitles(parsedQuery, hiddenTags, starredPerformerIds);
+  const page = await browseTitles(
+    parsedQuery,
+    hiddenTags,
+    starredPerformerIds,
+    requestStateLookup(parsedQuery, ctx.account.id),
+  );
   return json({ ...page, hiddenTagCount: hiddenTags.length });
+}
+
+// The Requested/Received lookup, read once per request and only when a
+// filter is set: the card's rule (own active request OR a Velvarr
+// acquisition = requested; imported acquisition = received), on the exact
+// provider reference. Library titles added outside Velvarr stay unknown.
+function requestStateLookup(
+  query: BrowseQuery,
+  accountId: string,
+): MediaStateLookup | undefined {
+  if (query.requested === undefined && query.received === undefined) {
+    return undefined;
+  }
+  const active = listActiveIntentKeys(accountId);
+  const acquisitions = listAcquisitionStates();
+  return (d) => {
+    const key = intentKey(
+      d.reference.provider,
+      d.reference.kind,
+      d.reference.id,
+    );
+    const state = acquisitions.get(key);
+    return {
+      requested: active.has(key) || state !== undefined,
+      received: state === "imported",
+    };
+  };
 }
 
 // Tag facet lookup for the browse filter UI: provider-published tags with
