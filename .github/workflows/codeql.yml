@@ -30,4 +30,5 @@ jobs:
           queries: security-extended
       - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
-          category: /language:javascript-typescript
+          # The category must match the old /language:javascript analysis so new runs supersede it and close its alerts.
+          category: /language:javascript
