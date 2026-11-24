@@ -714,6 +714,7 @@ const ICON_PATHS = {
   discover: "m12 3 2.6 6.4L21 12l-6.4 2.6L12 21l-2.6-6.4L3 12l6.4-2.6L12 3Z",
   movie: "M4 3h16v18H4z M4 8h16M4 16h16M8 3v18M16 3v18",
   scene: "M3 5h18v14H3z m7 3 6 4-6 4V8Z",
+  studio: "M3 21V8l6 4V8l6 4V4h6v17H3Z",
   performer: "M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z M4 21v-2a8 8 0 0 1 16 0v2",
   search: "M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z m-2 5 6 6",
   requests: "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M12 7v5l3 2",

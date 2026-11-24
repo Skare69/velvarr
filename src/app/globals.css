@@ -566,6 +566,7 @@ body:has(.auth-page) {
   inset: 0 auto 0 0;
   z-index: 40;
   width: var(--sidebar-width);
+  overflow-y: auto;
   /* Top inset = (topbar height - brand 39px) / 2: the logo shares the search
      field's centre line (rule 48). */
   padding: calc((var(--topbar-height) - 39px) / 2) 16px 20px;
