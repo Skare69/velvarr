@@ -2926,13 +2926,34 @@ test("library access is bounded by grants; no path leakage; protected images", a
   );
   assert.ok((await image.arrayBuffer()).byteLength > 0);
 
+  // Every reply carries CORP, errors too (VELV-245): Chromium ORB-blocks a
+  // CORP-less JSON error into an empty opaque reply, so a same-site page's
+  // no-cors fetch resolved on 401/403/404 but rejected on the 200 image —
+  // an oracle for sign-in state and item grants.
+  const corp = (res: Response) =>
+    assert.equal(
+      res.headers.get("cross-origin-resource-policy"),
+      "same-origin",
+    );
   const deniedImage = await call("GET", `/api/images/${ITEM_SHOW}`, {
     cookie: member,
   });
+  corp(deniedImage);
   await errorShape(deniedImage, 403);
 
+  const missingImage = await call(
+    "GET",
+    "/api/images/ffffffffffffffffffffffffffffffff",
+    { cookie: member },
+  );
+  corp(missingImage);
+  await errorShape(missingImage, 404);
+
   const anonImage = await call("GET", `/api/images/${ITEM_MOVIE}`);
-  assert.equal(anonImage.status, 401);
+  corp(anonImage);
+  await errorShape(anonImage, 401);
+  // Success JSON too: CORP on errors only would flip the oracle to JSON routes.
+  corp(libs);
 });
 
 test("empty grant list never means all libraries", async () => {

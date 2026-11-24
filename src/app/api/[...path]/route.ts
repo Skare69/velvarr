@@ -84,7 +84,7 @@ function errorResponse(
 // Segments come from the request URL, not `context.params`: Next strips the
 // static `/api` prefix from a catch-all's params, so trusting params made every
 // route 404 in a real server while direct-handler tests passed.
-async function dispatch(request: Request, method: string): Promise<Response> {
+async function handle(request: Request, method: string): Promise<Response> {
   try {
     const segments = new URL(request.url).pathname
       .split("/")
@@ -126,6 +126,19 @@ async function dispatch(request: Request, method: string): Promise<Response> {
   } catch (err) {
     return errorResponse(err, method, new URL(request.url).pathname);
   }
+}
+
+// Every API reply carries CORP same-origin, errors included. SameSite=Strict
+// still sends the session cookie on a no-cors load from a same-site sibling
+// app, and Chromium ORB-blocks a JSON reply without CORP into an empty
+// opaque reply (fetch resolves) while a CORP-blocked reply rejects. With CORP
+// on only some replies, resolve-vs-reject told that page whether the visitor
+// was signed in, granted an item or staff (VELV-245); with CORP on all of
+// them every cross-origin load rejects alike.
+async function dispatch(request: Request, method: string): Promise<Response> {
+  const response = await handle(request, method);
+  response.headers.set("cross-origin-resource-policy", "same-origin");
+  return response;
 }
 
 export async function GET(request: Request): Promise<Response> {
