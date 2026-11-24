@@ -82,6 +82,7 @@ import {
   clearBrowseKeys,
   countActiveFilters,
   dateRangePatch,
+  isCommittableDate,
   performerModePatch,
   performersPatch,
   starredPatch,
@@ -457,28 +458,77 @@ function DateRange({
     (operation === "<=" || operation === "<" || operation === "=" ? date : "");
   return (
     <div className="flex items-center gap-2">
-      <input
+      <DateBound
         id={`${id}-from`}
-        type="date"
-        className="input"
-        aria-label="Released from"
+        label="Released from"
         value={from}
-        max={to || undefined}
+        max={to}
         disabled={disabled}
-        onChange={(e) => onCommit(e.target.value, to)}
+        onCommit={(v) => onCommit(v, to)}
       />
       <span className="text-sm text-muted">to</span>
-      <input
+      <DateBound
         id={`${id}-to`}
-        type="date"
-        className="input"
-        aria-label="Released to"
+        label="Released to"
         value={to}
-        min={from || undefined}
+        min={from}
         disabled={disabled}
-        onChange={(e) => onCommit(from, e.target.value)}
+        onCommit={(v) => onCommit(from, v)}
       />
     </div>
+  );
+}
+
+/** One date box of DateRange. The box shows its own draft, so a URL
+ * round trip never rewrites it mid-entry (that reset Chrome's year segment
+ * on every digit), and only a committable date reaches the URL
+ * (isCommittableDate). Leaving the box with a partial year shows the
+ * committed date again. A new committed value from outside (a removed
+ * chip, swapped bounds) replaces the draft. */
+function DateBound({
+  id,
+  label,
+  value,
+  min,
+  max,
+  disabled,
+  onCommit,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  min?: string;
+  max?: string;
+  disabled?: boolean;
+  onCommit: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  // The committed value as last rendered: the draft follows only a change
+  // of it, never a render that still carries the pre-commit value.
+  const [seen, setSeen] = useState(value);
+  if (value !== seen) {
+    setSeen(value);
+    setDraft(value);
+  }
+  return (
+    <input
+      id={id}
+      type="date"
+      className="input"
+      aria-label={label}
+      value={draft}
+      min={min || undefined}
+      max={max || undefined}
+      disabled={disabled}
+      onChange={(e) => {
+        const next = e.target.value;
+        setDraft(next);
+        if (next !== value && isCommittableDate(next)) onCommit(next);
+      }}
+      onBlur={() => {
+        if (!isCommittableDate(draft)) setDraft(value);
+      }}
+    />
   );
 }
 

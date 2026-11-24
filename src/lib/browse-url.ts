@@ -20,10 +20,12 @@ import {
   tpdbFilmographyRuns,
   type PerformerMode,
 } from "./browse-entities.ts";
-import type {
-  BrowseEntity,
-  CatalogProvider,
-  CatalogTagSelection,
+import {
+  CATALOG_YEAR_MAX,
+  CATALOG_YEAR_MIN,
+  type BrowseEntity,
+  type CatalogProvider,
+  type CatalogTagSelection,
 } from "./contracts.ts";
 
 export type BrowseType = "all" | "movie" | "scene";
@@ -336,6 +338,17 @@ export function dateRangePatch(
     };
   if (hi !== "") return { ...none, date: hi, date_operation: "<=" };
   return { ...none, date: null, date_operation: null };
+}
+
+/** Whether a native date input's value may commit to the URL: a cleared
+ * box, or a full date whose year is a catalog year. Chrome reports every
+ * keystroke in the year segment as a complete date (typing 1980 reads
+ * 0001-…, 0019-…, 0198-…), so those partial years stay in the box. */
+export function isCommittableDate(value: string): boolean {
+  if (value === "") return true;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const year = Number(value.slice(0, 4));
+  return year >= CATALOG_YEAR_MIN && year <= CATALOG_YEAR_MAX;
 }
 
 // Tab, paging and the direction/date_operation/performerMode/yearTo
