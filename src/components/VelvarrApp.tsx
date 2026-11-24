@@ -1103,6 +1103,7 @@ function Shell() {
       icon: "performer",
       group: "browse",
     },
+    // Studios and Genres share the facets view. Only the Studios directory activates this link.
     { id: "facets", label: "Studios", icon: "studio", group: "browse" },
     { id: "library", label: "Library", icon: "library", group: "manage" },
     { id: "requests", label: "Requests", icon: "requests", group: "manage" },
