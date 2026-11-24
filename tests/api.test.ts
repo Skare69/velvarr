@@ -195,6 +195,9 @@ const TPDB_MOVIE9 = "2a2b3c4d-0000-0000-0000-000000000009";
 const TPDB_MERGE_A = "2a2b3c4d-0000-0000-0e57-000000000001";
 const TPDB_MERGE_B = "2a2b3c4d-0000-0000-0e57-000000000002";
 const TPDB_MERGE_C = "2a2b3c4d-0000-0000-0e57-000000000003";
+// The library grouping test's second Jellyfin movie: its file is the one
+// Whisparr files under the primary, so the collapsed pair keeps this tile.
+const LIBRARY_TWIN_ITEM = "8".repeat(32);
 const TPDB_PERFORMER3 = "2a2b3c4d-0000-0000-0000-00000000000d";
 const TPDB_PERFORMER = "2a2b3c4d-0000-0000-0000-00000000000f";
 const TPDB_PERFORMER2 = "2a2b3c4d-0000-0000-0000-00000000000e";
@@ -1016,6 +1019,12 @@ interface InjectedMovieRow {
 
 let extraTpdbMovies: InjectedMovieRow[] = [];
 
+// While armed, the unfiltered /movies branch serves extraTpdbMovies as real
+// upstream pages: per_page-sized slices, a provider next link while rows
+// remain. Reads counts /movies hits, so a test pins the walk depth. Empty
+// outside the merged-page walk test, so every other pin keeps its fixture.
+let pagedExtraMovies: { reads: number } | undefined;
+
 const HISTORICAL_BROWSE_QUERY = "HistoricalRanges";
 const historicalBrowseId = (year: number, index: number) =>
   `b1800000-0000-0000-${year}-${String(index).padStart(12, "0")}`;
@@ -1201,6 +1210,23 @@ async function tpdbHandler(
         data: [tpdbMovieRow(amplificationMovieId(1))],
         meta: { total: 10000 },
         links: { next: "https://fixture.test/next" },
+      });
+    }
+    // Paged extra rows (merged-page walk test): slice extraTpdbMovies by
+    // the upstream paging params so a merged-away window sits on real
+    // pages. Only the unfiltered shape is paged; q-pages stay untouched.
+    if (pagedExtraMovies && url.searchParams.get("q") === null) {
+      pagedExtraMovies.reads += 1;
+      const page = Number(url.searchParams.get("page") ?? 1);
+      const per = Number(url.searchParams.get("per_page") ?? 50);
+      const start = (page - 1) * per;
+      return json(res, 200, {
+        data: extraTpdbMovies.slice(start, start + per),
+        meta: { total: 10000 },
+        links:
+          start + per < extraTpdbMovies.length
+            ? { next: `${tpdbUrl}/movies?page=${page + 1}` }
+            : {},
       });
     }
     const realTotal = url.searchParams.get("q") !== null;
@@ -5703,6 +5729,434 @@ describe("tpdb movie merge", () => {
     const res = await unmerge(admin, TPDB_MERGE_C);
     assert.equal(res.status, 404);
     assert.equal((await errorShape(res, 404)).code, "not_found");
+  });
+
+  test("a merge whose target carries dependent links is refused with dependent_merge until they are unmerged", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    let chained = false;
+    try {
+      assert.equal(
+        (await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B)).status,
+        201,
+      );
+      chained = true;
+      // A→B exists, so B→C would leave B pointing at a merged-away record:
+      // the store refuses the chain instead of silently re-pointing A.
+      const refused = await postMerge(admin, TPDB_MERGE_B, TPDB_MERGE_C);
+      assert.equal(refused.status, 400);
+      assert.equal((await errorShape(refused, 400)).code, "dependent_merge");
+
+      // Undo the dependent link; the same POST then succeeds.
+      assert.equal((await unmerge(admin, TPDB_MERGE_A)).status, 200);
+      chained = false;
+      const freed = await postMerge(admin, TPDB_MERGE_B, TPDB_MERGE_C);
+      assert.equal(freed.status, 201, await freed.clone().text());
+    } finally {
+      if (chained) await unmerge(admin, TPDB_MERGE_A);
+      await unmerge(admin, TPDB_MERGE_B);
+    }
+  });
+
+  test("a merged-away movie's pending request answers the primary's detail and blocks a duplicate filing", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    const requester = await loginAs("member");
+    const created = await call("POST", "/api/requests", {
+      cookie: requester,
+      body: { media: mergeRef(TPDB_MERGE_A) },
+    });
+    assert.equal(created.status, 201, await created.clone().text());
+    const createdBody = (await created.json()) as { request: { id: string } };
+    const requestId = createdBody.request.id;
+    let merged = false;
+    try {
+      assert.equal(
+        (await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B)).status,
+        201,
+      );
+      merged = true;
+      // The group's active intent rides the primary's detail page.
+      const detail = await call(
+        "GET",
+        `/api/catalog/tpdb/movie/${TPDB_MERGE_B}`,
+        { cookie: requester },
+      );
+      assert.equal(detail.status, 200, await detail.clone().text());
+      const detailBody = (await detail.json()) as {
+        myRequest: { decision: string } | null;
+      };
+      assert.equal(detailBody.myRequest?.decision, "pending");
+      // The same group intent refuses a second filing, from the primary.
+      const duplicate = await call("POST", "/api/requests", {
+        cookie: requester,
+        body: { media: mergeRef(TPDB_MERGE_B) },
+      });
+      assert.equal(duplicate.status, 409);
+      assert.equal((await errorShape(duplicate, 409)).code, "request_exists");
+
+      assert.equal((await unmerge(admin, TPDB_MERGE_A)).status, 200);
+      merged = false;
+      // The stored row never changed: undo reads the original id again.
+      const listed = await call("GET", "/api/requests", { cookie: requester });
+      assert.equal(listed.status, 200);
+      const rows = (await listed.json()) as {
+        requests: { id: string; media: { id: string } }[];
+      };
+      const row = rows.requests.find((r) => r.id === requestId);
+      assert.ok(row, "the request row is listed");
+      assert.equal(row.media.id, TPDB_MERGE_A);
+    } finally {
+      // Later tests pin member's request rows to exact sets: the same
+      // direct cleanup the merge requests test performs.
+      if (merged) await unmerge(admin, TPDB_MERGE_A);
+      if (requestId) dropRequests([requestId]);
+    }
+  });
+
+  test("an acquisition filed under the merged-away movie answers the primary's detail and availability", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    const requester = await loginAs("member");
+    // Whisparr + path mappings feed the acquisition's instance identity and
+    // the availability verdict; earlier merge tests leave it disconnected.
+    const saveWhisparr = await call("PATCH", "/api/admin/integrations", {
+      cookie: admin,
+      body: {
+        jellyfinUrl,
+        jellyfinExternalUrl: jellyfinUrl,
+        whisparrUrl,
+        whisparrApiKey: whisparrKey,
+        pathMappings: [
+          { whisparrPrefix: "/data/whisparr", jellyfinPrefix: "/media" },
+        ],
+      },
+    });
+    assert.equal(saveWhisparr.status, 200, await saveWhisparr.clone().text());
+    const created = await call("POST", "/api/requests", {
+      cookie: requester,
+      body: { media: mergeRef(TPDB_MERGE_A) },
+    });
+    assert.equal(created.status, 201, await created.clone().text());
+    const createdBody = (await created.json()) as { request: { id: string } };
+    const requestId = createdBody.request.id;
+    const approved = await call("PATCH", `/api/requests/${requestId}`, {
+      cookie: admin,
+      body: { decision: "approved" },
+    });
+    assert.equal(approved.status, 200, await approved.clone().text());
+    // Whisparr facts on the acquisition: the same seed the verdicts test
+    // uses, so the file-backed verdict reads real observed state.
+    const acquired = getAcquisitionByReference({
+      provider: "tpdb",
+      kind: "movie",
+      id: TPDB_MERGE_A,
+    });
+    assert.ok(acquired, "the approved request filed an acquisition");
+    recordAcquisitionObservation(acquired.id, {
+      state: "monitoring",
+      item: {
+        whisparrId: 77,
+        path: `/media/${ITEM_MOVIE}.mkv`,
+        title: "Alpha Movie",
+      },
+    });
+    let merged = false;
+    try {
+      assert.equal(
+        (await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B)).status,
+        201,
+      );
+      merged = true;
+      resetSweepCache();
+      // Detail: the group's acquisition answers the primary's page.
+      const detail = await call(
+        "GET",
+        `/api/catalog/tpdb/movie/${TPDB_MERGE_B}`,
+        { cookie: requester },
+      );
+      assert.equal(detail.status, 200, await detail.clone().text());
+      const detailBody = (await detail.json()) as {
+        acquisition: { state: string } | null;
+      };
+      assert.equal(detailBody.acquisition?.state, "monitoring");
+      // Availability: the primary reports the file-backed outcome the
+      // merged-away record carries.
+      const available = await call(
+        "GET",
+        `/api/availability/tpdb/movie/${TPDB_MERGE_B}`,
+        { cookie: requester },
+      );
+      assert.equal(available.status, 200, await available.clone().text());
+      const availableBody = (await available.json()) as {
+        outcome: string;
+        item?: { id: string };
+      };
+      assert.equal(availableBody.outcome, "available");
+      assert.equal(availableBody.item?.id, ITEM_MOVIE);
+      // Authorization stays per user: no granted libraries, no verdict.
+      fx.grants.set(NOGRANT_ID, []);
+      const denied = await call(
+        "GET",
+        `/api/availability/tpdb/movie/${TPDB_MERGE_B}`,
+        { cookie: await loginAs("nogrants") },
+      );
+      assert.equal(
+        ((await denied.json()) as { outcome: string }).outcome,
+        "denied",
+      );
+    } finally {
+      // Leave the integration state and the shared caches exactly as later
+      // tests expect them: the same disconnect the library merge test
+      // performs (the requests lifecycle test re-adds Whisparr itself).
+      if (merged) await unmerge(admin, TPDB_MERGE_A);
+      if (requestId) dropRequests([requestId]);
+      await call("PATCH", "/api/admin/integrations", {
+        cookie: admin,
+        body: {
+          jellyfinUrl,
+          jellyfinExternalUrl: jellyfinUrl,
+          whisparrUrl: "",
+        },
+      });
+    }
+  });
+
+  test("a merged-away movie's related rail never recommends either record of the pair", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    const viewer = await loginAs("member");
+    clearDiscoverCache();
+    resetMetaCache();
+    extraTpdbMovies = [tpdbMovieRow(TPDB_MERGE_A), tpdbMovieRow(TPDB_MERGE_B)];
+    let merged = false;
+    try {
+      assert.equal(
+        (await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B)).status,
+        201,
+      );
+      merged = true;
+      resetMetaCache();
+      // The merged-away address resolves before the query: the source is
+      // the primary, candidates come from the listing (which drops
+      // merged-away rows), so neither record of the pair can appear.
+      const res = await call(
+        "GET",
+        `/api/catalog/tpdb/movie/${TPDB_MERGE_A}/related`,
+        { cookie: viewer },
+      );
+      assert.equal(res.status, 200, await res.clone().text());
+      const body = (await res.json()) as {
+        items: { reference: { id: string } }[];
+      };
+      const ids = body.items.map((item) => item.reference.id);
+      assert.ok(
+        !ids.includes(TPDB_MERGE_A),
+        "the merged-away id is not a candidate",
+      );
+      assert.ok(
+        !ids.includes(TPDB_MERGE_B),
+        "the primary never rides the rail through the merged-away address",
+      );
+    } finally {
+      extraTpdbMovies = [];
+      if (merged) await unmerge(admin, TPDB_MERGE_A);
+      resetMetaCache();
+    }
+  });
+
+  test("a library page collapses a merged pair of files into the primary's tile", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    // Whisparr + path mappings feed the library catalog enrichment.
+    const saveWhisparr = await call("PATCH", "/api/admin/integrations", {
+      cookie: admin,
+      body: {
+        jellyfinUrl,
+        jellyfinExternalUrl: jellyfinUrl,
+        whisparrUrl,
+        whisparrApiKey: whisparrKey,
+        pathMappings: [
+          { whisparrPrefix: "/data/whisparr", jellyfinPrefix: "/media" },
+        ],
+      },
+    });
+    assert.equal(saveWhisparr.status, 200, await saveWhisparr.clone().text());
+    const originalEntry = whisparrMovies[0]!;
+    const originalWhisparrLength = whisparrMovies.length;
+    const originalItemsLength = fx.items.length;
+    let merged = false;
+    try {
+      // Two files, one per record of the pair: the shared file's Whisparr
+      // identity becomes the merged-away record, the twin's file is filed
+      // under the primary.
+      whisparrMovies[0] = {
+        ...originalEntry,
+        tpdbId: TPDB_MERGE_A,
+        foreignId: `tpdbId:${TPDB_MERGE_A}`,
+      };
+      whisparrMovies.push({
+        id: 412,
+        title: "Bravo Movie",
+        monitored: true,
+        path: `/data/whisparr/${LIBRARY_TWIN_ITEM}.mkv`,
+        hasFile: true,
+        movieFileId: 6,
+        sizeOnDisk: 500_000_000,
+        added: "2026-09-11T12:00:00Z",
+        tmdbId: 0,
+        tpdbId: TPDB_MERGE_B,
+        foreignId: `tpdbId:${TPDB_MERGE_B}`,
+        itemType: "movie",
+        statistics: { movieFileCount: 1, sizeOnDisk: 500_000_000 },
+      });
+      fx.items.push({
+        Id: LIBRARY_TWIN_ITEM,
+        Name: "Bravo Movie",
+        libraryId: MOVIES_LIB,
+      });
+      resetMovieListCache();
+      assert.equal(
+        (await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B)).status,
+        201,
+      );
+      merged = true;
+      resetMovieListCache();
+      const res = await call("GET", `/api/library?libraryId=${MOVIES_LIB}`, {
+        cookie: admin,
+      });
+      assert.equal(res.status, 200, await res.clone().text());
+      const page = (await res.json()) as {
+        items: {
+          id: string;
+          catalog?: { provider: string; kind: string; id: string };
+        }[];
+      };
+      // One tile for the group: the item filed under the primary wins, the
+      // merged-away record's tile is gone.
+      assert.deepEqual(
+        page.items.map((item) => item.id),
+        [LIBRARY_TWIN_ITEM],
+      );
+      assert.deepEqual(page.items[0]!.catalog, {
+        provider: "tpdb",
+        kind: "movie",
+        id: TPDB_MERGE_B,
+      });
+      // The collapsed-away file's own detail still answers, catalog
+      // resolved through the merge.
+      const collapsed = await call("GET", `/api/library/${ITEM_MOVIE}`, {
+        cookie: admin,
+      });
+      assert.equal(collapsed.status, 200, await collapsed.clone().text());
+      const collapsedBody = (await collapsed.json()) as {
+        catalog?: { id: string };
+      };
+      assert.equal(collapsedBody.catalog?.id, TPDB_MERGE_B);
+    } finally {
+      // Leave the fixture rows, the merge state and the shared collection
+      // cache exactly as later tests expect them.
+      whisparrMovies[0] = originalEntry;
+      whisparrMovies.length = originalWhisparrLength;
+      fx.items.length = originalItemsLength;
+      if (merged) await unmerge(admin, TPDB_MERGE_A);
+      resetMovieListCache();
+      await call("GET", `/api/library/${ITEM_MOVIE}`, { cookie: admin });
+      await call("PATCH", "/api/admin/integrations", {
+        cookie: admin,
+        body: {
+          jellyfinUrl,
+          jellyfinExternalUrl: jellyfinUrl,
+          whisparrUrl: "",
+        },
+      });
+    }
+  });
+
+  test("a fully merged-away upstream page walks on, and dropped rows hide the page total", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    const viewer = await loginAs("member");
+    clearDiscoverCache();
+    resetMetaCache();
+    pagedExtraMovies = { reads: 0 };
+    extraTpdbMovies = [tpdbMovieRow(TPDB_MERGE_A), tpdbMovieRow(TPDB_MERGE_B)];
+    let merged = false;
+    try {
+      assert.equal(
+        (await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B)).status,
+        201,
+      );
+      merged = true;
+      clearDiscoverCache();
+      resetMetaCache();
+      // Upstream page 1 holds only the merged-away id beside a next link:
+      // the walk fetches page 2, where the visible id lives, and the page
+      // stays honest about the totals the drops voided.
+      const res = await call("GET", "/api/browse?type=movie&perPage=1&page=1", {
+        cookie: viewer,
+      });
+      assert.equal(res.status, 200, await res.clone().text());
+      const page = (await res.json()) as {
+        items: { reference: { id: string } }[];
+        total?: number;
+        totalCountKnown: boolean;
+        hasMore: boolean;
+      };
+      assert.deepEqual(
+        page.items.map((item) => item.reference.id),
+        [TPDB_MERGE_B],
+      );
+      assert.equal(page.total, undefined);
+      assert.equal(page.totalCountKnown, false);
+      assert.equal(page.hasMore, false);
+      assert.equal(
+        pagedExtraMovies.reads,
+        2,
+        "the walk read the emptied page and the visible one, nothing more",
+      );
+
+      // Honesty on a countable page: one dropped row hides the total.
+      pagedExtraMovies = undefined;
+      clearDiscoverCache();
+      resetMetaCache();
+      const filtered = await call(
+        "GET",
+        "/api/catalog/search?provider=tpdb&kind=movie&q=Fixture",
+        { cookie: viewer },
+      );
+      assert.equal(filtered.status, 200, await filtered.clone().text());
+      const filteredBody = (await filtered.json()) as {
+        total?: number;
+        totalCountKnown: boolean;
+      };
+      assert.equal(filteredBody.total, undefined);
+      assert.equal(filteredBody.totalCountKnown, false);
+
+      // Control: the same page with no drops keeps its total.
+      assert.equal((await unmerge(admin, TPDB_MERGE_A)).status, 200);
+      merged = false;
+      clearDiscoverCache();
+      resetMetaCache();
+      const control = await call(
+        "GET",
+        "/api/catalog/search?provider=tpdb&kind=movie&q=Fixture",
+        { cookie: viewer },
+      );
+      assert.equal(control.status, 200, await control.clone().text());
+      const controlBody = (await control.json()) as {
+        total?: number;
+        totalCountKnown: boolean;
+      };
+      assert.equal(controlBody.total, 1);
+      assert.equal(controlBody.totalCountKnown, true);
+    } finally {
+      pagedExtraMovies = undefined;
+      extraTpdbMovies = [];
+      if (merged) await unmerge(admin, TPDB_MERGE_A);
+      clearDiscoverCache();
+      resetMetaCache();
+    }
   });
 });
 

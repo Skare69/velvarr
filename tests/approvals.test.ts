@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { canApproveRequest } from "../src/lib/approvals.ts";
+import { canApproveRequest, canMergeDuplicates } from "../src/lib/approvals.ts";
 import type { Account, RequestRecord } from "../src/lib/contracts.ts";
 
 const account = (over: Partial<Account>): Account =>
@@ -65,4 +65,26 @@ test("decided rows are never decidable, for staff and granted accounts alike", (
       false,
     );
   }
+});
+
+// The merge action's gate, pinned the same way: only admins and explicit
+// mergeDuplicates holders may merge, so a detail view can never offer a
+// merge the server would refuse — nor hide one it allows.
+test("only admins and mergeDuplicates holders may merge duplicates", () => {
+  assert.equal(canMergeDuplicates(account({ role: "admin" })), true);
+  assert.equal(
+    canMergeDuplicates(account({ role: "requester", mergeDuplicates: true })),
+    true,
+  );
+  // A grant-less member stays out, and the decision gate's staff shortcut
+  // must not leak here: a moderator needs the merge grant too. The grant
+  // reads as its stored value, so the negative cases pin an explicit false.
+  assert.equal(
+    canMergeDuplicates(account({ role: "requester", mergeDuplicates: false })),
+    false,
+  );
+  assert.equal(
+    canMergeDuplicates(account({ role: "moderator", mergeDuplicates: false })),
+    false,
+  );
 });

@@ -680,9 +680,12 @@ export async function relatedRoute(
       ),
     );
   }
+  // A merged-away address resolves to the primary before the rail loads, so
+  // the source identity and its exclusion set match the detail the page
+  // renders. resolveMovieReference passes non-movie references through.
   return json(
     await relatedTitles(
-      parseMediaReference(providerRaw, kindRaw, idRaw),
+      resolveMovieReference(parseMediaReference(providerRaw, kindRaw, idRaw)),
       hiddenTags,
       {
         rank: rankRaw === "jev" ? "jev" : "tags",

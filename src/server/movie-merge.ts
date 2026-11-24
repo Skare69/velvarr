@@ -1,18 +1,20 @@
-import type { Account, MediaReference } from "../lib/contracts.ts";
+import type { LibraryItem, MediaReference } from "../lib/contracts.ts";
+import { canMergeDuplicates } from "../lib/approvals.ts";
 import { AppError } from "./http.ts";
 import { getCatalogDetail } from "./providers.ts";
 import {
   clearDiscoverCache,
+  getAccount,
   getMovieMerge,
   recordMovieMerge,
   removeMovieMerge,
 } from "./storage.ts";
 
 /** The merge grant rides the account: admins always may, members only with
- * the per-account "Merge duplicates" grant (same shape as prose search). */
-export function canMergeDuplicates(account: Account): boolean {
-  return account.role === "admin" || account.mergeDuplicates;
-}
+ * the per-account "Merge duplicates" grant (same shape as prose search).
+ * One definition lives in lib/approvals.ts; this re-export keeps the
+ * server's importers on the shared gate. */
+export { canMergeDuplicates } from "../lib/approvals.ts";
 
 /** Store one Velvarr-wide merge link: `mergedId` resolves to `primaryId` at
  * read time from now on. TPDB must return both details before the link is
@@ -35,6 +37,18 @@ export async function mergeMovies(
   ]);
   if (!mergedDetail || !primaryDetail) {
     throw new AppError(404, "not_found", "Record not found on TPDB.");
+  }
+  // The grant can lapse while the two provider reads run: the ctx account is
+  // a pre-body snapshot, so a revoked grant or a demotion during the awaits
+  // must not complete a Velvarr-wide merge. Same rule as decideRequest's
+  // live actor re-read.
+  const current = getAccount(accountId);
+  if (!current || !current.enabled || !canMergeDuplicates(current)) {
+    throw new AppError(
+      403,
+      "forbidden",
+      "Duplicate merge is not turned on for this account.",
+    );
   }
   recordMovieMerge(merged, primary, accountId);
   // Cached discover rails can still show the merged-away tile; drop them so
@@ -60,4 +74,37 @@ export function resolveMovieReference(ref: MediaReference): MediaReference {
   const link = getMovieMerge(ref.id.toLowerCase());
   if (!link) return ref;
   return { ...ref, id: link.primaryId };
+}
+
+/** Read-time collapse for library surfaces: Jellyfin can hold files under two
+ * TPDB records that merged, and the page or rail would show both tiles.
+ * Items whose catalog is a TPDB movie group per resolved canonical id (the
+ * catalog id after resolveMovieReference); the item actually filed under the
+ * primary wins when present, else the first item of the group keeps the
+ * group's slot. Items without a catalog — and items cataloged to anything
+ * but a TPDB movie — pass through. */
+export function groupMergedLibraryItems(items: LibraryItem[]): LibraryItem[] {
+  const slots = new Map<string, number>();
+  const out: LibraryItem[] = [];
+  for (const item of items) {
+    const catalog = item.catalog;
+    if (
+      catalog === undefined ||
+      catalog.provider !== "tpdb" ||
+      catalog.kind !== "movie"
+    ) {
+      out.push(item);
+      continue;
+    }
+    const resolved = resolveMovieReference(catalog);
+    const key = resolved.id.toLowerCase();
+    const slot = slots.get(key);
+    if (slot === undefined) {
+      slots.set(key, out.length);
+      out.push(item);
+    } else if (catalog.id.toLowerCase() === key) {
+      out[slot] = item;
+    }
+  }
+  return out;
 }

@@ -28,6 +28,10 @@ import {
 import { AppError, shelfError, sourceError } from "../../../../server/http.ts";
 import { listRecentlyAddedItems } from "../../../../server/jellyfin.ts";
 import {
+  groupMergedLibraryItems,
+  resolveMovieReference,
+} from "../../../../server/movie-merge.ts";
+import {
   getCatalogDetail,
   listCatalogTags,
   searchCatalog,
@@ -817,10 +821,22 @@ export async function buildShelf(
             ctx.account,
             SHELF_ITEMS + MORE_PREVIEWS,
           ).then((items) =>
-            railOf(items, (it) => ({
-              name: it.name,
-              ...(it.image ? { imageUrl: it.image } : {}),
-            })),
+            railOf(
+              groupMergedLibraryItems(
+                // Resolve each catalog first so a merged-away reference
+                // groups under its primary; the tile itself reads only
+                // name/image, the grouping needs the resolved identity.
+                items.map((it) =>
+                  it.catalog === undefined
+                    ? it
+                    : { ...it, catalog: resolveMovieReference(it.catalog) },
+                ),
+              ),
+              (it) => ({
+                name: it.name,
+                ...(it.image ? { imageUrl: it.image } : {}),
+              }),
+            ),
           ),
         ]).then((r) => r[0]!),
       );

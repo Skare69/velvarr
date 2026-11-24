@@ -10,7 +10,10 @@ import {
   listLibraryItems,
 } from "../../../../server/jellyfin.ts";
 import { findWhisparrItemByPath } from "../../../../server/whisparr.ts";
-import { resolveMovieReference } from "../../../../server/movie-merge.ts";
+import {
+  groupMergedLibraryItems,
+  resolveMovieReference,
+} from "../../../../server/movie-merge.ts";
 
 export async function libraries(ctx: AuthContext): Promise<Response> {
   const views = await listLibraries(ctx.config, ctx.token);
@@ -65,13 +68,16 @@ export async function libraryPage(
     ...(sortParam === "dateAdded" ? { sort: "dateAdded" as const } : {}),
   });
   // A catalog reference merged away resolves to the primary at read time;
-  // an absent catalog stays absent.
+  // an absent catalog stays absent. A pair of files filed under records that
+  // merged collapses to one tile, preferring the primary's own file.
   return json({
     ...page,
-    items: page.items.map((it) =>
-      it.catalog === undefined
-        ? it
-        : { ...it, catalog: resolveMovieReference(it.catalog) },
+    items: groupMergedLibraryItems(
+      page.items.map((it) =>
+        it.catalog === undefined
+          ? it
+          : { ...it, catalog: resolveMovieReference(it.catalog) },
+      ),
     ),
   });
 }

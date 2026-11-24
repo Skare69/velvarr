@@ -5521,15 +5521,14 @@ test("migration 17 adds the merge grant and movie merge links to a schema 16 dat
     "22222222-2222-4222-8222-222222222222",
     owner.id,
   );
-  const link = storage.getMovieMerge(
-    "11111111-1111-4111-8111-111111111111",
-  );
+  const link = storage.getMovieMerge("11111111-1111-4111-8111-111111111111");
   assert.ok(link, "the link row is stored");
   assert.equal(link.primaryId, "22222222-2222-4222-8222-222222222222");
-  assert.equal(storage.listMovieMergesFor("22222222-2222-4222-8222-222222222222").length, 1);
-  assert.ok(
-    storage.removeMovieMerge("11111111-1111-4111-8111-111111111111"),
+  assert.equal(
+    storage.listMovieMergesFor("22222222-2222-4222-8222-222222222222").length,
+    1,
   );
+  assert.ok(storage.removeMovieMerge("11111111-1111-4111-8111-111111111111"));
   assert.equal(
     storage.getMovieMerge("11111111-1111-4111-8111-111111111111"),
     null,

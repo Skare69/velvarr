@@ -1073,6 +1073,9 @@ export interface CatalogSearchPage {
 
 const DEFAULT_PER_PAGE = 24;
 const TPDB_FAKE_TOTAL = 10000;
+// Merged rows must not strand later visible pages: the most extra upstream
+// fetches one searchCatalog call may spend walking past an emptied page.
+const MERGE_PAGE_WALKS = 5;
 
 function cleanQueryTerm(v: unknown): string | undefined {
   return cleanString(v, 200);
@@ -1301,6 +1304,65 @@ function tpdbQuery(base: Record<string, string | number | undefined>): string {
   }
   const qs = params.toString();
   return qs === "" ? "" : `?${qs}`;
+}
+
+/** Serve a TPDB movie listing with merged-away rows removed. A page the
+ * filter empties must not strand later visible titles: walk the following
+ * upstream pages, at most MERGE_PAGE_WALKS extra fetches per call, and stop
+ * early when upstream runs out. The served page echoes the requested page;
+ * hasMore comes from the last fetch. Any dropped row hides the upstream
+ * total, which still counts the removed records. */
+async function servedTpdbMoviePage(
+  parsed: CatalogSearchPage,
+  requestedPage: number,
+  perPage: number,
+  fetchPage: (page: number) => Promise<TpdbListBody>,
+  map: (row: unknown) => CatalogDetail | undefined,
+): Promise<CatalogSearchPage> {
+  const mergedIds = mergedMovieIdSet();
+  let current = parsed;
+  let fetchedPage = requestedPage;
+  const items: CatalogDetail[] = [];
+  let dropped = 0;
+  for (;;) {
+    const kept = current.items.filter(
+      (d) => !mergedIds.has(d.reference.id.toLowerCase()),
+    );
+    const droppedHere = current.items.length - kept.length;
+    dropped += droppedHere;
+    items.push(...kept);
+    if (
+      items.length > 0 ||
+      // An empty pass the merge filter did not cause (unreadable rows, an
+      // upstream page with no rows) must not walk: the bulk scan's stop
+      // contract reads it as the end of readable titles.
+      droppedHere === 0 ||
+      !current.hasMore ||
+      fetchedPage - requestedPage >= MERGE_PAGE_WALKS
+    ) {
+      break;
+    }
+    fetchedPage += 1;
+    current = parseTpdbPage(
+      "movie",
+      await fetchPage(fetchedPage),
+      map,
+      fetchedPage,
+      perPage,
+    );
+  }
+  if (dropped === 0 && fetchedPage === requestedPage) return parsed;
+  const total = dropped === 0 ? current.total : undefined;
+  return {
+    provider: "tpdb",
+    kind: "movie",
+    page: requestedPage,
+    perPage,
+    hasMore: current.hasMore,
+    ...(total !== undefined ? { total } : {}),
+    totalCountKnown: total !== undefined,
+    items,
+  };
 }
 
 /** Paged catalog search. Never merges results across providers; every item is
@@ -1539,9 +1601,11 @@ export async function searchCatalog(
         "TPDB filmography paging cannot be combined with studio, tag, or sort filters.",
       );
       const id = requireTpdbPerformerId(query.performer);
-      const body = await tpdbGet<TpdbListBody>(
-        `/performers/${id}/${query.kind}s${tpdbQuery({ page, per_page: perPage })}`,
-      );
+      const fetchPage = (n: number) =>
+        tpdbGet<TpdbListBody>(
+          `/performers/${id}/${query.kind}s${tpdbQuery({ page: n, per_page: perPage })}`,
+        );
+      const body = await fetchPage(page);
       const parsed = parseTpdbPage(
         query.kind,
         body,
@@ -1553,9 +1617,10 @@ export async function searchCatalog(
         // Merged-away TPDB movies vanish from every listing, filmographies
         // included; the primary still appears because both records exist
         // upstream. Detail resolution happens in the route, never here.
-        const mergedIds = mergedMovieIdSet();
-        parsed.items = parsed.items.filter(
-          (d) => !mergedIds.has(d.reference.id.toLowerCase()),
+        // A page they empty walks forward (bounded) so later visible titles
+        // stay reachable, and any dropped row hides the upstream total.
+        return servedTpdbMoviePage(parsed, page, perPage, fetchPage, (row) =>
+          tpdbMediaDetail("movie", row, recordTagPair),
         );
       }
       return parsed;
@@ -1592,7 +1657,7 @@ export async function searchCatalog(
         `year must be a calendar year between ${CATALOG_YEAR_MIN} and ${CATALOG_YEAR_MAX}.`,
       );
     }
-    const path = tpdbQuery({
+    const tpdbParams = {
       q: cleanQueryTerm(query.query),
       year: query.year,
       date: releaseDate?.cutoff,
@@ -1603,10 +1668,14 @@ export async function searchCatalog(
       orderBy: sort?.upstream,
       page,
       per_page: perPage,
-    });
-    const body = await tpdbGet<TpdbListBody>(
-      query.kind === "movie" ? `/movies${path}` : `/scenes${path}`,
-    );
+    };
+    const fetchPage = (n: number) =>
+      tpdbGet<TpdbListBody>(
+        query.kind === "movie"
+          ? `/movies${tpdbQuery({ ...tpdbParams, page: n })}`
+          : `/scenes${tpdbQuery({ ...tpdbParams, page: n })}`,
+      );
+    const body = await fetchPage(page);
     const result = parseTpdbPage(
       query.kind,
       body,
@@ -1616,11 +1685,16 @@ export async function searchCatalog(
     );
     if (query.kind === "movie") {
       // Same listing rule as the filmography branch above: one set read per
-      // page, filtered after dedupe; the scene path stays byte-identical.
-      const mergedIds = mergedMovieIdSet();
-      result.items = result.items.filter(
-        (d) => !mergedIds.has(d.reference.id.toLowerCase()),
+      // call, filtered after dedupe, with a bounded forward walk when the
+      // filter empties the whole page; the scene path stays byte-identical.
+      const served = await servedTpdbMoviePage(
+        result,
+        page,
+        perPage,
+        fetchPage,
+        (row) => tpdbMediaDetail("movie", row, recordTagPair),
       );
+      return sort !== undefined ? { ...served, sort } : served;
     }
     return sort !== undefined ? { ...result, sort } : result;
   }

@@ -11,6 +11,7 @@ import {
   getContentPreferences,
   hasAuthoritativeAbsence,
   isObservationStale,
+  movieMergeGroupIds,
 } from "../../../../server/storage.ts";
 import { AppError, shelfError } from "../../../../server/http.ts";
 import { resolvePlaybackAccess } from "../../../../server/jellyfin.ts";
@@ -64,8 +65,11 @@ export async function availability(
 ): Promise<Response> {
   const media = parseMediaReference(providerRaw, kindRaw, idRaw);
   const acquisition = getAcquisitionByReference(media);
+  // The acquisition lookup is already merge-group aware; the folder hint is
+  // not. Whisparr may hold the twin under the merged-away id, so walk the
+  // group (own id first) and keep the first folder found.
   const whisparrPath =
-    acquisition?.whisparrPath ?? (await whisparrFolderOf(ctx, media));
+    acquisition?.whisparrPath ?? (await mergedWhisparrFolder(ctx, media));
   const verdict = await resolvePlaybackAccess(
     ctx.config,
     ctx.token,
@@ -142,6 +146,21 @@ async function whisparrFolderOf(
   } finally {
     clearTimeout(hintTimer);
   }
+}
+
+/** First Whisparr folder across the movie's merge group, own id first. For
+ * an unmerged or non-movie reference the group is the id itself, so this is
+ * the plain single lookup. A candidate without a folder falls through to
+ * the next; an empty walk yields undefined, as before. */
+async function mergedWhisparrFolder(
+  ctx: AuthContext,
+  media: MediaReference,
+): Promise<string | undefined> {
+  for (const id of movieMergeGroupIds(media.provider, media.kind, media.id)) {
+    const folder = await whisparrFolderOf(ctx, { ...media, id });
+    if (folder) return folder;
+  }
+  return undefined;
 }
 
 // Real provider verification for the admin UI: configured:false stays

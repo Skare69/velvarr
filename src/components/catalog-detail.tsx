@@ -588,7 +588,11 @@ export function DetailSections({
     <>
       {d.reference.provider === "tpdb" && d.reference.kind === "movie" && (
         <>
-          <MovieDuplicates key={d.reference.id} movie={d} />
+          <MovieDuplicates
+            key={d.reference.id}
+            movie={d}
+            onRefetch={onRetryLink}
+          />
           <MergedMovies movie={d} onRefetch={onRetryLink} />
         </>
       )}

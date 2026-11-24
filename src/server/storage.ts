@@ -242,7 +242,6 @@ type Statements = {
   capDiscoverCache: StatementSync;
   clearDiscoverCache: StatementSync;
   insertMovieMerge: StatementSync;
-  repointMovieMerges: StatementSync;
   deleteMovieMerge: StatementSync;
   getMovieMerge: StatementSync;
   listMovieMergesForPrimary: StatementSync;
@@ -961,11 +960,6 @@ function S(): Statements {
       clearDiscoverCache: d.prepare("DELETE FROM discover_cache"),
       insertMovieMerge: d.prepare(
         "INSERT INTO movie_merges (merged_id, primary_id, created_by, created_at) VALUES (?, ?, ?, ?)",
-      ),
-      // A merged-away id that was itself a primary re-points its rows to the
-      // new primary, so no row ever chains.
-      repointMovieMerges: d.prepare(
-        "UPDATE movie_merges SET primary_id = ? WHERE primary_id = ?",
       ),
       deleteMovieMerge: d.prepare(
         "DELETE FROM movie_merges WHERE merged_id = ?",
@@ -1909,6 +1903,24 @@ export function createRequest(
         `You have ${OPEN_REQUEST_CAP} requests waiting for a decision. Wait until some are decided, then request more.`,
       );
     }
+    // One active intent per movie merge group: a request stored under any
+    // group id counts, so the 409 fires whichever spelling the caller uses.
+    // The unique-index catch below stays as the backstop.
+    for (const groupId of movieMergeGroupIds(
+      media.provider,
+      media.kind,
+      externalId,
+    )) {
+      if (
+        S().getActiveRequest.get(accountId, media.provider, media.kind, groupId)
+      ) {
+        throw new AppError(
+          409,
+          "request_exists",
+          "an active request for this item already exists",
+        );
+      }
+    }
     const id = randomUUID();
     const now = Date.now();
     try {
@@ -2851,18 +2863,33 @@ export function countDecidablePending(viewer: Account): number {
 }
 
 /** The account's own active (pending or approved) request for this media, or
- * null. At most one exists: requests_active_intent is unique. */
+ * null. Requests live under whichever merge-group id was stored, so the
+ * lookup walks the group, own id first; requests_active_intent is unique,
+ * so each id holds at most one. */
 export function getActiveRequest(
   accountId: string,
   media: MediaReference,
 ): RequestRecord | null {
   assertMediaReference(media);
-  const row = S().getActiveRequest.get(
+  const own = media.id.toLowerCase();
+  let row = S().getActiveRequest.get(
     accountId,
     media.provider,
     media.kind,
-    media.id,
+    own,
   ) as RequestRow | undefined;
+  if (!row) {
+    for (const groupId of movieMergeGroupIds(media.provider, media.kind, own)) {
+      if (groupId === own) continue;
+      row = S().getActiveRequest.get(
+        accountId,
+        media.provider,
+        media.kind,
+        groupId,
+      ) as RequestRow | undefined;
+      if (row) break;
+    }
+  }
   return row ? rowToRequest(row) : null;
 }
 
@@ -3049,7 +3076,8 @@ export function cancelRequest(
 }
 
 /** Shared acquisition for one identity on the configured instance, or null.
- * Carries no per-user request history. */
+ * Carries no per-user request history. Acquisitions live under whichever
+ * merge-group id was stored, so the lookup walks the group, own id first. */
 export function getAcquisitionByReference(
   media: MediaReference,
   instanceId?: string,
@@ -3059,13 +3087,27 @@ export function getAcquisitionByReference(
   if (!instance) return null;
   // Active ids are lowercase (createRequest folds; migration 16 folded old
   // rows, except an active case-collision pair): fold the lookup so a
-  // mixed-case reference still resolves the row.
-  const row = S().getAcquisitionByIdentity.get(
+  // mixed-case reference still resolves the row, and walk the movie merge
+  // group so an acquisition stored under any group id answers.
+  const own = media.id.toLowerCase();
+  let row = S().getAcquisitionByIdentity.get(
     instance,
     media.provider,
     media.kind,
-    media.id.toLowerCase(),
+    own,
   ) as AcquisitionRow | undefined;
+  if (!row) {
+    for (const groupId of movieMergeGroupIds(media.provider, media.kind, own)) {
+      if (groupId === own) continue;
+      row = S().getAcquisitionByIdentity.get(
+        instance,
+        media.provider,
+        media.kind,
+        groupId,
+      ) as AcquisitionRow | undefined;
+      if (row) break;
+    }
+  }
   return row ? rowToAcquisition(row) : null;
 }
 
@@ -3399,10 +3441,11 @@ export function recoverAbandonedWork(): void {
 // one indexed lookup per read, no cycle guard.
 
 /** Links `mergedId` into `primaryId` Velvarr-wide. Refuses a self merge, a
- *  record that is already merged away, and a target that is itself merged
- *  away (no chains). When the merged-away id was itself the primary of
- *  existing rows, those rows re-point to the new primary in the same
- *  transaction. */
+ *  record that is already merged away, a target that is itself merged away
+ *  (no chains), and a dependent merge: when the merged-away id is itself the
+ *  primary of existing links, those links would be left pointing at a
+ *  merged-away record, so the call fails with 400 `dependent_merge` until
+ *  they are unmerged. */
 export function recordMovieMerge(
   mergedId: string,
   primaryId: string,
@@ -3429,7 +3472,13 @@ export function recordMovieMerge(
         "The target record is itself merged away; undo that merge first.",
       );
     }
-    S().repointMovieMerges.run(primary, merged);
+    if (listMovieMergesFor(merged).length > 0) {
+      throw new AppError(
+        400,
+        "dependent_merge",
+        "Other records are merged into this one; unmerge them first.",
+      );
+    }
     S().insertMovieMerge.run(merged, primary, createdBy, Date.now());
   });
 }
@@ -3472,6 +3521,27 @@ export function listMovieMergesFor(primaryId: string): string[] {
       merged_id: string;
     }[]
   ).map((row) => row.merged_id);
+}
+
+/** The folded ids of one identity's full merge group, including the input
+ *  id. For a tpdb movie the group is the record's primary plus everything
+ *  merged into that primary (a merged-away input is covered through its
+ *  link); every other provider and kind is a group of one. Requests and
+ *  acquisitions are stored under whichever group id was live at write
+ *  time, so identity lookups walk this list. */
+export function movieMergeGroupIds(
+  provider: string,
+  kind: string,
+  id: string,
+): string[] {
+  const folded = id.toLowerCase();
+  if (provider !== "tpdb" || kind !== "movie") return [folded];
+  const link = getMovieMerge(folded);
+  if (link) {
+    const group = [link.primaryId, ...listMovieMergesFor(link.primaryId)];
+    return [...new Set(group)];
+  }
+  return [folded, ...listMovieMergesFor(folded)];
 }
 
 /** Every merged-away id, lowercase. The table holds one row per user merge,
