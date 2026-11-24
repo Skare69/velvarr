@@ -1494,6 +1494,17 @@ export function TitlesView() {
     void load(1, "reset");
   }, [load, reload]);
 
+  // A request-state filter's answer moves when a request lands (a card or
+  // Request all): the loaded rows go stale, and the next page's offset
+  // would count over the new state and skip titles. Reload from page 1;
+  // the Request all plan and its result line stay, unlike a filter change.
+  useEffect(() => {
+    if (!requested && !received) return;
+    const restart = () => void load(1, "reset");
+    window.addEventListener(REQUESTS_CHANGED, restart);
+    return () => window.removeEventListener(REQUESTS_CHANGED, restart);
+  }, [load, requested, received]);
+
   const [sentinelRef, nearEnd] = useNearEnd(
     acc !== null && acc.items.length > 0,
   );

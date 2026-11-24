@@ -105,7 +105,18 @@ const updateDiscord = () => {
 };
 const heldConfig = new Set(),
   heldPatch = new Set(),
-  heldProbe = new Set();
+  heldProbe = new Set(),
+  heldBrowse = new Set();
+// One synthetic TPDB movie row for the browse grid and its card check.
+const browseDetail = (t) => ({
+  reference: { provider: "tpdb", kind: "movie", id: t.id },
+  title: t.title,
+  credits: [],
+  tags: [],
+  related: [],
+  links: [],
+  aliases: [],
+});
 const release = (pending) => {
   for (const resolve of pending) resolve();
   pending.clear();
@@ -141,6 +152,7 @@ const server = http.createServer(async (req, res) => {
         release(heldConfig);
         release(heldPatch);
         release(heldProbe);
+        release(heldBrowse);
       }
       if (update.config) config = update.config;
       Object.assign(mode, update);
@@ -148,6 +160,7 @@ const server = http.createServer(async (req, res) => {
       if (!mode.holdConfig) release(heldConfig);
       if (!mode.holdPatch) release(heldPatch);
       if (!mode.holdProbe) release(heldProbe);
+      if (!mode.holdBrowseMore) release(heldBrowse);
     }
     return json(res, 200, { mode, config, requests });
   }
@@ -201,7 +214,57 @@ const server = http.createServer(async (req, res) => {
         latestVersion: "0.41.0",
         updateAvailable: false,
       });
+    if (path === "/api/requests" && req.method === "POST" && mode.browse) {
+      // Browse request-state fixture: a filed request moves the title's
+      // requested state for the next /api/browse read.
+      const id = request.body.media.id;
+      mode.browse.requested = [...(mode.browse.requested ?? []), id];
+      return json(res, 201, {
+        request: { id: `request-${id}`, decision: "pending", createdAt: 0 },
+      });
+    }
     if (path === "/api/requests") return json(res, 200, { requests: [] });
+    if (path === "/api/browse" && mode.browse) {
+      const url = new URL(req.url, "http://127.0.0.1");
+      const n = Number(url.searchParams.get("page") || 1);
+      // A held later page lets a test act between two pages.
+      if (n > 1 && mode.holdBrowseMore) await hold(heldBrowse);
+      const requested = new Set(mode.browse.requested ?? []);
+      const filter = url.searchParams.get("requested");
+      const matching = mode.browse.titles.filter(
+        (t) => filter === null || requested.has(t.id) === (filter === "yes"),
+      );
+      const size = mode.browse.pageSize;
+      return json(res, 200, {
+        items: matching
+          .slice((n - 1) * size, n * size)
+          .map((t) => browseDetail(t)),
+        page: n,
+        perPage: size,
+        hasMore: n * size < matching.length,
+        totalCountKnown: false,
+        errors: [],
+        notices: [],
+        hiddenTagCount: 0,
+      });
+    }
+    if (path.startsWith("/api/catalog/tpdb/movie/") && mode.browse) {
+      const id = path.split("/").pop();
+      const title = mode.browse.titles.find((t) => t.id === id);
+      if (!title) return error(res, 404, "Unknown browse title.");
+      const mine = (mode.browse.requested ?? []).includes(id);
+      return json(res, 200, {
+        detail: browseDetail(title),
+        link: null,
+        catalogRecord: null,
+        myRequest: mine
+          ? { id: `request-${id}`, decision: "pending", createdAt: 0 }
+          : null,
+        acquisition: null,
+      });
+    }
+    if (path.startsWith("/api/availability/") && mode.browse)
+      return json(res, 200, { outcome: "missing" });
     if (path === "/api/libraries")
       return json(res, 200, {
         libraries: [{ id: "review-library", name: "Review library" }],
@@ -556,6 +619,7 @@ function stop() {
   release(heldConfig);
   release(heldPatch);
   release(heldProbe);
+  release(heldBrowse);
   server.closeAllConnections();
   server.close();
   app.kill("SIGTERM");
