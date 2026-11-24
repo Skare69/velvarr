@@ -11,7 +11,7 @@ import {
   typePatch,
   yearRangePatch,
   dateRangePatch,
-  isCommittableDate,
+  isCompleteDateEntry,
   type BrowseEntryState,
 } from "../src/lib/browse-url.ts";
 import { browseSortsFor, SORT_KEYS } from "../src/lib/sorts.ts";
@@ -502,24 +502,21 @@ test("yearRangePatch writes the pair, deletes an absent or repeated upper bound,
   });
 });
 
-test("isCommittableDate holds back the partial years Chrome reports while a year is typed", () => {
+test("isCompleteDateEntry holds back the zero-padded years Chrome reports while a year is typed", () => {
   // Chrome's date input reports each digit typed into the year segment as
-  // a full date: typing 1980 reads 0001, 0019, 0198, then 1980. Only the
-  // last one may reach the URL; committing the others reset the segment.
+  // a full date: typing 1980 reads 0001, 0019, 0198, then 1980. Committing
+  // the padded ones reset the segment, so they wait for the box's blur.
   assert.deepEqual(
     ["0001-12-31", "0019-12-31", "0198-12-31", "1980-12-31"].map(
-      isCommittableDate,
+      isCompleteDateEntry,
     ),
     [false, false, false, true],
   );
-  // A cleared box commits (it removes the bound).
-  assert.equal(isCommittableDate(""), true);
-  // The catalog year bounds, both included; Chrome allows 6-digit years.
-  assert.equal(isCommittableDate(`${CATALOG_YEAR_MIN}-01-01`), true);
-  assert.equal(isCommittableDate(`${CATALOG_YEAR_MAX}-12-31`), true);
-  assert.equal(isCommittableDate(`${CATALOG_YEAR_MIN - 1}-12-31`), false);
-  assert.equal(isCommittableDate(`${CATALOG_YEAR_MAX + 1}-01-01`), false);
-  assert.equal(isCommittableDate("21980-03-11"), false);
+  // A cleared box is complete (it removes the bound).
+  assert.equal(isCompleteDateEntry(""), true);
+  // No catalog range: dates the server takes outside 1900-2100 commit too.
+  for (const d of ["1896-01-01", "1899-12-31", "2101-01-01", "21980-03-11"])
+    assert.equal(isCompleteDateEntry(d), true, d);
 });
 
 test("dateRangePatch writes the range on the existing date keys and drops a year window", () => {

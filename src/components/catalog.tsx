@@ -82,7 +82,7 @@ import {
   clearBrowseKeys,
   countActiveFilters,
   dateRangePatch,
-  isCommittableDate,
+  isCompleteDateEntry,
   performerModePatch,
   performersPatch,
   starredPatch,
@@ -481,10 +481,10 @@ function DateRange({
 
 /** One date box of DateRange. The box shows its own draft, so a URL
  * round trip never rewrites it mid-entry (that reset Chrome's year segment
- * on every digit), and only a committable date reaches the URL
- * (isCommittableDate). Leaving the box with a partial year shows the
- * committed date again. A new committed value from outside (a removed
- * chip, swapped bounds) replaces the draft. */
+ * on every digit). While the user types, only a complete entry reaches
+ * the URL (isCompleteDateEntry); leaving the box commits whatever date it
+ * holds, so every date the box accepts stays reachable. A new committed
+ * value from outside (a removed chip, swapped bounds) replaces the draft. */
 function DateBound({
   id,
   label,
@@ -523,10 +523,10 @@ function DateBound({
       onChange={(e) => {
         const next = e.target.value;
         setDraft(next);
-        if (next !== value && isCommittableDate(next)) onCommit(next);
+        if (next !== value && isCompleteDateEntry(next)) onCommit(next);
       }}
       onBlur={() => {
-        if (!isCommittableDate(draft)) setDraft(value);
+        if (draft !== value) onCommit(draft);
       }}
     />
   );
