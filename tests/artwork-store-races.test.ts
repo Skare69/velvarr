@@ -348,3 +348,46 @@ test("artwork index: only a trimmed lowercase SHA-256 can select a matching vari
     ),
   );
 });
+
+test("artwork cache: Windows timestamp access preserves disk hits", (t) => {
+  const cache = fixture(t);
+  const indexMtime = snapshot(cache.index).mtimeMs;
+  const variantMtime = snapshot(cache.variant).mtimeMs;
+  const readOnly = new Set<number>();
+  const trackedOpen = fs.openSync;
+  t.mock.method(
+    fs,
+    "openSync",
+    (file: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+      const fd = trackedOpen(file, flags, mode);
+      if (flags === "r") readOnly.add(fd);
+      else readOnly.delete(fd);
+      return fd;
+    },
+  );
+  t.mock.method(
+    fs,
+    "futimesSync",
+    (...args: Parameters<typeof fs.futimesSync>) => {
+      // Windows SetFileTime requires write access to file attributes.
+      if (readOnly.has(args[0])) {
+        throw Object.assign(new Error("FILE_WRITE_ATTRIBUTES required"), {
+          code: "EPERM",
+        });
+      }
+      return real.futimesSync(...args);
+    },
+  );
+  syncBuiltinESMExports();
+
+  const hit = lookupArtworkVariant(cache.url, 200);
+  assert.equal(
+    hit?.hash,
+    hash,
+    "a Windows timestamp update must preserve the disk hit",
+  );
+  assert.deepEqual(hit?.bytes, bytes);
+  assert.ok(snapshot(cache.index).mtimeMs > indexMtime);
+  assert.ok(snapshot(cache.variant).mtimeMs > variantMtime);
+  cache.assertClosed();
+});

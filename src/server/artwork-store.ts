@@ -102,7 +102,8 @@ function withFreshFile<T>(
   read: (fd: number) => T | null,
 ): T | null {
   try {
-    const fd = openSync(file, "r");
+    // Windows requires write access to attributes for descriptor timestamps.
+    const fd = openSync(file, "r+");
     try {
       const st = fstatSync(fd);
       // The sweep owns removal; a read must not unlink a replacement path.
