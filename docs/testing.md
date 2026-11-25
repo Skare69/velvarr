@@ -112,6 +112,11 @@ It checks that the JSON report survives both owner exits.
 Before the fix, its `TEMP` case failed with
 `AssertionError [ERR_ASSERTION]: JSON report must survive owner exit`.
 
+The delta wrapper creates its executable config in a separate, private temporary
+directory. It creates the file exclusively with owner-only permissions. The wrapper
+removes only that directory after the child exits, or if the config write fails.
+Its security tests check permissions and preserve a planted symlink and its target.
+
 ### Delta gate repair over v0.44.0
 
 The failed release check reported

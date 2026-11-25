@@ -8,7 +8,7 @@
 // (browse.ts, related.ts) that only the full gate's whole denominator
 // prices in. No changed file under the globs means nothing to run.
 
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
@@ -133,14 +133,15 @@ for (const name of targets) console.log(`  ${name}`);
 // A generated config file carries the patterns and the report-only
 // thresholds; it imports the repo config, so the runner options stay
 // single-sourced.
-const deltaConfigPath = join(
-  mutationTempBase,
-  `velvarr-stryker-delta-${process.pid}.mjs`,
+const deltaConfigDir = mkdtempSync(
+  join(mutationTempBase, "velvarr-stryker-delta-"),
 );
+const deltaConfigPath = join(deltaConfigDir, "delta.mjs");
 const repoConfigUrl = new URL("../stryker.config.mjs", import.meta.url);
-writeFileSync(
-  deltaConfigPath,
-  `import base from "${repoConfigUrl.href}";
+try {
+  writeFileSync(
+    deltaConfigPath,
+    `import base from "${repoConfigUrl.href}";
 const deltaConfig = {
   ...base,
   mutate: ${JSON.stringify(patterns)},
@@ -148,8 +149,8 @@ const deltaConfig = {
 };
 export default deltaConfig;
 `,
-);
-try {
+    { flag: "wx", mode: 0o600 },
+  );
   const childEnv = {
     ...process.env,
     TMPDIR: mutationTempBase,
@@ -164,5 +165,5 @@ try {
   });
   process.exitCode = run.status ?? 1;
 } finally {
-  rmSync(deltaConfigPath, { force: true });
+  rmSync(deltaConfigDir, { recursive: true, force: true });
 }

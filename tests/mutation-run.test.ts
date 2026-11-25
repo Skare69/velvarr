@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -244,3 +245,182 @@ for (const lookup of ["TMPDIR", "TEMP"]) {
     });
   });
 }
+
+function runDeltaSecurity(
+  t: TestContext,
+  { status = 0, symlink = false, failWrite = false } = {},
+) {
+  const { base, inheritedFile } = fixture(t);
+  const metadata = join(base, "security.json");
+  const loaded = join(base, "loaded.json");
+  const sentinel = join(base, "sentinel");
+  writeFileSync(sentinel, "sentinel data");
+  const configOwner = `
+    import { writeFileSync } from "node:fs";
+    import { pathToFileURL } from "node:url";
+    // The child loads the runtime-selected generated config.
+    const config = (await import(pathToFileURL(process.argv[1]).href)).default;
+    writeFileSync(process.argv[2], JSON.stringify({
+      mutate: config.mutate,
+      break: config.thresholds.break,
+    }));
+    process.exit(Number(process.argv[3]));
+  `;
+  const wrapperOwner = `
+    import cp from "node:child_process";
+    import fs from "node:fs";
+    import os from "node:os";
+    import { dirname, join } from "node:path";
+    import { syncBuiltinESMExports } from "node:module";
+    const [wrapper, base, metadata, loaded, status, symlink, failWrite] = process.argv.slice(1);
+    const spawnSync = cp.spawnSync;
+    const writeFileSync = fs.writeFileSync;
+    const mkdtempSync = fs.mkdtempSync;
+    const legacyPath = join(base, "velvarr-stryker-delta-" + process.pid + ".mjs");
+    const peer = join(base, "velvarr-stryker-delta-peer");
+    fs.mkdirSync(peer);
+    writeFileSync(join(peer, "keep"), "peer data");
+    if (symlink === "true") fs.symlinkSync(join(base, "sentinel"), legacyPath);
+    process.umask(0);
+    os.tmpdir = () => base;
+    const observation = { legacyPath, peer, owned: [], called: false };
+    const save = () => writeFileSync(metadata, JSON.stringify(observation));
+    save();
+    fs.mkdtempSync = (prefix, ...args) => {
+      const directory = mkdtempSync(prefix, ...args);
+      if (String(prefix).startsWith(join(base, "velvarr-stryker-delta-"))) {
+        observation.owned.push(directory);
+        save();
+      }
+      return directory;
+    };
+    fs.writeFileSync = (file, ...args) => {
+      if (failWrite === "true" && (
+        String(file).endsWith("/delta.mjs") ||
+        String(file).endsWith("\\\\delta.mjs") ||
+        String(file) === legacyPath
+      )) throw new Error("fixture config write denied");
+      return writeFileSync(file, ...args);
+    };
+    cp.spawnSync = (command, args, options) => {
+      if (command === "git") {
+        if (args[0] === "describe") return { status: 0, stdout: "v0.44.0\\n" };
+        if (args[0] === "diff") return { status: 0, stdout: "src/lib/discord-settings.ts\\n" };
+      }
+      if (command !== "stryker") throw new Error("Unexpected fixture command: " + command);
+      observation.called = true;
+      observation.config = args[1];
+      observation.directoryMode = fs.statSync(dirname(args[1])).mode & 0o777;
+      observation.fileMode = fs.statSync(args[1]).mode & 0o777;
+      save();
+      return spawnSync(process.execPath, [
+        "--input-type=module", "--eval", ${JSON.stringify(configOwner)},
+        args[1], loaded, status,
+      ], { env: options.env, stdio: "inherit" });
+    };
+    syncBuiltinESMExports();
+    // Install the fixtures before the wrapper imports its config.
+    await import(wrapper);
+  `;
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      wrapperOwner,
+      new URL("../scripts/mutation-delta.mjs", import.meta.url).href,
+      base,
+      metadata,
+      loaded,
+      String(status),
+      String(symlink),
+      String(failWrite),
+    ],
+    {
+      env: { ...process.env, TMPDIR: base, TEMP: base, TMP: base },
+      encoding: "utf8",
+    },
+  );
+  const observation = JSON.parse(readFileSync(metadata, "utf8")) as {
+    legacyPath: string;
+    peer: string;
+    owned: string[];
+    called: boolean;
+    config?: string;
+    directoryMode?: number;
+    fileMode?: number;
+  };
+  return { result, observation, sentinel, inheritedFile, loaded };
+}
+
+for (const status of [0, 17]) {
+  test(`delta config stays private and cleans its directory after status ${status}`, (t) => {
+    const { result, observation, inheritedFile, loaded } = runDeltaSecurity(t, {
+      status,
+    });
+    assert.equal(result.signal, null, result.stderr);
+    assert.equal(result.status, status, result.stderr);
+    assert.equal(observation.called, true);
+    assert.deepEqual(JSON.parse(readFileSync(loaded, "utf8")), {
+      mutate: ["src/lib/discord-settings.ts"],
+      break: null,
+    });
+    assert.equal(observation.owned.length, 1);
+    const directory = observation.owned[0];
+    assert.ok(directory);
+    assert.ok(observation.config);
+    assert.equal(dirname(observation.config), directory);
+    if (process.platform !== "win32") {
+      assert.equal(observation.directoryMode! & 0o077, 0);
+      assert.equal(observation.fileMode, 0o600);
+    }
+    assert.equal(existsSync(directory), false);
+    assert.equal(
+      readFileSync(join(observation.peer, "keep"), "utf8"),
+      "peer data",
+    );
+    assert.equal(readFileSync(inheritedFile, "utf8"), "inherited data");
+  });
+}
+
+test(
+  "delta config preserves a planted legacy symlink and its sentinel",
+  { skip: process.platform === "win32" },
+  (t) => {
+    const { result, observation, sentinel } = runDeltaSecurity(t, {
+      symlink: true,
+    });
+    assert.equal(
+      readFileSync(sentinel, "utf8"),
+      "sentinel data",
+      "the generated config must not overwrite the symlink target",
+    );
+    assert.equal(lstatSync(observation.legacyPath).isSymbolicLink(), true);
+    assert.equal(result.signal, null, result.stderr);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      readFileSync(join(observation.peer, "keep"), "utf8"),
+      "peer data",
+    );
+  },
+);
+
+test("delta config write failure cleans only its owned directory", (t) => {
+  const { result, observation, inheritedFile, sentinel, loaded } =
+    runDeltaSecurity(t, { failWrite: true });
+  assert.equal(result.signal, null, result.stderr);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /fixture config write denied/);
+  assert.equal(observation.called, false);
+  assert.equal(existsSync(loaded), false);
+  assert.equal(observation.owned.length, 1);
+  const directory = observation.owned[0];
+  assert.ok(directory);
+  assert.equal(existsSync(directory), false);
+  assert.equal(
+    readFileSync(join(observation.peer, "keep"), "utf8"),
+    "peer data",
+  );
+  assert.equal(readFileSync(inheritedFile, "utf8"), "inherited data");
+  assert.equal(readFileSync(sentinel, "utf8"), "sentinel data");
+});
