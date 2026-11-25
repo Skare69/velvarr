@@ -6684,6 +6684,212 @@ describe("tpdb movie merge", () => {
       });
     }
   });
+
+  test("an imported acquisition on the kept record does not hide the twin's playable file", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    const requester = await loginAs("member");
+    const saveWhisparr = await call("PATCH", "/api/admin/integrations", {
+      cookie: admin,
+      body: {
+        jellyfinUrl,
+        jellyfinExternalUrl: jellyfinUrl,
+        whisparrUrl,
+        whisparrApiKey: whisparrKey,
+        pathMappings: [
+          { whisparrPrefix: "/data/whisparr", jellyfinPrefix: "/media" },
+        ],
+      },
+    });
+    assert.equal(saveWhisparr.status, 200, await saveWhisparr.clone().text());
+    const originalEntry = whisparrMovies[0]!;
+    // The playable file lives in Whisparr under the merged-away identity.
+    whisparrMovies[0] = {
+      ...originalEntry,
+      tpdbId: TPDB_MERGE_A,
+      foreignId: `tpdbId:${TPDB_MERGE_A}`,
+    };
+    let merged = false;
+    let requestId: string | undefined;
+    try {
+      // The kept record's acquisition is imported but Jellyfin has not
+      // matched it: its observation names a path no library item backs, so
+      // the kept record's own verdict is awaiting_scan.
+      const req = await call("POST", "/api/requests", {
+        cookie: requester,
+        body: { media: { provider: "tpdb", kind: "movie", id: TPDB_MERGE_B } },
+      });
+      assert.equal(req.status, 201);
+      const reqBody = (await req.json()) as { request: { id: string } };
+      requestId = reqBody.request.id;
+      await call("PATCH", `/api/requests/${requestId}`, {
+        cookie: admin,
+        body: { decision: "approved" },
+      });
+      const acq = getAcquisitionByReference({
+        provider: "tpdb",
+        kind: "movie",
+        id: TPDB_MERGE_B,
+      });
+      assert.ok(acq);
+      recordAcquisitionObservation(acq.id, {
+        state: "imported",
+        item: {
+          whisparrId: 91,
+          path: "/data/whisparr/unscanned.mkv",
+          title: "Unscanned Movie",
+        },
+      });
+      resetMovieListCache();
+      assert.equal(
+        (await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B)).status,
+        201,
+      );
+      merged = true;
+      resetMovieListCache();
+      resetSweepCache();
+      const res = await call(
+        "GET",
+        `/api/availability/tpdb/movie/${TPDB_MERGE_B}`,
+        { cookie: requester },
+      );
+      assert.equal(res.status, 200, await res.clone().text());
+      const body = (await res.json()) as {
+        outcome: string;
+        item?: { id: string };
+      };
+      // The twin's playable file answers despite the kept record's own
+      // awaiting_scan demotion: every group id is checked before a
+      // negative verdict is selected.
+      assert.equal(body.outcome, "available");
+      assert.equal(body.item?.id, ITEM_MOVIE);
+    } finally {
+      whisparrMovies[0] = originalEntry;
+      if (merged) await unmerge(admin, TPDB_MERGE_A);
+      if (requestId) dropRequests([requestId]);
+      resetMovieListCache();
+      resetSweepCache();
+      await call("PATCH", "/api/admin/integrations", {
+        cookie: admin,
+        body: {
+          jellyfinUrl,
+          jellyfinExternalUrl: jellyfinUrl,
+          whisparrUrl: "",
+        },
+      });
+    }
+  });
+
+  test("a denied library under the kept record does not hide the twin's playable file", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    const saveWhisparr = await call("PATCH", "/api/admin/integrations", {
+      cookie: admin,
+      body: {
+        jellyfinUrl,
+        jellyfinExternalUrl: jellyfinUrl,
+        whisparrUrl,
+        whisparrApiKey: whisparrKey,
+        pathMappings: [
+          { whisparrPrefix: "/data/whisparr", jellyfinPrefix: "/media" },
+        ],
+      },
+    });
+    assert.equal(saveWhisparr.status, 200, await saveWhisparr.clone().text());
+    const originalEntry = whisparrMovies[0]!;
+    // The playable file lives in Whisparr under the merged-away identity,
+    // inside the library this viewer can play.
+    whisparrMovies[0] = {
+      ...originalEntry,
+      tpdbId: TPDB_MERGE_A,
+      foreignId: `tpdbId:${TPDB_MERGE_A}`,
+    };
+    // The kept record's file sits in the Shows library, which the member's
+    // Velvarr grants exclude; the wider Jellyfin-side pool still lets the
+    // sweep find it, so the kept record's own verdict is a real denial.
+    fx.grants.set(MEMBER_ID, [MOVIES_LIB, SHOWS_LIB]);
+    let merged = false;
+    let requestId: string | undefined;
+    try {
+      const req = await call("POST", "/api/requests", {
+        cookie: await loginAs("member"),
+        body: { media: { provider: "tpdb", kind: "movie", id: TPDB_MERGE_B } },
+      });
+      assert.equal(req.status, 201);
+      const reqBody = (await req.json()) as { request: { id: string } };
+      requestId = reqBody.request.id;
+      await call("PATCH", `/api/requests/${requestId}`, {
+        cookie: admin,
+        body: { decision: "approved" },
+      });
+      const acq = getAcquisitionByReference({
+        provider: "tpdb",
+        kind: "movie",
+        id: TPDB_MERGE_B,
+      });
+      assert.ok(acq);
+      recordAcquisitionObservation(acq.id, {
+        state: "monitoring",
+        item: {
+          whisparrId: 92,
+          path: `/data/whisparr/${ITEM_SHOW}.mkv`,
+          title: "Beta Show",
+        },
+      });
+      resetMovieListCache();
+      assert.equal(
+        (await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B)).status,
+        201,
+      );
+      merged = true;
+      resetMovieListCache();
+      resetSweepCache();
+      const requester = await loginAs("member");
+      const res = await call(
+        "GET",
+        `/api/availability/tpdb/movie/${TPDB_MERGE_B}`,
+        { cookie: requester },
+      );
+      assert.equal(res.status, 200, await res.clone().text());
+      const body = (await res.json()) as {
+        outcome: string;
+        item?: { id: string };
+      };
+      // The kept record's own verdict is denied (its file sits in a library
+      // the viewer's grants exclude), but the twin's playable file in the
+      // granted library answers: every group id is checked before a
+      // negative verdict is selected.
+      assert.equal(body.outcome, "available");
+      assert.equal(body.item?.id, ITEM_MOVIE);
+
+      // Authorization stays per user: an account with no granted libraries
+      // is denied even though the group holds a playable file.
+      const denied = await call(
+        "GET",
+        `/api/availability/tpdb/movie/${TPDB_MERGE_B}`,
+        { cookie: await loginAs("nogrants") },
+      );
+      assert.equal(
+        ((await denied.json()) as { outcome: string }).outcome,
+        "denied",
+      );
+    } finally {
+      fx.grants.set(MEMBER_ID, [MOVIES_LIB]);
+      whisparrMovies[0] = originalEntry;
+      if (merged) await unmerge(admin, TPDB_MERGE_A);
+      if (requestId) dropRequests([requestId]);
+      resetMovieListCache();
+      resetSweepCache();
+      await call("PATCH", "/api/admin/integrations", {
+        cookie: admin,
+        body: {
+          jellyfinUrl,
+          jellyfinExternalUrl: jellyfinUrl,
+          whisparrUrl: "",
+        },
+      });
+    }
+  });
 });
 
 test("catalog artwork proxy: provider-only, no credentials, cacheable with revalidation", async () => {

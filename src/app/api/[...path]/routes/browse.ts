@@ -71,10 +71,14 @@ export async function availability(
   // so walking candidates never widens it.
   const candidateVerdict = async (candidate: MediaReference) => {
     const acquisition = getAcquisitionByReference(candidate);
-    // Whisparr may hold the twin under a merged-away id; the group walk
-    // keeps the first folder found. A failed lookup only costs the hint.
+    // The candidate's own Whisparr identity describes its own file; the
+    // group's acquisition row describes the pair's delivery state. Own
+    // folder first, so a twin's playable file is not hidden behind a
+    // sibling's not-yet-scanned path. A failed lookup only costs the hint.
     const whisparrPath =
-      acquisition?.whisparrPath ?? (await mergedWhisparrFolder(ctx, candidate));
+      (await whisparrFolderOf(ctx, candidate)) ??
+      acquisition?.whisparrPath ??
+      (await mergedWhisparrFolder(ctx, candidate));
     const verdict = await resolvePlaybackAccess(
       ctx.config,
       ctx.token,
@@ -113,19 +117,24 @@ export async function availability(
     }
     return verdict;
   };
-  // The folder hint already walks the merge group, but Jellyfin may hold the
-  // file under any group id, merged-away twins included. Walk the whole
-  // pipeline across the group, own id first per the group contract, and keep
-  // the first non-missing verdict. When every candidate is missing, the last
-  // one's plain missing verdict stands, so an unmerged reference behaves
-  // exactly as a single-candidate run.
+  // Every id gets its verdict before a negative one is selected: an
+  // awaiting_scan demotion or a per-user denial under one id must not hide
+  // a playable file the group holds under another. The first available
+  // verdict wins; with nothing playable the requested reference's own
+  // verdict stands, so an unmerged reference behaves exactly as a
+  // single-candidate run.
   const groupIds = movieMergeGroupIds(media.provider, media.kind, media.id);
-  let chosen = await candidateVerdict(media);
-  if (chosen.outcome === "missing") {
+  const ownId = media.id.toLowerCase();
+  const own = await candidateVerdict(media);
+  let chosen = own;
+  if (own.outcome !== "available") {
     for (const id of groupIds) {
-      if (id === media.id) continue;
-      chosen = await candidateVerdict({ ...media, id });
-      if (chosen.outcome !== "missing") break;
+      if (id === ownId) continue;
+      const verdict = await candidateVerdict({ ...media, id });
+      if (verdict.outcome === "available") {
+        chosen = verdict;
+        break;
+      }
     }
   }
   return json(chosen);
