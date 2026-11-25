@@ -111,20 +111,46 @@ function validationReason(body: unknown): string {
   return typeof message === "string" ? message : "";
 }
 
-const FLASH =
-  /"flash":\{"error":(null|"(?:[^"\\]|\\.)*"),"success":(null|"(?:[^"\\]|\\.)*")\}/;
+/** The JSON object that starts at `start`, scanned with string escapes in
+ * mind, or undefined when it does not parse. */
+function objectAt(source: string, start: number): unknown {
+  let depth = 0;
+  let quoted = false;
+  for (let i = start; i < source.length; i++) {
+    const c = source[i];
+    if (quoted) {
+      if (c === "\\") i++;
+      else if (c === '"') quoted = false;
+    } else if (c === '"') quoted = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) {
+      try {
+        return JSON.parse(source.slice(start, i + 1));
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  return undefined;
+}
 
-/** The Inertia page props carry the session flash the merge redirect set. */
-function flashOf(html: string): {
-  error: string | null;
-  success: string | null;
-} {
-  const match = FLASH.exec(html.replaceAll("&quot;", '"'));
-  if (!match) return { error: null, success: null };
-  return {
-    error: JSON.parse(match[1]!) as string | null,
-    success: JSON.parse(match[2]!) as string | null,
-  };
+/** The session flash in the Inertia page props of the merge redirect
+ * target, in any key order. Undefined when the page carries none. */
+export function flashOf(
+  html: string,
+): { error: string | null; success: string | null } | undefined {
+  const page = html.replaceAll("&quot;", '"');
+  const at = page.indexOf('"flash":{');
+  if (at < 0) return undefined;
+  const flash = record(objectAt(page, at + '"flash":'.length));
+  if (!flash) return undefined;
+  const str = (v: unknown) => (typeof v === "string" && v !== "" ? v : null);
+  return { error: str(flash.error), success: str(flash.success) };
+}
+
+/** A merge whose POST left but whose result TPDB never stated. */
+function unconfirmed(reason: string): AppError {
+  return new AppError(502, "upstream_bad_response", reason);
 }
 
 async function submit(
@@ -212,20 +238,23 @@ async function submit(
   await discard(post);
   collectCookies(post, jar);
   const next = new URL(post.headers.get("location") ?? "/", site);
-  if (next.pathname.includes("/login")) throw sessionError("sent to sign-in");
   // The form posted; only the flash on the redirect target tells success
-  // from a rejection. Cookies never leave TPDB's own origin.
-  if (next.origin !== new URL(site).origin) return { message: null };
+  // from a rejection. Cookies and the key never leave TPDB's own origin,
+  // so an off-origin redirect leaves the result unconfirmed.
+  if (next.origin !== new URL(site).origin)
+    throw unconfirmed("TPDB redirected to another site");
+  if (next.pathname.includes("/login")) throw sessionError("sent to sign-in");
   const page = await send(next.href, {
     headers: { ...base, Accept: "text/html", Cookie: cookieHeader(jar) },
   });
   if (page.status !== 200) {
     await discard(page);
-    return { message: null };
+    throw unconfirmed(`confirmation page HTTP ${page.status}`);
   }
   const flash = flashOf(await text(page));
-  if (flash.error !== null) throw rejected(flash.error);
-  return { message: flash.success === null ? null : clean(flash.success) };
+  if (flash?.error) throw rejected(flash.error);
+  if (!flash?.success) throw unconfirmed("TPDB sent no merge confirmation");
+  return { message: clean(flash.success) };
 }
 
 function failure(error: unknown): AppError {

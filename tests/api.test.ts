@@ -740,7 +740,11 @@ type MergeMode =
   | "flashError"
   | "down"
   | "lost"
-  | "confirmLost";
+  | "confirmLost"
+  | "confirm503"
+  | "offOrigin"
+  | "noFlash"
+  | "errorAfterSuccess";
 type MergeFixture = {
   mode: MergeMode;
   targetStatus: number;
@@ -758,10 +762,9 @@ type MergeFixture = {
 };
 let mergeFixture: MergeFixture | undefined;
 
-function mergeFlashPage(flash: {
-  error: string | null;
-  success: string | null;
-}): string {
+function mergeFlashPage(
+  flash: Record<string, string | null> | undefined,
+): string {
   const props = JSON.stringify({ component: "x", props: { flash } });
   return `<!DOCTYPE html><html><body><script>${props}</script></body></html>`;
 }
@@ -804,12 +807,21 @@ async function tpdbMergeHandler(
         req.socket.destroy();
         return true;
       }
+      if (merge.mode === "confirm503") {
+        html(503, "<!DOCTYPE html><html><body>busy</body></html>");
+        return true;
+      }
       html(
         200,
         mergeFlashPage(
           merge.mode === "flashError"
             ? { error: "Already merged", success: null }
-            : { error: null, success: "Merge request submitted" },
+            : merge.mode === "errorAfterSuccess"
+              ? // Key order is TPDB's to choose: error after success.
+                { success: null, error: "Already merged" }
+              : merge.mode === "noFlash"
+                ? undefined
+                : { error: null, success: "Merge request submitted" },
         ),
       );
       return true;
@@ -830,7 +842,14 @@ async function tpdbMergeHandler(
     switch (merge.mode) {
       case "ok":
       case "confirmLost":
+      case "confirm503":
+      case "noFlash":
+      case "errorAfterSuccess":
         redirect(target);
+        break;
+      case "offOrigin":
+        // An external authorization hop: Velvarr must not follow it.
+        redirect("https://auth.example.test/authorize");
         break;
       case "lost":
         // The form reached TPDB, but its answer is lost on the way back.
@@ -12504,10 +12523,12 @@ test("movie merge: admin-only TPDB website merge, direction, payload and named f
       const invalid = await fails(422, "tpdb_merge_rejected");
       assert.ok(invalid.startsWith("TPDB rejected the merge: "), invalid);
       assert.ok(invalid.includes("The scene id field is required."), invalid);
-      arm({ mode: "flashError" });
-      const flash = await fails(422, "tpdb_merge_rejected");
-      assert.ok(flash.startsWith("TPDB rejected the merge: "), flash);
-      assert.ok(flash.includes("Already merged"), flash);
+      for (const mode of ["flashError", "errorAfterSuccess"] as const) {
+        arm({ mode });
+        const flash = await fails(422, "tpdb_merge_rejected");
+        assert.ok(flash.startsWith("TPDB rejected the merge: "), flash);
+        assert.ok(flash.includes("Already merged"), `${mode}: ${flash}`);
+      }
     });
 
     await t.test(
@@ -12520,17 +12541,45 @@ test("movie merge: admin-only TPDB website merge, direction, payload and named f
     );
 
     // Once the form POST left, TPDB may hold the merge even without an
-    // answer. A 5xx, a lost POST answer and a lost confirmation page are
-    // tpdb_merge_unknown, never a "not submitted" the UI would offer to
-    // retry (this pin was upstream_unavailable for the 5xx before).
+    // answer. A 5xx, a lost POST answer, a lost or failed confirmation
+    // page, an off-origin redirect and a page without a flash are all
+    // tpdb_merge_unknown: never "submitted" without TPDB's word, and never
+    // a "not submitted" the UI would offer to retry (this pin was
+    // upstream_unavailable for the 5xx, and success for the last three).
     await t.test(
       "failures after the form POST leave the outcome unknown",
       async () => {
-        for (const mode of ["down", "lost", "confirmLost"] as const) {
+        for (const mode of [
+          "down",
+          "lost",
+          "confirmLost",
+          "confirm503",
+          "offOrigin",
+          "noFlash",
+        ] as const) {
           const fx = arm({ mode });
-          const message = await fails(502, "tpdb_merge_unknown");
+          const fetched: string[] = [];
+          const realFetch = globalThis.fetch;
+          globalThis.fetch = ((
+            input: RequestInfo | URL,
+            init?: RequestInit,
+          ) => {
+            fetched.push(input instanceof Request ? input.url : String(input));
+            return realFetch(input, init);
+          }) as typeof fetch;
+          let message: string;
+          try {
+            message = await fails(502, "tpdb_merge_unknown");
+          } finally {
+            globalThis.fetch = realFetch;
+          }
           assert.match(message, /It may already be submitted\.$/);
           assert.equal(posts(fx).length, 1, mode);
+          // The key and the session cookie never follow an off-origin hop.
+          assert.ok(
+            !fetched.some((url) => url.startsWith("https://auth.example.test")),
+            mode,
+          );
         }
       },
     );
