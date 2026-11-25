@@ -98,8 +98,9 @@ export const TAGS = {
 };
 
 /** Card status names map to the envelope facts that src/lib/status.ts reads:
- * requested = pending request, approved = approved request, processing =
- * downloading, available = playable in Jellyfin, declined = declined request. */
+ * requested = pending request, approved = approved request, available =
+ * playable in Jellyfin, declined = declined request. The landing page is about
+ * discovery: no title is shown downloading, and no file size or codec appears. */
 function item(n, kind, title, artName, opts = {}) {
   const scene = kind === "scene";
   const studio = opts.studio ?? (scene ? STUDIOS.plum : STUDIOS.velvet);
@@ -142,7 +143,7 @@ export const SCENES = [
     tags: [TAGS.poolside],
   }),
   item(4, "scene", "By the Fireplace", "scene-fireplace", {
-    status: "processing",
+    status: "available",
     tags: [TAGS.velvet],
   }),
   item(5, "scene", "Neon Dance Floor", "scene-club", {
@@ -204,12 +205,6 @@ export function libraryItem(c) {
     year: Number(d.releaseDate.slice(0, 4)),
     overview: d.description,
     durationTicks: d.durationSeconds * 10_000_000,
-    file: {
-      sizeBytes: 6_195_000_000,
-      container: "mkv",
-      resolution: "2160p",
-      videoCodec: "hevc",
-    },
     // Jellyfin images are same-origin paths: the tile skips the proxy helper.
     image: `/api/catalog/image?url=${encodeURIComponent(d.imageUrl)}`,
     canPlay: true,
@@ -250,17 +245,15 @@ export function catalogResponse(c) {
         ? request(c, "pending", 5)
         : s === "declined"
           ? request(c, "declined", 30)
-          : s === "approved" || s === "processing" || s === "available"
+          : s === "approved" || s === "available"
             ? request(c, "approved", 15)
             : null,
     acquisition:
-      s === "processing"
-        ? acquisition("downloading", { percent: 62, timeleft: "00:12:40" })
-        : s === "approved"
-          ? acquisition("monitoring")
-          : s === "available"
-            ? acquisition("imported")
-            : null,
+      s === "approved"
+        ? acquisition("monitoring")
+        : s === "available"
+          ? acquisition("imported")
+          : null,
   };
 }
 

@@ -1,5 +1,5 @@
 // Requests view as an admin: two pending requests to decide and the
-// approved ones below, one of them downloading.
+// approved ones below, all in the library. No row shows a download.
 import { HOUR, MOVIES, NOW, SCENES } from "../demo.mjs";
 
 const byTitle = (title) =>
@@ -38,15 +38,8 @@ function row(title, who, decision, ageHours, decidedHours, acq = null) {
 const ROWS = [
   row("Blue Hour Above the City", MARA, "pending", 5, null),
   row("The Pink Motel", JONAS, "pending", 10, null),
-  row(
-    "By the Fireplace",
-    MARA,
-    "approved",
-    15,
-    12,
-    acquisition("downloading", { percent: 62, timeleft: "00:12:40" }),
-  ),
-  row("Room Service", JONAS, "approved", 20, 18, acquisition("monitoring")),
+  row("By the Fireplace", MARA, "approved", 15, 12, acquisition("imported")),
+  row("Room Service", JONAS, "approved", 20, 18, acquisition("imported")),
   row(
     "After Midnight in Lisbon",
     MARA,
@@ -100,12 +93,13 @@ export default {
     return undefined;
   },
   async prepare(page) {
-    // The clip shows the main column without the fixed top bar above it.
+    // The clip shows the main column without the fixed top bar above it. The
+    // page intro talks about downloads; the landing page shows discovery only.
     await page.addStyleTag({
       content:
-        ".app-topbar { display: none !important; } .app-main { padding-top: var(--page-gutter) !important; }",
+        ".app-topbar { display: none !important; } .app-main { padding-top: var(--page-gutter) !important; } .app-main .page-description { display: none !important; }",
     });
-    await page.getByText("Downloading — 62% (00:12:40 left)").waitFor();
+    await page.getByText("Imported by Whisparr").first().waitFor();
     // Titles and posters come from the per-card catalog reads.
     await page
       .locator(".request-title")
