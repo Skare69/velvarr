@@ -384,8 +384,8 @@ function MergeMoviesControl({
         Merge in Velvarr…
       </button>
       <p className="cat-note">
-        Use this only if you know both entries are the same release — the
-        merge records your assertion; Velvarr never matches by name.
+        Use this only if you know both entries are the same release — the merge
+        records your assertion; Velvarr never matches by name.
       </p>
       {open && (
         <>
@@ -565,9 +565,12 @@ export function MergedMovies({
     setBusyId(id);
     setError(null);
     try {
-      await api(`/api/catalog/tpdb/movie/${encodeURIComponent(id)}/velvarr-merge`, {
-        method: "DELETE",
-      });
+      await api(
+        `/api/catalog/tpdb/movie/${encodeURIComponent(id)}/velvarr-merge`,
+        {
+          method: "DELETE",
+        },
+      );
       setUnmergedIds((cur) => [...cur, id]);
       onRefetch?.();
     } catch (e) {
@@ -594,9 +597,7 @@ export function MergedMovies({
             key={id}
             className="flex flex-wrap items-center justify-between gap-3"
           >
-            <span className="font-mono text-xs break-all text-muted">
-              {id}
-            </span>
+            <span className="font-mono text-xs break-all text-muted">{id}</span>
             {canMergeDuplicates(account) && (
               <button
                 type="button"

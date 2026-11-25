@@ -5259,7 +5259,9 @@ describe("tpdb movie merge", () => {
     });
 
   const unmerge = (cookie: string, mergedId: string): Promise<Response> =>
-    call("DELETE", `/api/catalog/tpdb/movie/${mergedId}/velvarr-merge`, { cookie });
+    call("DELETE", `/api/catalog/tpdb/movie/${mergedId}/velvarr-merge`, {
+      cookie,
+    });
 
   const detailOf = async (
     cookie: string,
