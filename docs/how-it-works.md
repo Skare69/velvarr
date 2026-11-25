@@ -104,6 +104,12 @@ full-tree sweep for expiry and budget eviction. The newest file stays
 protected, so it can exceed the budget alone. Large cache trees can delay a
 request during this sweep.
 
+Cache reads use one open file descriptor for metadata and bytes.
+Recency updates use file descriptors too.
+A missing, empty, expired, or unreadable file is a cache miss.
+Malformed index entries are also cache misses.
+Reads never delete a file. Each actual write sweeps empty and expired entries.
+
 ## Metadata provider request rules
 
 Velvarr sends its name, version, and project URL in `User-Agent` for TPDB and

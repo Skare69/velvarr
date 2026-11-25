@@ -9,12 +9,14 @@ import {
   type Server,
 } from "node:http";
 import {
+  closeSync,
   existsSync,
+  fstatSync,
+  futimesSync,
+  openSync,
   readdirSync,
   readFileSync,
   renameSync,
-  statSync,
-  utimesSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -5491,6 +5493,17 @@ test("catalog artwork width: cached passthrough preserves its index and skips ex
     `/api/catalog/image?url=${encodeURIComponent(url)}&w=600`;
   const indexPath = (url: string) =>
     join(indexDir, createHash("sha256").update(url).digest("hex"));
+  const readIndexSnapshot = (path: string) => {
+    const fd = openSync(path, "r");
+    try {
+      return {
+        mtimeMs: fstatSync(fd).mtimeMs,
+        content: readFileSync(fd, "utf8"),
+      };
+    } finally {
+      closeSync(fd);
+    }
+  };
 
   // Both entries come from authenticated width requests to the local fixture.
   const unrelatedUrl = imageUrl("expired");
@@ -5510,7 +5523,7 @@ test("catalog artwork width: cached passthrough preserves its index and skips ex
   const etag = initial.headers.get("etag");
   assert.match(etag ?? "", /^"[A-Za-z0-9_-]{43}"$/);
   const sourceIndex = indexPath(sourceUrl);
-  const indexContent = readFileSync(sourceIndex, "utf8");
+  const indexContent = readIndexSnapshot(sourceIndex).content;
   assert.equal(
     etag,
     `"${Buffer.from(indexContent, "hex").toString("base64url")}"`,
@@ -5529,10 +5542,21 @@ test("catalog artwork width: cached passthrough preserves its index and skips ex
   );
 
   const fresh = new Date(Date.now() - 60 * 60_000);
-  utimesSync(sourceIndex, fresh, fresh);
-  const freshMtime = statSync(sourceIndex).mtimeMs;
+  const sourceFd = openSync(sourceIndex, "r+");
+  let freshMtime: number;
+  try {
+    futimesSync(sourceFd, fresh, fresh);
+    freshMtime = fstatSync(sourceFd).mtimeMs;
+  } finally {
+    closeSync(sourceFd);
+  }
   const expired = new Date(Date.now() - 25 * 60 * 60_000);
-  utimesSync(unrelatedIndex, expired, expired);
+  const unrelatedFd = openSync(unrelatedIndex, "r+");
+  try {
+    futimesSync(unrelatedFd, expired, expired);
+  } finally {
+    closeSync(unrelatedFd);
+  }
 
   for (let i = 0; i < 3; i += 1) {
     const cached = await call("GET", requestPath(sourceUrl), {
@@ -5547,9 +5571,10 @@ test("catalog artwork width: cached passthrough preserves its index and skips ex
       1,
       "the source cache avoids fetches",
     );
-    assert.equal(readFileSync(sourceIndex, "utf8"), indexContent);
+    const cachedIndex = readIndexSnapshot(sourceIndex);
+    assert.equal(cachedIndex.content, indexContent);
     assert.equal(
-      statSync(sourceIndex).mtimeMs,
+      cachedIndex.mtimeMs,
       freshMtime,
       "cached passthrough must not rewrite or refresh the index",
     );

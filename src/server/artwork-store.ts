@@ -8,13 +8,16 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import {
+  closeSync,
+  fstatSync,
+  futimesSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   renameSync,
   statSync,
   unlinkSync,
-  utimesSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -92,28 +95,36 @@ function variantPath(hash: string, width: ArtworkWidth): string {
   );
 }
 
-/** Best-effort read of a fresh non-empty variant; null means "miss". */
-function readVariantIfFresh(file: string): Uint8Array | null {
-  let st;
+/** Keep freshness checks and reads on one file, even if its path changes. */
+function withFreshFile<T>(
+  file: string,
+  ttl: number,
+  read: (fd: number) => T | null,
+): T | null {
   try {
-    st = statSync(file);
+    const fd = openSync(file, "r");
+    try {
+      const st = fstatSync(fd);
+      // The sweep owns removal; a read must not unlink a replacement path.
+      if (st.size === 0 || Date.now() - st.mtimeMs >= ttl) return null;
+      return read(fd);
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     return null;
   }
-  // Never serve zero bytes: a truncated or crashed write is deleted on sight
-  // and treated as a miss.
-  if (st.size === 0) {
-    try {
-      unlinkSync(file);
-    } catch {
-      // A racing sweep or reset already removed it.
-    }
-    return null;
-  }
-  if (Date.now() - st.mtimeMs >= ARTWORK_STORE_TTL_MS) return null;
-  // LRU touch: mtime recency drives both the TTL and the budget eviction.
-  utimesSync(file, new Date(), new Date());
-  return readFileSync(file);
+}
+
+/** Best-effort read of a fresh non-empty variant; null means "miss". */
+function readVariantIfFresh(file: string): Uint8Array | null {
+  return withFreshFile(file, ARTWORK_STORE_TTL_MS, (fd) => {
+    const bytes = readFileSync(fd);
+    if (bytes.length === 0) return null;
+    // LRU touch: mtime recency drives both the TTL and the budget eviction.
+    futimesSync(fd, new Date(), new Date());
+    return bytes;
+  });
 }
 
 /** Corrupt/unsupported source or unusable output: never fabricate image
@@ -237,33 +248,9 @@ function indexFilePath(url: string): string {
   );
 }
 
-/** Fresh, non-empty, well-formed index entry → the source hash it names.
- * Only a lowercase hex sha256 is accepted: the content becomes part of the
- * variant path, so it must never smuggle path syntax. Zero-byte entries are
- * deleted on sight. */
-function readIndexHash(url: string): string | null {
-  const file = indexFilePath(url);
-  let st;
-  try {
-    st = statSync(file);
-  } catch {
-    return null;
-  }
-  if (st.size === 0) {
-    try {
-      unlinkSync(file);
-    } catch {
-      // A racing sweep already removed it.
-    }
-    return null;
-  }
-  if (Date.now() - st.mtimeMs >= ARTWORK_INDEX_TTL_MS) return null;
-  let text: string;
-  try {
-    text = readFileSync(file, "utf8").trim();
-  } catch {
-    return null;
-  }
+/** Only a lowercase hex sha256 can become part of a variant path. */
+function readIndexHash(fd: number): string | null {
+  const text = readFileSync(fd, "utf8").trim();
   return /^[0-9a-f]{64}$/.test(text) ? text : null;
 }
 
@@ -279,17 +266,15 @@ export function lookupArtworkVariant(
   hash: string;
   isVariant: boolean;
 } | null {
-  const hash = readIndexHash(url);
-  if (hash === null) return null;
-  const hit = readVariantIfFresh(variantPath(hash, width));
-  if (hit === null) return null;
-  // Keep the index entry as fresh as the variant it points at.
-  try {
-    utimesSync(indexFilePath(url), new Date(), new Date());
-  } catch {
-    // The variant hit stands even if the touch fails.
-  }
-  return { bytes: hit, contentType: "image/webp", hash, isVariant: true };
+  return withFreshFile(indexFilePath(url), ARTWORK_INDEX_TTL_MS, (fd) => {
+    const hash = readIndexHash(fd);
+    if (hash === null) return null;
+    const hit = readVariantIfFresh(variantPath(hash, width));
+    if (hit === null) return null;
+    // Only a real variant hit extends this same index file's TTL.
+    futimesSync(fd, new Date(), new Date());
+    return { bytes: hit, contentType: "image/webp", hash, isVariant: true };
+  });
 }
 
 /** Remember url → hash so a restart can serve variants without re-fetching
@@ -299,7 +284,11 @@ export function rememberArtworkVariant(url: string, hash: string): void {
   if (hash.length === 0) return;
   // Passthroughs return here on every memory hit. An unchanged fresh index
   // needs neither a rewrite nor an uncharged full-tree sweep.
-  if (readIndexHash(url) === hash) return;
+  if (
+    withFreshFile(indexFilePath(url), ARTWORK_INDEX_TTL_MS, readIndexHash) ===
+    hash
+  )
+    return;
   try {
     const file = indexFilePath(url);
     writeFileAtomic(file, Buffer.from(hash, "utf8"));

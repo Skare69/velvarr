@@ -12,8 +12,13 @@ import assert from "node:assert/strict";
 import { test, beforeEach, mock } from "node:test";
 import { createHash } from "node:crypto";
 import {
+  closeSync,
+  fstatSync,
+  ftruncateSync,
+  futimesSync,
   existsSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   statSync,
   utimesSync,
@@ -2872,6 +2877,18 @@ test("artwork no-upscale: a rotated source is compared on its oriented width", a
   );
 });
 
+function readArtworkIndexSnapshot(path: string) {
+  const fd = openSync(path, "r");
+  try {
+    return {
+      mtimeMs: fstatSync(fd).mtimeMs,
+      content: readFileSync(fd, "utf8"),
+    };
+  } finally {
+    closeSync(fd);
+  }
+}
+
 for (const [label, source] of [
   ["small image", POSTER_185],
   ["unreadable image", NOT_AN_IMAGE],
@@ -2906,7 +2923,7 @@ for (const [label, source] of [
       assert.equal(first.hash, sourceHash);
       assert.equal(first.isVariant, false);
       const index = artworkIndexPath(url);
-      assert.equal(readFileSync(index, "utf8"), sourceHash);
+      assert.equal(readArtworkIndexSnapshot(index).content, sourceHash);
 
       const expiredUrl = `${fixture.origin}/scene/d1/0b/6b/expired.png`;
       rememberArtworkVariant(expiredUrl, sourceHash);
@@ -2915,8 +2932,7 @@ for (const [label, source] of [
       utimesSync(expiredIndex, expired, expired);
       const aged = new Date(Date.now() - 60_000);
       utimesSync(index, aged, aged);
-      const before = statSync(index);
-      const originalIndex = readFileSync(index, "utf8");
+      const before = readArtworkIndexSnapshot(index);
 
       // No derivative exists, so each memory hit must derive the passthrough again.
       for (let i = 0; i < 3; i++) {
@@ -2926,13 +2942,13 @@ for (const [label, source] of [
         assert.equal(repeated.hash, sourceHash);
         assert.equal(repeated.isVariant, false);
         assert.equal(existsSync(artworkStorePath(sourceHash, 600)), false);
-        assert.equal(readFileSync(index, "utf8"), originalIndex);
+        assert.equal(readArtworkIndexSnapshot(index).content, before.content);
         assert.equal(upstreamCount, 1);
         assert.equal(missCount, 1);
       }
       await t.test("preserves the fresh index mtime", () => {
         assert.equal(
-          statSync(index).mtimeMs,
+          readArtworkIndexSnapshot(index).mtimeMs,
           before.mtimeMs,
           "a cached passthrough must not rewrite or extend the index TTL",
         );
@@ -2995,15 +3011,22 @@ for (const state of [
       utimesSync(expiredIndex, expired, expired);
       let previousMtime: number | undefined;
       if (state !== "missing") {
-        if (state === "fresh different-hash") writeFileSync(index, otherHash);
-        if (state === "malformed") writeFileSync(index, "not-a-sha256");
-        if (state === "empty") writeFileSync(index, "");
-        const aged =
-          state === "expired same-hash"
-            ? expired
-            : new Date(Date.now() - 60_000);
-        utimesSync(index, aged, aged);
-        previousMtime = statSync(index).mtimeMs;
+        const fd = openSync(index, "r+");
+        try {
+          if (state !== "expired same-hash") {
+            ftruncateSync(fd, 0);
+            if (state === "fresh different-hash") writeFileSync(fd, otherHash);
+            if (state === "malformed") writeFileSync(fd, "not-a-sha256");
+          }
+          const aged =
+            state === "expired same-hash"
+              ? expired
+              : new Date(Date.now() - 60_000);
+          futimesSync(fd, aged, aged);
+          previousMtime = fstatSync(fd).mtimeMs;
+        } finally {
+          closeSync(fd);
+        }
       }
 
       const result = await fetchProviderArtwork(url, { width: 600, onMiss });
@@ -3012,10 +3035,11 @@ for (const state of [
       assert.equal(result.hash, sourceHash);
       assert.equal(result.isVariant, false);
       assert.equal(existsSync(artworkStorePath(sourceHash, 600)), false);
-      assert.equal(readFileSync(index, "utf8"), sourceHash);
+      const repaired = readArtworkIndexSnapshot(index);
+      assert.equal(repaired.content, sourceHash);
       if (previousMtime !== undefined) {
         assert.ok(
-          statSync(index).mtimeMs > previousMtime,
+          repaired.mtimeMs > previousMtime,
           "an invalid or changed index must receive a fresh write",
         );
       }

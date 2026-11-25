@@ -3,7 +3,7 @@
 // Never overwrites an existing file and never prints secret values.
 
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -57,17 +57,6 @@ const origin = process.argv[2]
   ? canonicalOrigin(process.argv[2])
   : canonicalOrigin("http://127.0.0.1:6699");
 
-if (existsSync(target)) {
-  console.error(`.env.local already exists at ${target}`);
-  console.error(
-    "Refusing to overwrite: rotating secrets would invalidate encrypted data and sessions.",
-  );
-  console.error(
-    "Delete the file yourself only if you accept that consequence, then rerun.",
-  );
-  process.exit(1);
-}
-
 const secretKey = randomBytes(32).toString("hex"); // 64 hex chars = 32-byte AES-256 key
 const setupSecret = randomBytes(32).toString("base64url"); // 43 chars, above the 32-char minimum
 
@@ -81,20 +70,19 @@ const body = [
 ].join("\n");
 
 try {
-  // Exclusive: also fails if it appeared meanwhile. 0600 at creation: no
-  // window where other local users can read the key before chmod lands.
+  // Exclusive creation refuses existing paths and sets owner-only permissions.
   writeFileSync(target, body, { flag: "wx", mode: 0o600 });
-  try {
-    chmodSync(target, 0o600); // no-op restriction on Windows
-  } catch (error) {
-    // Windows filesystems may not support POSIX modes; file is still user-profile protected.
-    if (process.platform !== "win32") {
-      console.warn(
-        `Warning: could not restrict ${target} to owner-only permissions (${error.message}). Check that other users cannot read it.`,
-      );
-    }
-  }
 } catch (error) {
+  if (error?.code === "EEXIST") {
+    console.error(`.env.local already exists at ${target}`);
+    console.error(
+      "Refusing to overwrite: rotating secrets would invalidate encrypted data and sessions.",
+    );
+    console.error(
+      "Delete the file yourself only if you accept that consequence, then rerun.",
+    );
+    process.exit(1);
+  }
   console.error(`Could not write ${target}: ${error.message}`);
   process.exit(1);
 }

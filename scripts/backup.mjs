@@ -9,7 +9,6 @@
 import { DatabaseSync } from "node:sqlite";
 import {
   closeSync,
-  existsSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -24,8 +23,14 @@ const repoRoot = path.resolve(
 
 // .env.local supplies runtime config; variables already in the environment win.
 function loadEnvLocal(file) {
-  if (!existsSync(file)) return;
-  for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
+  let contents;
+  try {
+    contents = readFileSync(file, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  for (const line of contents.split(/\r?\n/)) {
     const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line.trim());
     if (match && process.env[match[1]] === undefined) {
       process.env[match[1]] = match[2].replace(/^(['"])(.*)\1$/, "$2");
@@ -45,17 +50,6 @@ const source = path.join(
   "velvarr.sqlite",
 );
 const destination = path.resolve(destinationArg);
-
-if (existsSync(destination)) {
-  console.error(`Refusing to overwrite existing backup: ${destination}`);
-  process.exit(1);
-}
-if (!existsSync(source)) {
-  console.error(
-    `No Velvarr database at ${source} (set VELVARR_DATA_DIR if it lives elsewhere).`,
-  );
-  process.exit(1);
-}
 
 mkdirSync(path.dirname(destination), { recursive: true });
 
@@ -81,6 +75,11 @@ try {
 } catch (error) {
   // Remove this run's empty placeholder so a retry is not refused.
   unlinkSync(destination);
+  if (!db) {
+    console.error(
+      `Could not open Velvarr database at ${source} (set VELVARR_DATA_DIR if it lives elsewhere).`,
+    );
+  }
   throw error;
 } finally {
   db?.close();
