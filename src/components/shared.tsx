@@ -1204,9 +1204,12 @@ export function setParamsClearing(
   updates: Record<string, string | null | undefined>,
   options?: { push?: boolean },
 ): void {
-  const cleared: Record<string, string | null> = {};
-  for (const key of new URLSearchParams(window.location.search).keys())
-    cleared[key] = null;
+  const cleared = Object.fromEntries(
+    Array.from(new URLSearchParams(window.location.search).keys(), (key) => [
+      key,
+      null,
+    ]),
+  );
   setP({ ...cleared, ...updates }, options);
 }
 

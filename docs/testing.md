@@ -29,6 +29,21 @@ Run the focused regression with synthetic errors:
 node --experimental-strip-types --test tests/fixture.test.ts
 ```
 
+## Query parameter regressions
+
+`tests/ui/navigation.spec.mjs` checks that navigation and search remove all old query parameters.
+The cases include `__proto__`, `constructor`, `prototype`, and repeated names.
+The navigation property uses seed 42 and 200 runs.
+Search cases check both live and submitted queries, plus browser Back.
+
+After the production build, run the focused suite:
+
+```sh
+PLAYWRIGHT_CHANNEL=chrome bun run test:ui tests/ui/navigation.spec.mjs
+```
+
+Omit `PLAYWRIGHT_CHANNEL` when Playwright uses its own Chromium installation.
+
 ## Artwork property review
 
 Run the random-seed review without a change to the sample counts:

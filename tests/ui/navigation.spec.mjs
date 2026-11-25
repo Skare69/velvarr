@@ -1,4 +1,5 @@
-import { expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import fc from "fast-check";
 import { scenario } from "./settings-harness.mjs";
 
 const studiosUrl = "/?view=facets&kind=studios";
@@ -61,6 +62,72 @@ scenario(
     await expect(studios).not.toHaveAttribute("aria-current", "page");
   },
 );
+
+scenario("Navigation clears arbitrary query keys as data", async ({ page }) => {
+  test.setTimeout(180_000);
+  await memberPage(page);
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(
+        fc.tuple(
+          fc.oneof(
+            fc.constantFrom(
+              "__proto__",
+              "constructor",
+              "prototype",
+              "toString",
+            ),
+            fc.string().map((key) => `extra-${key}`),
+          ),
+          fc.string(),
+        ),
+        { maxLength: 12 },
+      ),
+      async (entries) => {
+        const params = new URLSearchParams([
+          ["view", "facets"],
+          ["kind", "studios"],
+          ...entries,
+        ]);
+        await page.goto(`/?${params}`);
+        await page
+          .getByRole("navigation", { name: "Main", exact: true })
+          .getByRole("link", { name: "Studios", exact: true })
+          .press("Enter");
+        await expect(page).toHaveURL(studiosUrl);
+      },
+    ),
+    { seed: 42, numRuns: 200, examples: [[[["__proto__", ""]]]] },
+  );
+});
+
+for (const submit of [false, true]) {
+  scenario(
+    `${submit ? "Submitted" : "Live"} search clears prototype-named query keys`,
+    async ({ page }) => {
+      await memberPage(page);
+      await page.route("**/api/search?*", (route) =>
+        route.fulfill({ json: { query: "example", categories: [] } }),
+      );
+      await page.goto(
+        `${filteredBrowse}&__proto__=old&__proto__=again&constructor=old&prototype=old`,
+      );
+      const search = page.getByRole("searchbox", {
+        name: "Search all sources",
+      });
+      await search.fill("example");
+      if (submit) await search.press("Enter");
+      await expect(page).toHaveURL("/?view=search&q=example");
+      await expect(
+        page.getByRole("heading", { name: "Results for “example”" }),
+      ).toBeVisible();
+      await page.goBack();
+      await expect(page).toHaveURL(
+        /\/\?view=titles&type=movie&__proto__=old&__proto__=again&constructor=old&prototype=old(?:&perPage=\d+)?$/,
+      );
+    },
+  );
+}
 
 for (const mobile of [false, true]) {
   scenario(
