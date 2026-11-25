@@ -1,7 +1,7 @@
 import { requireId, queryInt } from "../parse.ts";
 import { createHash } from "node:crypto";
 import { type AuthContext, json } from "../admission.ts";
-import type { MediaReference } from "../../../../lib/contracts.ts";
+import type { LibraryItem, MediaReference } from "../../../../lib/contracts.ts";
 import { AppError } from "../../../../server/http.ts";
 import {
   getLibraryImage,
@@ -14,6 +14,7 @@ import {
   groupMergedLibraryItems,
   resolveMovieReference,
 } from "../../../../server/movie-merge.ts";
+import { mergedMovieIdSet } from "../../../../server/storage.ts";
 
 export async function libraries(ctx: AuthContext): Promise<Response> {
   const views = await listLibraries(ctx.config, ctx.token);
@@ -60,25 +61,50 @@ export async function libraryPage(
   }
   // Empty grant list never means all libraries.
   if (grants.size === 0) return json({ items: [], total: 0, start, limit });
-  const page = await listLibraryItems(ctx.config, ctx.token, ctx.account, {
-    start,
-    limit,
+  // A catalog reference merged away resolves to the primary at read time;
+  // an absent catalog stays absent. A pair of files filed under records that
+  // merged collapses to one tile, preferring the item filed under the kept
+  // record. The helper resolves catalogs itself, so the raw items go in.
+  if (mergedMovieIdSet().size === 0) {
+    const page = await listLibraryItems(ctx.config, ctx.token, ctx.account, {
+      start,
+      limit,
+      search,
+      ...(libraryId !== undefined ? { libraryId } : {}),
+      ...(sortParam === "dateAdded" ? { sort: "dateAdded" as const } : {}),
+    });
+    return json({ ...page, items: groupMergedLibraryItems(page.items) });
+  }
+  // A merged pair can straddle page boundaries, so grouping inside one page
+  // would still show both tiles. Enumerate the Jellyfin items fully, group
+  // the raw list, then serve the requested window with the grouped total.
+  // ponytail: a homelab library is small; a tenant-scale library needs a
+  // grouped cursor instead of full enumeration.
+  const query = {
     search,
     ...(libraryId !== undefined ? { libraryId } : {}),
     ...(sortParam === "dateAdded" ? { sort: "dateAdded" as const } : {}),
-  });
-  // A catalog reference merged away resolves to the primary at read time;
-  // an absent catalog stays absent. A pair of files filed under records that
-  // merged collapses to one tile, preferring the primary's own file.
+  };
+  const raw: LibraryItem[] = [];
+  let cursor = 0;
+  let upstreamTotal = Number.POSITIVE_INFINITY;
+  while (cursor < upstreamTotal) {
+    const page = await listLibraryItems(ctx.config, ctx.token, ctx.account, {
+      start: cursor,
+      limit,
+      ...query,
+    });
+    raw.push(...page.items);
+    if (page.items.length < limit) break;
+    cursor += limit;
+    upstreamTotal = page.total;
+  }
+  const grouped = groupMergedLibraryItems(raw);
   return json({
-    ...page,
-    items: groupMergedLibraryItems(
-      page.items.map((it) =>
-        it.catalog === undefined
-          ? it
-          : { ...it, catalog: resolveMovieReference(it.catalog) },
-      ),
-    ),
+    items: grouped.slice(start, start + limit),
+    total: grouped.length,
+    start,
+    limit,
   });
 }
 

@@ -1076,6 +1076,11 @@ const TPDB_FAKE_TOTAL = 10000;
 // Merged rows must not strand later visible pages: the most extra upstream
 // fetches one searchCatalog call may spend walking past an emptied page.
 const MERGE_PAGE_WALKS = 5;
+// ponytail: the walked page number is per searchCatalog call. A browse query
+// that aggregates several streams replays a consumed window when the client's
+// continuation lands on a stream whose merge walk already advanced past it;
+// mergePageItems dedupes, so the grid stays honest but may stop early on that
+// surface. A grouped cursor shared across streams is the upgrade path.
 
 function cleanQueryTerm(v: unknown): string | undefined {
   return cleanString(v, 200);
@@ -1309,9 +1314,13 @@ function tpdbQuery(base: Record<string, string | number | undefined>): string {
 /** Serve a TPDB movie listing with merged-away rows removed. A page the
  * filter empties must not strand later visible titles: walk the following
  * upstream pages, at most MERGE_PAGE_WALKS extra fetches per call, and stop
- * early when upstream runs out. The served page echoes the requested page;
- * hasMore comes from the last fetch. Any dropped row hides the upstream
- * total, which still counts the removed records. */
+ * early when upstream runs out. Continuation contract: the served page
+ * number is the last consumed upstream window. A walk that consumed extra
+ * pages reports the last one, so the client's next request (served.page + 1)
+ * continues from the first unread upstream page; a no-walk call echoes the
+ * requested page unchanged. hasMore comes from the last fetch, and perPage
+ * echoes the request. Any dropped row hides the upstream total, which still
+ * counts the removed records. */
 async function servedTpdbMoviePage(
   parsed: CatalogSearchPage,
   requestedPage: number,
@@ -1356,7 +1365,7 @@ async function servedTpdbMoviePage(
   return {
     provider: "tpdb",
     kind: "movie",
-    page: requestedPage,
+    page: fetchedPage,
     perPage,
     hasMore: current.hasMore,
     ...(total !== undefined ? { total } : {}),
@@ -1618,7 +1627,9 @@ export async function searchCatalog(
         // included; the primary still appears because both records exist
         // upstream. Detail resolution happens in the route, never here.
         // A page they empty walks forward (bounded) so later visible titles
-        // stay reachable, and any dropped row hides the upstream total.
+        // stay reachable, and any dropped row hides the upstream total. The
+        // served page is the last consumed upstream window, so the client's
+        // next request continues from the first unread upstream page.
         return servedTpdbMoviePage(parsed, page, perPage, fetchPage, (row) =>
           tpdbMediaDetail("movie", row, recordTagPair),
         );
@@ -1687,6 +1698,8 @@ export async function searchCatalog(
       // Same listing rule as the filmography branch above: one set read per
       // call, filtered after dedupe, with a bounded forward walk when the
       // filter empties the whole page; the scene path stays byte-identical.
+      // The served page is the last consumed upstream window, so the
+      // client's next request continues from the first unread upstream page.
       const served = await servedTpdbMoviePage(
         result,
         page,

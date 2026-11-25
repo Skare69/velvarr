@@ -64,48 +64,71 @@ export async function availability(
   idRaw: string,
 ): Promise<Response> {
   const media = parseMediaReference(providerRaw, kindRaw, idRaw);
-  const acquisition = getAcquisitionByReference(media);
-  // The acquisition lookup is already merge-group aware; the folder hint is
-  // not. Whisparr may hold the twin under the merged-away id, so walk the
-  // group (own id first) and keep the first folder found.
-  const whisparrPath =
-    acquisition?.whisparrPath ?? (await mergedWhisparrFolder(ctx, media));
-  const verdict = await resolvePlaybackAccess(
-    ctx.config,
-    ctx.token,
-    ctx.account,
-    {
-      provider: media.provider,
-      kind: media.kind,
-      id: media.id,
-      ...(whisparrPath ? { whisparrPath } : {}),
-      ...(acquisition?.whisparrTitle
-        ? { title: acquisition.whisparrTitle }
-        : {}),
-      ...(acquisition?.state === "imported" ? { imported: true } : {}),
-      ...(await identityHints(media, acquisition?.whisparrTitle)),
-    },
-    // The one cache-eligible caller: repeated badge calls share one sweep.
-    { cachedSweep: true },
-  );
-  // Scan lag (hazard 9): Whisparr has imported the item but Jellyfin's fresh
-  // check under this caller's token found no authorized match — the library
-  // simply has not caught up. A proven Whisparr absence demotes back to
-  // missing; outages stay unavailable and per-user denials stay denied
-  // because they never reach this branch.
-  if (
-    verdict.outcome === "missing" &&
-    acquisition !== null &&
-    acquisition.state === "imported" &&
-    !hasAuthoritativeAbsence(acquisition)
-  ) {
-    return json({
-      outcome: "awaiting_scan",
-      reason: "Imported on Whisparr; the media server has not matched it yet.",
-      observationStale: isObservationStale(acquisition),
-    });
+  // One identity's full pipeline: the merge-group-aware acquisition lookup,
+  // the Whisparr folder hint, the Jellyfin verdict under the caller's own
+  // token and account, and the awaiting_scan demotion.
+  // resolvePlaybackAccess enforces per-user library authorization itself,
+  // so walking candidates never widens it.
+  const candidateVerdict = async (candidate: MediaReference) => {
+    const acquisition = getAcquisitionByReference(candidate);
+    // Whisparr may hold the twin under a merged-away id; the group walk
+    // keeps the first folder found. A failed lookup only costs the hint.
+    const whisparrPath =
+      acquisition?.whisparrPath ?? (await mergedWhisparrFolder(ctx, candidate));
+    const verdict = await resolvePlaybackAccess(
+      ctx.config,
+      ctx.token,
+      ctx.account,
+      {
+        provider: candidate.provider,
+        kind: candidate.kind,
+        id: candidate.id,
+        ...(whisparrPath ? { whisparrPath } : {}),
+        ...(acquisition?.whisparrTitle
+          ? { title: acquisition.whisparrTitle }
+          : {}),
+        ...(acquisition?.state === "imported" ? { imported: true } : {}),
+        ...(await identityHints(candidate, acquisition?.whisparrTitle)),
+      },
+      // The one cache-eligible caller: repeated badge calls share one sweep.
+      { cachedSweep: true },
+    );
+    // Scan lag (hazard 9): Whisparr has imported the item but Jellyfin's fresh
+    // check under this caller's token found no authorized match — the library
+    // simply has not caught up. A proven Whisparr absence demotes back to
+    // missing; outages stay unavailable and per-user denials stay denied
+    // because they never reach this branch.
+    if (
+      verdict.outcome === "missing" &&
+      acquisition !== null &&
+      acquisition.state === "imported" &&
+      !hasAuthoritativeAbsence(acquisition)
+    ) {
+      return {
+        outcome: "awaiting_scan",
+        reason:
+          "Imported on Whisparr; the media server has not matched it yet.",
+        observationStale: isObservationStale(acquisition),
+      };
+    }
+    return verdict;
+  };
+  // The folder hint already walks the merge group, but Jellyfin may hold the
+  // file under any group id, merged-away twins included. Walk the whole
+  // pipeline across the group, own id first per the group contract, and keep
+  // the first non-missing verdict. When every candidate is missing, the last
+  // one's plain missing verdict stands, so an unmerged reference behaves
+  // exactly as a single-candidate run.
+  const groupIds = movieMergeGroupIds(media.provider, media.kind, media.id);
+  let chosen = await candidateVerdict(media);
+  if (chosen.outcome === "missing") {
+    for (const id of groupIds) {
+      if (id === media.id) continue;
+      chosen = await candidateVerdict({ ...media, id });
+      if (chosen.outcome !== "missing") break;
+    }
   }
-  return json(verdict);
+  return json(chosen);
 }
 
 /** The Whisparr folder of one identity, or undefined. A Whisparr failure only

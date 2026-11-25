@@ -181,7 +181,17 @@ export async function velvarrMergeRoute(
   requireTpdbMovie(reference.provider, reference.kind);
   const primary = mediaField(await readJson(request), "primary");
   requireTpdbMovie(primary.provider, primary.kind);
-  return json(await mergeMovies(reference.id, primary.id, ctx.account.id), 201);
+  // Raw token, not the re-read session: logout during the delayed reads must
+  // abort the merge, so mergeMovies re-checks the live session itself.
+  return json(
+    await mergeMovies(
+      reference.id,
+      primary.id,
+      ctx.account.id,
+      ctx.rawSessionToken,
+    ),
+    201,
+  );
 }
 
 // DELETE /api/catalog/tpdb/movie/:id/velvarr-merge — removes the link whose

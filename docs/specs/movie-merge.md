@@ -37,6 +37,12 @@ stays the parent card's scope.
 - Write path: TPDB must return both details before the link is stored. An
   upstream failure names the source and stores nothing. A successful merge or
   undo calls `clearDiscoverCache()`.
+- Session recheck: the merge write re-derives the session and the grant just
+  before the write, after both upstream reads. The route's admission snapshot
+  predates the body read and the reads; logout during them deletes the
+  session row, so a revoked session refuses the write with 401
+  `session_expired` before anything is stored. The live-account grant check
+  follows it unchanged.
 - Unmerge deletes the one link row. No other state changes, so every stored
   reference reads the old way again.
 
@@ -72,7 +78,17 @@ stays the parent card's scope.
 - Library: a `LibraryItem` whose `catalog` reference is a merged-away TPDB
   movie resolves to the primary at read time. Library and the Jellyfin-recent
   rail group display by canonical identity, so a merged pair never shows as
-  two entries.
+  two entries. The grouping helper takes raw items and resolves the catalog
+  references itself. Within a group the first item holds the slot, and a
+  later item filed under the kept record itself (its original catalog id
+  equals the group key) replaces the slot exactly once, so the kept record's
+  tile wins whichever order Jellyfin returns; an alias-only group still names
+  the kept record. While at least one merge exists, the library route
+  enumerates the Jellyfin items across pages, groups the raw list, and
+  serves the requested window with the grouped total, so a pair split across
+  pages still renders one tile; with no merges the single-page fetch is
+  unchanged. The Jellyfin-recent rail stays one fetch — grouping within the
+  fetched window is its honest bound.
 - Duplicates check: a candidate already merged away carries `mergedInto` (the
   primary id) in the response. The merge filter stays out of the check's own
   candidate path, so a merged pair stays visible for undo.
@@ -105,9 +121,9 @@ stays the parent card's scope.
 
 - Error codes: 400 `self_merge`, 400 `already_merged`, 400 `primary_merged`,
   400 `dependent_merge`, 400 `invalid_field` (bad body refs), 400
-  `invalid_reference` (not a TPDB movie), 403 `forbidden`, 404 `not_found`
-  on an unknown undo. Upstream failures pass through with their named source
-  error.
+  `invalid_reference` (not a TPDB movie), 401 `session_expired` (logout
+  during the upstream reads), 403 `forbidden`, 404 `not_found` on an unknown
+  undo. Upstream failures pass through with their named source error.
 - A merged-away id in a URL still resolves on detail and disappears from
   lists; a merge alone never produces a 404.
 - Undo works while TPDB still holds both records.

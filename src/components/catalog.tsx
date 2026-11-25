@@ -1029,8 +1029,10 @@ type BrowsePage = {
 };
 
 /** The grid's accumulated state: items from every fetched page plus the
- * meta of the latest fetch. `page` is the last fetched page number —
- * component state, never a URL key. */
+ * meta of the latest fetch. `page` is the server's continuation cursor —
+ * the last upstream window it served, which a merge-aware listing may
+ * have advanced past the requested number. Component state, never a URL
+ * key. */
 type BrowseAccum = {
   items: CatalogDetail[];
   page: number;
@@ -1435,7 +1437,11 @@ export function TitlesView() {
           if (mode === "reset" || prev === null) {
             return {
               items: page.items,
-              page: n,
+              // The served page number is the continuation cursor: a
+              // merge-aware listing may consume several upstream windows
+              // per request, so the next request continues from the served
+              // number, not the requested one.
+              page: page.page,
               hasMore: page.hasMore,
               total: page.total,
               totalCountKnown: page.totalCountKnown,
@@ -1448,7 +1454,7 @@ export function TitlesView() {
           return {
             ...prev,
             items,
-            page: n,
+            page: page.page,
             // A page that adds no items cannot progress: end automatic
             // pagination, or the sentinel re-fires forever. Named errors
             // stay visible; retry refetches from page 1.

@@ -27,10 +27,7 @@ import {
 } from "../../../../server/discovery.ts";
 import { AppError, shelfError, sourceError } from "../../../../server/http.ts";
 import { listRecentlyAddedItems } from "../../../../server/jellyfin.ts";
-import {
-  groupMergedLibraryItems,
-  resolveMovieReference,
-} from "../../../../server/movie-merge.ts";
+import { groupMergedLibraryItems } from "../../../../server/movie-merge.ts";
 import {
   getCatalogDetail,
   listCatalogTags,
@@ -822,16 +819,11 @@ export async function buildShelf(
             SHELF_ITEMS + MORE_PREVIEWS,
           ).then((items) =>
             railOf(
-              groupMergedLibraryItems(
-                // Resolve each catalog first so a merged-away reference
-                // groups under its primary; the tile itself reads only
-                // name/image, the grouping needs the resolved identity.
-                items.map((it) =>
-                  it.catalog === undefined
-                    ? it
-                    : { ...it, catalog: resolveMovieReference(it.catalog) },
-                ),
-              ),
+              // Raw items in: the helper resolves catalogs itself, so the
+              // item filed under the kept record wins the group's slot. The
+              // rail stays one fetch — grouping within the fetched window is
+              // its honest bound.
+              groupMergedLibraryItems(items),
               (it) => ({
                 name: it.name,
                 ...(it.image ? { imageUrl: it.image } : {}),
