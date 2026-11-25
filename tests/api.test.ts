@@ -738,7 +738,9 @@ type MergeMode =
   | "invalid"
   | "login"
   | "flashError"
-  | "down";
+  | "down"
+  | "lost"
+  | "confirmLost";
 type MergeFixture = {
   mode: MergeMode;
   targetStatus: number;
@@ -797,6 +799,11 @@ async function tpdbMergeHandler(
     // The API row read carries no cookie; the redirect page read after the
     // form POST carries the site session, on the same fixture origin.
     if (entry.cookie !== undefined) {
+      if (merge.mode === "confirmLost") {
+        // TPDB stored the merge, then the confirmation page never arrives.
+        req.socket.destroy();
+        return true;
+      }
       html(
         200,
         mergeFlashPage(
@@ -822,7 +829,12 @@ async function tpdbMergeHandler(
     entry.body = await readBody(req);
     switch (merge.mode) {
       case "ok":
+      case "confirmLost":
         redirect(target);
+        break;
+      case "lost":
+        // The form reached TPDB, but its answer is lost on the way back.
+        req.socket.destroy();
         break;
       case "flashError":
         // Absolute same-origin Location: the relative form is "ok" above.
@@ -12498,10 +12510,30 @@ test("movie merge: admin-only TPDB website merge, direction, payload and named f
       assert.ok(flash.includes("Already merged"), flash);
     });
 
-    await t.test("TPDB outage is upstream_unavailable", async () => {
-      arm({ mode: "down" });
-      await fails(502, "upstream_unavailable");
-    });
+    await t.test(
+      "an outage before the form POST is upstream_unavailable",
+      async () => {
+        const fx = arm({ targetStatus: 500 });
+        await fails(502, "upstream_unavailable");
+        assert.equal(posts(fx).length, 0);
+      },
+    );
+
+    // Once the form POST left, TPDB may hold the merge even without an
+    // answer. A 5xx, a lost POST answer and a lost confirmation page are
+    // tpdb_merge_unknown, never a "not submitted" the UI would offer to
+    // retry (this pin was upstream_unavailable for the 5xx before).
+    await t.test(
+      "failures after the form POST leave the outcome unknown",
+      async () => {
+        for (const mode of ["down", "lost", "confirmLost"] as const) {
+          const fx = arm({ mode });
+          const message = await fails(502, "tpdb_merge_unknown");
+          assert.match(message, /It may already be submitted\.$/);
+          assert.equal(posts(fx).length, 1, mode);
+        }
+      },
+    );
 
     await t.test(
       "target record read decides before any site call",

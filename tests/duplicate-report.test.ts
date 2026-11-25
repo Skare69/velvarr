@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { duplicateReport } from "../src/lib/duplicate-report.ts";
+import {
+  duplicateReport,
+  mergeNotSubmitted,
+} from "../src/lib/duplicate-report.ts";
 import type {
   CatalogDetail,
   DuplicateMovieMatch,
@@ -86,4 +89,23 @@ test("hash-only report does not invent missing metadata or poster evidence", () 
   assert.ok(!text.includes("undefined"));
   assert.ok(!text.includes("Poster dHash"));
   assert.ok(!text.includes("Tag overlap"));
+});
+
+test("only a proven refusal offers a merge resubmit; any other failure is unknown", () => {
+  for (const code of [
+    "tpdb_merge_rejected",
+    "tpdb_merge_session",
+    "catalog_not_found",
+    "invalid_field",
+    "upstream_unavailable",
+    "provider_not_configured",
+    "rate_limited",
+  ]) {
+    assert.equal(mergeNotSubmitted(code), true, code);
+  }
+  // A lost answer after TPDB got the form, a lost Velvarr response, or an
+  // internal fault: the merge may exist, so a second press could file it twice.
+  for (const code of ["tpdb_merge_unknown", "network", "internal", "error"]) {
+    assert.equal(mergeNotSubmitted(code), false, code);
+  }
 });

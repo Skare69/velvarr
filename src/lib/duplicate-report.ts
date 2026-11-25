@@ -50,6 +50,29 @@ const RULE_WORDS: Record<DuplicateMovieMatch["rules"][number], string> = {
   metadata: "metadata match (cast, year, tags and poster)",
 };
 
+/** Error codes of a merge submit that prove TPDB stored nothing: Velvarr
+ * refused the request, failed before it posted TPDB's form, or TPDB
+ * refused the form. Any other failure (`tpdb_merge_unknown`, a lost
+ * Velvarr response, an internal error) leaves the outcome unknown, so the
+ * UI must not offer a resubmit that could file a second merge. */
+export function mergeNotSubmitted(code: string): boolean {
+  return (
+    code.startsWith("invalid_") ||
+    code.startsWith("upstream_") ||
+    [
+      "tpdb_merge_rejected",
+      "tpdb_merge_session",
+      "catalog_not_found",
+      "provider_not_configured",
+      "payload_too_large",
+      "rate_limited",
+      "forbidden",
+      "unauthenticated",
+      "session_revoked",
+    ].includes(code)
+  );
+}
+
 /** Default notes for TPDB's merge form, which asks where the information
  * comes from. The viewed record (`movie`) merges into `match`. */
 export function mergeNotes(

@@ -8,8 +8,12 @@ import type {
   TpdbMergeRequest,
   TpdbMergeResponse,
 } from "../lib/contracts";
-import { duplicateReport, mergeNotes } from "../lib/duplicate-report";
-import { api, messageOf, useApiGet, useSession } from "./shared";
+import {
+  duplicateReport,
+  mergeNotes,
+  mergeNotSubmitted,
+} from "../lib/duplicate-report";
+import { api, ApiError, messageOf, useApiGet, useSession } from "./shared";
 
 /** Manual fallback: copy a report and submit it on TPDB by hand. */
 function CopyReport({ report }: { report: string }) {
@@ -67,7 +71,8 @@ type MergeState =
   | { kind: "idle" }
   | { kind: "busy" }
   | { kind: "done"; message: string | null }
-  | { kind: "failed"; error: string };
+  | { kind: "failed"; error: string }
+  | { kind: "unknown"; error: string };
 
 /** Admin path: submit TPDB's merge form. The viewed record merges into
  * `match`. Velvarr changes no data of its own here. */
@@ -93,7 +98,11 @@ function MergeForm({
       );
       setState({ kind: "done", message: res.message });
     } catch (err) {
-      setState({ kind: "failed", error: messageOf(err) });
+      const code = err instanceof ApiError ? err.code : "network";
+      setState({
+        kind: mergeNotSubmitted(code) ? "failed" : "unknown",
+        error: messageOf(err),
+      });
     }
   }
   if (state.kind === "done")
@@ -101,6 +110,23 @@ function MergeForm({
       <p role="status" className="cat-note">
         Merge submitted to TPDB.
         {state.message !== null ? ` TPDB: ${state.message}` : ""}
+      </p>
+    );
+  // No resubmit and no report: TPDB may hold the merge already, and a
+  // second press would file it twice.
+  if (state.kind === "unknown")
+    return (
+      <p role="alert" className="cat-note">
+        Merge result unknown: {state.error} Check the{" "}
+        <a
+          className="underline"
+          href={match.tpdbUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          other record on TPDB
+        </a>{" "}
+        before you submit it again.
       </p>
     );
   const busy = state.kind === "busy";

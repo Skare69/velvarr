@@ -131,6 +131,7 @@ async function submit(
   source: string,
   scene: number,
   notes: string,
+  phase: { posted: boolean },
 ): Promise<TpdbMergeResponse> {
   const token = validateToken(tpdbCredential());
   const site = validateBaseUrl(tpdbSiteUrl());
@@ -162,7 +163,9 @@ async function submit(
   collectCookies(form, jar);
   const xsrf = jar.get("XSRF-TOKEN");
   if (xsrf === undefined) throw sessionError("no CSRF cookie");
-
+  // From here on TPDB may have stored the merge even when no answer
+  // arrives: a lost response is not a refusal.
+  phase.posted = true;
   const post = await send(formUrl, {
     method: "POST",
     headers: {
@@ -225,28 +228,49 @@ async function submit(
   return { message: flash.success === null ? null : clean(flash.success) };
 }
 
-/** Submits "source merges into target" on TPDB. Ids are validated UUIDs. */
+function failure(error: unknown): AppError {
+  if (error instanceof AppError) return error;
+  if (error instanceof Error && error.name === "TimeoutError") {
+    return new AppError(
+      504,
+      "upstream_timeout",
+      "TPDB did not respond in time.",
+    );
+  }
+  return new AppError(
+    502,
+    "upstream_unavailable",
+    "TPDB could not be reached.",
+  );
+}
+
+/** Submits "source merges into target" on TPDB. Ids are validated UUIDs.
+ * Once the form POST left, every failure except TPDB's own refusal is
+ * `tpdb_merge_unknown`: the merge may exist, so the client must not offer
+ * a blind resubmit. */
 export async function submitTpdbMovieMerge(
   source: string,
   target: string,
   notes: string,
 ): Promise<TpdbMergeResponse> {
   const scene = await targetNumber(target);
+  const phase = { posted: false };
   try {
-    return await submit(source, scene, notes);
+    return await submit(source, scene, notes, phase);
   } catch (error) {
-    if (error instanceof AppError) throw error;
-    if (error instanceof Error && error.name === "TimeoutError") {
-      throw new AppError(
-        504,
-        "upstream_timeout",
-        "TPDB did not respond in time.",
-      );
-    }
+    const known = failure(error);
+    // tpdb_merge_rejected and tpdb_merge_session are TPDB's own answer
+    // that it stored nothing; anything else after the POST is uncertain.
+    if (
+      !phase.posted ||
+      known.code === "tpdb_merge_rejected" ||
+      known.code === "tpdb_merge_session"
+    )
+      throw known;
     throw new AppError(
       502,
-      "upstream_unavailable",
-      "TPDB could not be reached.",
+      "tpdb_merge_unknown",
+      `TPDB did not confirm the merge (${known.message.replace(/\.$/, "")}). It may already be submitted.`,
     );
   }
 }
