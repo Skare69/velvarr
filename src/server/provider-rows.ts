@@ -175,7 +175,10 @@ export function isProviderImageUrl(url: string): ImageUrlCheck {
   }
   return {
     ok: true,
-    service: u.hostname.endsWith("theporndb.net") ? "tpdb" : "stashdb",
+    service:
+      u.hostname === "cdn.theporndb.net" || u.hostname === "thumb.theporndb.net"
+        ? "tpdb"
+        : "stashdb",
   };
 }
 

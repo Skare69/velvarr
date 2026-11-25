@@ -2162,20 +2162,32 @@ test("upstream fields are normalized: bad dates, absurd durations, insecure imag
 // --- artwork enforcement ---
 
 test("artwork URL gate: https + provider hosts only, derived from live records", () => {
-  assert.equal(
-    isProviderImageUrl("https://cdn.theporndb.net/scene/ab/cd/ef.jpg").ok,
-    true,
+  assert.deepEqual(
+    isProviderImageUrl("https://cdn.theporndb.net/scene/ab/cd/ef.jpg"),
+    { ok: true, service: "tpdb" },
   );
-  assert.equal(
-    isProviderImageUrl("https://thumb.theporndb.net/abc=/500x500/smart").ok,
-    true,
+  assert.deepEqual(
+    isProviderImageUrl("https://thumb.theporndb.net/abc=/500x500/smart"),
+    { ok: true, service: "tpdb" },
   );
-  assert.equal(
+  assert.deepEqual(
     isProviderImageUrl(
       "https://stashdb.org/images/d695a097-3cf5-41c6-bf00-be5c7bc185b8",
-    ).ok,
-    true,
+    ),
+    { ok: true, service: "stashdb" },
   );
+  for (const url of [
+    "https://attackercdn.theporndb.net/x.jpg",
+    "https://attacker.cdn.theporndb.net/x.jpg",
+    "https://cdn.theporndb.net.attacker.example/x.jpg",
+    "https://attackerthumb.theporndb.net/x.jpg",
+    "https://thumb.theporndb.net.attacker.example/x.jpg",
+    "https://attackerstashdb.org/images/x.jpg",
+    "https://stashdb.org.attacker.example/images/x.jpg",
+    "https://attacker.example/https://cdn.theporndb.net/x.jpg",
+  ]) {
+    assert.equal(isProviderImageUrl(url).ok, false, url);
+  }
   // Real studio-CDN host observed on live records: correctly refused.
   assert.deepEqual(
     isProviderImageUrl("https://images02-openlife.gammacdn.com/movies/1.jpg"),
@@ -2264,7 +2276,10 @@ test("artwork gate: loopback only with the named test-fixture origin", () => {
     // The opt-in names one exact origin: that origin opens, its neighbours
     // stay shut.
     process.env.VELVARR_TEST_ARTWORK_ORIGIN = "http://127.0.0.1:22";
-    assert.equal(isProviderImageUrl("http://127.0.0.1:22/x").ok, true);
+    assert.deepEqual(isProviderImageUrl("http://127.0.0.1:22/x"), {
+      ok: true,
+      service: "stashdb",
+    });
     assert.equal(isProviderImageUrl("http://127.0.0.1:23/x").ok, false);
     assert.equal(isProviderImageUrl("http://localhost:22/x").ok, false);
   } finally {
@@ -2364,6 +2379,13 @@ test("property: isProviderImageUrl SSRF invariants over generated URL parts", ()
             arbitrary: fc.constantFrom(
               "www.stashdb.org",
               "stashdb.org.",
+              "attackercdn.theporndb.net",
+              "attacker.cdn.theporndb.net",
+              "cdn.theporndb.net.attacker.example",
+              "attackerthumb.theporndb.net",
+              "thumb.theporndb.net.attacker.example",
+              "attackerstashdb.org",
+              "stashdb.org.attacker.example",
               "cdn.theporndb.net:443",
               ...LOOPBACK_POOL,
             ),
@@ -2378,6 +2400,7 @@ test("property: isProviderImageUrl SSRF invariants over generated URL parts", ()
           "",
           "/a.jpg",
           "/x/y.jpg",
+          "/https://cdn.theporndb.net/x.jpg",
           "/images/d695a097-3cf5-41c6-bf00-be5c7bc185b8",
           "/images/0f47d850-8a93-4a55-9f8e-3ce30d3f1d21",
           "/images/not-a-uuid",
@@ -2432,7 +2455,7 @@ test("property: isProviderImageUrl SSRF invariants over generated URL parts", ()
           }
           assert.equal(
             verdict.service,
-            parsed.hostname.endsWith("theporndb.net") ? "tpdb" : "stashdb",
+            parsed.hostname === "stashdb.org" ? "stashdb" : "tpdb",
             `wrong service for: ${u}`,
           );
           assert.equal(

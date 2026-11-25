@@ -217,6 +217,7 @@ test("checks reject missing config, HTTP failures, malformed and oversized webho
     const result = await checkDiscordConnection(undefined, WEBHOOK);
     assert.ok(result.error);
     assert.ok(!JSON.stringify(result).includes("synthetic"));
+    // The webhook must not appear anywhere in the serialized error.
     assert.ok(!JSON.stringify(result).includes(WEBHOOK));
   }
 });

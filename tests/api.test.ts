@@ -12576,10 +12576,9 @@ test("movie merge: admin-only TPDB website merge, direction, payload and named f
           assert.match(message, /It may already be submitted\.$/);
           assert.equal(posts(fx).length, 1, mode);
           // The key and the session cookie never follow an off-origin hop.
-          assert.ok(
-            !fetched.some((url) => url.startsWith("https://auth.example.test")),
-            mode,
-          );
+          for (const url of fetched) {
+            assert.equal(new URL(url).origin, new URL(tpdbUrl).origin, mode);
+          }
         }
       },
     );

@@ -117,6 +117,7 @@ test("old config and independent stored overrides remain secret-free", () => {
     includeTitlesSource: "stored",
     stored: true,
   });
+  // Check all serialized fields for the secret, not just URL-valued fields.
   assert.ok(!JSON.stringify(summary).includes(webhook));
   delete process.env.VELVARR_DISCORD_WEBHOOK_URL;
   assert.equal(discordConfiguration().configured, false);
