@@ -6161,6 +6161,89 @@ describe("tpdb movie merge", () => {
     }
   });
 
+  test("a filtered browse continues past a walked merge window to the titles behind it", async () => {
+    await bootArmed();
+    const admin = await loginAs("owner");
+    const viewer = await loginAs("member");
+    clearDiscoverCache();
+    resetMetaCache();
+    pagedExtraMovies = { reads: 0 };
+    extraTpdbMovies = [
+      tpdbMovieRow(TPDB_MERGE_A),
+      tpdbMovieRow(TPDB_MERGE_B),
+      tpdbMovieRow(TPDB_MERGE_C),
+    ];
+    let merged = false;
+    try {
+      assert.equal(
+        (await postMerge(admin, TPDB_MERGE_A, TPDB_MERGE_B)).status,
+        201,
+      );
+      merged = true;
+      // A hidden tag no fixture row carries sets localFiltered, so the
+      // browse streams its pages through the merged-stream path where the
+      // upstream cursor decision lives.
+      assert.equal(
+        (
+          await call("PATCH", "/api/me/preferences", {
+            cookie: viewer,
+            body: {
+              hiddenTags: [
+                {
+                  name: "Unrelated Hidden Tag",
+                  tpdb: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+                },
+              ],
+            },
+          })
+        ).status,
+        200,
+      );
+      clearDiscoverCache();
+      resetMetaCache();
+      // Exactly three upstream pages, one row each, A merged into B:
+      // page 1 walks the merged-away A and serves B; page 2 serves C,
+      // never a replay of B.
+      const first = await call(
+        "GET",
+        "/api/browse?type=movie&perPage=1&page=1",
+        { cookie: viewer },
+      );
+      assert.equal(first.status, 200, await first.clone().text());
+      const firstPage = (await first.json()) as {
+        items: { reference: { id: string } }[];
+      };
+      assert.deepEqual(
+        firstPage.items.map((item) => item.reference.id),
+        [TPDB_MERGE_B],
+      );
+      const second = await call(
+        "GET",
+        "/api/browse?type=movie&perPage=1&page=2",
+        { cookie: viewer },
+      );
+      assert.equal(second.status, 200, await second.clone().text());
+      const secondPage = (await second.json()) as {
+        items: { reference: { id: string } }[];
+      };
+      assert.deepEqual(
+        secondPage.items.map((item) => item.reference.id),
+        [TPDB_MERGE_C],
+        "page 2 serves the title behind the walked window, never a replay of B",
+      );
+    } finally {
+      await call("PATCH", "/api/me/preferences", {
+        cookie: viewer,
+        body: { hiddenTags: [] },
+      });
+      pagedExtraMovies = undefined;
+      extraTpdbMovies = [];
+      if (merged) await unmerge(admin, TPDB_MERGE_A);
+      clearDiscoverCache();
+      resetMetaCache();
+    }
+  });
+
   test("a logout during a merge's upstream reads refuses the write with session_expired and stores nothing", async () => {
     await bootArmed();
     const admin = await loginAs("owner");

@@ -1079,6 +1079,10 @@ class Stream {
           : await this.gate(this.base.provider, read);
       this.buffer.push(...result.items.filter(this.visible));
       this.nativeHasMore = result.hasMore;
+      // The served page is the continuation cursor: a merge-aware upstream
+      // may consume several windows for this one read, so the stream's next
+      // fetch continues from the served number instead of replaying it.
+      this.page = result.page;
       this.total = result.total;
       this.totalKnown = result.totalCountKnown;
       this.sort = result.sort;
