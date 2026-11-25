@@ -32,7 +32,6 @@ import {
   listFollows,
   getActiveRequest,
   upsertCatalogRecord,
-  getMovieMerge,
   listMovieMergesFor,
 } from "../../../../server/storage.ts";
 import {
@@ -730,13 +729,25 @@ export async function catalogDetail(
   idRaw: string,
 ): Promise<Response> {
   const reference = parseCatalogReference(providerRaw, kindRaw, idRaw);
-  const detail = await getCatalogDetail(reference);
+  // A merged-away TPDB movie id resolves to its primary's detail at read
+  // time; stored rows keep their stored ids, so an undo restores them. One
+  // extra indexed lookup on TPDB movie details only — no extra upstream call.
+  const detailSource = isMediaReference(reference)
+    ? resolveMovieReference(reference)
+    : reference;
+  const detail = await getCatalogDetail(detailSource);
   if (!detail) {
     throw new AppError(
       404,
       "catalog_not_found",
       "This item is not in the provider catalog.",
     );
+  }
+  // Both a swapped merged-away hit and a direct primary hit name the ids
+  // merged into this record, so the page can offer Unmerge.
+  if (reference.provider === "tpdb" && reference.kind === "movie") {
+    const mergedFromIds = listMovieMergesFor(detail.reference.id);
+    if (mergedFromIds.length > 0) detail.mergedFromIds = mergedFromIds;
   }
   const record = upsertCatalogRecord(detail);
   const media: MediaReference | null = isMediaReference(reference)

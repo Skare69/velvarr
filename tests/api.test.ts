@@ -5253,13 +5253,13 @@ describe("tpdb movie merge", () => {
     mergedId: string,
     primaryId: string,
   ): Promise<Response> =>
-    call("POST", `/api/catalog/tpdb/movie/${mergedId}/merge`, {
+    call("POST", `/api/catalog/tpdb/movie/${mergedId}/velvarr-merge`, {
       cookie,
       body: { primary: mergeRef(primaryId) },
     });
 
   const unmerge = (cookie: string, mergedId: string): Promise<Response> =>
-    call("DELETE", `/api/catalog/tpdb/movie/${mergedId}/merge`, { cookie });
+    call("DELETE", `/api/catalog/tpdb/movie/${mergedId}/velvarr-merge`, { cookie });
 
   const detailOf = async (
     cookie: string,
@@ -5449,7 +5449,7 @@ describe("tpdb movie merge", () => {
     // the merge rule can name it, so this is the parser's invalid_field.
     const otherProvider = await call(
       "POST",
-      `/api/catalog/tpdb/movie/${TPDB_MERGE_A}/merge`,
+      `/api/catalog/tpdb/movie/${TPDB_MERGE_A}/velvarr-merge`,
       {
         cookie: admin,
         body: {
@@ -5462,7 +5462,7 @@ describe("tpdb movie merge", () => {
     // A well-formed media ref that is not a tpdb movie names the merge rule.
     const otherKind = await call(
       "POST",
-      `/api/catalog/tpdb/movie/${TPDB_MERGE_A}/merge`,
+      `/api/catalog/tpdb/movie/${TPDB_MERGE_A}/velvarr-merge`,
       {
         cookie: admin,
         body: { primary: { provider: "tpdb", kind: "scene", id: TPDB_MOVIE2 } },
