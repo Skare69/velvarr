@@ -467,6 +467,12 @@ export type DuplicateMoviesResponse = {
   errors: SourceError[];
 };
 
+/** POST /api/catalog/tpdb/movie/:id/duplicates/merge — the viewed record
+ * (source) merges into `target` on TPDB. `message` is TPDB's own success
+ * text, or null when TPDB accepted the form without one. */
+export type TpdbMergeRequest = { target: string; notes: string };
+export type TpdbMergeResponse = { message: string | null };
+
 /** A shelf that could not be built at all: no items key, only the error. */
 export type ShelfError = { code: string; message: string };
 

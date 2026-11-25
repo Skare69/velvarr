@@ -62,7 +62,7 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const JSON_LIMIT = 2 * 1024 * 1024;
 
 // https://discourse.stashapp.cc/t/rules-for-api-access/21336
-const USER_AGENT = `Velvarr/${packageJson.version} (+https://github.com/Skare69/velvarr)`;
+export const USER_AGENT = `Velvarr/${packageJson.version} (+https://github.com/Skare69/velvarr)`;
 const STASHDB_LIMIT = 60;
 const STASHDB_WINDOW_MS = 60_000;
 
@@ -253,7 +253,7 @@ export function validateBaseUrl(value: string): string {
   return u.origin + u.pathname.replace(/\/+$/, "");
 }
 
-function validateToken(token: string): string {
+export function validateToken(token: string): string {
   if (token === "") return "";
   if (
     typeof token !== "string" ||
@@ -442,7 +442,7 @@ async function requestBounded(
   }
 }
 
-async function readBounded(
+export async function readBounded(
   res: Response,
   limit: number,
   service: Service,

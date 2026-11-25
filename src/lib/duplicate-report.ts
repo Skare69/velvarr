@@ -44,3 +44,27 @@ export function duplicateReport(
   }
   return lines.join("\n");
 }
+
+const RULE_WORDS: Record<DuplicateMovieMatch["rules"][number], string> = {
+  hash: "shared file hash",
+  metadata: "metadata match (cast, year, tags and poster)",
+};
+
+/** Default notes for TPDB's merge form, which asks where the information
+ * comes from. The viewed record (`movie`) merges into `match`. */
+export function mergeNotes(
+  movie: CatalogDetail,
+  match: DuplicateMovieMatch,
+): string {
+  const lines = [
+    `Duplicate of ${match.title} (${match.tpdbUrl}).`,
+    `This record: ${movie.title} (TPDB id ${movie.reference.id})`,
+    `Source site: ${movie.studio?.name ?? "not supplied"}`,
+    `Matched rules: ${match.rules.map((rule) => RULE_WORDS[rule]).join(", ")}`,
+  ];
+  for (const h of match.evidence.sharedHashes ?? []) {
+    lines.push(`Shared ${h.type}: ${h.hash}`);
+  }
+  lines.push("Submitted via Velvarr's duplicate check.");
+  return lines.join("\n");
+}

@@ -33,7 +33,11 @@ import {
 } from "../src/server/artwork-store.ts";
 import { catalogImageUrl, normalizeFacetName } from "../src/lib/contracts.ts";
 import type { IntegrationConfig, ProviderCheck } from "../src/lib/contracts.ts";
-import type { DuplicateMoviesResponse } from "../src/lib/contracts.ts";
+import type {
+  DuplicateMoviesResponse,
+  TpdbMergeRequest,
+  TpdbMergeResponse,
+} from "../src/lib/contracts.ts";
 import type {
   DiscordCheck,
   DiscordSettingsInfo,
@@ -724,6 +728,133 @@ let duplicateFixture:
     }
   | undefined;
 
+// VELV-288: TPDB's website merge form. Armed only by the movie merge test;
+// undefined everywhere else, so tpdbMergeHandler never answers a request.
+type MergeMode =
+  | "ok"
+  | "json200"
+  | "empty200"
+  | "csrf"
+  | "invalid"
+  | "login"
+  | "flashError"
+  | "down";
+type MergeFixture = {
+  mode: MergeMode;
+  targetStatus: number;
+  targetRow: Record<string, unknown>;
+  sessionStatus: number;
+  sessionCookies: string[];
+  requests: {
+    method: string;
+    path: string;
+    auth: string;
+    xsrf: string | undefined;
+    cookie: string | undefined;
+    body?: Record<string, unknown>;
+  }[];
+};
+let mergeFixture: MergeFixture | undefined;
+
+function mergeFlashPage(flash: {
+  error: string | null;
+  success: string | null;
+}): string {
+  const props = JSON.stringify({ component: "x", props: { flash } });
+  return `<!DOCTYPE html><html><body><script>${props}</script></body></html>`;
+}
+
+async function tpdbMergeHandler(
+  merge: MergeFixture,
+  req: IncomingMessage,
+  res: ServerResponse,
+  p: string,
+): Promise<boolean> {
+  const target = `/movies/${DUPLICATE_CANDIDATE}`;
+  const form = `/movies/${DUPLICATE_SOURCE}/merge`;
+  if (p !== target && p !== form) return false;
+  const header = (name: string) => {
+    const value = req.headers[name];
+    return typeof value === "string" ? value : undefined;
+  };
+  const entry: MergeFixture["requests"][number] = {
+    method: req.method ?? "GET",
+    path: p,
+    auth: header("authorization") ?? "",
+    xsrf: header("x-xsrf-token"),
+    cookie: header("cookie"),
+  };
+  merge.requests.push(entry);
+  const html = (status: number, body: string) => {
+    res.writeHead(status, { "content-type": "text/html; charset=utf-8" });
+    res.end(body);
+  };
+  const redirect = (location: string) => {
+    res.writeHead(302, { location });
+    res.end();
+  };
+  if (p === target && entry.method === "GET") {
+    // The API row read carries no cookie; the redirect page read after the
+    // form POST carries the site session, on the same fixture origin.
+    if (entry.cookie !== undefined) {
+      html(
+        200,
+        mergeFlashPage(
+          merge.mode === "flashError"
+            ? { error: "Already merged", success: null }
+            : { error: null, success: "Merge request submitted" },
+        ),
+      );
+      return true;
+    }
+    if (merge.targetStatus !== 200) json(res, merge.targetStatus, {});
+    else json(res, 200, { data: merge.targetRow });
+    return true;
+  }
+  if (p === form && entry.method === "GET") {
+    if (merge.sessionCookies.length > 0) {
+      res.setHeader("set-cookie", merge.sessionCookies);
+    }
+    html(merge.sessionStatus, "<!DOCTYPE html><html><body>form</body></html>");
+    return true;
+  }
+  if (p === form && entry.method === "POST") {
+    entry.body = await readBody(req);
+    switch (merge.mode) {
+      case "ok":
+        redirect(target);
+        break;
+      case "flashError":
+        // Absolute same-origin Location: the relative form is "ok" above.
+        redirect(`${tpdbUrl}${target}`);
+        break;
+      case "login":
+        redirect("/login");
+        break;
+      case "json200":
+        json(res, 200, { message: "Merge queued" });
+        break;
+      case "empty200":
+        json(res, 200, {});
+        break;
+      case "csrf":
+        json(res, 419, { message: "CSRF token mismatch." });
+        break;
+      case "invalid":
+        json(res, 422, {
+          message: "The scene id field is required.",
+          errors: { scene_id: ["The scene id field is required."] },
+        });
+        break;
+      case "down":
+        json(res, 500, {});
+        break;
+    }
+    return true;
+  }
+  return false;
+}
+
 function duplicateMovieRow(id: string): Record<string, unknown> {
   return {
     ...tpdbMovieRow(id),
@@ -930,6 +1061,11 @@ async function tpdbHandler(
   // Path-matched outage: fail specific upstream reads no matter how many
   // calls a route happens to issue around them.
   if (tpdbFx.failPaths.includes(p)) return json(res, 500, {});
+  // Before the Bearer gate so the merge test can assert which requests
+  // carried the token instead of seeing a fixture 401.
+  if (mergeFixture && (await tpdbMergeHandler(mergeFixture, req, res, p))) {
+    return;
+  }
   if (auth !== `Bearer ${tpdbToken}`) return json(res, 401, {});
   if (duplicateFixture) {
     if (p === `/movies/${DUPLICATE_SOURCE}`) {
@@ -12206,6 +12342,193 @@ test("movie duplicates: session boundary, translated pairs, vetoes, hash caps an
       body: { hiddenTags: [] },
     });
     assert.equal(restored.status, 200);
+  }
+});
+
+test("movie merge: admin-only TPDB website merge, direction, payload and named failures", async (t) => {
+  await boot();
+  const owner = await loginAs("owner");
+  const member = await loginAs("member");
+  const at = (reference: string) =>
+    `/api/catalog/${reference}/duplicates/merge`;
+  const path = at(`tpdb/movie/${DUPLICATE_SOURCE}`);
+  const notes = `Duplicate of https://theporndb.net/movies/${DUPLICATE_CANDIDATE}`;
+  const body: TpdbMergeRequest = { target: DUPLICATE_CANDIDATE, notes };
+  const form = `/movies/${DUPLICATE_SOURCE}/merge`;
+  const arm = (patch: Partial<MergeFixture> = {}): MergeFixture => {
+    resetMetaCache();
+    mergeFixture = {
+      mode: "ok",
+      targetStatus: 200,
+      targetRow: { ...tpdbMovieRow(DUPLICATE_CANDIDATE), _id: 5388830 },
+      sessionStatus: 200,
+      sessionCookies: [
+        "XSRF-TOKEN=abc%3D%3D; path=/",
+        "theporndb_session=sess1; path=/; httponly",
+      ],
+      requests: [],
+      ...patch,
+    };
+    return mergeFixture;
+  };
+  const submit = (payload: unknown = body, cookie = owner, route = path) =>
+    call("POST", route, { cookie, body: payload });
+  const posts = (fx: MergeFixture) =>
+    fx.requests.filter((r) => r.method === "POST");
+  const fails = async (
+    status: number,
+    code: string,
+    payload: unknown = body,
+    route = path,
+  ) => {
+    const res = await submit(payload, owner, route);
+    assert.equal(res.status, status);
+    const error = await errorShape(res);
+    assert.equal(error.code, code);
+    return error.message;
+  };
+  const previousSite = process.env.TPDB_SITE_URL;
+  process.env.TPDB_SITE_URL = tpdbUrl;
+  try {
+    await t.test("admin only, validated before any upstream call", async () => {
+      const fx = arm();
+      const before = tpdbFx.calls;
+      assert.equal((await call("POST", path, { body })).status, 401);
+      assert.equal((await submit(body, member)).status, 403);
+      for (const [route, payload, code] of [
+        [at(`tpdb/scene/${DUPLICATE_SOURCE}`), body, "invalid_reference"],
+        [at(`stashdb/movie/${DUPLICATE_SOURCE}`), body, "invalid_reference"],
+        [at("tpdb/movie/not-a-uuid"), body, "invalid_reference"],
+        [
+          path,
+          { target: DUPLICATE_SOURCE.toUpperCase(), notes },
+          "invalid_reference",
+        ],
+        [path, { target: "not-a-uuid", notes }, "invalid_field"],
+        [path, { notes }, "invalid_field"],
+        [path, { target: DUPLICATE_CANDIDATE, notes: "" }, "invalid_field"],
+        [path, { target: DUPLICATE_CANDIDATE, notes: 7 }, "invalid_field"],
+        [
+          path,
+          { target: DUPLICATE_CANDIDATE, notes: "x".repeat(2001) },
+          "invalid_field",
+        ],
+      ] as const) {
+        await fails(400, code, payload, route);
+      }
+      assert.equal(tpdbFx.calls, before, "no upstream call first");
+      assert.deepEqual(fx.requests, []);
+    });
+
+    await t.test(
+      "source merges into target: numeric target id, decoded XSRF, session cookies",
+      async () => {
+        const fx = arm();
+        const res = await submit();
+        assert.equal(res.status, 200);
+        assert.deepEqual((await res.json()) as TpdbMergeResponse, {
+          message: "Merge request submitted",
+        });
+        const sent = posts(fx);
+        assert.equal(sent.length, 1);
+        const post = sent[0]!;
+        assert.equal(post.path, form, "posted to the viewed (source) record");
+        assert.deepEqual(post.body, { scene_id: 5388830, notes });
+        assert.equal(post.xsrf, "abc==");
+        const cookie = post.cookie ?? "";
+        assert.ok(cookie.includes("XSRF-TOKEN=abc%3D%3D"), cookie);
+        assert.ok(cookie.includes("theporndb_session=sess1"), cookie);
+        assert.equal(post.auth, `Bearer ${tpdbToken}`);
+        const session = fx.requests.find(
+          (r) => r.method === "GET" && r.path === form,
+        );
+        assert.equal(session?.auth, `Bearer ${tpdbToken}`);
+        // The redirect page read after the POST carries the site session.
+        const page = fx.requests.at(-1);
+        assert.equal(page?.path, `/movies/${DUPLICATE_CANDIDATE}`);
+        assert.ok(page?.cookie?.includes("theporndb_session=sess1"));
+      },
+    );
+
+    await t.test("2xx JSON answers carry TPDB's message or null", async () => {
+      arm({ mode: "json200" });
+      const queued = await submit({
+        target: DUPLICATE_CANDIDATE,
+        notes: "x".repeat(2000),
+      });
+      assert.equal(queued.status, 200);
+      assert.deepEqual(await queued.json(), { message: "Merge queued" });
+      arm({ mode: "empty200" });
+      const empty = await submit();
+      assert.equal(empty.status, 200);
+      assert.deepEqual(await empty.json(), { message: null });
+    });
+
+    await t.test(
+      "lost or refused site session names tpdb_merge_session",
+      async () => {
+        for (const mode of ["csrf", "login"] as const) {
+          const fx = arm({ mode });
+          await fails(502, "tpdb_merge_session");
+          assert.equal(posts(fx).length, 1, mode);
+        }
+        const noSession: Partial<MergeFixture>[] = [
+          { sessionStatus: 403 },
+          { sessionCookies: [] },
+        ];
+        for (const patch of noSession) {
+          const fx = arm(patch);
+          await fails(502, "tpdb_merge_session");
+          assert.equal(posts(fx).length, 0, "no POST without a site session");
+        }
+        const gone = arm({ sessionStatus: 404 });
+        await fails(404, "catalog_not_found");
+        assert.equal(posts(gone).length, 0);
+      },
+    );
+
+    await t.test("TPDB rejections name TPDB's reason", async () => {
+      arm({ mode: "invalid" });
+      const invalid = await fails(422, "tpdb_merge_rejected");
+      assert.ok(invalid.startsWith("TPDB rejected the merge: "), invalid);
+      assert.ok(invalid.includes("The scene id field is required."), invalid);
+      arm({ mode: "flashError" });
+      const flash = await fails(422, "tpdb_merge_rejected");
+      assert.ok(flash.startsWith("TPDB rejected the merge: "), flash);
+      assert.ok(flash.includes("Already merged"), flash);
+    });
+
+    await t.test("TPDB outage is upstream_unavailable", async () => {
+      arm({ mode: "down" });
+      await fails(502, "upstream_unavailable");
+    });
+
+    await t.test(
+      "target record read decides before any site call",
+      async () => {
+        const missing = arm({ targetStatus: 404 });
+        await fails(404, "catalog_not_found");
+        assert.equal(posts(missing).length, 0);
+        assert.ok(!missing.requests.some((r) => r.path === form));
+        const noId = arm({ targetRow: tpdbMovieRow(DUPLICATE_CANDIDATE) });
+        await fails(502, "upstream_bad_response");
+        assert.equal(posts(noId).length, 0);
+        const other = arm({
+          targetRow: {
+            ...tpdbMovieRow(DUPLICATE_CANDIDATE),
+            id: TPDB_MOVIE,
+            _id: 5388830,
+          },
+        });
+        await fails(502, "upstream_bad_response");
+        assert.equal(posts(other).length, 0);
+      },
+    );
+  } finally {
+    if (previousSite === undefined) delete process.env.TPDB_SITE_URL;
+    else process.env.TPDB_SITE_URL = previousSite;
+    mergeFixture = undefined;
+    resetMetaCache();
   }
 });
 

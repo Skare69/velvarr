@@ -16,6 +16,7 @@ Put the variables in `.env.local`.
 | `TPDB_API_TOKEN`              | no              | TPDB token for calls made without a token saved in Settings. A saved token wins. |
 | `STASHDB_API_KEY`             | no              | StashDB key for calls made without a key saved in Settings. A saved key wins. |
 | `TPDB_BASE_URL`               | no              | TPDB API root override. Default `https://api.theporndb.net`. |
+| `TPDB_SITE_URL`               | no              | TPDB website root override, for the duplicate merge form. Default `https://theporndb.net`. |
 | `STASHDB_BASE_URL`            | no              | StashDB API root override. Default `https://stashdb.org`. |
 | `TYPESAFE_BASE_URL`           | no              | TypeSafe cloud API root override. Unset uses the TypeSafe default. |
 | `TYPESAFE_DEFAULT_MODEL`      | no              | TypeSafe decision model override. Unset uses the TypeSafe default. |

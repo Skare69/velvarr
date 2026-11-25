@@ -405,11 +405,23 @@ export function providerConfigured(provider: "tpdb" | "stashdb"): boolean {
 // Provider API roots: an environment override applies only when it is a
 // non-empty string; otherwise the provider default applies.
 function envBaseUrl(
-  name: "TPDB_BASE_URL" | "STASHDB_BASE_URL",
+  name: "TPDB_BASE_URL" | "STASHDB_BASE_URL" | "TPDB_SITE_URL",
   fallback: string,
 ): string {
   const value = process.env[name];
   return typeof value === "string" && value.trim() !== "" ? value : fallback;
+}
+
+/** TPDB's website root: merges exist only as a website form, never in the
+ * public API (VELV-288). */
+export function tpdbSiteUrl(): string {
+  return envBaseUrl("TPDB_SITE_URL", "https://theporndb.net");
+}
+
+export function tpdbCredential(): string {
+  const token = credential("tpdb");
+  if (token === undefined) throw notConfigured("tpdb");
+  return token;
 }
 
 export function tpdbGet<T>(

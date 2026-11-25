@@ -5,6 +5,8 @@ import {
   parseCatalogReference,
   isMediaReference,
   parseMediaReference,
+  readJson,
+  fieldText,
   type CatalogSearchParams,
 } from "../parse.ts";
 import type {
@@ -68,13 +70,10 @@ import {
 } from "../../../../server/related.ts";
 
 import { duplicateMovies } from "../../../../server/duplicates.ts";
+import { isUuid } from "../../../../server/provider-rows.ts";
+import { submitTpdbMovieMerge } from "../../../../server/tpdb-merge.ts";
 
-export async function duplicatesRoute(
-  ctx: AuthContext,
-  provider: string,
-  kind: string,
-  id: string,
-): Promise<Response> {
+function tpdbMovieId(provider: string, kind: string, id: string): string {
   const reference = parseCatalogReference(provider, kind, id);
   if (reference.provider !== "tpdb" || reference.kind !== "movie") {
     throw new AppError(
@@ -83,12 +82,54 @@ export async function duplicatesRoute(
       "Duplicate checks support TPDB movies only.",
     );
   }
+  return reference.id;
+}
+
+export async function duplicatesRoute(
+  ctx: AuthContext,
+  provider: string,
+  kind: string,
+  id: string,
+): Promise<Response> {
   return json(
     await duplicateMovies(
-      reference.id,
+      tpdbMovieId(provider, kind, id),
       getContentPreferences(ctx.account.id).hiddenTags,
     ),
   );
+}
+
+/** Admin-only: TPDB records the merge under the stored key's account. The
+ * viewed record (source) merges into `target`. */
+async function mergeRoute(
+  request: Request,
+  provider: string,
+  kind: string,
+  id: string,
+): Promise<Response> {
+  const source = tpdbMovieId(provider, kind, id);
+  if (!isUuid(source)) {
+    throw new AppError(
+      400,
+      "invalid_reference",
+      "Provider catalog ids must be UUIDs.",
+    );
+  }
+  const body = await readJson(request);
+  const target = body.target;
+  if (!isUuid(target))
+    throw new AppError(400, "invalid_field", "Invalid target.");
+  const notes = fieldText(body, "notes", 2000);
+  if (notes.trim() === "")
+    throw new AppError(400, "invalid_field", "Invalid notes.");
+  if (target.toLowerCase() === source.toLowerCase()) {
+    throw new AppError(
+      400,
+      "invalid_reference",
+      "A record cannot merge into itself.",
+    );
+  }
+  return json(await submitTpdbMovieMerge(source, target, notes));
 }
 function isTpdbDateOperation(v: string): v is ReleaseDateOperation {
   return ["<", "<=", "=", ">", ">="].includes(v);
@@ -768,6 +809,13 @@ export const routes: RouteDef[] = [
     auth: "session",
     run: async (ctx, _request, p) =>
       duplicatesRoute(ctx, p.provider!, p.kind!, p.id!),
+  },
+  {
+    method: "POST",
+    segments: ["catalog", ":provider", ":kind", ":id", "duplicates", "merge"],
+    auth: "admin",
+    run: async (_ctx, request, p) =>
+      mergeRoute(request, p.provider!, p.kind!, p.id!),
   },
   {
     method: "GET",
