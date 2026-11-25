@@ -862,11 +862,12 @@ export function FacetsView() {
       <header className="page-heading">
         <div>
           <h2 className="page-title">{title}</h2>
-          <p className="text-sm text-muted">
-            {kind === "studios"
-              ? "Studios in recent releases — no provider publishes a full studio directory."
-              : "Every genre each provider lists."}
-          </p>
+          {kind === "studios" && (
+            <p className="text-sm text-muted">
+              Studios in recent releases — no provider publishes a full studio
+              directory.
+            </p>
+          )}
         </div>
       </header>
       {data.errors.length > 0 && (
