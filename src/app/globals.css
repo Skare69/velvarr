@@ -875,12 +875,6 @@ body:has(.auth-page) {
   font-weight: 700;
   letter-spacing: -0.6px;
 }
-.page-description {
-  margin-top: 7px;
-  font-size: 0.9rem;
-  color: var(--color-muted);
-  max-width: 68ch;
-}
 .page-toolbar {
   display: flex;
   flex-wrap: wrap;

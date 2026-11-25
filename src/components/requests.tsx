@@ -591,11 +591,6 @@ export function RequestsView() {
       <div className="page-heading">
         <div className="min-w-0">
           <h2 className="page-title">Requests</h2>
-          <p className="page-description">
-            {isStaff
-              ? "Showing every user's requests."
-              : "Showing only your own requests."}
-          </p>
         </div>
         <button
           type="button"
@@ -608,14 +603,6 @@ export function RequestsView() {
           Refresh
         </button>
       </div>
-
-      <p className="page-description mb-4 mt-4 max-w-prose">
-        A request is one person&rsquo;s intent. Downloading is shared work that
-        several requests can attach to, and playback access is decided per
-        person — neither is changed here. Cancelling removes only that
-        request&rsquo;s intent — never shared media — and a title already
-        imported into the library has nothing left to cancel.
-      </p>
 
       <div className="page-toolbar">
         <ToolbarGroup caption="Type" captionId="req-type-label">

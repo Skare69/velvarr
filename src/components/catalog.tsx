@@ -1672,13 +1672,6 @@ export function TitlesView() {
   // `name` is display-only (never queried) — a forged label can misname the
   // heading but never change results.
   const heading = params.get("name") || "Titles";
-  const typeSummary =
-    type === "movie"
-      ? "TPDB movies"
-      : type === "scene"
-        ? "StashDB scenes"
-        : "TPDB movies and StashDB scenes";
-
   const notConfigured =
     type === "movie" && providers?.tpdb === "not_configured"
       ? "tpdb"
@@ -1911,7 +1904,6 @@ export function TitlesView() {
         <div className="page-heading">
           <div className="min-w-0">
             <h2 className="page-title">{heading}</h2>
-            <p className="page-description">{typeSummary}</p>
           </div>
         </div>
         {/* One toolbar row under the heading, every control the same 44px

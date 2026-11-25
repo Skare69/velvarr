@@ -70,9 +70,6 @@ export function AdminView() {
       <div className="page-heading">
         <div>
           <h1 className="page-title">Users</h1>
-          <p className="page-description">
-            Manage library access, requests, and account permissions.
-          </p>
         </div>
         {/* Rule 32: on coarse pointers the primary action drops below the
          * heading and spans the content width. */}

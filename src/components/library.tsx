@@ -236,9 +236,6 @@ export function LibraryView() {
         <div className="page-heading">
           <div>
             <h1 className="page-title">Your library</h1>
-            <p className="page-description">
-              Browse your collection. Play directly in Jellyfin.
-            </p>
           </div>
           <span className="chip">Jellyfin</span>
         </div>

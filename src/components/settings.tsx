@@ -66,9 +66,6 @@ export function SettingsView() {
       <div className="page-heading">
         <div>
           <h1 className="page-title">Settings</h1>
-          <p className="page-description">
-            Connect your services and make Velvarr yours.
-          </p>
         </div>
       </div>
       <nav className="settings-tabs" aria-label="Settings sections">
