@@ -171,8 +171,8 @@ export function account(libraryIds: string[]): Account {
 }
 
 /** Port 0 so suites can run concurrently; every request is logged before the
- * handler sees it, and a handler that throws answers 500 with the reason
- * instead of hanging the socket and timing the test out. */
+ * handler sees it. A handler that throws returns a generic HTTP 500 response,
+ * never exception details. */
 export function startFixture(handler: FixtureHandler): Promise<Fixture> {
   const { promise, resolve, reject } = Promise.withResolvers<Fixture>();
   const log: RecordedRequest[] = [];
@@ -190,8 +190,8 @@ export function startFixture(handler: FixtureHandler): Promise<Fixture> {
       });
       try {
         handler(req, res, body);
-      } catch (err) {
-        sendJson(res, 500, { fixtureError: String(err) });
+      } catch {
+        sendJson(res, 500, { fixtureError: "Fixture handler failed" });
       }
     });
   });

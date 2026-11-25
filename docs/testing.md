@@ -18,6 +18,17 @@ once. CI runs these two suites; there is no separate connection-only test or
 coverage rerun. The suites check different layers: application logic and API
 behavior versus interactions with the rendered UI.
 
+## Loopback fixture failures
+
+The shared fixture returns HTTP 500 with `{ "fixtureError": "Fixture handler failed" }`.
+The response never contains exception messages, stack traces, or other thrown values.
+
+Run the focused regression with synthetic errors:
+
+```sh
+node --experimental-strip-types --test tests/fixture.test.ts
+```
+
 ## Artwork property review
 
 Run the random-seed review without a change to the sample counts:
