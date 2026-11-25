@@ -11,6 +11,7 @@
 import assert from "node:assert/strict";
 import { test, beforeEach, mock } from "node:test";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import {
   closeSync,
   fstatSync,
@@ -1708,6 +1709,38 @@ test("cache key is per credential: token B never receives token A's cached paylo
     await fixture.close();
   }
 });
+
+for (const concurrent of [false, true]) {
+  test(`former FNV collision isolates metadata ${concurrent ? "in flight" : "in the fresh cache"}`, async () => {
+    // Inert fixture strings share the former FNV-1a value 0xe6c55f8f.
+    const tokenA = "inert-fnv-26178762fb618e63";
+    const tokenB = "inert-fnv-ddb77f0727a02816";
+    let hits = 0;
+    const fixture = await startFixture((req, res) => {
+      hits += 1;
+      sendJson(res, 200, {
+        owner: req.headers.authorization === `Bearer ${tokenA}` ? "A" : "B",
+      });
+    });
+    try {
+      const read = (token: string) =>
+        requestJson<{ owner: string }>(fixture.origin, "/collision", token, {
+          service: "tpdb",
+        });
+      const first = read(tokenA);
+      const results = concurrent
+        ? await Promise.all([first, read(tokenB)])
+        : [await first, await read(tokenB)];
+      assert.deepEqual(results, [{ owner: "A" }, { owner: "B" }]);
+      assert.equal(hits, 2);
+      assert.deepEqual(await read(tokenA), { owner: "A" });
+      assert.deepEqual(await read(tokenB), { owner: "B" });
+      assert.equal(hits, 2);
+    } finally {
+      await fixture.close();
+    }
+  });
+}
 
 // --- not found vs outage ---
 
@@ -6706,12 +6739,80 @@ test("an upstream outage returns the explicit unlinked reason unchanged, never t
   }
 });
 
+test("credential fingerprints remain stable within a process and use exactly 32 hex characters", () => {
+  const key = "inert-guard-fixture";
+  const fingerprint = credentialFingerprint(key);
+  assert.match(fingerprint, /^[0-9a-f]{32}$/);
+  assert.equal(credentialFingerprint(key), fingerprint);
+});
+
+for (const [first, second] of [
+  ["x", "x\0"],
+  ["\ud800", "\ud801"],
+] as const) {
+  test(`credential fingerprints preserve exact identity for ${JSON.stringify([first, second])}`, () => {
+    assert.notEqual(
+      credentialFingerprint(first),
+      credentialFingerprint(second),
+    );
+    assert.equal(
+      rejectedKeyClearAllowed({
+        stored: second,
+        expect: credentialFingerprint(first),
+        fingerprint: credentialFingerprint,
+      }),
+      false,
+    );
+  });
+}
+
+test("credential fingerprints differ between two Node process instances", () => {
+  const providerUrl = new URL("../src/server/providers.ts", import.meta.url)
+    .href;
+  const script = `
+    import { credentialFingerprint } from ${JSON.stringify(providerUrl)};
+    process.stdout.write(credentialFingerprint("inert-process-fixture"));
+  `;
+  const fingerprintFromProcess = () =>
+    execFileSync(
+      process.execPath,
+      ["--experimental-strip-types", "--input-type=module", "--eval", script],
+      {
+        encoding: "utf8",
+        env: { NODE_ENV: "test" },
+        timeout: 15_000,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+  const first = fingerprintFromProcess();
+  const second = fingerprintFromProcess();
+  assert.match(first, /^[0-9a-f]{32}$/);
+  assert.match(second, /^[0-9a-f]{32}$/);
+  assert.notEqual(first, second);
+});
+
+test("a legacy unsalted SHA256 fingerprint cannot authorize a guarded clear", () => {
+  const stored = "inert-legacy-guard-fixture";
+  const legacyFingerprint = createHash("sha256")
+    .update(stored)
+    .digest("hex")
+    .slice(0, 32);
+  assert.equal(
+    rejectedKeyClearAllowed({
+      stored,
+      expect: legacyFingerprint,
+      fingerprint: credentialFingerprint,
+    }),
+    false,
+  );
+});
+
 test("the guarded clear refuses exactly a stored key the fingerprint does not match", () => {
   // The compare-and-set invariant behind the rejected-key auto-clear
   // (VELV-130): a guarded clear may delete only a stored credential that
   // still matches the fingerprint its failed check carried. The identity
   // oracle pins the decision itself; the second half round-trips the real
-  // SHA-256 fingerprint the route passes.
+  // process-local keyed tag the route passes.
   fc.assert(
     fc.property(
       fc.string({ minLength: 0, maxLength: 64 }),
@@ -6748,5 +6849,11 @@ test("the guarded clear refuses exactly a stored key the fingerprint does not ma
         }
       },
     ),
+    {
+      examples: [
+        ["x", "x\0"],
+        ["\ud800", "\ud801"],
+      ],
+    },
   );
 });

@@ -495,6 +495,155 @@ test("a stored admin-UI key works with no environment key", async () => {
   }
 });
 
+for (const boundary of ["stored key", "environment key", "endpoint", "model"]) {
+  test(`TypeSafe ${boundary} changes isolate answers and failure gates`, async () => {
+    const envNames = [
+      "TYPESAFE_API_KEY",
+      "TYPESAFE_BASE_URL",
+      "TYPESAFE_DEFAULT_MODEL",
+      "OLLAMA_BASE_URL",
+      "OLLAMA_MODEL",
+    ] as const;
+    const originalEnv = envNames.map(
+      (name) => [name, process.env[name]] as const,
+    );
+    const realFetch = globalThis.fetch;
+    const keyPrefix = `fixture-${boundary.replaceAll(" ", "-")}`;
+    const originalKey = `${keyPrefix}-a`;
+    const changedKey = `${keyPrefix}-b`;
+    const options = {
+      judgmentProvider: "typesafe" as const,
+      ...(boundary === "environment key"
+        ? {}
+        : { typesafeApiKey: ` ${originalKey} ` }),
+    };
+    const requested = { title: `TypeSafe ${boundary} answer isolation probe` };
+    const candidate = { title: `${requested.title} alternate` };
+    const unanswered = {
+      title: `TypeSafe ${boundary} failure isolation probe`,
+    };
+    const requests: {
+      url: string;
+      authorization: string | null;
+      model: unknown;
+    }[] = [];
+    let down = false;
+    let noul = 0.95;
+    const select = (changed: boolean) => {
+      process.env.TYPESAFE_API_KEY =
+        boundary === "environment key"
+          ? ` ${changed ? changedKey : originalKey} `
+          : `${keyPrefix}-env`;
+      process.env.TYPESAFE_BASE_URL =
+        boundary === "endpoint" && changed
+          ? "https://judgment-fixture.invalid/b"
+          : "https://judgment-fixture.invalid/a";
+      process.env.TYPESAFE_DEFAULT_MODEL =
+        boundary === "model" && changed ? "fixture-model-b" : "fixture-model-a";
+      if (boundary !== "environment key") {
+        options.typesafeApiKey =
+          boundary === "stored key" && changed
+            ? ` ${changedKey} `
+            : ` ${originalKey} `;
+      }
+    };
+    globalThis.fetch = async (input, init) => {
+      requests.push({
+        url: String(input),
+        authorization: new Headers(init?.headers).get("authorization"),
+        model: wireJson(init).model,
+      });
+      if (down) throw new Error("synthetic backend outage");
+      return new Response(
+        JSON.stringify({ answers: { sameWork: { type: "noul", noul } } }),
+        { headers: { "content-type": "application/json" } },
+      );
+    };
+    try {
+      delete process.env.OLLAMA_BASE_URL;
+      delete process.env.OLLAMA_MODEL;
+      resetSameWorkBreaker();
+      select(false);
+      assert.equal(await sameWork(requested, candidate, options), true);
+      if (boundary === "stored key") {
+        process.env.TYPESAFE_API_KEY = "fixture-env-ignored";
+      }
+      assert.equal(await sameWork(requested, candidate, options), true);
+      assert.equal(
+        requests.length,
+        1,
+        "unchanged effective settings reuse the answer",
+      );
+
+      select(true);
+      noul = 0.1;
+      assert.equal(await sameWork(requested, candidate, options), false);
+      assert.equal(await sameWork(requested, candidate, options), false);
+      assert.equal(
+        requests.length,
+        2,
+        "the changed backend keeps its own answer",
+      );
+      select(false);
+      assert.equal(await sameWork(requested, candidate, options), true);
+      assert.equal(requests.length, 2, "the original answer remains available");
+
+      down = true;
+      assert.equal(await sameWork(unanswered, candidate, options), false);
+      assert.equal(await sameWork(unanswered, candidate, options), false);
+      assert.equal(
+        requests.length,
+        3,
+        "the failed backend gates another attempt",
+      );
+      select(true);
+      down = false;
+      noul = 0.95;
+      assert.equal(await sameWork(unanswered, candidate, options), true);
+      assert.equal(await sameWork(unanswered, candidate, options), true);
+      assert.equal(requests.length, 4, "another backend has no failure gate");
+      select(false);
+      assert.equal(await sameWork(unanswered, candidate, options), false);
+      assert.equal(await sameWork(requested, candidate, options), true);
+      assert.equal(
+        requests.length,
+        4,
+        "only unanswered pairs use the failure gate",
+      );
+
+      const originalRequest = {
+        url: "https://judgment-fixture.invalid/a/v1/systemone",
+        authorization: `Bearer ${originalKey}`,
+        model: "fixture-model-a",
+      };
+      const changedRequest = {
+        url:
+          boundary === "endpoint"
+            ? "https://judgment-fixture.invalid/b/v1/systemone"
+            : originalRequest.url,
+        authorization:
+          boundary === "stored key" || boundary === "environment key"
+            ? `Bearer ${changedKey}`
+            : originalRequest.authorization,
+        model: boundary === "model" ? "fixture-model-b" : originalRequest.model,
+      };
+      assert.deepEqual(requests, [
+        originalRequest,
+        changedRequest,
+        originalRequest,
+        changedRequest,
+      ]);
+    } finally {
+      globalThis.fetch = realFetch;
+      resetSameWorkBreaker();
+      for (const [name, value] of originalEnv) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+}
+
 test("suggestTags offers the top three real tags and drops none and junk", async () => {
   delete process.env.TYPESAFE_API_KEY;
   const realFetch = globalThis.fetch;

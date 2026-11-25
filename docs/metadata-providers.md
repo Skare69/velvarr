@@ -37,9 +37,12 @@ provider card on this tab.
 If a saved-credential check proves a stored TPDB or StashDB key was rejected as
 unauthorized, Velvarr deletes that stored override and checks its environment
 fallback. Automatic deletion requires a fingerprint from that saved-key check
-that still matches the current stored key. If another tab replaced it, the
-replacement remains saved and the card asks for another check. A rejection
-without a fingerprint cannot delete anything. An environment key, a rejected
+that still matches the current stored key. The fingerprint is an opaque,
+process-local token with 32 hexadecimal characters. After a restart, or on
+another server process, the server safely rejects the old fingerprint and
+requires a new check. If another tab replaced the key, the replacement remains
+saved and the card asks for another check. A rejection without a fingerprint
+cannot delete anything. An environment key, a rejected
 draft, an outage, a permission error,
 or another inconclusive failure never triggers this deletion.
 

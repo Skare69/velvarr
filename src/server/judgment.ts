@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
 import type { IntegrationConfig, JudgmentProvider } from "../lib/contracts.ts";
 import { isJudgmentProvider, isOllamaModel } from "../lib/contracts.ts";
+import { credentialTag } from "./credential-tag.ts";
 import { AppError, validateBaseUrl } from "./http.ts";
 import { choice, noul, score, TypeSafeClient } from "@typesafe-ai/sdk";
 
@@ -140,9 +140,10 @@ function judgmentBackend(options?: JudgmentOptions) {
   const model = local
     ? settings.model
     : process.env.TYPESAFE_DEFAULT_MODEL?.trim();
-  const identity = createHash("sha256")
-    .update(JSON.stringify([settings.provider, url, model, key]))
-    .digest("hex");
+  const identity = credentialTag(
+    key,
+    JSON.stringify(["judgment-backend", settings.provider, url, model]),
+  );
   if (cached?.identity !== identity) {
     cached = {
       identity,
