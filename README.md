@@ -56,6 +56,7 @@ docker compose up -d
 - Catalogs and one Browse grid across TPDB and StashDB: movies, scenes, performers, and studios, with filters that the URL holds.
 - Requests with administrator or moderator approval, crash-safe acquisition into Whisparr, and per-user Jellyfin watch links. On Browse, "Request all" requests the titles that the grid shows, at most 20 for each press.
 - Performer follows, per-account preferences, similar titles, and an update notice for new releases.
+- Performer match suggestions: a performer page with only one provider offers the probable record on the other provider, with a score and the evidence. You confirm each merge.
 - Possible duplicate TPDB movies on the detail page, with evidence. An administrator can submit a merge to TPDB in one click: TPDB records it under the account of the stored TPDB key. Other users get a report to copy, and a user with the merge grant can merge the pair in Velvarr.
 - Configure optional [Discord notifications](docs/configuration.md#discord-notifications) in Settings → Connections → Discord without a restart.
 - Optional [Smarter library matching](docs/ai.md) and natural-language search.

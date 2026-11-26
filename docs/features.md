@@ -12,6 +12,7 @@
 - **Preferences:** open Preferences from the sidebar, the mobile More menu, or the account menu to edit hidden tags and Discover shelf order while keeping your place.
 - **Similar titles** for movies and scenes, and **Often appears with** for performers.
 - **Possible duplicate movies:** TPDB movie details compare hashes or cast, year, tags, duration, and poster similarity. Copy a manual report with both TPDB links. A user with the merge grant can merge the pair in Velvarr.
+- **Performer match suggestions:** a performer page that shows only TPDB or only StashDB searches the other provider by name and aliases. It compares profile links, birth date, gender, height, eye color, and other published facts, and shows a score with the evidence. Select **Merge** to join the two entries for your account. Velvarr never merges on its own. The check reads at most 10 search results.
 - **Update notice** when a newer GitHub release is available.
 - [Optional Discord notifications](configuration.md#discord-notifications) use Settings → Connections → Discord. Save changes without a restart. Checks never post channel messages.
 - **Optional:** [Smarter library matching](ai.md), through [TypeSafe](https://typesafe.ai) or an [Ollama](ai.md#ai-matching-with-ollama) decision model.

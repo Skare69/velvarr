@@ -2352,16 +2352,17 @@ const PROVIDER_LABELS: Record<CatalogProvider, string> = {
  * to one entry and unfollowing either side drops both. The merge is the
  * user's assertion that these are the same person — this name-matches
  * nothing and never touches a pair the providers published. `autoFollow`
- * carries the survivor's provider-taken snapshot for the one-click merge
- * that also follows the survivor: a missing survivor row is then inserted
- * inside this transaction, so every refusal below rolls it back and leaves
- * no partial follow. Undefined keeps the both-sides-already-followed
- * contract. */
+ * and `autoFollowAbsorbed` carry the provider-taken snapshots for the
+ * one-click merge that also follows either side: a missing row is then
+ * inserted inside this transaction, so every refusal below rolls both new
+ * rows back and leaves no partial follow. Undefined keeps the
+ * side-already-followed contract. */
 export function mergePerformerFollows(
   accountId: string,
   survivor: CatalogReference,
   absorbed: CatalogReference,
   autoFollow: { name: string; imageUrl: string | null } | undefined,
+  autoFollowAbsorbed?: { name: string; imageUrl: string | null },
 ): PerformerFollow {
   if (
     !validCatalogRef(survivor, ["performer"]) ||
@@ -2396,11 +2397,20 @@ export function mergePerformerFollows(
         `follow the ${PROVIDER_LABELS[survivor.provider]} entry first`,
       );
     }
-    const absorbedRow = S().getPerformerFollowByRef.get(
+    let absorbedRow = S().getPerformerFollowByRef.get(
       accountId,
       absorbed.provider,
       absorbed.id,
     ) as PerformerFollowRow | undefined;
+    if (!absorbedRow && autoFollowAbsorbed) {
+      absorbedRow = insertFollowRow(
+        accountId,
+        absorbed,
+        autoFollowAbsorbed.name,
+        autoFollowAbsorbed.imageUrl,
+        null,
+      );
+    }
     if (!absorbedRow) {
       throw new AppError(
         404,

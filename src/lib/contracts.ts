@@ -446,6 +446,50 @@ export type SourceError = {
   message: string;
 };
 
+/** One compared fact behind a performer match suggestion. `points` is its
+ * signed share of the score; a signal exists only when both records publish
+ * the field. */
+export type PerformerMatchSignal = {
+  key:
+    | "linksBack"
+    | "profileLink"
+    | "name"
+    | "birthDate"
+    | "deathDate"
+    | "gender"
+    | "height"
+    | "eyeColor"
+    | "hairColor"
+    | "ethnicity"
+    | "careerStart"
+    | "cupSize";
+  verdict: "match" | "conflict";
+  label: string;
+  points: number;
+};
+
+/** A probable record of the same performer on the other provider. Never a
+ * link: the user confirms each merge. */
+export type PerformerMatchSuggestion = {
+  reference: CatalogReference;
+  title: string;
+  imageUrl?: string;
+  aliases: string[];
+  /** 0..100 */
+  score: number;
+  confidence: "high" | "medium" | "low";
+  signals: PerformerMatchSignal[];
+};
+
+/** GET /api/catalog/:provider/performer/:id/matches — a bounded name search,
+ * not a complete scan of the other provider. */
+export type PerformerMatchesResponse = {
+  suggestions: PerformerMatchSuggestion[];
+  searched: string[];
+  incomplete: string[];
+  errors: SourceError[];
+};
+
 export type DuplicateMovieMatch = {
   reference: CatalogReference;
   title: string;

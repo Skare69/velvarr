@@ -232,6 +232,31 @@ const TPDB_PERFORMER6 = "2a2b3c4d-0000-0000-0000-000000000015";
 // linkedPerformerCounterpart runs the other provider's name search — the
 // only fixture reaching that branch.
 const TPDB_PERFORMER7 = "2a2b3c4d-0000-0000-0000-000000000018";
+// Performer match suggestions (docs/specs/performer-matches.md): one person
+// with a TPDB and a StashDB record that publish no link to each other (same
+// name, same day birth date, same gender), plus a same-named StashDB decoy
+// of another gender. Both sides serve detail and name search. Fresh ids and
+// a name no other test searches, so no existing count moves.
+const MATCH_NAME = "Suggested Match Performer";
+const TPDB_PERFORMER_MATCH = "2a2b3c4d-0000-0000-0000-00000000a7c1";
+const STASH_PERFORMER_MATCH = "4c4d5e6f-0000-0000-0000-0000000a7c01";
+const STASH_PERFORMER_DECOY = "4c4d5e6f-0000-0000-0000-0000000a7c02";
+// A StashDB performer the provider authoritatively lacks
+// (findPerformer: null): the merge's missing-counterpart refusal.
+const STASH_PERFORMER_GONE = "4c4d5e6f-0000-0000-0000-0000000a7c03";
+const stashMatchRows = [
+  { id: STASH_PERFORMER_MATCH, gender: "FEMALE" },
+  { id: STASH_PERFORMER_DECOY, gender: "MALE" },
+].map(({ id, gender }) => ({
+  id,
+  name: MATCH_NAME,
+  deleted: false,
+  aliases: [],
+  urls: [],
+  images: [],
+  gender,
+  birthdate: { date: "1990-05-04", accuracy: "DAY" },
+}));
 const TPDB_STUDIO = "2a2b3c4d-0000-0000-0000-0000000000a1";
 // Second studio on the /movies snapshot: no published counterpart anywhere,
 // so the unified Studios shelf can prove unlinked tiles still render.
@@ -1263,10 +1288,24 @@ async function tpdbHandler(
     });
   }
   if (p === "/performers") {
+    const matchSearch = url.searchParams.get("q") === MATCH_NAME;
     return json(res, 200, {
-      data: [{ id: TPDB_PERFORMER, name: "Fixture Performer" }],
+      data: matchSearch
+        ? [{ id: TPDB_PERFORMER_MATCH, name: MATCH_NAME }]
+        : [{ id: TPDB_PERFORMER, name: "Fixture Performer" }],
       meta: { total: 1 },
       links: {},
+    });
+  }
+  // The match pair's TPDB side: no extras.links, so nothing names its
+  // StashDB record; only the published facts can suggest it.
+  if (p === `/performers/${TPDB_PERFORMER_MATCH}`) {
+    return json(res, 200, {
+      data: {
+        id: TPDB_PERFORMER_MATCH,
+        name: MATCH_NAME,
+        extras: { gender: "Female", birthday: "1990-05-04" },
+      },
     });
   }
   // The only performer record with a published counterpart URL; TPDB carries
@@ -1635,21 +1674,35 @@ async function stashdbHandler(
     });
   }
   if (query.includes("searchPerformers")) {
-    return json(res, 200, {
-      data: {
-        searchPerformers: {
-          count: 1,
-          performers: [
+    const term = (body.variables as { t?: unknown } | undefined)?.t;
+    const performers =
+      term === MATCH_NAME
+        ? stashMatchRows
+        : [
             {
               id: STASH_PERFORMER,
               name: "Fixture Performer",
               deleted: false,
               images: [],
             },
-          ],
-        },
+          ];
+    return json(res, 200, {
+      data: {
+        searchPerformers: { count: performers.length, performers },
       },
     });
+  }
+  // The match pair's StashDB side and its decoy, plus one performer StashDB
+  // authoritatively lacks (a null dataKey, not an outage).
+  if (query.includes("findPerformer")) {
+    const wanted = (body.variables as { id?: unknown } | undefined)?.id;
+    const row = stashMatchRows.find((r) => r.id === wanted);
+    if (row !== undefined) {
+      return json(res, 200, { data: { findPerformer: row } });
+    }
+    if (wanted === STASH_PERFORMER_GONE) {
+      return json(res, 200, { data: { findPerformer: null } });
+    }
   }
   // Only the counterpart of the linked TPDB record resolves, plus the
   // user-merge pair's StashDB side; every other StashDB performer detail
@@ -10867,7 +10920,7 @@ test("follows are capped per account: the follow past the cap is refused and the
   );
 });
 
-test("a merge refuses same-provider, unfollowed, and already-merged entries", async () => {
+test("a merge refuses same-provider, missing-catalog, and already-merged entries", async () => {
   assert.equal(
     (
       await call("POST", "/api/follows/merge", {
@@ -10930,22 +10983,25 @@ test("a merge refuses same-provider, unfollowed, and already-merged entries", as
   const stash3 = { provider: "stashdb", id: STASH_PERFORMER3 };
 
   await follow("tpdb", TPDB_PERFORMER5, "User-Merged Fixture Performer");
-  // The counterpart must already be followed; the 404 names the missing
-  // side. The survivor is already followed here, so no provider read runs.
-  const missingCounterpart = await merge(tpdb5, stash3);
+  // A counterpart the provider does not have refuses with 404
+  // catalog_not_found. The survivor is already followed here, so the only
+  // provider read is the counterpart's snapshot.
+  const gone = { provider: "stashdb", id: STASH_PERFORMER_GONE };
+  const missingCounterpart = await merge(tpdb5, gone);
   assert.equal(missingCounterpart.status, 404);
-  const missingBody = await errorShape(missingCounterpart);
-  assert.equal(missingBody.code, "follow_not_found");
-  assert.match(missingBody.message, /StashDB/);
-  // A missing survivor no longer refuses on its own side: the merge follows
-  // it from the provider snapshot, so the missing side is now the
-  // counterpart — and the auto-followed row is rolled back with the refusal.
+  assert.equal(
+    (await errorShape(missingCounterpart)).code,
+    "catalog_not_found",
+  );
+  // Neither side followed: the merge follows the survivor from its provider
+  // snapshot, the missing counterpart refuses, and the refusal rolls the new
+  // survivor row back.
   const missingSurvivor = await merge(
     { provider: "tpdb", id: TPDB_PERFORMER3 },
-    stash3,
+    gone,
   );
   assert.equal(missingSurvivor.status, 404);
-  assert.match((await errorShape(missingSurvivor)).message, /StashDB/);
+  assert.equal((await errorShape(missingSurvivor)).code, "catalog_not_found");
   // Neither refusal left a follow behind: the list still holds exactly the
   // three pre-existing entries.
   const refusalList = await call("GET", "/api/follows", { cookie: member2 });
@@ -10955,8 +11011,20 @@ test("a merge refuses same-provider, unfollowed, and already-merged entries", as
     [STASH_PERFORMER, TPDB_PERFORMER, TPDB_PERFORMER5].sort(),
   );
 
-  await follow("stashdb", STASH_PERFORMER3, "User-Merged Fixture Performer");
-  assert.equal((await merge(tpdb5, stash3)).status, 200);
+  // Contract moved (docs/specs/performer-matches.md, "Merge"): this call
+  // used to refuse with 404 follow_not_found because the StashDB
+  // counterpart was not followed. A match suggestion's one-click Merge now
+  // follows the counterpart from its provider snapshot, so the same merge
+  // succeeds and links the pair.
+  const merged = await merge(tpdb5, stash3);
+  assert.equal(merged.status, 200);
+  const mergedBody = (await merged.json()) as { follow: FollowShape };
+  assert.equal(mergedBody.follow.reference.id, TPDB_PERFORMER5);
+  assert.deepEqual(mergedBody.follow.linked, {
+    provider: "stashdb",
+    kind: "performer",
+    id: STASH_PERFORMER3,
+  });
 
   // The survivor is already merged: a third entry cannot join.
   await follow("stashdb", STASH_PERFORMER4, "Third Fixture Performer");
@@ -10966,6 +11034,23 @@ test("a merge refuses same-provider, unfollowed, and already-merged entries", as
   });
   assert.equal(survivorLinked.status, 409);
   assert.equal((await errorShape(survivorLinked)).code, "already_linked");
+  // The same refusal with an unfollowed counterpart: its auto-followed row
+  // is rolled back with the 409.
+  const survivorLinkedFresh = await merge(tpdb5, {
+    provider: "stashdb",
+    id: STASH_PERFORMER_DECOY,
+  });
+  assert.equal(survivorLinkedFresh.status, 409);
+  assert.equal((await errorShape(survivorLinkedFresh)).code, "already_linked");
+  const afterFresh = await call("GET", "/api/follows", { cookie: member2 });
+  assert.equal(
+    ((await afterFresh.json()) as { follows: FollowShape[] }).follows.some(
+      (f) =>
+        f.reference.id === STASH_PERFORMER_DECOY ||
+        f.linked?.id === STASH_PERFORMER_DECOY,
+    ),
+    false,
+  );
   // Reverse direction: merging from the absorbed side's page is the same 409.
   const absorbedSide = await merge(
     { provider: "stashdb", id: STASH_PERFORMER3 },
@@ -10996,6 +11081,163 @@ test("a merge refuses same-provider, unfollowed, and already-merged entries", as
     .map((f) => f.reference.id)
     .sort();
   assert.deepEqual(baselineIds, [STASH_PERFORMER, TPDB_PERFORMER].sort());
+});
+
+test("performer match suggestions offer the other provider's probable record", async () => {
+  const matches = (provider: string, kind: string, id: string) =>
+    call("GET", `/api/catalog/${provider}/${kind}/${id}/matches`, {
+      cookie: member2,
+    });
+  type MatchesBody = {
+    suggestions: {
+      reference: { provider: string; kind: string; id: string };
+      title: string;
+      score: number;
+      confidence: string;
+      signals: { key: string; verdict: string; points: number }[];
+    }[];
+    searched: string[];
+    incomplete: string[];
+    errors: unknown[];
+  };
+  assert.equal(
+    (
+      await call(
+        "GET",
+        `/api/catalog/tpdb/performer/${TPDB_PERFORMER_MATCH}/matches`,
+      )
+    ).status,
+    401,
+  );
+
+  // TPDB side: the same-named StashDB record with the same birth date and
+  // gender is offered; the same-named decoy of another gender is not.
+  const fromTpdb = await matches("tpdb", "performer", TPDB_PERFORMER_MATCH);
+  assert.equal(fromTpdb.status, 200);
+  const tpdbBody = (await fromTpdb.json()) as MatchesBody;
+  assert.deepEqual(tpdbBody.searched, [MATCH_NAME]);
+  assert.deepEqual(tpdbBody.incomplete, []);
+  assert.deepEqual(tpdbBody.errors, []);
+  assert.deepEqual(
+    tpdbBody.suggestions.map((s) => s.reference),
+    [{ provider: "stashdb", kind: "performer", id: STASH_PERFORMER_MATCH }],
+  );
+  const stashHit = tpdbBody.suggestions[0]!;
+  assert.equal(stashHit.title, MATCH_NAME);
+  assert.ok(stashHit.score >= 55, `score ${stashHit.score}`);
+  assert.deepEqual(
+    stashHit.signals
+      .filter((s) => s.key === "birthDate")
+      .map((s) => [s.verdict, s.points]),
+    [["match", 40]],
+  );
+  assert.equal(
+    stashHit.signals.some((s) => s.verdict === "conflict"),
+    false,
+  );
+
+  // The reverse: the StashDB record's page offers the TPDB record.
+  const fromStash = await matches(
+    "stashdb",
+    "performer",
+    STASH_PERFORMER_MATCH,
+  );
+  assert.equal(fromStash.status, 200);
+  const stashBody = (await fromStash.json()) as MatchesBody;
+  assert.deepEqual(stashBody.searched, [MATCH_NAME]);
+  assert.deepEqual(stashBody.errors, []);
+  assert.deepEqual(
+    stashBody.suggestions.map((s) => s.reference),
+    [{ provider: "tpdb", kind: "performer", id: TPDB_PERFORMER_MATCH }],
+  );
+  assert.ok(stashBody.suggestions[0]!.score >= 55);
+
+  // Only performers have matches.
+  const movie = await matches("tpdb", "movie", TPDB_MOVIE);
+  assert.equal(movie.status, 400);
+  assert.equal((await errorShape(movie)).code, "invalid_reference");
+
+  // A performer whose record publishes its StashDB counterpart needs no
+  // suggestion: the answer is empty and no StashDB search runs.
+  const dispatchesBefore = stashDispatches.count;
+  const linked = await matches("tpdb", "performer", TPDB_PERFORMER4);
+  assert.equal(linked.status, 200);
+  assert.deepEqual(await linked.json(), {
+    suggestions: [],
+    searched: [],
+    incomplete: [],
+    errors: [],
+  });
+  assert.equal(stashDispatches.count, dispatchesBefore);
+});
+
+test("a suggestion's merge follows both unfollowed sides and links them", async () => {
+  const listed = async () => {
+    const res = await call("GET", "/api/follows", { cookie: member2 });
+    assert.equal(res.status, 200);
+    return ((await res.json()) as { follows: FollowShape[] }).follows;
+  };
+  const baseline = await listed();
+  const isPair = (f: FollowShape) =>
+    f.reference.id === TPDB_PERFORMER_MATCH ||
+    f.reference.id === STASH_PERFORMER_MATCH;
+  assert.deepEqual(baseline.filter(isPair), []);
+  const counterpart = {
+    provider: "stashdb",
+    kind: "performer",
+    id: STASH_PERFORMER_MATCH,
+  };
+  try {
+    const merged = await call("POST", "/api/follows/merge", {
+      cookie: member2,
+      body: {
+        performer: {
+          provider: "tpdb",
+          kind: "performer",
+          id: TPDB_PERFORMER_MATCH,
+        },
+        counterpart,
+      },
+    });
+    assert.equal(merged.status, 200);
+    const follow = ((await merged.json()) as { follow: FollowShape }).follow;
+    assert.deepEqual(follow.reference, {
+      provider: "tpdb",
+      kind: "performer",
+      id: TPDB_PERFORMER_MATCH,
+    });
+    assert.equal(follow.name, MATCH_NAME);
+    assert.deepEqual(follow.linked, counterpart);
+    // One entry for the person: the survivor, naming its counterpart.
+    const after = await listed();
+    assert.deepEqual(after.filter(isPair), [follow]);
+    assert.deepEqual(
+      after.filter((f) => !isPair(f)),
+      baseline.filter((f) => !isPair(f)),
+    );
+    // The account's merge is a counterpart: both pages stop suggesting.
+    for (const path of [
+      `tpdb/performer/${TPDB_PERFORMER_MATCH}`,
+      `stashdb/performer/${STASH_PERFORMER_MATCH}`,
+    ]) {
+      const res = await call("GET", `/api/catalog/${path}/matches`, {
+        cookie: member2,
+      });
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), {
+        suggestions: [],
+        searched: [],
+        incomplete: [],
+        errors: [],
+      });
+    }
+  } finally {
+    // Unfollowing the survivor drops the whole pair.
+    await call("DELETE", `/api/follows/tpdb/${TPDB_PERFORMER_MATCH}`, {
+      cookie: member2,
+    });
+  }
+  assert.deepEqual(await listed(), baseline);
 });
 
 test("catalog detail resolves a user-merged pair's link from the stored merge", async () => {

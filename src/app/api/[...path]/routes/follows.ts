@@ -119,12 +119,28 @@ export async function deleteFollowRoute(
   return new Response(null, { status: 204 });
 }
 
+/** A follow snapshot of `reference` taken from its provider detail with the
+ * same rules as a Follow press; a missing record is a 404. */
+async function followSnapshot(
+  reference: CatalogReference,
+): Promise<{ name: string; imageUrl: string | null }> {
+  const detail = await getCatalogDetail(reference);
+  if (!detail) {
+    throw new AppError(
+      404,
+      "catalog_not_found",
+      "This item is not in the provider catalog.",
+    );
+  }
+  return { name: detail.title, imageUrl: followImage(detail.imageUrl) };
+}
+
 /** Merges two entries the user asserts are the same person and the providers
- * never linked. The counterpart must already be followed; the survivor
- * (`performer`) is followed on the spot when it is not yet, its snapshot
- * taken from the provider detail with the same rules as a Follow press. The
- * survivor row names the counterpart, exactly as a provider-published pair
- * would. */
+ * never linked. Either side that is not followed yet is followed on the
+ * spot, its snapshot taken from the provider detail with the same rules as a
+ * Follow press, so one Merge click on a match suggestion follows both. The
+ * survivor (`performer`) row names the counterpart, exactly as a
+ * provider-published pair would. */
 export async function mergeFollowsRoute(
   request: Request,
   ctx: AuthContext,
@@ -140,30 +156,25 @@ export async function mergeFollowsRoute(
     );
   }
   // Existing follows keep their snapshots and do not depend on provider reads.
-  const followed = listFollows(ctx.account.id).some(
-    (f) =>
-      (f.reference.provider === performer.provider &&
-        f.reference.id === performer.id) ||
-      (f.linked?.provider === performer.provider &&
-        f.linked?.id === performer.id),
-  );
-  let autoFollow: { name: string; imageUrl: string | null } | undefined;
-  if (!followed) {
-    const detail = await getCatalogDetail(performer);
-    if (!detail) {
-      throw new AppError(
-        404,
-        "catalog_not_found",
-        "This item is not in the provider catalog.",
-      );
-    }
-    autoFollow = { name: detail.title, imageUrl: followImage(detail.imageUrl) };
-  }
+  const follows = listFollows(ctx.account.id);
+  const followed = (ref: CatalogReference) =>
+    follows.some(
+      (f) =>
+        (f.reference.provider === ref.provider && f.reference.id === ref.id) ||
+        (f.linked?.provider === ref.provider && f.linked?.id === ref.id),
+    );
+  const autoFollow = followed(performer)
+    ? undefined
+    : await followSnapshot(performer);
+  const autoFollowAbsorbed = followed(counterpart)
+    ? undefined
+    : await followSnapshot(counterpart);
   const follow = mergePerformerFollows(
     ctx.account.id,
     performer,
     counterpart,
     autoFollow,
+    autoFollowAbsorbed,
   );
   return json({ follow }, 200);
 }

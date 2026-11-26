@@ -81,6 +81,7 @@ import {
 import { duplicateMovies } from "../../../../server/duplicates.ts";
 import { isUuid } from "../../../../server/provider-rows.ts";
 import { submitTpdbMovieMerge } from "../../../../server/tpdb-merge.ts";
+import { performerMatchSuggestions } from "../../../../server/performer-suggestions.ts";
 
 function tpdbMovieId(provider: string, kind: string, id: string): string {
   const reference = parseCatalogReference(provider, kind, id);
@@ -106,6 +107,40 @@ export async function duplicatesRoute(
       getContentPreferences(ctx.account.id).hiddenTags,
     ),
   );
+}
+
+/** Probable records of this performer on the other provider. A performer
+ * that already has a counterpart (provider link, shared profile link, or the
+ * account's own merge) gets an empty answer and no search. */
+async function performerMatchesRoute(
+  ctx: AuthContext,
+  provider: string,
+  kind: string,
+  id: string,
+): Promise<Response> {
+  const reference = parseCatalogReference(provider, kind, id);
+  if (reference.kind !== "performer") {
+    throw new AppError(
+      400,
+      "invalid_reference",
+      "Match suggestions support performers only.",
+    );
+  }
+  const detail = await getCatalogDetail(reference);
+  if (!detail) {
+    throw new AppError(
+      404,
+      "catalog_not_found",
+      "This item is not in the provider catalog.",
+    );
+  }
+  if (
+    getPerformerLink(ctx.account.id, reference) !== null ||
+    (await linkedPerformerCounterpart(detail)).linked !== undefined
+  ) {
+    return json({ suggestions: [], searched: [], incomplete: [], errors: [] });
+  }
+  return json(await performerMatchSuggestions(detail));
 }
 
 /** Admin-only: TPDB records the merge under the stored key's account. The
@@ -905,6 +940,13 @@ export const routes: RouteDef[] = [
     auth: "session",
     run: async (ctx, _request, p) =>
       duplicatesRoute(ctx, p.provider!, p.kind!, p.id!),
+  },
+  {
+    method: "GET",
+    segments: ["catalog", ":provider", ":kind", ":id", "matches"],
+    auth: "session",
+    run: async (ctx, _request, p) =>
+      performerMatchesRoute(ctx, p.provider!, p.kind!, p.id!),
   },
   {
     method: "POST",

@@ -15,6 +15,7 @@ import {
   ErrorPanel,
   GridSkeleton,
   detailParams,
+  detailHref,
   ClampedText,
   Icon,
   imgSrc,
@@ -38,6 +39,8 @@ import type {
   CatalogProvider,
   CatalogReference,
   PerformerFollow,
+  PerformerMatchesResponse,
+  PerformerMatchSuggestion,
   FollowResponse,
 } from "../lib/contracts";
 import {
@@ -735,11 +738,191 @@ function MergeControl({
           </button>
           <p className="mt-1 text-xs text-muted">
             Use this only if you know both entries are the same person — the
-            merge records your assertion; Velvarr never matches by name.
+            merge records your choice and follows both entries.
           </p>
         </>
       )}
     </div>
+  );
+}
+
+/* ---------- Possible matches on the other provider ---------- */
+
+const CONFIDENCE_LABEL = {
+  high: "Strong match",
+  medium: "Likely match",
+  low: "Possible match",
+} as const satisfies Record<PerformerMatchSuggestion["confidence"], string>;
+
+/** Probable records of this performer on the other provider, scored from the
+ * facts both providers publish. A suggestion is never a link: only the
+ * user's Merge press pairs the two records. Rendered only while this page's
+ * provider link is missing. */
+function MatchSuggestions({
+  reference,
+  onOpen,
+  onMerged,
+}: {
+  reference: CatalogReference;
+  onOpen: (r: CatalogReference) => void;
+  onMerged: () => void;
+}) {
+  const other: CatalogProvider =
+    reference.provider === "tpdb" ? "stashdb" : "tpdb";
+  const otherLabel = providerLabel(other);
+  const headingId = useId();
+  const { data, error, loading, reload } = useApiGet<PerformerMatchesResponse>(
+    `/api/catalog/${reference.provider}/performer/${encodeURIComponent(reference.id)}/matches`,
+    [reference.provider, reference.id],
+  );
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [mergeError, setMergeError] = useState<string | null>(null);
+
+  const merge = async (s: PerformerMatchSuggestion) => {
+    setBusyId(s.reference.id);
+    setMergeError(null);
+    try {
+      await api("/api/follows/merge", {
+        method: "POST",
+        body: JSON.stringify({
+          performer: {
+            provider: reference.provider,
+            kind: "performer",
+            id: reference.id,
+          },
+          counterpart: s.reference,
+        }),
+      });
+      // The parent refetches the page; the link resolves and this panel
+      // unmounts, so the local list needs no update.
+      onMerged();
+    } catch (e) {
+      setMergeError(messageOf(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  if (loading) {
+    return (
+      <p className="mt-4 text-sm text-muted" aria-live="polite">
+        Looking for this performer on {otherLabel}…
+      </p>
+    );
+  }
+  if (error !== null) {
+    return (
+      <p className="mt-4 text-sm text-danger" role="alert">
+        Possible {otherLabel} matches are unavailable: {error}{" "}
+        <button type="button" className="btn" onClick={reload}>
+          Retry
+        </button>
+      </p>
+    );
+  }
+  if (
+    data === null ||
+    (data.suggestions.length === 0 && data.errors.length === 0)
+  ) {
+    return null;
+  }
+
+  return (
+    <section className="mt-4" aria-labelledby={headingId}>
+      <h4 id={headingId} className="text-sm font-semibold">
+        Possible {otherLabel} matches
+      </h4>
+      <p className="mt-1 text-xs text-muted">
+        Velvarr compares the facts both providers publish. Merge only when you
+        are sure: the merge records your choice and follows both entries.
+      </p>
+      {data.suggestions.length > 0 && (
+        <ul
+          className="mt-3 space-y-4"
+          aria-label={`Possible ${otherLabel} matches`}
+        >
+          {data.suggestions.map((s) => (
+            <li key={s.reference.id} className="flex items-start gap-3">
+              <ItemImage
+                name={s.title}
+                src={imgSrc(s.imageUrl, 200)}
+                className="h-16 w-12 shrink-0 rounded object-cover"
+              />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <a
+                    className="cat-inline-link"
+                    href={detailHref(s.reference)}
+                    onClick={spaClick(() => onOpen(s.reference))}
+                  >
+                    {s.title}
+                  </a>
+                  <span className="filter-chip whitespace-nowrap">
+                    {s.score}% · {CONFIDENCE_LABEL[s.confidence]}
+                  </span>
+                </div>
+                {s.signals.length > 0 && (
+                  <ul
+                    className="mt-1 space-y-0.5 text-sm"
+                    aria-label={`Evidence for ${s.title}`}
+                  >
+                    {s.signals.map((sig) => (
+                      <li
+                        key={`${sig.key}:${sig.label}`}
+                        className={`flex items-start gap-1.5 ${sig.verdict === "match" ? "text-ok" : "text-danger"}`}
+                      >
+                        <Icon
+                          name={sig.verdict === "match" ? "check" : "close"}
+                        />
+                        <span>
+                          <span className="sr-only">
+                            {sig.verdict === "match"
+                              ? "Matches: "
+                              : "Conflicts: "}
+                          </span>
+                          {sig.label}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <button
+                type="button"
+                className="btn shrink-0"
+                disabled={busyId !== null}
+                aria-busy={busyId === s.reference.id}
+                aria-label={`Merge with ${s.title} on ${otherLabel}`}
+                onClick={() => void merge(s)}
+              >
+                {busyId === s.reference.id ? "Merging…" : "Merge"}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {mergeError !== null && (
+        <p className="mt-2 text-sm text-danger" role="alert">
+          {mergeError}
+        </p>
+      )}
+      {data.errors.map((e, i) => (
+        <p key={`${e.provider}:${i}`} className="mt-2 text-xs text-danger">
+          {providerLabel(e.provider)}: {e.message}
+        </p>
+      ))}
+      {data.incomplete.map((note) => (
+        <p key={note} className="mt-1 text-xs text-muted">
+          {note}
+        </p>
+      ))}
+      {data.searched.length > 0 && (
+        <p className="mt-1 text-xs text-muted">
+          Searched {otherLabel} for:{" "}
+          {data.searched.map((q) => `“${q}”`).join(", ")}.
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -1580,6 +1763,14 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
                     message={`Pairing with ${providerLabel(linkFailure.provider)} is unknown: the lookup failed (${linkFailure.message}). This is not a confirmed absence — retry, or merge the two entries yourself.`}
                     onRetry={() => setReload((n) => n + 1)}
                   />
+                  <MatchSuggestions
+                    reference={reference}
+                    onOpen={open}
+                    onMerged={() => {
+                      setMerged(`${reference.provider}:${reference.id}`);
+                      setReload((n) => n + 1);
+                    }}
+                  />
                   <MergeControl
                     reference={reference}
                     onMerged={() => {
@@ -1597,8 +1788,16 @@ export function PerformerView({ reference }: { reference: CatalogReference }) {
                   </h3>
                   <p className="mt-2 text-sm text-muted">
                     {unlinkedReason ??
-                      `${providerLabel(reference.provider)} publishes no ${providerLabel(missing)} link for this performer, and ${providerLabel(missing)} is the only source for ${missing === "tpdb" ? "movies" : "scenes"}. Velvarr pairs only the records the providers link themselves — it never matches performers by name.`}
+                      `${providerLabel(reference.provider)} publishes no ${providerLabel(missing)} link for this performer, and ${providerLabel(missing)} is the only source for ${missing === "tpdb" ? "movies" : "scenes"}. Velvarr links only the records the providers link themselves; it can suggest possible matches, but only you can merge them.`}
                   </p>
+                  <MatchSuggestions
+                    reference={reference}
+                    onOpen={open}
+                    onMerged={() => {
+                      setMerged(`${reference.provider}:${reference.id}`);
+                      setReload((n) => n + 1);
+                    }}
+                  />
                   <MergeControl
                     reference={reference}
                     onMerged={() => {
