@@ -488,29 +488,30 @@
 .dup > .cat-section-title {
   color: var(--color-accent-text);
 }
-/* A found duplicate gets a magenta-soft banner across the panel top. The
-   banner is the summary of a closed disclosure: the matches and merge
-   actions open below it. An errors-only check keeps the plain title and
-   stays open. The banner rounds its own corners (9px = the panel's 10px
-   minus its 1px edge), so no overflow clip hides its focus ring. */
+/* A found duplicate gets a one-line magenta-soft banner across the panel
+   top: icon, headline, and the Details cue at the end. The banner is the
+   summary of a closed disclosure: the matches and merge actions open below
+   it. An errors-only check keeps the plain title and stays open. The banner
+   rounds its own corners (9px = the panel's 10px minus its 1px edge), so no
+   overflow clip hides its focus ring. */
 .dup:has(> .dup-disclosure > .dup-banner:not(.dup-banner-done)) {
   border-color: color-mix(in oklab, var(--color-accent) 45%, var(--color-edge));
 }
 .dup-banner {
-  display: grid;
-  grid-template-columns: auto minmax(0, max-content) 1fr;
-  grid-template-areas:
-    "icon eyebrow ."
-    "icon head toggle";
+  display: flex;
   align-items: center;
-  column-gap: 0.75rem;
-  row-gap: 0.1rem;
+  gap: 0.6rem;
   margin: -1rem;
-  padding: 0.9rem 1rem;
+  padding: 0.6rem 1rem;
   border-radius: 9px;
   background: var(--color-accent-soft);
   cursor: pointer;
   list-style: none;
+}
+@media (pointer: coarse) {
+  .dup-banner {
+    min-height: 2.75rem;
+  }
 }
 .dup-banner::-webkit-details-marker {
   display: none;
@@ -535,13 +536,11 @@
   margin-top: 0;
 }
 .dup-toggle {
-  grid-area: toggle;
-  justify-self: start;
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  min-height: 2.75rem;
-  font-size: 0.875rem;
+  margin-left: auto;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--color-accent-text);
 }
@@ -564,25 +563,21 @@
 /* A status mark, not a control: the icon alone in the banner's text tone,
    no filled disc. */
 .dup-banner-icon {
-  grid-area: icon;
   display: grid;
   place-items: center;
-  width: 2.25rem;
-  height: 2.25rem;
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
   color: var(--color-accent-text);
 }
 .dup-banner-icon .icon {
-  width: 1.25rem;
-  height: 1.25rem;
-}
-.dup-banner > .cat-section-title {
-  grid-area: eyebrow;
-  color: var(--color-accent-text);
+  width: 1.1rem;
+  height: 1.1rem;
 }
 .dup-headline {
-  grid-area: head;
-  font-size: 1.2rem;
-  font-weight: 700;
+  min-width: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
@@ -597,13 +592,8 @@
 .dup-banner-done .dup-banner-icon {
   color: var(--color-ok);
 }
-.dup-banner-done > .cat-section-title,
 .dup-banner-done .dup-toggle {
   color: var(--color-muted);
-}
-.dup-banner-done .dup-headline {
-  font-size: 1rem;
-  font-weight: 600;
 }
 .dup-card .cat-note,
 .dup-fine .cat-note {
@@ -618,22 +608,32 @@
   padding-top: 1rem;
   border-top: 1px solid var(--color-edge);
 }
-.dup-actions {
+/* Below the checks, two titled columns of equal height: "In Velvarr" (the
+   tile tray with the merge row) and "On TPDB" (the merge form or the copy
+   report, on the same raised surface). They stack in a narrow panel. */
+.dup-side {
   display: grid;
   gap: 1rem;
-  min-width: 0;
 }
-@container (min-width: 40rem) {
-  .dup-actions:has(> .dup-group + .dup-group) {
-    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
-    align-items: start;
-    column-gap: 1.5rem;
+@container (min-width: 46rem) {
+  .dup-side {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
 }
-.dup-group {
+.dup-col {
   display: grid;
+  grid-template-rows: auto 1fr;
   gap: 0.5rem;
   min-width: 0;
+}
+.dup-actions {
+  display: grid;
+  align-content: start;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 1rem;
+  border-radius: 10px;
+  background: var(--color-raised);
 }
 .dup-group-title {
   font-size: 0.78rem;

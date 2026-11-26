@@ -179,7 +179,7 @@ function MergeForm({
       <textarea
         id={notesId}
         className="input w-full"
-        rows={6}
+        rows={8}
         maxLength={2000}
         value={notes}
         onChange={(event) => setNotes(event.currentTarget.value)}
@@ -325,21 +325,18 @@ function DuplicateNotice({
     ));
   const actions = (
     <div className="dup-actions">
-      <div className="dup-group">
-        <h4 className="dup-group-title">On TPDB</h4>
-        {match.tpdbMerge ? (
-          <MergeSubmitted movie={movie} submitted={match.tpdbMerge} />
-        ) : isAdmin ? (
-          <MergeForm movie={movie} match={match} report={report} />
-        ) : (
-          <>
-            <p className="cat-note">
-              Check both records first. Velvarr does not submit reports.
-            </p>
-            <CopyReport report={report} />
-          </>
-        )}
-      </div>
+      {match.tpdbMerge ? (
+        <MergeSubmitted movie={movie} submitted={match.tpdbMerge} />
+      ) : isAdmin ? (
+        <MergeForm movie={movie} match={match} report={report} />
+      ) : (
+        <>
+          <p className="cat-note">
+            Check both records first. Velvarr does not submit reports.
+          </p>
+          <CopyReport report={report} />
+        </>
+      )}
     </div>
   );
   const setP = useParamsSetter();
@@ -427,66 +424,80 @@ function DuplicateNotice({
       </figcaption>
     </figure>
   );
+  const verdict = (
+    <div className="dup-verdict">
+      <details className="dup-checks">
+        <summary>
+          <Icon name="chevron-right" className="dup-chev" />
+          <span className="dup-rule">{ruleText}</span>
+          <span className="dup-score">
+            {passed} of {checks.length} checks passed
+          </span>
+        </summary>
+        <ChecksList checks={checks} />
+        {scanNotes.map((note) => (
+          <p key={note} className="cat-note dup-scan-note">
+            {note}
+          </p>
+        ))}
+      </details>
+    </div>
+  );
+  const tray = (
+    <div className="dup-tray">
+      <div
+        className="dup-pair"
+        role={picking ? "radiogroup" : undefined}
+        aria-label={picking ? "Entry to keep in Velvarr" : undefined}
+      >
+        {selfTile}
+        <span className="dup-link" aria-hidden="true">
+          ≈
+        </span>
+        {otherTile}
+      </div>
+      {picking && (
+        <div className="dup-merge">
+          <div>
+            <button
+              type="button"
+              className="btn"
+              disabled={pick.busy}
+              aria-busy={pick.busy}
+              onClick={() => void pick.merge()}
+            >
+              {pick.busy ? "Merging…" : "Merge in Velvarr"}
+            </button>
+          </div>
+          <p className="cat-note">
+            Keeps {keptSelf ? "this record" : "the possible duplicate"}. The
+            other one leaves every list here, and its links open the kept entry.
+            TPDB stays unchanged. Unmerge undoes it. Merge only the same
+            release: Velvarr never matches by name.
+          </p>
+          {pick.error !== null && (
+            <p className="cat-note" role="alert">
+              {pick.error}
+            </p>
+          )}
+        </div>
+      )}
+      {merged}
+    </div>
+  );
   return (
     <article className="dup-card">
-      <div className="dup-verdict">
-        <details className="dup-checks">
-          <summary>
-            <Icon name="chevron-right" className="dup-chev" />
-            <span className="dup-rule">{ruleText}</span>
-            <span className="dup-score">
-              {passed} of {checks.length} checks passed
-            </span>
-          </summary>
-          <ChecksList checks={checks} />
-          {scanNotes.map((note) => (
-            <p key={note} className="cat-note dup-scan-note">
-              {note}
-            </p>
-          ))}
-        </details>
-      </div>
-      <div className="dup-tray">
-        <div
-          className="dup-pair"
-          role={picking ? "radiogroup" : undefined}
-          aria-label={picking ? "Entry to keep in Velvarr" : undefined}
-        >
-          {selfTile}
-          <span className="dup-link" aria-hidden="true">
-            ≈
-          </span>
-          {otherTile}
+      {verdict}
+      <div className="dup-side">
+        <div className="dup-col">
+          <h4 className="dup-group-title">In Velvarr</h4>
+          {tray}
         </div>
-        {picking && (
-          <div className="dup-merge">
-            <div>
-              <button
-                type="button"
-                className="btn"
-                disabled={pick.busy}
-                aria-busy={pick.busy}
-                onClick={() => void pick.merge()}
-              >
-                {pick.busy ? "Merging…" : "Merge in Velvarr"}
-              </button>
-            </div>
-            <p className="cat-note">
-              Keeps {keptSelf ? "this record" : "the possible duplicate"}. The
-              other one leaves every list here, and its links open the kept
-              entry. TPDB stays unchanged. Unmerge undoes it. Merge only the
-              same release: Velvarr never matches by name.
-            </p>
-            {pick.error !== null && (
-              <p className="cat-note" role="alert">
-                {pick.error}
-              </p>
-            )}
-          </div>
-        )}
-        {merged}
+        <div className="dup-col">
+          <h4 className="dup-group-title">On TPDB</h4>
+          {actions}
+        </div>
       </div>
-      {actions}
     </article>
   );
 }
@@ -662,8 +673,8 @@ export function MovieDuplicates({
       ? "Duplicate merged in Velvarr"
       : `${found} duplicates merged in Velvarr`
     : pending === 1
-      ? "Possible duplicate found"
-      : `${pending} possible duplicates found`;
+      ? "Possible TPDB duplicate"
+      : `${pending} possible TPDB duplicates`;
   const body = (
     <>
       {data?.matches.map((match) => (
@@ -728,13 +739,10 @@ export function MovieDuplicates({
                 <span className="dup-banner-icon">
                   <Icon name={resolved ? "check" : "info"} />
                 </span>
-                <span className="cat-section-title" aria-hidden="true">
-                  TPDB duplicate check
-                </span>
                 <span className="dup-headline">{headline}</span>
                 <span className="dup-toggle">
-                  <span className="dup-toggle-show">Show details</span>
-                  <span className="dup-toggle-hide">Hide details</span>
+                  <span className="dup-toggle-show">Details</span>
+                  <span className="dup-toggle-hide">Hide</span>
                   <Icon name="chevron-right" />
                 </span>
               </summary>
