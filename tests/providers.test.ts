@@ -1098,6 +1098,81 @@ for (const kind of ["scene", "performer", "studio"] as const) {
   }
 }
 
+// --- StashDB aliased batching ---
+
+test("concurrent stashdb studio reads share one aliased request and fail per item", async () => {
+  const restore = setEnv({ STASHDB_API_KEY: STASH_TOKEN });
+  const ids = [STASH_STUDIO_ID, STASH_PARENT_STUDIO_ID, STASH_CROSS_ID];
+  const row = (id: string) => ({
+    id,
+    name: `Studio ${id.slice(0, 4)}`,
+    deleted: false,
+    urls: [],
+    images: [],
+    parent: null,
+    child_studios: [],
+  });
+  const fixture = await startFixture((_req, res, body) => {
+    const parsed = JSON.parse(body) as {
+      query: string;
+      variables: Record<string, string>;
+    };
+    if (!parsed.query.includes("s0: findStudio(id: $id0)")) {
+      // A single query: only a cache miss would land here.
+      sendJson(res, 200, { data: { findStudio: row(parsed.variables.id!) } });
+      return;
+    }
+    sendJson(res, 200, {
+      data: {
+        s0: row(parsed.variables.id0!),
+        s1: null,
+        s2: row(parsed.variables.id2!),
+      },
+      errors: [{ message: "resolver failed", path: ["s1"] }],
+    });
+  });
+  try {
+    process.env.STASHDB_BASE_URL = fixture.origin;
+    const settled = await Promise.allSettled(
+      ids.map((id) =>
+        getCatalogDetail({ provider: "stashdb", kind: "studio", id }),
+      ),
+    );
+    assert.equal(fixture.log.length, 1, "one request for three studios");
+    assert.deepEqual(JSON.parse(fixture.log[0]!.body).variables, {
+      id0: ids[0],
+      id1: ids[1],
+      id2: ids[2],
+    });
+    const [first, second, third] = settled;
+    assert.equal(first?.status, "fulfilled");
+    assert.equal(third?.status, "fulfilled");
+    if (first?.status === "fulfilled" && third?.status === "fulfilled") {
+      assert.equal(first.value?.reference.id, ids[0]);
+      assert.equal(third.value?.reference.id, ids[2]);
+    }
+    // Alias s1's GraphQL error fails only item 1, with the code a single
+    // query's error gives.
+    assert.equal(second?.status, "rejected");
+    if (second?.status === "rejected") {
+      assert.ok(second.reason instanceof AppError);
+      assert.equal(second.reason.code, "upstream_bad_response");
+      assert.match(second.reason.message, /resolver failed/);
+    }
+    // The alias answer filled the single query's cache entry.
+    const again = await getCatalogDetail({
+      provider: "stashdb",
+      kind: "studio",
+      id: ids[0]!,
+    });
+    assert.equal(again?.reference.id, ids[0]);
+    assert.equal(fixture.log.length, 1, "a later single read is a cache hit");
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
 // --- StashDB performer detail biography mapping ---
 
 test("stashdb performer detail maps the biography facts the provider published", async () => {

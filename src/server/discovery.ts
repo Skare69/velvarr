@@ -39,6 +39,7 @@ import {
 // in routes/discover.ts today; importing it mirrors how routes import server
 // modules. If the shelf builders ever move to src/server, drop this comment.
 import {
+  facetShelves,
   followedShelf,
   MORE_PREVIEWS,
   SHELF_ITEMS,
@@ -80,6 +81,10 @@ export function releasesCacheKey(today: string, fp: string): string {
   // {status, ...} wrapper this module no longer reads; the bump keeps a
   // deploy from misparsing them (they age out via the 1h prune).
   return `discover:releases2:${today}:${fp}`;
+}
+
+export function facetsCacheKey(today: string, fp: string): string {
+  return `discover:facets:${today}:${fp}`;
 }
 
 export function trendingCacheKey(fp: string): string {
@@ -223,15 +228,39 @@ export async function cachedFollowed(
     ),
     () => followedShelf(accountId, hiddenTags),
     // A shelf whose sources are in outage degrades live instead of
-    // pinning the outage for a TTL. null is an empty filmography, and
-    // config-state or scan-ceiling errors are fixed facts that cache
-    // like any clean build — the error-only shape repeats the first
-    // error's code.
-    (shelf) =>
-      shelf === null ||
-      ((shelf.error === undefined ||
-        NON_OUTAGE_SOURCE_CODES[shelf.error.code] === true) &&
-        !sourceOutage(shelf.errors ?? [])),
+    // pinning the outage for a TTL. null is an empty filmography.
+    (shelf) => shelf === null || shelfCacheable(shelf),
+  );
+}
+
+// Config-state or scan-ceiling errors are fixed facts that cache like any
+// clean build; any outage keeps the shelf out of discover_cache. The
+// error-only shape repeats the first error's code.
+function shelfCacheable(shelf: Shelf): boolean {
+  return (
+    (shelf.error === undefined ||
+      NON_OUTAGE_SOURCE_CODES[shelf.error.code] === true) &&
+    !sourceOutage(shelf.errors ?? [])
+  );
+}
+
+/** The Studios and Genres shelves, built once from one cachedReleases
+ * result and shared: both shelf loads read one build instead of each
+ * repeating the studio enrichment and the counterpart lookups. Same
+ * throw-through rule as cachedReleases: an outage on either shelf or a
+ * failed studio detail read (a degraded name-only tile) is never cached. */
+export async function cachedFacetShelves(
+  hiddenTags: CatalogTagSelection[],
+  today: string,
+): Promise<Shelf[]> {
+  let degraded = false;
+  return readThrough<Shelf[]>(
+    facetsCacheKey(today, fingerprint(hiddenTags)),
+    async () =>
+      facetShelves(await cachedReleases(hiddenTags, today), () => {
+        degraded = true;
+      }),
+    (shelves) => !degraded && shelves.every(shelfCacheable),
   );
 }
 

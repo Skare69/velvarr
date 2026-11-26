@@ -21,6 +21,7 @@ import {
   listFollowsByProvider,
 } from "../../../../server/storage.ts";
 import {
+  cachedFacetShelves,
   cachedReleases,
   cachedTrending,
   cachedFollowed,
@@ -294,6 +295,9 @@ export function studioFacets(
   // The directory passes Infinity and lists every studio; the shelf
   // enriches rail depth plus the preview tail.
   cap: number = SHELF_ITEMS + MORE_PREVIEWS,
+  // Told about each failed detail read, so a shared cache can refuse to
+  // pin the degraded name-only tiles.
+  onEnrichFailure?: () => void,
 ): Promise<CatalogDetail[]> {
   const known = new Map<
     string,
@@ -329,7 +333,10 @@ export function studioFacets(
         (detail) => detail ?? nameOnly(reference, name),
         // Detail read failed: the name/reference survived the snapshot, the
         // logo did not. Degraded tile, not a shelf error.
-        () => nameOnly(reference, name),
+        () => {
+          onEnrichFailure?.();
+          return nameOnly(reference, name);
+        },
       ),
     ),
   );
@@ -343,6 +350,7 @@ export function studioFacets(
 // half-filled rail that could read as a quiet success.
 export function facetShelves(
   newReleases: PromiseSettledResult<BrowsePage>,
+  onEnrichFailure?: () => void,
 ): Promise<Shelf[]> {
   let error: ShelfError | undefined;
   let items: CatalogDetail[] = [];
@@ -395,8 +403,8 @@ export function facetShelves(
     }))
     .filter((source) => source.items.length > 0);
   return Promise.all([
-    facetShelf("studios", sources, pageErrors),
-    facetShelf("genres", sources, pageErrors),
+    facetShelf("studios", sources, pageErrors, onEnrichFailure),
+    facetShelf("genres", sources, pageErrors, onEnrichFailure),
   ]);
 }
 
@@ -434,13 +442,16 @@ export async function facetShelf(
   // The browse page's own per-source failures: the dead side contributed no
   // rows, so its outage must ride beside the survivor's tiles.
   pageErrors: SourceError[] = [],
+  onEnrichFailure?: () => void,
 ): Promise<Shelf> {
   const perSource = await Promise.all(
     sources.map(async ({ provider, items }) => ({
       provider,
       tiles:
         shelf === "studios"
-          ? (await studioFacets(provider, items)).map((detail): FacetItem => ({
+          ? (
+              await studioFacets(provider, items, undefined, onEnrichFailure)
+            ).map((detail): FacetItem => ({
               facet: "studio",
               provider,
               id: detail.reference.id,
@@ -854,12 +865,10 @@ export async function buildShelf(
     case "studios":
     case "genres": {
       // facetShelves yields the error-only shelves when both sides of the
-      // browse page failed, preserving the old shape. Each facet rebuilds
-      // studio enrichment from the provider detail cache; acceptable —
-      // cachedReleases joins concurrent builds.
-      const shelves = await facetShelves(
-        await cachedReleases(hiddenTags, today),
-      );
+      // browse page failed, preserving the old shape. Both shelves come
+      // from one shared build, so the board enriches studios and resolves
+      // counterparts once, not once per shelf.
+      const shelves = await cachedFacetShelves(hiddenTags, today);
       return shelves.find((s) => s.id === id)!;
     }
   }

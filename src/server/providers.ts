@@ -267,6 +267,17 @@ export function metaCacheStateForTest(): {
 // TTL must never serve key A's cached payload to key B. Process-local keyed
 // tags keep credentials out of cache keys and separate credential payloads.
 
+function metaCacheKey(
+  service: Service,
+  method: string,
+  baseUrl: string,
+  path: string,
+  token: string,
+  body: unknown,
+): string {
+  return `${service} ${method} ${baseUrl}${path} ${credentialTag(token, "metadata-cache")} ${JSON.stringify(body ?? null)}`;
+}
+
 // Cache-aware read for TPDB/StashDB. timeoutMs and cacheTtlMs are internal/
 // test knobs; callers use the 15s default and the 10-minute metadata TTL.
 export async function requestJson<T>(
@@ -293,7 +304,7 @@ export async function requestJson<T>(
   const cacheable =
     options.bypassCache !== true && isCacheable(service, method, options.body);
   const key = cacheable
-    ? `${service} ${method} ${baseUrl}${path} ${credentialTag(token, "metadata-cache")} ${JSON.stringify(options.body ?? null)}`
+    ? metaCacheKey(service, method, baseUrl, path, token, options.body)
     : "";
   const hit = cacheable ? metaCache.get(key) : undefined;
   if (hit && Date.now() - hit.at < ttl) return parseJson<T>(hit.bytes, service);
@@ -511,20 +522,203 @@ async function stashQuery(
   // partial data whose errors sit beside a populated dataKey, or a null
   // dataKey with no errors — the documented authoritative-absence signal for
   // find* queries.
-  if (
-    body === null ||
-    typeof body !== "object" ||
-    body.data === null ||
-    body.data === undefined
-  ) {
+  return stashDataValue(body, dataKey);
+}
+
+function stashDataValue(body: unknown, dataKey: string): unknown {
+  const data =
+    body !== null && typeof body === "object"
+      ? (body as { data?: Record<string, unknown> | null }).data
+      : undefined;
+  if (data === null || data === undefined) {
     throw new AppError(
       502,
       "upstream_bad_response",
       "StashDB returned an unusable response.",
     );
   }
-  const value = body.data[dataKey];
+  const value = data[dataKey];
   return value === undefined ? null : value;
+}
+
+// StashDB's API rules (https://discourse.stashapp.cc/t/rules-for-api-access/21336,
+// read 2026-11-26) cap clients at 60 requests per minute and publish no
+// field or complexity cap, so concurrent same-operation lookups share one
+// POST of aliased fields (s0: findStudio(id: $id0) {…} s1: …). A discover
+// board used to send one request per studio and per tag. Each alias answer
+// lands in the per-item meta-cache entry the single query writes, so a later
+// single read is a cache hit. ponytail: fixed chunk size; tune it only if
+// stash-box ever publishes a query complexity limit.
+export const STASH_BATCH_CHUNK = 25;
+
+type StashBatchItem = {
+  variables: Record<string, unknown>;
+  resolve: (bytes: Uint8Array) => void;
+  reject: (error: unknown) => void;
+};
+type StashBatch = {
+  query: string;
+  dataKey: string;
+  base: string;
+  token: string;
+  items: StashBatchItem[];
+};
+// Keyed by query, endpoint and credential: one tick's lookups of one
+// operation flush together on the next macrotask.
+const stashBatches = new Map<string, StashBatch>();
+
+/** stashQuery for one `query(<params>) { <one root field> }` read, batched
+ * with the same operation's other lookups of this tick. Same answers, same
+ * errors and the same cache entries as stashQuery. */
+async function stashBatchedQuery(
+  query: string,
+  variables: Record<string, unknown>,
+  dataKey: string,
+): Promise<unknown> {
+  const token = credential("stashdb");
+  if (token === undefined) throw notConfigured("stashdb");
+  const base = envBaseUrl("STASHDB_BASE_URL", "https://stashdb.org");
+  const key = metaCacheKey("stashdb", "POST", base, "/graphql", token, {
+    query,
+    variables,
+  });
+  const hit = metaCache.get(key);
+  // A fresh hit or an identical read in flight: the single path answers
+  // from the cache or joins.
+  if (
+    (hit !== undefined && Date.now() - hit.at < META_CACHE_TTL_MS) ||
+    metaInFlight.has(key)
+  ) {
+    return stashQuery(query, variables, dataKey);
+  }
+  const group = `${dataKey} ${base} ${credentialTag(token, "metadata-cache")} ${query}`;
+  let batch = stashBatches.get(group);
+  if (batch === undefined) {
+    const created: StashBatch = { query, dataKey, base, token, items: [] };
+    batch = created;
+    stashBatches.set(group, created);
+    setTimeout(() => {
+      stashBatches.delete(group);
+      void flushStashBatch(created);
+    }, 0);
+  }
+  const { promise, resolve, reject } = Promise.withResolvers<Uint8Array>();
+  batch.items.push({ variables, resolve, reject });
+  metaInFlight.set(key, promise);
+  promise
+    .then(
+      (bytes) => cachePut(key, bytes),
+      () => {},
+    )
+    .finally(() => {
+      if (metaInFlight.get(key) === promise) metaInFlight.delete(key);
+    });
+  let bytes: Uint8Array;
+  try {
+    bytes = await promise;
+  } catch (error) {
+    // The single path's stale-on-error rule: only an outage or a timeout
+    // serves the last good payload.
+    const staleWorthy =
+      error instanceof AppError &&
+      (error.code === "upstream_unavailable" ||
+        error.code === "upstream_timeout");
+    if (hit === undefined || !staleWorthy) throw error;
+    bytes = hit.bytes;
+  }
+  return stashDataValue(parseJson<unknown>(bytes, "stashdb"), dataKey);
+}
+
+async function flushStashBatch(batch: StashBatch): Promise<void> {
+  for (let at = 0; at < batch.items.length; at += STASH_BATCH_CHUNK) {
+    const chunk = batch.items.slice(at, at + STASH_BATCH_CHUNK);
+    try {
+      await sendStashChunk(batch, chunk);
+    } catch (error) {
+      // An HTTP-level failure (or an unusable body) fails the whole chunk.
+      for (const item of chunk) item.reject(error);
+    }
+  }
+}
+
+async function sendStashChunk(
+  batch: StashBatch,
+  chunk: StashBatchItem[],
+): Promise<void> {
+  const { query, dataKey, base, token } = batch;
+  if (chunk.length === 1) {
+    // A lone lookup sends the plain single query.
+    const item = chunk[0]!;
+    const bytes = await requestJsonBytes(base, "/graphql", token, {
+      service: "stashdb",
+      method: "POST",
+      body: { query, variables: item.variables },
+    });
+    try {
+      rejectStashGraphQlFailure(parseJson<unknown>(bytes, "stashdb"), dataKey);
+      item.resolve(bytes);
+    } catch (error) {
+      item.reject(error);
+    }
+    return;
+  }
+  const shape = /^query\(([^)]*)\) \{ (.*) \}$/s.exec(query);
+  if (shape === null) {
+    throw new Error("stashBatchedQuery needs `query(<params>) { <field> }`.");
+  }
+  const indexed = (text: string, i: number) =>
+    text.replace(/\$(\w+)/g, (_, name: string) => `$${name}${i}`);
+  const document = `query(${chunk.map((_, i) => indexed(shape[1]!, i)).join(", ")}) { ${chunk.map((_, i) => `s${i}: ${indexed(shape[2]!, i)}`).join(" ")} }`;
+  const variables = Object.fromEntries(
+    chunk.flatMap((item, i) =>
+      Object.entries(item.variables).map(([name, value]) => [
+        `${name}${i}`,
+        value,
+      ]),
+    ),
+  );
+  const parsed = parseJson<{
+    data?: Record<string, unknown> | null;
+    errors?: unknown;
+  } | null>(
+    await requestJsonBytes(base, "/graphql", token, {
+      service: "stashdb",
+      method: "POST",
+      body: { query: document, variables },
+    }),
+    "stashdb",
+  );
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    parsed.data === null ||
+    typeof parsed.data !== "object"
+  ) {
+    // No data object at all: a request-level failure for every alias.
+    throw stashGraphQlFailureError(parsed?.errors);
+  }
+  const data = parsed.data;
+  const errors: unknown[] = Array.isArray(parsed.errors) ? parsed.errors : [];
+  chunk.forEach((item, i) => {
+    const alias = `s${i}`;
+    // An error belongs to an alias by its path; a path-less error is
+    // request-level and counts for every alias.
+    const own = errors.filter((error) => {
+      const path = (error as { path?: unknown } | null)?.path;
+      return !Array.isArray(path) || path[0] === alias;
+    });
+    const single = {
+      data: { [dataKey]: data[alias] ?? null },
+      ...(own.length > 0 ? { errors: own } : {}),
+    };
+    try {
+      rejectStashGraphQlFailure(single, dataKey);
+    } catch (error) {
+      item.reject(error);
+      return;
+    }
+    item.resolve(new TextEncoder().encode(JSON.stringify(single)));
+  });
 }
 
 // --- artwork: provider-hosted images only; originals memory-cached for a
@@ -1949,7 +2143,7 @@ export async function getCatalogDetail(
     return detail;
   }
   if (kind === "studio") {
-    const row = await stashQuery(
+    const row = await stashBatchedQuery(
       "query($id: ID!) { findStudio(id: $id) { id name deleted urls { url type } images { url width height } parent { id name } child_studios { id } } }",
       { id },
       "findStudio",
@@ -2378,7 +2572,7 @@ export async function searchCatalogTags(
     }
     return tpdbTags(body.data, recordTagPair);
   }
-  const res = await stashQuery(
+  const res = await stashBatchedQuery(
     "query($t: String!) { searchTag(term: $t, limit: 50) { id name } }",
     { t: q },
     "searchTag",
@@ -2607,7 +2801,7 @@ export async function studioCounterpart(
     }
     for (const url of candidates) {
       const want = url.replace(/\/+$/, "").toLowerCase();
-      const res = (await stashQuery(
+      const res = (await stashBatchedQuery(
         "query($url: String!) { queryStudios(input: { url: $url, page: 1, per_page: 5 }) { studios { id name urls { url } } } }",
         { url },
         "queryStudios",

@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { rmTempDir, testTempDir } from "./setup.ts";
 import { Buffer } from "node:buffer";
+import { Readable } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   fetchProviderArtwork,
@@ -1748,6 +1749,99 @@ async function stashdbHandler(
   json(res, 200, { data: null });
 }
 
+// Real StashDB HTTP dispatches, one per request the fixture receives,
+// whether it carries one query or an aliased batch.
+const stashDispatches = { count: 0 };
+
+// Velvarr batches concurrent StashDB lookups into one aliased document
+// (s0: findStudio(id: $id0) {…} s1: …). The fixtures answer single
+// queries, so this wrapper replays each alias as its own single query
+// against the handler and merges the answers by alias, with each
+// GraphQL error's path moved under its alias. A non-200 single answer
+// fails the whole batch, as an HTTP-level failure does upstream.
+function unbatchStash(
+  handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>,
+): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  const replay = async (
+    req: IncomingMessage,
+    raw: string,
+  ): Promise<{ status: number; text: string }> => {
+    const fake = Object.assign(Readable.from([Buffer.from(raw)]), {
+      headers: req.headers,
+      url: req.url,
+      method: req.method,
+    }) as unknown as IncomingMessage;
+    let status = 200;
+    let text = "";
+    const sink = {
+      writeHead(code: number) {
+        status = code;
+        return sink;
+      },
+      end(chunk?: string) {
+        text = chunk ?? "";
+      },
+    } as unknown as ServerResponse;
+    await handler(fake, sink);
+    return { status, text };
+  };
+  return async (req, res) => {
+    stashDispatches.count += 1;
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const raw = Buffer.concat(chunks).toString("utf8");
+    const body = (raw ? JSON.parse(raw) : {}) as {
+      query?: unknown;
+      variables?: Record<string, unknown>;
+    };
+    const query = typeof body.query === "string" ? body.query : "";
+    const aliases = [...query.matchAll(/\bs(\d+): (\w+)\(/g)];
+    if (aliases.length === 0) {
+      const single = await replay(req, raw);
+      res.writeHead(single.status, { "content-type": "application/json" });
+      res.end(single.text);
+      return;
+    }
+    const data: Record<string, unknown> = {};
+    const errors: unknown[] = [];
+    for (const [n, match] of aliases.entries()) {
+      const index = match[1]!;
+      const alias = `s${index}`;
+      const end = aliases[n + 1]?.index ?? query.lastIndexOf("}");
+      const field = query
+        .slice(match.index! + alias.length + 2, end)
+        .replace(/\$([A-Za-z_]+)\d+/g, "$$$1");
+      const variables = Object.fromEntries(
+        Object.entries(body.variables ?? {}).flatMap(([name, value]) => {
+          const m = /^(.*\D)(\d+)$/.exec(name);
+          return m !== null && m[2] === index ? [[m[1]!, value]] : [];
+        }),
+      );
+      const single = await replay(
+        req,
+        JSON.stringify({ query: `query { ${field} }`, variables }),
+      );
+      if (single.status !== 200) {
+        res.writeHead(single.status, { "content-type": "application/json" });
+        res.end(single.text);
+        return;
+      }
+      const answer = JSON.parse(single.text) as {
+        data?: Record<string, unknown> | null;
+        errors?: { path?: unknown[] }[];
+      };
+      data[alias] = answer.data?.[match[2]!] ?? null;
+      for (const error of answer.errors ?? []) {
+        errors.push({
+          ...error,
+          path: [alias, ...(error.path ?? []).slice(1)],
+        });
+      }
+    }
+    json(res, 200, { data, ...(errors.length > 0 ? { errors } : {}) });
+  };
+}
+
 function listen(
   handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>,
 ): Promise<{ server: Server; url: string }> {
@@ -1955,7 +2049,9 @@ before(async () => {
   ({ server: whisparrServer, url: whisparrUrl } =
     await listen(whisparrHandler));
   ({ server: tpdbServer, url: tpdbUrl } = await listen(tpdbHandler));
-  ({ server: stashdbServer, url: stashdbUrl } = await listen(stashdbHandler));
+  ({ server: stashdbServer, url: stashdbUrl } = await listen(
+    unbatchStash(stashdbHandler),
+  ));
   ({ server: otherServer, url: otherServerUrl } = await listen(
     differentServerHandler,
   ));
@@ -9174,6 +9270,68 @@ test("discover rails hold three pages and preview the next four past the cap", a
   }
 });
 
+test("a cold discover board sends a fixed few StashDB requests and a warm one sends none", async () => {
+  // StashDB allows 60 requests per minute. A board with 34 StashDB studios
+  // and 34 genres used to send one findStudio per studio tile, one
+  // queryStudios per TPDB studio and one searchTag per genre, and it built
+  // the facet shelves twice. The lookups now share aliased batch requests
+  // and one cached facet build, so the count no longer grows with tiles.
+  clearDiscoverCache();
+  resetMetaCache();
+  const extraId = (prefix: string, n: number) =>
+    `${prefix}-0000-0000-0000-${String(n).padStart(12, "0")}`;
+  extraTpdbMovies = Array.from({ length: 34 }, (_, i) => ({
+    ...tpdbMovieRow(extraId("6e6f7071", 800 + i)),
+    site: {
+      name: `Fixture Movie Studio ${String(i).padStart(2, "0")}`,
+      uuid: extraId("6e6f7071", 850 + i),
+    },
+  }));
+  extraStashScenes = Array.from({ length: 34 }, (_, i) => ({
+    id: extraId("7f708182", 900 + i),
+    title: `Fixture Scene ${i}`,
+    date: "2024-05-06",
+    duration: 600,
+    urls: [],
+    images: [],
+    studio: {
+      id: extraId("7f708182", 950 + i),
+      name: `Fixture Studio ${String(i).padStart(2, "0")}`,
+    },
+    tags: [
+      {
+        id: extraId("7f708182", 970 + i),
+        name: `Fixture Genre ${String(i).padStart(2, "0")}`,
+      },
+    ],
+    performers: [],
+  }));
+  const board = async () => {
+    const res = await call("GET", "/api/discover", { cookie: member });
+    assert.equal(res.status, 200);
+    return shelvesOf(res, member);
+  };
+  try {
+    const before = stashDispatches.count;
+    const shelves = await board();
+    const cold = stashDispatches.count - before;
+    for (const id of ["studios", "genres"]) {
+      const shelf = shelves.find((s) => s.id === id);
+      assert.equal(shelf?.error, undefined, id);
+      assert.equal(shelf?.errors, undefined, id);
+      assert.equal(shelf?.items?.length, 28, `${id} fills the rail`);
+    }
+    // Measured on this fixture: 4 here, 34 before the batching.
+    assert.ok(cold <= 8, `cold board sent ${cold} StashDB requests`);
+    const warm = stashDispatches.count;
+    await board();
+    assert.equal(stashDispatches.count - warm, 0, "warm board");
+  } finally {
+    extraTpdbMovies = [];
+    extraStashScenes = [];
+  }
+});
+
 test("discover stubs carry no items and follow the presence rules", async () => {
   assert.equal((await call("GET", "/api/discover")).status, 401);
   const res = await call("GET", "/api/discover", { cookie: member });
@@ -9643,7 +9801,7 @@ async function slugStashHandler(
 
 test("discover: a studio linked only by TPDB site slug dedupes to one tile", async () => {
   const tpdbFixture = await listen(slugTpdbHandler);
-  const stashFixture = await listen(slugStashHandler);
+  const stashFixture = await listen(unbatchStash(slugStashHandler));
   const prevTpdb = process.env.TPDB_BASE_URL;
   const prevStash = process.env.STASHDB_BASE_URL;
   process.env.TPDB_BASE_URL = tpdbFixture.url;
