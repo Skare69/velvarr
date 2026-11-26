@@ -2040,6 +2040,22 @@ export async function searchCatalog(
   return sort !== undefined ? { ...result, sort } : result;
 }
 
+/** Puts the provider's own profile page first in a performer's links. Neither
+ * row publishes it, but both sites serve every performer at
+ * /performers/<uuid> (StashDB publishes TPDB profiles in exactly that form),
+ * and the uuid is the id this detail was read by. A link, not `sourceUrl`, so
+ * a TPDB+StashDB page keeps both: the merge unions links. A self link never
+ * reads as a counterpart: crossProviderLink matches only the other site. */
+function withProfileLink(
+  detail: CatalogDetail,
+  site: string,
+  label: string,
+): CatalogDetail {
+  const url = new URL(`/performers/${detail.reference.id}`, site).href;
+  detail.links.unshift({ url, label });
+  return detail;
+}
+
 /** Full provider detail for one catalog entity. Returns null only for an
  * authoritative provider-side absence (TPDB 404, StashDB data null); outages
  * and auth failures throw AppError with upstreamStatus set. */
@@ -2100,7 +2116,9 @@ export async function getCatalogDetail(
         "TPDB returned an unusable record.",
       );
     }
-    return detail;
+    return kind === "performer"
+      ? withProfileLink(detail, tpdbSiteUrl(), "TPDB")
+      : detail;
   }
 
   if (kind === "scene") {
@@ -2140,7 +2158,13 @@ export async function getCatalogDetail(
         "StashDB returned an unusable performer record.",
       );
     }
-    return detail;
+    // ponytail: the API base doubles as the site root (one host on
+    // stashdb.org); add a STASHDB_SITE_URL only if a proxy ever splits them.
+    return withProfileLink(
+      detail,
+      envBaseUrl("STASHDB_BASE_URL", "https://stashdb.org"),
+      "StashDB",
+    );
   }
   if (kind === "studio") {
     const row = await stashBatchedQuery(

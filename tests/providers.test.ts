@@ -86,6 +86,7 @@ import {
   stashStudioDetail as mapStashStudioDetail,
 } from "../src/server/provider-rows.ts";
 import fc from "fast-check";
+import { mergePerformerDetails } from "../src/lib/performer-merge.ts";
 
 // One shared fixture upstream per file; every test starts with a cold cache
 // so cached reads never mask a scripted upstream change.
@@ -697,6 +698,69 @@ test("stashdb scene detail maps performers, clamps duration, drops absurd values
       "https://r18.dev/videos/vod/movies/detail/-/id=1start602",
     );
     assert.equal(detail.links[0]?.label, "R18.DEV");
+  } finally {
+    await fixture.close();
+    restore();
+  }
+});
+
+test("performer details link their own provider profile, and a linked page keeps both", async () => {
+  const restore = setEnv({
+    TPDB_API_TOKEN: TPDB_TOKEN,
+    STASHDB_API_KEY: STASH_TOKEN,
+  });
+  const tpdbProfile = `https://theporndb.net/performers/${CANON_PERFORMER_ID}`;
+  const fixture = await startFixture((req, res) => {
+    if (req.method === "GET") {
+      assert.equal(req.url, `/performers/${CANON_PERFORMER_ID}`);
+      sendJson(res, 200, { data: { id: CANON_PERFORMER_ID, name: "Fixture" } });
+      return;
+    }
+    // StashDB publishes its TPDB counterpart the way it links real records.
+    sendJson(res, 200, {
+      data: {
+        findPerformer: {
+          id: STASH_PERFORMER_ID,
+          name: "Fixture",
+          deleted: false,
+          aliases: [],
+          urls: [
+            { url: "https://twitter.com/fixture", type: "TWITTER" },
+            { url: tpdbProfile, type: "THEPORNDB" },
+          ],
+          images: [],
+        },
+      },
+    });
+  });
+  try {
+    process.env.TPDB_BASE_URL = fixture.origin;
+    process.env.STASHDB_BASE_URL = fixture.origin;
+    const stashProfile = `${fixture.origin}/performers/${STASH_PERFORMER_ID}`;
+    const tpdb = await getCatalogDetail({
+      provider: "tpdb",
+      kind: "performer",
+      id: CANON_PERFORMER_ID,
+    });
+    const stash = await getCatalogDetail({
+      provider: "stashdb",
+      kind: "performer",
+      id: STASH_PERFORMER_ID,
+    });
+    assert.ok(tpdb !== null && stash !== null);
+    // Neither row carries its own profile URL; each page still links it.
+    assert.deepEqual(tpdb.links, [{ url: tpdbProfile, label: "TPDB" }]);
+    assert.deepEqual(stash.links[0], { url: stashProfile, label: "StashDB" });
+    // The self link is not a counterpart: StashDB still links TPDB only
+    // through the URL it published.
+    assert.deepEqual(crossProviderLink(stash).linked?.provider, "tpdb");
+    assert.equal(crossProviderLink(tpdb).linked, undefined);
+    // The linked page (TPDB first) links both profiles, TPDB once.
+    assert.deepEqual(mergePerformerDetails(tpdb, stash).links, [
+      { url: tpdbProfile, label: "TPDB" },
+      { url: stashProfile, label: "StashDB" },
+      { url: "https://twitter.com/fixture", label: "TWITTER" },
+    ]);
   } finally {
     await fixture.close();
     restore();
