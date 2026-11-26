@@ -119,7 +119,7 @@ export function PreferencesView() {
   // it — keyboard focus rides along with the row, even to a boundary.
   const orderList =
     draft === null ? null : (
-      <section aria-labelledby="discover-order-label" className="mt-5">
+      <section aria-labelledby="discover-order-label">
         <h3 id="discover-order-label" className="font-semibold">
           Discover shelf order
         </h3>
@@ -185,6 +185,23 @@ export function PreferencesView() {
             );
           })}
         </ol>
+        <button
+          type="button"
+          className="btn mt-2"
+          disabled={
+            saving ||
+            JSON.stringify(draft.discoverOrder) ===
+              JSON.stringify(DEFAULT_ORDER)
+          }
+          onClick={() => {
+            setDraft((d) =>
+              d === null ? d : { ...d, discoverOrder: DEFAULT_ORDER },
+            );
+            setAnnounce("Discover shelf order restored to default.");
+          }}
+        >
+          Restore default order
+        </button>
         <span role="status" className="mt-1 block text-sm text-muted">
           {announce}
         </span>
@@ -200,18 +217,30 @@ export function PreferencesView() {
           void save();
         }}
       >
-        <TagPicker
-          id="pref-hidden-tags"
-          label="Hidden tags"
-          selected={draft.hiddenTags}
-          onChange={(hiddenTags) =>
-            setDraft((d) => (d === null ? d : { ...d, hiddenTags }))
-          }
-          allowFreeText
-          disabled={saving}
-        />
         {orderList}
-        <div className="mt-4 flex flex-wrap items-center gap-2">
+        <div className="mt-5">
+          <TagPicker
+            id="pref-hidden-tags"
+            label="Hidden tags"
+            selected={draft.hiddenTags}
+            onChange={(hiddenTags) =>
+              setDraft((d) => (d === null ? d : { ...d, hiddenTags }))
+            }
+            allowFreeText
+            disabled={saving}
+          />
+          <button
+            type="button"
+            className="btn mt-2"
+            disabled={draft.hiddenTags.length === 0 || saving}
+            onClick={() =>
+              setDraft((d) => (d === null ? d : { ...d, hiddenTags: [] }))
+            }
+          >
+            Remove all hidden tags
+          </button>
+        </div>
+        <div className="mt-6 flex flex-wrap items-center gap-2">
           <button
             type="submit"
             className="btn btn-accent prefs-save"
@@ -230,33 +259,6 @@ export function PreferencesView() {
             }}
           >
             Reset changes
-          </button>
-          <button
-            type="button"
-            className="btn"
-            disabled={
-              saving ||
-              JSON.stringify(draft.discoverOrder) ===
-                JSON.stringify(DEFAULT_ORDER)
-            }
-            onClick={() => {
-              setDraft((d) =>
-                d === null ? d : { ...d, discoverOrder: DEFAULT_ORDER },
-              );
-              setAnnounce("Discover shelf order restored to default.");
-            }}
-          >
-            Restore default order
-          </button>
-          <button
-            type="button"
-            className="btn"
-            disabled={draft.hiddenTags.length === 0 || saving}
-            onClick={() =>
-              setDraft((d) => (d === null ? d : { ...d, hiddenTags: [] }))
-            }
-          >
-            Remove all hidden tags
           </button>
           <span role="status" className="text-sm text-muted">
             {savedOnce && !dirty && !saving && saveError === null
