@@ -15,6 +15,7 @@ import {
   tpdbMediaDetail,
 } from "./provider-rows.ts";
 import { fetchProviderArtwork, tpdbGet } from "./providers.ts";
+import { BULK_SCAN_PAGE } from "../app/api/[...path]/routes/requests.ts";
 
 type MovieHash = { type: "OSHASH" | "PHASH"; hash: string };
 export type DuplicateInput = {
@@ -186,7 +187,66 @@ async function imageHash(url: string): Promise<bigint> {
   return posterDhash(bytes);
 }
 
-/** One metadata page and up to five hash pages; no catalog crawl or durable pairs. */
+// The candidate budget per query, read in BULK_SCAN_PAGE-row pages: a TPDB
+// movie page of 100 full rows can pass the provider client's 2 MiB response
+// bound ("TPDB returned an oversized response"). Five pages hold 120 rows, so
+// the page cap only binds when TPDB serves short pages.
+const CANDIDATE_BUDGET = 100;
+const CANDIDATE_PAGES = 5;
+
+/** Read one candidate query page by page. Rows read before a failed page
+ * count; the failure is named and the query reports itself incomplete. */
+async function readCandidates(
+  label: string,
+  params: URLSearchParams,
+): Promise<{ rows: unknown[]; errors: SourceError[]; incomplete: string[] }> {
+  const rows: unknown[] = [];
+  for (let page = 1; ; page++) {
+    const query = new URLSearchParams(params);
+    query.set("page", String(page));
+    query.set("per_page", String(BULK_SCAN_PAGE));
+    let body: Record<string, unknown> | undefined;
+    try {
+      body = record(await tpdbGet<unknown>(`/movies?${query}`));
+      if (!body || !Array.isArray(body.data)) throw badResponse();
+    } catch (error) {
+      const failure = expectedError(error);
+      const where = page === 1 ? label : `${label}: page ${page}`;
+      return {
+        rows,
+        errors: [{ ...failure, message: `${where}: ${failure.message}` }],
+        incomplete:
+          page === 1
+            ? []
+            : [
+                `${label}: only the first ${rows.length} candidates were checked`,
+              ],
+      };
+    }
+    const data = body.data as unknown[];
+    rows.push(...data);
+    const more =
+      data.length > 0 &&
+      Boolean(record(body.links)?.next || record(body.meta)?.next_page_url);
+    const atBudget = rows.length >= CANDIDATE_BUDGET;
+    if (!more && !atBudget) return { rows, errors: [], incomplete: [] };
+    if (atBudget || page >= CANDIDATE_PAGES) {
+      const kept = rows.slice(0, CANDIDATE_BUDGET);
+      return {
+        rows: kept,
+        errors: [],
+        incomplete:
+          more || rows.length > CANDIDATE_BUDGET
+            ? [
+                `${label}: only the first ${kept.length} candidates were checked`,
+              ]
+            : [],
+      };
+    }
+  }
+}
+
+/** Paged metadata and hash candidate reads; no catalog crawl or durable pairs. */
 export async function duplicateMovies(
   id: string,
   hiddenTags: CatalogTagSelection[],
@@ -233,7 +293,6 @@ export async function duplicateMovies(
       params: new URLSearchParams({
         performer_id: String(source.performerNumber),
         year,
-        per_page: "100",
       }),
     });
   }
@@ -245,42 +304,18 @@ export async function duplicateMovies(
       params: new URLSearchParams({
         hash: h.hash,
         hash_type: h.type,
-        per_page: "100",
       }),
     });
   }
   const hidden = hiddenTitleMatcher(hiddenTags);
   const pages = await Promise.all(
-    queries.map(async ({ label, params }) => {
-      try {
-        const body = record(await tpdbGet<unknown>(`/movies?${params}`));
-        if (!body || !Array.isArray(body.data)) throw badResponse();
-        return { label, body, error: undefined };
-      } catch (error) {
-        return { label, body: undefined, error: expectedError(error) };
-      }
-    }),
+    queries.map(({ label, params }) => readCandidates(label, params)),
   );
   const candidates = new Map<string, DuplicateInput>();
   for (const page of pages) {
-    if (!page.body) {
-      result.errors.push({
-        ...page.error!,
-        message: `${page.label}: ${page.error!.message}`,
-      });
-      continue;
-    }
-    const rows = page.body.data as unknown[];
-    if (
-      rows.length > 100 ||
-      record(page.body.links)?.next ||
-      record(page.body.meta)?.next_page_url
-    ) {
-      result.incomplete.push(
-        `${page.label}: only the first 100 candidates were checked`,
-      );
-    }
-    for (const row of rows.slice(0, 100)) {
+    result.errors.push(...page.errors);
+    result.incomplete.push(...page.incomplete);
+    for (const row of page.rows) {
       // Filter visibility before parsing optional evidence or producing row-specific errors.
       const detail = tpdbMediaDetail("movie", row);
       if (

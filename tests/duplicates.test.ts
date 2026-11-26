@@ -23,10 +23,15 @@ const hash = "abcdef0123456789";
 let fixture: Fixture;
 let source: Record<string, unknown>;
 let candidates: unknown[];
-let metadataFail = false;
+// The metadata listing page that answers 503; 0 means none.
+let metadataFailPage = 0;
 let malformed = false;
 const realFetch = globalThis.fetch;
-let next: string | null = null;
+// An endless listing: every page repeats `candidates` with a next link.
+let endless = false;
+// TPDB's full movie rows make a 100-row page pass the client's 2 MiB bound;
+// the fixture answers any page above 24 rows with an oversized body.
+const oversized = { data: [], padding: "x".repeat(2 * 1024 * 1024) };
 const images = new Map<string, Buffer>();
 
 function row(n: number): Record<string, unknown> {
@@ -84,13 +89,27 @@ before(async () => {
     if (url.pathname === `/movies/${sourceId}`)
       return sendJson(res, 200, { data: source });
     if (url.pathname === "/movies") {
-      if (metadataFail && url.searchParams.has("performer_id"))
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const perPage = Number(url.searchParams.get("per_page") ?? "25");
+      if (perPage > 24) return sendJson(res, 200, oversized);
+      if (page === metadataFailPage && url.searchParams.has("performer_id"))
         return sendJson(res, 503, {});
-      return sendJson(
-        res,
-        200,
-        malformed ? { data: {} } : { data: candidates, links: { next } },
-      );
+      if (malformed) return sendJson(res, 200, { data: {} });
+      if (endless)
+        return sendJson(res, 200, {
+          data: candidates,
+          links: { next: `https://api.theporndb.net/movies?page=${page + 1}` },
+        });
+      const end = page * perPage;
+      return sendJson(res, 200, {
+        data: candidates.slice(end - perPage, end),
+        links: {
+          next:
+            end < candidates.length
+              ? `https://api.theporndb.net/movies?page=${page + 1}`
+              : null,
+        },
+      });
     }
     sendJson(res, 404, {});
   });
@@ -127,9 +146,9 @@ beforeEach(() => {
   resetMetaCache();
   source = row(1);
   candidates = [row(2)];
-  metadataFail = false;
+  metadataFailPage = 0;
   malformed = false;
-  next = null;
+  endless = false;
   fixture.log.length = 0;
 });
 
@@ -220,15 +239,78 @@ test("distinct hash cap, bounded pagination and partial failure remain visible",
   }));
   source.hashes = [hashes[0], hashes[0], ...hashes.slice(1)];
   candidates = [{ ...row(2), hashes: [hashes[0]] }];
-  metadataFail = true;
-  next = "https://api.theporndb.net/movies?page=2";
+  metadataFailPage = 1;
+  endless = true;
   const result = await duplicateMovies(sourceId, []);
   assert.ok(result.matches[0]!.rules.includes("hash"));
   assert.ok(result.errors.some((e) => e.provider === "tpdb"));
   assert.ok(result.incomplete.includes("checked 5 of 6 hashes"));
-  assert.ok(result.incomplete.some((s) => s.includes("first 100")));
-  assert.equal(fixture.log.filter((r) => r.url.includes("hash=")).length, 5);
-  assert.ok(!fixture.log.some((r) => r.url.includes("page=2")));
+  // An endless listing of one-row pages stops at the five-page cap and says
+  // how many candidates it read.
+  assert.ok(
+    result.incomplete.includes(
+      "OSHASH candidates: only the first 5 candidates were checked",
+    ),
+  );
+  const hashReads = fixture.log.filter((r) => r.url.includes("hash="));
+  assert.equal(hashReads.filter((r) => r.url.includes("page=1&")).length, 5);
+  assert.ok(hashReads.some((r) => r.url.includes("page=5&")));
+  assert.ok(!hashReads.some((r) => r.url.includes("page=6&")));
+});
+
+test("candidates are read in 24-row pages, so a long listing never trips the 2 MiB bound", async () => {
+  source.hashes = [{ type: "PHASH", hash }];
+  candidates = Array.from({ length: 60 }, (_, n) => ({
+    ...row(n + 2),
+    hashes: [{ type: "PHASH", hash }],
+  }));
+  const result = await duplicateMovies(sourceId, []);
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(
+    result.matches.map((m) => m.reference.id).sort(),
+    Array.from({ length: 60 }, (_, n) => id(n + 2)).sort(),
+  );
+  assert.ok(!result.incomplete.some((s) => s.includes("were checked")));
+  const reads = fixture.log.filter((r) => r.url.includes("/movies?"));
+  assert.ok(reads.every((r) => r.url.includes("per_page=24")));
+  assert.ok(reads.some((r) => r.url.includes("page=3&")));
+  assert.ok(!reads.some((r) => r.url.includes("page=4&")));
+});
+
+test("a failed later page keeps the rows already read and names the page", async () => {
+  candidates = Array.from({ length: 30 }, (_, n) => row(n + 2));
+  metadataFailPage = 2;
+  const result = await duplicateMovies(sourceId, []);
+  assert.ok(
+    result.errors.some(
+      (e) =>
+        e.provider === "tpdb" &&
+        e.message.startsWith("Metadata candidates: page 2: "),
+    ),
+  );
+  assert.ok(
+    result.incomplete.includes(
+      "Metadata candidates: only the first 24 candidates were checked",
+    ),
+  );
+  // The 24 page-one rows reached the poster comparison.
+  assert.ok(
+    result.incomplete.includes("posters compared for 10 of 24 candidates"),
+  );
+  assert.equal(result.matches.length, 10);
+});
+
+test("a listing longer than the 100-row budget keeps the budget message", async () => {
+  candidates = Array.from({ length: 130 }, (_, n) => row(n + 2));
+  const result = await duplicateMovies(sourceId, []);
+  assert.ok(
+    result.incomplete.includes(
+      "Metadata candidates: only the first 100 candidates were checked",
+    ),
+  );
+  assert.ok(
+    result.incomplete.includes("posters compared for 10 of 100 candidates"),
+  );
 });
 
 test("poster cap is deterministic and hidden records leave no evidence or errors", async () => {
