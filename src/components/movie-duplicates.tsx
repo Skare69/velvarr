@@ -361,7 +361,10 @@ function DuplicateNotice({
       : keptSelf === self
         ? " dup-ring"
         : " dup-away";
-  const keepRadio = (id: string) =>
+  // The tile titles sit hidden under the posters, and a duplicate often
+  // shares its title, so each radio names which record it keeps and its
+  // title; "Keep this one" alone does not say which.
+  const keepRadio = (id: string, who: string, title: string) =>
     picking && (
       <label className="dup-keep">
         <input
@@ -372,6 +375,9 @@ function DuplicateNotice({
           onChange={() => pick.pick(id)}
         />
         Keep this one
+        <span className="sr-only">
+          : {who}, {title}
+        </span>
       </label>
     );
   const ruleText = match.rules
@@ -382,7 +388,7 @@ function DuplicateNotice({
       <MovieCard item={movie} onOpen={openDetail} />
       <figcaption className="dup-tile-caption">
         <span className="dup-tile-label">This record</span>
-        {keepRadio(movie.reference.id)}
+        {keepRadio(movie.reference.id, "this record", movie.title)}
         <a
           className="dup-tile-link"
           href={selfUrl}
@@ -408,7 +414,7 @@ function DuplicateNotice({
       )}
       <figcaption className="dup-tile-caption">
         <span className="dup-tile-label">Possible duplicate</span>
-        {keepRadio(match.reference.id)}
+        {keepRadio(match.reference.id, "the possible duplicate", match.title)}
         <a
           className="dup-tile-link"
           href={match.tpdbUrl}
