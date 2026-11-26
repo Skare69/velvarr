@@ -129,38 +129,30 @@ for (const submit of [false, true]) {
   );
 }
 
+// Preferences is a personal utility, so it lives only in the account menu
+// (Seerr's user dropdown), not among the sidebar or More destinations.
 for (const mobile of [false, true]) {
   scenario(
-    `${mobile ? "More" : "Collapsed sidebar"} opens Preferences in place and restores focus`,
+    `${mobile ? "Phone" : "Desktop"} opens Preferences from the account menu in place and restores focus`,
     async ({ page }) => {
       await memberPage(page);
       if (mobile) await page.setViewportSize({ width: 390, height: 844 });
       await page.goto(filteredBrowse);
       const more = page.getByRole("button", { name: "More", exact: true });
-      if (mobile) await more.press("Enter");
-      else await page.getByRole("button", { name: "Collapse sidebar" }).click();
+      if (mobile) await more.click();
       const nav = page.getByRole("navigation", {
         name: mobile ? "Mobile navigation" : "Main",
         exact: true,
       });
-      const preferences = nav.getByRole("button", {
-        name: "Preferences",
-        exact: true,
-      });
-      await preferences.press("Enter");
-      const dialog = page.getByRole("dialog", { name: "Your preferences" });
+      await expect(nav.getByRole("link", { name: "Studios" })).toBeVisible();
       await expect(
-        dialog.getByRole("heading", { name: "Discover shelf order" }),
-      ).toBeVisible();
-      await expect(page).toHaveURL(browseWithMovieFilter);
-      await page.keyboard.press("Escape");
-      await expect(dialog).not.toBeVisible();
-      await expect(mobile ? more : preferences).toBeFocused();
+        nav.getByRole("button", { name: "Preferences", exact: true }),
+      ).toHaveCount(0);
       if (mobile) {
-        await more.click();
         await nav.getByRole("link", { name: "Studios" }).click();
         await expect(page).toHaveURL(studiosUrl);
         await expect(nav).not.toBeVisible();
+        await page.goBack();
       }
       const account = page.getByLabel("Account menu", { exact: true });
       await account.click();
@@ -168,7 +160,13 @@ for (const mobile of [false, true]) {
         .locator(".account-menu")
         .getByRole("button", { name: "Preferences" })
         .click();
+      const dialog = page.getByRole("dialog", { name: "Your preferences" });
+      await expect(
+        dialog.getByRole("heading", { name: "Discover shelf order" }),
+      ).toBeVisible();
+      await expect(page).toHaveURL(browseWithMovieFilter);
       await dialog.getByRole("button", { name: "Close preferences" }).click();
+      await expect(dialog).not.toBeVisible();
       await expect(account).toBeFocused();
     },
   );

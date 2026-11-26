@@ -1040,7 +1040,6 @@ function Shell() {
         : "discover";
   const isAdmin = session.account.role === "admin";
   const navigation = useRef<HTMLDialogElement>(null);
-  const moreButton = useRef<HTMLButtonElement>(null);
   const accountMenu = useRef<HTMLDetailsElement>(null);
   // Desktop sidebar collapse, remembered on this device. Read after mount:
   // the server render has no localStorage, so the first paint is expanded.
@@ -1107,12 +1106,6 @@ function Shell() {
     { id: "facets", label: "Studios", icon: "studio", group: "browse" },
     { id: "library", label: "Library", icon: "library", group: "manage" },
     { id: "requests", label: "Requests", icon: "requests", group: "manage" },
-    {
-      id: "preferences",
-      label: "Preferences",
-      icon: "filter",
-      group: "manage",
-    },
     { id: "admin", label: "Users", icon: "users", group: "admin" },
     { id: "settings", label: "Settings", icon: "settings", group: "admin" },
   ] as const;
@@ -1141,62 +1134,40 @@ function Shell() {
       {index > 0 && visibleNav[index - 1]?.group !== item.group && (
         <div className="nav-section" />
       )}
-      {item.id === "preferences" ? (
-        <button
-          type="button"
-          className="nav-btn"
-          aria-haspopup="dialog"
-          title={collapsed ? item.label : undefined}
-          onClick={(event) => {
-            // The shortcut hides with the More sheet; return focus to More.
-            if (navigation.current?.open) {
-              navigation.current.close();
-              prefsOpener.current = moreButton.current;
-            } else {
-              prefsOpener.current = event.currentTarget;
-            }
-            setPrefsOpen(true);
-          }}
-        >
-          <Icon name={item.icon} />
-          <span className="nav-label">{item.label}</span>
-        </button>
-      ) : (
-        <a
-          href={
-            item.id === "facets"
-              ? "/?view=facets&kind=studios"
-              : item.id === "discover"
-                ? "/"
-                : `/?view=${item.id}`
-          }
-          className="nav-btn"
-          aria-current={
-            view === item.id &&
-            (item.id !== "facets" || params.get("kind") === "studios")
-              ? "page"
-              : undefined
-          }
-          title={collapsed ? item.label : undefined}
-          onClick={followNavLink}
-        >
-          <Icon name={item.icon} />
-          <span className="nav-label">{item.label}</span>
-          {item.id === "requests" &&
-            (pendingApprovals === "unavailable" || pendingApprovals > 0) && (
-              <span
-                className="nav-badge"
-                aria-label={
-                  pendingApprovals === "unavailable"
-                    ? "Approval count unavailable"
-                    : `${pendingApprovals} request${pendingApprovals === 1 ? "" : "s"} awaiting approval`
-                }
-              >
-                {pendingApprovals === "unavailable" ? "?" : pendingApprovals}
-              </span>
-            )}
-        </a>
-      )}
+      <a
+        href={
+          item.id === "facets"
+            ? "/?view=facets&kind=studios"
+            : item.id === "discover"
+              ? "/"
+              : `/?view=${item.id}`
+        }
+        className="nav-btn"
+        aria-current={
+          view === item.id &&
+          (item.id !== "facets" || params.get("kind") === "studios")
+            ? "page"
+            : undefined
+        }
+        title={collapsed ? item.label : undefined}
+        onClick={followNavLink}
+      >
+        <Icon name={item.icon} />
+        <span className="nav-label">{item.label}</span>
+        {item.id === "requests" &&
+          (pendingApprovals === "unavailable" || pendingApprovals > 0) && (
+            <span
+              className="nav-badge"
+              aria-label={
+                pendingApprovals === "unavailable"
+                  ? "Approval count unavailable"
+                  : `${pendingApprovals} request${pendingApprovals === 1 ? "" : "s"} awaiting approval`
+              }
+            >
+              {pendingApprovals === "unavailable" ? "?" : pendingApprovals}
+            </span>
+          )}
+      </a>
     </div>
   ));
   const brand = (
@@ -1317,7 +1288,6 @@ function Shell() {
         {/* Seerr's phone layout: the pages the bar has no room for live
             behind More, one entry point instead of a second (hamburger) one. */}
         <button
-          ref={moreButton}
           type="button"
           aria-haspopup="dialog"
           aria-expanded={menuOpen}
