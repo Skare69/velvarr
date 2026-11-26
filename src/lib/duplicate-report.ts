@@ -46,7 +46,7 @@ export function duplicateReport(
 }
 
 const RULE_WORDS: Record<DuplicateMovieMatch["rules"][number], string> = {
-  hash: "shared file hash",
+  hash: "shared video file hash",
   metadata: "metadata match (cast, year, tags and poster)",
 };
 
@@ -88,6 +88,6 @@ export function mergeNotes(
   for (const h of match.evidence.sharedHashes ?? []) {
     lines.push(`Shared ${h.type}: ${h.hash}`);
   }
-  lines.push("Submitted via Velvarr's duplicate check.");
+  lines.push("Submitted via Velvarr's duplicate check (https://velvarr.dev).");
   return lines.join("\n");
 }

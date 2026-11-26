@@ -133,9 +133,14 @@ const DROP_MIGRATION_14 = MIGRATION_14_INDEXES.map(
 // A rewind below version 15 must shed migration 15's column, or replaying its
 // ADD COLUMN fails as a duplicate.
 const DROP_MIGRATION_15 = "ALTER TABLE accounts DROP COLUMN prose_search;";
+// A rewind below version 18 must shed migration 18's submissions table, or
+// replaying it fails as a duplicate.
+const DROP_MIGRATION_18 = "DROP TABLE IF EXISTS tpdb_merge_submissions;";
 // A rewind below version 17 must shed migration 17's merge link table and
-// grant column, or replaying them fails as duplicates.
+// grant column, or replaying them fails as duplicates. Every such rewind is
+// also below 18, so it sheds migration 18 first.
 const DROP_MIGRATION_17 = `
+  ${DROP_MIGRATION_18}
   DROP INDEX IF EXISTS movie_merges_primary;
   DROP TABLE IF EXISTS movie_merges;
   ALTER TABLE accounts DROP COLUMN merge_duplicates;
@@ -1423,7 +1428,7 @@ test("v1 database migrates in place preserving config, accounts, sessions, and g
   ).user_version;
   raw.close();
   // Schema 16 folds stored provider ids to lowercase.
-  assert.equal(version, 17, "v1 database must migrate to the current schema");
+  assert.equal(version, 18, "v1 database must migrate to the current schema");
   assert.equal(owner.proseSearch, false, "migrated accounts start ungranted");
   // A v1 database never contained the removal tables (current migration 5
   // creates none), so nothing here can assert about them; the schema-10 test
@@ -1650,7 +1655,7 @@ test("a schema-10 database migrates to 11: every removal object is dropped, rows
   );
   assert.equal(
     versionRow.user_version,
-    17,
+    18,
     "schema 10 database must migrate to the current schema",
   );
   assert.ok(
@@ -2123,7 +2128,7 @@ test("migration 16 keeps every row: the contacted acquisition and both shadows s
     user_version: number;
   };
   check.close();
-  assert.equal(versionRow.user_version, 17);
+  assert.equal(versionRow.user_version, 18);
   assert.equal(
     mixed.n,
     2,
@@ -3791,7 +3796,7 @@ test("migration 13 admits failed_permanent and preserves acquisition rows", () =
     const versionRow = raw.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(versionRow.user_version, 17);
+    assert.equal(versionRow.user_version, 18);
     // The fabricated row survives the rebuild intact.
     const row = raw
       .prepare(
@@ -4774,6 +4779,7 @@ test("schema 9 preferences survive the schema 10 upgrade: hidden tags kept, orde
       WHERE is_owner = 1;
     DROP TABLE IF EXISTS discover_cache;
     ${DROP_MIGRATION_14}
+    ${DROP_MIGRATION_18}
     -- The rebuilt accounts table has no merge_duplicates column to drop;
     -- only migration 17's table and index exist here.
     DROP INDEX IF EXISTS movie_merges_primary;
@@ -5380,7 +5386,7 @@ test("migration 14 adds the request indexes to a schema 13 database and keeps ev
     const version = raw.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 17);
+    assert.equal(version.user_version, 18);
     const present = (
       raw
         .prepare(
@@ -5426,7 +5432,7 @@ test("migration 15 adds the natural-language search grant to a schema 14 databas
     const version = raw.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 17);
+    assert.equal(version.user_version, 18);
     const column = (
       raw.prepare("PRAGMA table_info(accounts)").all() as {
         name: string;
@@ -5485,7 +5491,7 @@ test("migration 17 adds the merge grant and movie merge links to a schema 16 dat
     const version = raw.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 17);
+    assert.equal(version.user_version, 18);
     const column = (
       raw.prepare("PRAGMA table_info(accounts)").all() as {
         name: string;
@@ -5531,6 +5537,59 @@ test("migration 17 adds the merge grant and movie merge links to a schema 16 dat
   assert.ok(storage.removeMovieMerge("11111111-1111-4111-8111-111111111111"));
   assert.equal(
     storage.getMovieMerge("11111111-1111-4111-8111-111111111111"),
+    null,
+  );
+});
+
+test("migration 18 adds TPDB merge submissions to a schema 17 database; a pair reads from both records and a resubmit replaces it", () => {
+  const dir = freshDir();
+  storage.bootstrap(testConfig(), ownerUser(), "jf-owner-token");
+  storage.closeStorage();
+
+  // Schema 17 is schema 18 without the tpdb_merge_submissions table.
+  const file = join(dir, "velvarr.sqlite");
+  const v17 = new DatabaseSync(file);
+  v17.exec(DROP_MIGRATION_18);
+  v17.exec("PRAGMA user_version = 17");
+  v17.close();
+
+  const owner = storage.getAccount(ownerUser().id);
+  assert.ok(owner, "the owner row survives the upgrade");
+  const a = "AAAAAAAA-1111-4111-8111-111111111111";
+  const b = "bbbbbbbb-2222-4222-8222-222222222222";
+  assert.equal(storage.getTpdbMergeSubmission(a, b), null);
+  const raw = new DatabaseSync(file);
+  try {
+    const version = raw.prepare("PRAGMA user_version").get() as {
+      user_version: number;
+    };
+    assert.equal(version.user_version, 18);
+  } finally {
+    raw.close();
+  }
+
+  storage.recordTpdbMergeSubmission(a, b, owner.id, "Merge request submitted");
+  const fromSource = storage.getTpdbMergeSubmission(a, b);
+  assert.ok(fromSource, "the submission is stored");
+  assert.equal(
+    fromSource.sourceId,
+    a.toLowerCase(),
+    "ids are stored lowercase",
+  );
+  assert.equal(fromSource.message, "Merge request submitted");
+  assert.deepEqual(
+    storage.getTpdbMergeSubmission(b, a.toLowerCase()),
+    fromSource,
+    "the other record's page sees the same submission",
+  );
+  storage.recordTpdbMergeSubmission(a, b, owner.id, null);
+  assert.equal(
+    storage.getTpdbMergeSubmission(a, b)?.message,
+    null,
+    "a resubmit of the same direction replaces the row",
+  );
+  assert.equal(
+    storage.getTpdbMergeSubmission(a, "cccccccc-3333-4333-8333-333333333333"),
     null,
   );
 });

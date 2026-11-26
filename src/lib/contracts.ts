@@ -463,6 +463,14 @@ export type DuplicateMovieMatch = {
   /** Present when the candidate is already merged away inside Velvarr: the
    * id of the record it merged into. The pair stays visible for undo. */
   mergedInto?: string;
+  /** Present when Velvarr already submitted a TPDB merge for this pair, in
+   * either direction, and TPDB confirmed it. `sourceId` is the record that
+   * merges away on TPDB. Velvarr cannot read TPDB's moderation state. */
+  tpdbMerge?: {
+    sourceId: string;
+    submittedAt: number;
+    message: string | null;
+  };
 };
 
 /** A bounded check, not a complete scan of the TPDB catalog. */

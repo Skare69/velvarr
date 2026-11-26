@@ -61,6 +61,8 @@ import {
   putDiscoverCache,
   saveConfig,
   unfollowPerformer,
+  getTpdbMergeSubmission,
+  recordTpdbMergeSubmission,
 } from "../src/server/storage.ts";
 import { mergeMovies } from "../src/server/movie-merge.ts";
 import { resetSweepCache } from "../src/server/jellyfin.ts";
@@ -5813,6 +5815,36 @@ describe("tpdb movie merge", () => {
       const match = result.matches.find((m) => m.reference.id === TPDB_MERGE_A);
       assert.ok(match, "the merged-away candidate stays listed");
       assert.equal(match.mergedInto, TPDB_MERGE_B);
+      assert.equal(match.tpdbMerge, undefined, "no submission, no field");
+      // A confirmed TPDB submission for the pair, stored from the other
+      // record's page (A merges into B), reaches this page's match too.
+      const me = (await (
+        await call("GET", "/api/me", { cookie: admin })
+      ).json()) as {
+        account: { id: string };
+      };
+      recordTpdbMergeSubmission(
+        TPDB_MERGE_A,
+        TPDB_MERGE_B,
+        me.account.id,
+        null,
+      );
+      resetMetaCache();
+      const again = (await (
+        await call(
+          "GET",
+          `/api/catalog/tpdb/movie/${TPDB_MERGE_B}/duplicates`,
+          {
+            cookie: admin,
+          },
+        )
+      ).json()) as DuplicateMoviesResponse;
+      const submitted = again.matches.find(
+        (m) => m.reference.id === TPDB_MERGE_A,
+      )?.tpdbMerge;
+      assert.equal(submitted?.sourceId, TPDB_MERGE_A.toLowerCase());
+      assert.equal(submitted?.message, null);
+      assert.equal(typeof submitted?.submittedAt, "number");
     } finally {
       // The poster download above hit the tpdb fixture's image branch and
       // left its auth probe set; the artwork test below pins "unset".
@@ -14356,6 +14388,21 @@ test("movie merge: admin-only TPDB website merge, direction, payload and named f
     });
 
     await t.test(
+      "a refused or unknown submit stores no submission",
+      async () => {
+        arm({ mode: "invalid" });
+        await fails(422, "tpdb_merge_rejected");
+        arm({ mode: "down" });
+        await fails(502, "tpdb_merge_unknown");
+        assert.equal(
+          getTpdbMergeSubmission(DUPLICATE_SOURCE, DUPLICATE_CANDIDATE),
+          null,
+          "the duplicate check never claims a merge TPDB did not confirm",
+        );
+      },
+    );
+
+    await t.test(
       "source merges into target: numeric target id, decoded XSRF, session cookies",
       async () => {
         const fx = arm();
@@ -14382,6 +14429,14 @@ test("movie merge: admin-only TPDB website merge, direction, payload and named f
         const page = fx.requests.at(-1);
         assert.equal(page?.path, `/movies/${DUPLICATE_CANDIDATE}`);
         assert.ok(page?.cookie?.includes("theporndb_session=sess1"));
+        // The confirmed submission is stored for the pair, so a reload of
+        // either record's duplicate check shows it instead of the form.
+        const stored = getTpdbMergeSubmission(
+          DUPLICATE_CANDIDATE,
+          DUPLICATE_SOURCE,
+        );
+        assert.equal(stored?.sourceId, DUPLICATE_SOURCE.toLowerCase());
+        assert.equal(stored?.message, "Merge request submitted");
       },
     );
 

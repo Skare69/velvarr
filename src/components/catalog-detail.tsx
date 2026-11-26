@@ -49,7 +49,7 @@ import { seedDetail } from "../lib/names";
 // Pure URL policy from lib: the runtime graph stays one-way (catalog.tsx
 // renders catalog-detail.tsx, never the reverse).
 import { browseFilterHref, type BrowseFilter } from "../lib/browse-url";
-import { MergedMovies, MovieDuplicates } from "./movie-duplicates";
+import { MovieDuplicates } from "./movie-duplicates";
 
 export type DetailTarget = {
   provider: CatalogProvider;
@@ -593,7 +593,6 @@ export function DetailSections({
             movie={d}
             onRefetch={onRetryLink}
           />
-          <MergedMovies movie={d} onRefetch={onRetryLink} />
         </>
       )}
       <div className="cat-cols">

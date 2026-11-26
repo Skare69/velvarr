@@ -63,7 +63,7 @@ import { parseDiscordWebhook } from "../lib/discord-settings.ts";
 
 // Schema identity: application_id spells 'VLVR', user_version is the schema version.
 const APP_ID = 0x564c5652;
-const SCHEMA_VERSION = 17;
+const SCHEMA_VERSION = 18;
 // ponytail: fixed 7-day session TTL; make it an env knob only if an operator asks.
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const BUSY_TIMEOUT_MS = 5000;
@@ -246,6 +246,8 @@ type Statements = {
   getMovieMerge: StatementSync;
   listMovieMergesForPrimary: StatementSync;
   listAllMovieMerges: StatementSync;
+  putTpdbMergeSubmission: StatementSync;
+  getTpdbMergeSubmission: StatementSync;
 };
 
 const MIGRATIONS: Record<number, string> = {
@@ -534,6 +536,19 @@ const MIGRATIONS: Record<number, string> = {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX movie_merges_primary ON movie_merges (primary_id);
+  `,
+  18: `
+    -- Additive: TPDB merge submissions that TPDB confirmed, so the
+    -- duplicate check shows "submitted" after a reload instead of the form.
+    -- Ids are lowercase; one row per direction, and a resubmit replaces it.
+    CREATE TABLE tpdb_merge_submissions (
+      source_id TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      submitted_by TEXT NOT NULL REFERENCES accounts (id),
+      submitted_at INTEGER NOT NULL,
+      message TEXT,
+      PRIMARY KEY (source_id, target_id)
+    );
   `,
 };
 
@@ -971,6 +986,12 @@ function S(): Statements {
         "SELECT merged_id FROM movie_merges WHERE primary_id = ? ORDER BY merged_id",
       ),
       listAllMovieMerges: d.prepare("SELECT merged_id FROM movie_merges"),
+      putTpdbMergeSubmission: d.prepare(
+        "INSERT INTO tpdb_merge_submissions (source_id, target_id, submitted_by, submitted_at, message) VALUES (?, ?, ?, ?, ?) ON CONFLICT (source_id, target_id) DO UPDATE SET submitted_by = excluded.submitted_by, submitted_at = excluded.submitted_at, message = excluded.message",
+      ),
+      getTpdbMergeSubmission: d.prepare(
+        "SELECT source_id, submitted_at, message FROM tpdb_merge_submissions WHERE (source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?) ORDER BY submitted_at DESC LIMIT 1",
+      ),
     };
   }
   return stmts;
@@ -3521,6 +3542,43 @@ export function listMovieMergesFor(primaryId: string): string[] {
       merged_id: string;
     }[]
   ).map((row) => row.merged_id);
+}
+
+/** Stores a TPDB merge submission that TPDB confirmed: `sourceId` merges
+ *  into `targetId` on TPDB. A resubmit of the same direction replaces it. */
+export function recordTpdbMergeSubmission(
+  sourceId: string,
+  targetId: string,
+  submittedBy: string,
+  message: string | null,
+): void {
+  S().putTpdbMergeSubmission.run(
+    sourceId.toLowerCase(),
+    targetId.toLowerCase(),
+    submittedBy,
+    Date.now(),
+    message,
+  );
+}
+
+/** The newest confirmed TPDB merge submission for the pair, in either
+ *  direction, or null. */
+export function getTpdbMergeSubmission(
+  a: string,
+  b: string,
+): { sourceId: string; submittedAt: number; message: string | null } | null {
+  const x = a.toLowerCase();
+  const y = b.toLowerCase();
+  const row = S().getTpdbMergeSubmission.get(x, y, y, x) as
+    | { source_id: string; submitted_at: number; message: string | null }
+    | undefined;
+  return row
+    ? {
+        sourceId: row.source_id,
+        submittedAt: row.submitted_at,
+        message: row.message,
+      }
+    : null;
 }
 
 /** The folded ids of one identity's full merge group, including the input

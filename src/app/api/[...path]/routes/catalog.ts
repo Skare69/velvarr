@@ -33,6 +33,7 @@ import {
   getActiveRequest,
   upsertCatalogRecord,
   listMovieMergesFor,
+  recordTpdbMergeSubmission,
 } from "../../../../server/storage.ts";
 import {
   canMergeDuplicates,
@@ -108,8 +109,10 @@ export async function duplicatesRoute(
 }
 
 /** Admin-only: TPDB records the merge under the stored key's account. The
- * viewed record (source) merges into `target`. */
+ * viewed record (source) merges into `target`. Only a submission TPDB
+ * confirmed is stored, so the duplicate check never claims one it did not. */
 async function mergeRoute(
+  ctx: AuthContext,
   request: Request,
   provider: string,
   kind: string,
@@ -137,7 +140,9 @@ async function mergeRoute(
       "A record cannot merge into itself.",
     );
   }
-  return json(await submitTpdbMovieMerge(source, target, notes));
+  const result = await submitTpdbMovieMerge(source, target, notes);
+  recordTpdbMergeSubmission(source, target, ctx.account.id, result.message);
+  return json(result);
 }
 
 // The grant check sits before any parsing or upstream work: a session
@@ -905,8 +910,8 @@ export const routes: RouteDef[] = [
     method: "POST",
     segments: ["catalog", ":provider", ":kind", ":id", "duplicates", "merge"],
     auth: "admin",
-    run: async (_ctx, request, p) =>
-      mergeRoute(request, p.provider!, p.kind!, p.id!),
+    run: async (ctx, request, p) =>
+      mergeRoute(ctx, request, p.provider!, p.kind!, p.id!),
   },
   {
     method: "POST",

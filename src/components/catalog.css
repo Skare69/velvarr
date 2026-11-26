@@ -477,6 +477,400 @@
   margin: 0 0 0.5rem;
 }
 
+/* TPDB duplicate check: one panel holds every match, the actions grouped
+   by where they act (TPDB or Velvarr), and the fine print at the foot. */
+.dup {
+  display: grid;
+  gap: 0.6rem;
+  padding: 1rem;
+  container-type: inline-size;
+}
+.dup > .cat-section-title {
+  color: var(--color-accent-text);
+}
+/* A found duplicate gets a magenta banner across the panel top that
+   flashes once on load. The banner is the summary of a closed disclosure:
+   the matches and merge actions open below it. An errors-only check keeps
+   the plain title and stays open. */
+.dup:has(> .dup-disclosure) {
+  overflow: hidden;
+}
+.dup:has(> .dup-disclosure > .dup-banner:not(.dup-banner-done)) {
+  border-color: color-mix(in oklab, var(--color-accent) 45%, var(--color-edge));
+}
+.dup-banner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "icon eyebrow toggle"
+    "icon head toggle";
+  align-items: center;
+  column-gap: 0.75rem;
+  row-gap: 0.1rem;
+  margin: -1rem;
+  padding: 0.9rem 1rem;
+  background: var(--color-accent-soft);
+  cursor: pointer;
+  list-style: none;
+  animation: dup-flash 900ms var(--ease-out) both;
+}
+.dup-banner::-webkit-details-marker {
+  display: none;
+}
+.dup-banner:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+.dup-disclosure[open] > .dup-banner {
+  margin-bottom: 1rem;
+  border-bottom: 1px solid
+    color-mix(in oklab, var(--color-accent) 45%, var(--color-panel));
+}
+.dup-body {
+  display: grid;
+  gap: 1rem;
+}
+/* Merged entries open with the details; the panel spaces them, not the
+   section margin. */
+.dup-body > .cat-section {
+  margin-top: 0;
+}
+.dup-toggle {
+  grid-area: toggle;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-height: 2.75rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-accent-text);
+}
+.dup-toggle .icon {
+  width: 1rem;
+  height: 1rem;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .dup-toggle .icon {
+    transition: transform var(--dur-base) var(--ease-out);
+  }
+}
+.dup-disclosure[open] .dup-toggle .icon {
+  transform: rotate(90deg);
+}
+.dup-disclosure[open] .dup-toggle-show,
+.dup-disclosure:not([open]) .dup-toggle-hide {
+  display: none;
+}
+@keyframes dup-flash {
+  from {
+    background-color: color-mix(
+      in oklab,
+      var(--color-accent) 55%,
+      var(--color-panel)
+    );
+  }
+  to {
+    background-color: var(--color-accent-soft);
+  }
+}
+.dup-banner-icon {
+  grid-area: icon;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 999px;
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+}
+.dup-banner-icon .icon {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+.dup-banner > .cat-section-title {
+  grid-area: eyebrow;
+  color: var(--color-accent-text);
+}
+.dup-headline {
+  grid-area: head;
+  font-size: 1.2rem;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+/* Every match is merged in Velvarr: nothing left to act on, so the banner
+   turns neutral, keeps a green check, and does not flash. */
+.dup-banner-done {
+  background: var(--color-raised);
+  animation: none;
+}
+.dup-disclosure[open] > .dup-banner-done {
+  border-bottom-color: var(--color-edge);
+}
+.dup-banner-done .dup-banner-icon {
+  background: var(--color-ok-fill);
+  color: var(--color-ink);
+}
+.dup-banner-done > .cat-section-title,
+.dup-banner-done .dup-toggle {
+  color: var(--color-muted);
+}
+.dup-banner-done .dup-headline {
+  font-size: 1rem;
+  font-weight: 600;
+}
+.dup-card .cat-note,
+.dup-fine .cat-note {
+  margin: 0;
+}
+.dup-card {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+.dup-card + .dup-card {
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-edge);
+}
+.dup-actions {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+@container (min-width: 40rem) {
+  .dup-actions:has(> .dup-group + .dup-group) {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    align-items: start;
+    column-gap: 1.5rem;
+  }
+}
+.dup-group {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.dup-group-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-muted);
+}
+.dup-fine {
+  display: grid;
+  gap: 0.25rem;
+  justify-items: start;
+}
+.dup-fine:empty {
+  display: none;
+}
+/* The verdict bar: a leading chevron, the matched rules and the check
+   score in one summary that opens the check list, indented to the text. */
+.dup-verdict {
+  border-radius: 8px;
+  background: var(--color-raised);
+}
+.dup-checks > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.6rem;
+  padding: 0.7rem;
+  cursor: pointer;
+  list-style: none;
+}
+.dup-checks > summary::-webkit-details-marker {
+  display: none;
+}
+.dup-chev {
+  width: 1rem;
+  height: 1rem;
+  color: var(--color-accent-text);
+}
+.dup-checks[open] .dup-chev {
+  transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .dup-chev {
+    transition: transform var(--dur-base) var(--ease-out);
+  }
+}
+.dup-rule {
+  font-weight: 600;
+  color: var(--color-ink);
+}
+.dup-score {
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+}
+/* One raised tray holds both browse tiles and the Velvarr merge row: a
+   magenta ring on this record's poster (or the entry to keep), the caption
+   under each poster, and the ≈ in a soft magenta circle between them. */
+.dup-tray {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+  border-radius: 14px;
+  background: var(--color-raised);
+}
+.dup-pair {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+}
+.dup-tile {
+  display: grid;
+  gap: 0.25rem;
+  align-content: start;
+  align-self: stretch;
+  width: 10rem;
+  margin: 0;
+}
+/* The magenta ring marks this record, or, while the Velvarr merge choice
+   shows, the entry to keep; the entry that merges away fades. */
+.dup-tile .media-art {
+  transition:
+    box-shadow var(--dur-base) var(--ease-out),
+    opacity var(--dur-base) var(--ease-out);
+}
+.dup-ring .media-art {
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+/* The card's hover lift sets its own shadow; keep the ring with it. */
+.dup-ring .media-card:is(:hover, :focus-within) .media-art {
+  box-shadow:
+    0 0 0 2px var(--color-accent),
+    0 6px 20px -4px rgb(0 0 0 / 0.5);
+}
+.dup-away .media-art {
+  opacity: 0.45;
+}
+.dup-keep {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 2rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+.dup-keep input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--color-accent);
+}
+.dup-merge {
+  display: grid;
+  gap: 0.5rem;
+  justify-items: start;
+}
+.dup-tile-caption {
+  display: grid;
+  justify-items: start;
+  padding-top: 0.35rem;
+}
+.dup-tile-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-muted);
+}
+.dup-tile-self .dup-tile-label {
+  color: var(--color-accent-text);
+}
+.dup-tile-self .dup-tile-label::before {
+  content: "";
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.4rem;
+  border-radius: 999px;
+  background: var(--color-accent);
+  vertical-align: 0.05em;
+}
+.dup-tile-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2rem;
+  font-size: 0.875rem;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+@media (pointer: coarse) {
+  .dup-tile-link,
+  .dup-keep {
+    min-height: 2.75rem;
+  }
+}
+.dup-link {
+  display: grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 999px;
+  background: var(--color-accent-soft);
+  color: var(--color-accent-text);
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+.dup-checks > summary:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+  border-radius: 8px;
+}
+.dup-check-list {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0.25rem 0.7rem 0.7rem 2.3rem;
+  list-style: none;
+}
+/* Scan coverage under the checks, on the list's text edge. */
+.dup-scan-note {
+  padding: 0 0.7rem 0.7rem 2.3rem;
+}
+@container (min-width: 40rem) {
+  .dup-check-list {
+    grid-template-columns: 1fr 1fr;
+    column-gap: 1.5rem;
+  }
+}
+.dup-check-list li {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+}
+.dup-box {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  margin-top: 0.2rem;
+  border: 1px solid var(--color-muted);
+  border-radius: 3px;
+  font-size: 0.7rem;
+  line-height: 1;
+}
+.dup-box[data-met="true"] {
+  background: var(--color-ok-fill);
+  border-color: var(--color-ok-fill);
+  color: var(--color-ink);
+}
+.dup-check-label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+.dup-check-detail {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Inputs with a leading icon: the icon names what the field searches, so
    title, performer, include, and exclude fields never look alike. */
 .input-lead {

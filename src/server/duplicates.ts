@@ -8,7 +8,7 @@ import type {
 } from "../lib/contracts.ts";
 import { hiddenTitleMatcher } from "./catalog-visibility.ts";
 import { AppError, sourceError, upstreamCheckError } from "./http.ts";
-import { getMovieMerge } from "./storage.ts";
+import { getMovieMerge, getTpdbMergeSubmission } from "./storage.ts";
 import {
   isProviderImageUrl,
   isUuid,
@@ -444,7 +444,12 @@ export async function duplicateMovies(
   // candidate path so the pair is never silently dropped here.
   result.matches = [...matches.values()].map((item) => {
     const link = getMovieMerge(item.reference.id.toLowerCase());
-    return link ? { ...item, mergedInto: link.primaryId } : item;
+    const submitted = getTpdbMergeSubmission(id, item.reference.id);
+    return {
+      ...item,
+      ...(link ? { mergedInto: link.primaryId } : {}),
+      ...(submitted ? { tpdbMerge: submitted } : {}),
+    };
   });
   result.incomplete = [...new Set(result.incomplete)];
   result.errors = result.errors.filter(
