@@ -820,9 +820,13 @@ function MatchSuggestions({
       </p>
     );
   }
+  // A bounded check that found nothing still shows its limits and errors:
+  // an empty answer from a capped search is not a confirmed absence.
   if (
     data === null ||
-    (data.suggestions.length === 0 && data.errors.length === 0)
+    (data.suggestions.length === 0 &&
+      data.errors.length === 0 &&
+      data.incomplete.length === 0)
   ) {
     return null;
   }
@@ -836,6 +840,11 @@ function MatchSuggestions({
         Velvarr compares the facts both providers publish. Merge only when you
         are sure: the merge records your choice and follows both entries.
       </p>
+      {data.suggestions.length === 0 && (
+        <p className="mt-2 text-sm text-muted">
+          No likely match among the {otherLabel} records Velvarr compared.
+        </p>
+      )}
       {data.suggestions.length > 0 && (
         <ul
           className="mt-3 space-y-4"

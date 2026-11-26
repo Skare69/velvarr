@@ -129,7 +129,7 @@ finds suggestions. Each suggestion shows the photo, the name (a link to its
 page), the score and confidence, the match and conflict signals, and a Merge
 button. A text says that Velvarr compares published facts and that a merge
 records the user's choice. Errors and `incomplete` notes show below the list.
-No suggestions and no errors: the section shows nothing.
+When the answer has no suggestions, no errors and no `incomplete` notes, the section shows nothing. With no suggestions but with notes or errors, it says that no likely match was found and shows the notes, so a capped search never reads as a confirmed absence.
 
 ## Acceptance
 
