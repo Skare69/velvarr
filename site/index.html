@@ -204,7 +204,7 @@ h1 em, .shine { font-style: normal; color: var(--ink); display: inline-block; }
 .stack .opt .tool b { grid-column: 2; }
 .stack .opt-label { grid-column: 2; font-size: 0.72rem; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
 
-/* Example card for AI-assisted matching (last tour feature) */
+/* Example cards for AI-assisted matching and the duplicate check (tour features) */
 .match { margin: 0; padding: 24px; border: 1px solid var(--edge); border-radius: 10px; background: var(--panel); }
 .match-ex { margin: 0 0 16px; font-size: 0.72rem; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
 .match-row { display: grid; gap: 4px; padding: 14px 16px; border: 1px solid var(--edge); border-radius: 7px; background: var(--raised); }
@@ -424,6 +424,28 @@ html.animations-paused .shine { animation-play-state: paused; }
         <p class="match-link">Likely the same title</p>
         <div class="match-row"><span>In your Jellyfin library</span><b>Midnight Lobby: Director's Cut</b></div>
         <p class="match-note">Flagged for your review. Nothing changes until you decide.</p>
+      </figure>
+    </article>
+    <article class="feat" id="tour-duplicates">
+      <div class="say">
+        <span class="kicker">Duplicates</span>
+        <h2>Spot the same movie twice on TPDB</h2>
+        <p>TPDB sometimes lists one movie twice, for example as a translated release. On each TPDB movie page, Velvarr compares file hashes, cast, year, tags, length and poster, and shows the evidence. People with the merge grant fold the pair into one entry. Admins can also send the merge to TPDB.</p>
+        <ul class="chips" aria-label="Duplicate check capabilities">
+          <li>shared file hashes</li>
+          <li>cast, year, tags and poster</li>
+          <li>merge in Velvarr</li>
+          <li>unmerge any time</li>
+          <li>merge sent to TPDB</li>
+        </ul>
+        <p class="works"><a href="https://github.com/Skare69/velvarr/blob/main/docs/features.md#possible-duplicate-tpdb-movies">How the duplicate check works</a></p>
+      </div>
+      <figure class="match" aria-label="Example of a possible duplicate movie">
+        <p class="match-ex">Example</p>
+        <div class="match-row"><span>This TPDB record</span><b>Midnight Lobby (2024)</b></div>
+        <p class="match-link">Same cast, year, tags, length and poster</p>
+        <div class="match-row"><span>Possible duplicate on TPDB</span><b>Mitternachtslobby (2024)</b></div>
+        <p class="match-note">You pick the record to keep. Unmerge brings both back.</p>
       </figure>
     </article>
     </div>
