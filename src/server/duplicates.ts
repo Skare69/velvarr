@@ -224,23 +224,22 @@ async function readCandidates(
       };
     }
     const data = body.data as unknown[];
-    rows.push(...data);
+    // Slice before the spread: a huge array of tiny rows fits the byte bound
+    // but overflows the call stack as spread arguments.
+    const room = CANDIDATE_BUDGET - rows.length;
+    rows.push(...data.slice(0, room));
     const more =
-      data.length > 0 &&
-      Boolean(record(body.links)?.next || record(body.meta)?.next_page_url);
-    const atBudget = rows.length >= CANDIDATE_BUDGET;
-    if (!more && !atBudget) return { rows, errors: [], incomplete: [] };
-    if (atBudget || page >= CANDIDATE_PAGES) {
-      const kept = rows.slice(0, CANDIDATE_BUDGET);
+      data.length > room ||
+      (data.length > 0 &&
+        Boolean(record(body.links)?.next || record(body.meta)?.next_page_url));
+    if (!more) return { rows, errors: [], incomplete: [] };
+    if (rows.length >= CANDIDATE_BUDGET || page >= CANDIDATE_PAGES) {
       return {
-        rows: kept,
+        rows,
         errors: [],
-        incomplete:
-          more || rows.length > CANDIDATE_BUDGET
-            ? [
-                `${label}: only the first ${kept.length} candidates were checked`,
-              ]
-            : [],
+        incomplete: [
+          `${label}: only the first ${rows.length} candidates were checked`,
+        ],
       };
     }
   }

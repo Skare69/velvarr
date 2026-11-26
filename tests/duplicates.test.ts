@@ -313,6 +313,21 @@ test("a listing longer than the 100-row budget keeps the budget message", async 
   );
 });
 
+test("a page of 200,000 tiny rows inside the byte bound stays within the budget", async () => {
+  // About 600 KB: below the 2 MiB bound, but too many rows to spread as
+  // call arguments.
+  candidates = Array.from({ length: 200_000 }, () => ({}));
+  endless = true;
+  const result = await duplicateMovies(sourceId, []);
+  assert.ok(
+    result.incomplete.includes(
+      "Metadata candidates: only the first 100 candidates were checked",
+    ),
+  );
+  assert.ok(result.errors.every((e) => e.code === "upstream_bad_response"));
+  assert.ok(!fixture.log.some((r) => r.url.includes("page=2&")));
+});
+
 test("poster cap is deterministic and hidden records leave no evidence or errors", async () => {
   candidates = Array.from({ length: 12 }, (_, n) => row(n + 2)).reverse();
   const result = await duplicateMovies(sourceId, []);
