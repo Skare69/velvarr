@@ -4,9 +4,8 @@
  * One accessible tag picker for every tag surface: search include/exclude
  * filters and personal hidden tags all get the same combobox, the same
  * removable chips, the same keyboard story. It searches /api/browse/tags
- * (both providers at once) after the term settles. Includes are always AND
- * and excludes always exclude, so there is deliberately no Any/All operator
- * here — the caller's `description` carries that per-surface help.
+ * (both providers at once) after the term settles. Include terms match with
+ * AND and can contain OR groups. Exclusions and hidden tags stay flat.
  */
 
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
@@ -115,9 +114,24 @@ export function TagPicker(props: TagPickerProps) {
   const [term, setTerm] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
-  // The chip whose or-group the next pick extends; null when none is
-  // armed. One pick consumes it — see pick().
-  const [orTarget, setOrTarget] = useState<number | null>(null);
+  // Bind the target to this exact selection snapshot, not an index alone.
+  const [orTarget, setOrTarget] = useState<{
+    index: number;
+    signature: string;
+  } | null>(null);
+  const selectionSignature = JSON.stringify(rows);
+  const targetIndex =
+    allowGroups && orTarget?.signature === selectionSignature
+      ? orTarget.index
+      : null;
+  const targetRow = targetIndex === null ? undefined : rows[targetIndex];
+  useEffect(() => {
+    setOrTarget((target) =>
+      target?.signature === selectionSignature && allowGroups && !disabled
+        ? target
+        : null,
+    );
+  }, [selectionSignature, allowGroups, disabled]);
   const inputRef = useRef<HTMLInputElement>(null);
   const t = term.trim();
   // The debounce commits the term; the route only ever sees settled input.
@@ -218,21 +232,15 @@ export function TagPicker(props: TagPickerProps) {
     // "Analingus" and "Anal Fisting"). Picking a listed row is the way to
     // ask for one exact tag.
     const chosen = tag;
-    // An armed or-button means this pick extends that group: the group
-    // stays a group, its member order stays put, and the arm always clears
-    // after the pick. A target that no longer points at a group (removed
-    // or shifted meanwhile) falls back to a plain append.
-    const target = orTarget;
+    // One pick consumes the target. A stale target appends an AND term.
     setOrTarget(null);
-    if (target !== null && allowGroups) {
-      const row = rows[target];
-      if (Array.isArray(row)) {
-        emit(rows.map((r, i) => (i === target ? [...row, chosen] : r)));
-        setTerm("");
-        setOpen(false);
-        inputRef.current?.focus();
-        return;
-      }
+    if (targetIndex !== null && targetRow !== undefined && allowGroups) {
+      const members = Array.isArray(targetRow) ? targetRow : [targetRow];
+      emit(rows.map((r, i) => (i === targetIndex ? [...members, chosen] : r)));
+      setTerm("");
+      setOpen(false);
+      inputRef.current?.focus();
+      return;
     }
     emit([...rows, chosen]);
     setTerm("");
@@ -240,8 +248,7 @@ export function TagPicker(props: TagPickerProps) {
     inputRef.current?.focus();
   }
 
-  /** One row off the selection; also disarms the or-target, whose index
-   * would point somewhere else after the removal. */
+  /** Remove a whole term and cancel the next OR pick. */
   function removeRow(i: number) {
     setOrTarget(null);
     emit(rows.filter((_, j) => j !== i));
@@ -288,6 +295,49 @@ export function TagPicker(props: TagPickerProps) {
           </InfoTip>
         )}
       </div>
+      {allowGroups && (
+        <div className="tag-next">
+          <span className="label" id={`${id}-next-label`}>
+            Add next tag
+          </span>
+          <div
+            className="segmented"
+            role="group"
+            aria-labelledby={`${id}-next-label`}
+          >
+            <button
+              type="button"
+              aria-pressed={targetRow === undefined}
+              disabled={disabled || capped}
+              onClick={() => setOrTarget(null)}
+            >
+              AND
+            </button>
+            <button
+              type="button"
+              aria-pressed={targetRow !== undefined}
+              disabled={disabled || capped || rows.length === 0}
+              onClick={() =>
+                setOrTarget({
+                  index: rows.length - 1,
+                  signature: selectionSignature,
+                })
+              }
+            >
+              OR
+            </button>
+          </div>
+        </div>
+      )}
+      {allowGroups && targetRow !== undefined && (
+        <p className="cat-note tag-target" role="status">
+          Add OR to “
+          {Array.isArray(targetRow)
+            ? targetRow.map((member) => member.name).join(" OR ")
+            : targetRow.name}
+          ”. Select AND to cancel.
+        </p>
+      )}
       <div className="input-lead">
         <Icon
           name={
@@ -377,6 +427,7 @@ export function TagPicker(props: TagPickerProps) {
                       type="button"
                       role="option"
                       id={`${id}-opt-${i}`}
+                      disabled={disabled || capped}
                       aria-selected={i === activeIdx}
                       tabIndex={-1}
                       className="cat-picker-row"
@@ -413,12 +464,12 @@ export function TagPicker(props: TagPickerProps) {
       )}
       {rows.length > 0 && (
         <ul
-          className="mt-2 flex list-none flex-wrap gap-1.5 p-0"
+          className={`mt-2 flex list-none flex-wrap gap-1.5 p-0${allowGroups ? " tag-terms" : ""}`}
           aria-label={`Selected ${label}`}
         >
           {rows.map((row, i) => {
             const group = Array.isArray(row);
-            const text = group ? row.map((m) => m.name).join(" or ") : row.name;
+            const text = group ? row.map((m) => m.name).join(" OR ") : row.name;
             // Same chip as the active-filter row above Browse results, so
             // a tag looks the same in the drawer and on the page.
             const chip = (
@@ -450,7 +501,7 @@ export function TagPicker(props: TagPickerProps) {
                 {!group && isFreeText(row) && (
                   <span className="text-muted">Free text:</span>
                 )}
-                {text}
+                <span className="tag-term-name">{text}</span>
                 <span className="filter-chip-x" aria-hidden="true">
                   <Icon name="close" />
                 </span>
@@ -460,22 +511,27 @@ export function TagPicker(props: TagPickerProps) {
               <li
                 key={`${group ? "group" : "tag"}:${i}:${normalizeFacetName(group ? (row[0]?.name ?? "") : row.name)}`}
               >
-                {group ? (
-                  /* The or-affordance is a button BESIDE the chip, never
-                     nested inside it — a button inside a button is
-                     invalid HTML. */
+                {allowGroups && i > 0 && (
+                  <span className="tag-term-and">AND</span>
+                )}
+                {allowGroups ? (
                   <span className="filter-chip-with">
                     {chip}
                     <button
                       type="button"
                       className="filter-chip-or"
-                      disabled={disabled}
-                      aria-pressed={orTarget === i}
-                      aria-label={`Add another tag to the group “${text}”`}
-                      title="Extend this or-group"
-                      onClick={() => setOrTarget(orTarget === i ? null : i)}
+                      disabled={disabled || capped}
+                      aria-pressed={targetIndex === i}
+                      aria-label={`Add OR to “${text}”`}
+                      onClick={() => {
+                        setOrTarget({
+                          index: i,
+                          signature: selectionSignature,
+                        });
+                        inputRef.current?.focus();
+                      }}
                     >
-                      or
+                      Add OR
                     </button>
                   </span>
                 ) : (
@@ -485,17 +541,6 @@ export function TagPicker(props: TagPickerProps) {
             );
           })}
         </ul>
-      )}
-      {/* The armed group names itself while waiting for the next pick; the
-          arm clears after that one pick (see pick()). */}
-      {allowGroups && orTarget !== null && Array.isArray(rows[orTarget]) && (
-        <p className="cat-note">
-          Adding to &ldquo;
-          {(rows[orTarget] as CatalogTagSelection[])
-            .map((m) => m.name)
-            .join(" or ")}{" "}
-          or &hellip;&rdquo; — pick another tag.
-        </p>
       )}
     </div>
   );

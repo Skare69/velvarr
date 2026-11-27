@@ -2359,8 +2359,8 @@ export function TitlesView() {
             onChange={onInclude}
             allowFreeText
             allowGroups
-            description="Titles need every tag here; tags joined by or form one group."
-            help="A tag picked from the list matches exactly. A typed term matches every tag whose name contains it (case and separators ignored): “anal” also matches Analingus and Anal Fisting."
+            description="Titles need every AND term. Any tag within an OR group can match that term."
+            help="Select AND for a new term. Select OR to extend the last term, or Add OR beside a specific term. A listed tag matches exactly. A typed term matches tag names that contain it, with case and separators ignored."
           />
           <TagPicker
             id="titles-exclude"

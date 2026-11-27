@@ -1144,13 +1144,13 @@ a.filter-chip:hover {
   background: color-mix(in oklab, var(--color-raised) 70%, var(--color-ink));
   color: var(--color-ink);
 }
-/* An or-group's chip and its "or" affordance read as one control: the
-   small button sits beside the chip (never nested inside it — a button
-   inside a button is invalid HTML) and lights up while it is armed. */
+/* Keep the OR action beside a wrapping term, never inside its remove button. */
 .filter-chip-with {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
+  min-width: 0;
+  max-width: 100%;
 }
 .filter-chip-or {
   border: 1px dashed
@@ -1162,14 +1162,71 @@ a.filter-chip:hover {
   font-size: 0.78rem;
   font-weight: 650;
   padding: 0.12rem 0.42rem;
+  min-height: 44px;
+  flex-shrink: 0;
+  white-space: nowrap;
   cursor: pointer;
 }
-.filter-chip-or:hover,
+.filter-chip-or:not(:disabled):hover,
 .filter-chip-or:focus-visible,
 .filter-chip-or[aria-pressed="true"] {
   color: var(--color-ink);
   border-color: var(--color-accent-text);
   background: color-mix(in oklab, var(--color-raised) 82%, var(--color-ink));
+}
+.filter-chip-or:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.filter-chip-or:focus-visible,
+.tag-next button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 4px;
+}
+.filter-chip-or:not(:disabled):active {
+  transform: translateY(1px);
+}
+.tag-next {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.tag-next .label {
+  margin: 0;
+}
+.tag-next .segmented button {
+  min-height: 44px;
+  min-width: 44px;
+}
+.tag-target,
+.tag-term-name {
+  overflow-wrap: anywhere;
+}
+.tag-terms {
+  flex-direction: column;
+  align-items: flex-start;
+}
+.tag-terms > li {
+  min-width: 0;
+  max-width: 100%;
+}
+.tag-term-and {
+  display: block;
+  margin: 0.25rem 0;
+  color: var(--color-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.tag-terms .filter-chip {
+  min-width: 0;
+  min-height: 44px;
+  text-align: left;
+}
+.tag-terms .filter-chip-mark,
+.tag-terms .filter-chip-x {
+  flex-shrink: 0;
 }
 /* Five date comparisons wrap into rows of three in the narrow drawer
    instead of scrolling a cut label out of view. */

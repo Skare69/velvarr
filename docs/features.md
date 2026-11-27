@@ -2,7 +2,7 @@
 
 - **Catalogs:** movies (TPDB), scenes (TPDB and StashDB), performers, and studios, with the filters and sort orders that each provider supports.
 - **Artwork:** StashDB uses the servable image with the largest valid pixel area. If no servable image has valid dimensions, it uses the first servable image.
-- **Browse:** one grid for TPDB movies and StashDB scenes, with search, tag include and exclude ("or" groups included), up to five performers with an all-or-any choice, up to five studios, a year range, and date filters. A filter an entry cannot ride on one source says so in a note beside the grid. The URL holds every filter.
+- **Browse:** one grid for TPDB movies and StashDB scenes, with search, tags, performers, studios, years, and dates. Manual **AND** adds a Must have term, and **OR** adds an alternative within one term. Every term must match, and manual controls use the same query URLs as enhanced search. Each tag list permits 25 members, including OR members, without duplicates, and exclusions and hidden tags stay flat. Select up to five performers with an all-or-any choice, and up to five studios. The URL holds every filter, and a note identifies filters that a source cannot apply.
 - **Search, Studios, and Genres** across both providers. Velvarr never merges results across providers. Cross-provider identity comes only from links that the providers publish.
 - **Requests** with administrator or moderator approval, and an optional auto-approve grant for each account. Each account can have a maximum of 500 requests that wait for a decision.
 - **Crash-safe acquisition into Whisparr:** Velvarr records each attempt before the network call, so a restart never loses or duplicates an add.

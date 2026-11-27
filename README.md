@@ -53,7 +53,7 @@ docker compose up -d
 
 ## Features
 
-- Catalogs and one Browse grid across TPDB and StashDB: movies, scenes, performers, and studios, with filters that the URL holds.
+- Catalogs and one Browse grid across TPDB and StashDB: movies, scenes, performers, and studios. Manual tag **AND/OR** controls use the same query URLs as enhanced search. Every Must have term must match, with OR alternatives within each term. Each tag list permits 25 members without duplicates. Exclusions and hidden tags stay flat.
 - Requests with administrator or moderator approval, crash-safe acquisition into Whisparr, and per-user Jellyfin watch links. On Browse, "Request all" requests the titles that the grid shows, at most 20 for each press.
 - Performer follows, per-account preferences, similar titles, and an update notice for new releases.
 - Performer match suggestions: a performer page with only one provider offers the probable record on the other provider, with a score and the evidence. You confirm each merge.

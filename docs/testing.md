@@ -44,6 +44,25 @@ PLAYWRIGHT_CHANNEL=chrome bun run test:ui tests/ui/navigation.spec.mjs
 
 Omit `PLAYWRIGHT_CHANNEL` when Playwright uses its own Chromium installation.
 
+## Browse tag controls
+
+After the production build, run the Browse browser cases and the existing server regressions:
+
+```sh
+PLAYWRIGHT_CHANNEL=chrome bun run test:ui tests/ui/browse.spec.mjs
+node --experimental-strip-types --import ./tests/setup.ts --test \
+  tests/browse.test.ts tests/browse-url.test.ts tests/prose-map.test.ts
+```
+
+Omit `PLAYWRIGHT_CHANNEL` when Playwright uses its own Chromium installation.
+The browser cases use the real Must have picker and synthetic tag-search responses.
+They compare the URL `include` array with the outgoing `/api/browse` request.
+Cases cover AND terms, OR groups, independent groups, cancellation, navigation, duplicates, the 25-member cap, and flat exclusion and hidden-tag lists.
+
+The enhanced-search case supplies a synthetic mapped response through the real search form, then edits its groups manually.
+It checks the response contract, not a live model or provider.
+The server suites check group semantics, URL validation, and prose-to-filter mapping.
+
 ## Artwork property review
 
 Run the random-seed review without a change to the sample counts:

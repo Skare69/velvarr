@@ -910,6 +910,10 @@ body:has(.auth-page) {
   border-radius: 10px;
   background: var(--color-panel);
 }
+/* Nested control rows must shrink too, not keep a select's intrinsic width. */
+.toolbar-group > div {
+  min-width: 0;
+}
 .toolbar-group > .filter-group-name {
   margin: 0;
   white-space: nowrap;
