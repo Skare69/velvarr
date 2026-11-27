@@ -1,14 +1,34 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { chromium, expect } from "@playwright/test";
+import http from "node:http";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 
-const landingUrl =
-  process.env.LANDING_PAGE_URL || new URL("./index.html", import.meta.url).href;
-const releaseUrl =
-  "https://api.github.com/repos/Skare69/velvarr/releases/latest";
-const loopNames = ["beam-rot", "breathe", "drift-a", "drift-b", "shimmer"];
+// The Pages deploy bakes the newest release into the badge (pages.yml). The
+// test serves the page with the same bake applied and fixture values that
+// match the mocked clock, so the same-day shine renders deterministically on
+// any checkout, not only on a same-day deploy.
+const badgeTag = "v0.0.0-test";
+const badgePublished = "2026-11-21T09:00:00Z";
+const contentTypes = {
+  ".html": "text/html",
+  ".webp": "image/webp",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".css": "text/css",
+  ".js": "text/javascript",
+  ".mjs": "text/javascript",
+  ".json": "application/json",
+};
+const loopNames = ["beam-rot", "breathe", "shimmer"];
 const storageKey = "velvarr-animations-paused";
 let browser;
+let landingUrl;
+let server;
 
 before(async () => {
   browser = await chromium.launch({
@@ -17,14 +37,55 @@ before(async () => {
       ? { channel: process.env.PLAYWRIGHT_CHANNEL }
       : {}),
   });
+  if (process.env.LANDING_PAGE_URL) {
+    landingUrl = process.env.LANDING_PAGE_URL;
+    return;
+  }
+  const root = path.resolve(fileURLToPath(new URL("./", import.meta.url)));
+  server = http.createServer(async (request, response) => {
+    const urlPath = decodeURIComponent(
+      new URL(request.url, "http://localhost").pathname,
+    );
+    const filePath = path.resolve(
+      root,
+      urlPath === "/" ? "index.html" : urlPath.slice(1),
+    );
+    if (filePath !== root && !filePath.startsWith(root + path.sep)) {
+      response.writeHead(403);
+      response.end();
+      return;
+    }
+    try {
+      let body = await readFile(filePath);
+      if (filePath.endsWith("index.html")) {
+        body = Buffer.from(
+          String(body).replace(
+            'data-tag="" data-published=""',
+            `data-tag="${badgeTag}" data-published="${badgePublished}"`,
+          ),
+        );
+      }
+      response.writeHead(200, {
+        "content-type":
+          contentTypes[path.extname(filePath)] ?? "application/octet-stream",
+      });
+      response.end(body);
+    } catch {
+      response.writeHead(404);
+      response.end("not found");
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  landingUrl = `http://127.0.0.1:${server.address().port}/index.html`;
 });
 after(async () => {
   await browser?.close();
+  await new Promise((resolve) => server?.close(resolve));
 });
 
 async function openPage(
   t,
-  { reducedMotion = "no-preference", delayRelease = false } = {},
+  { reducedMotion = "no-preference" } = {},
 ) {
   const context = await browser.newContext({
     reducedMotion,
@@ -45,39 +106,9 @@ async function openPage(
       }
     };
   });
-  let release;
-  const releaseReady = new Promise((resolve) => {
-    release = resolve;
-  });
-  if (!delayRelease) release();
-  const documentUrl = new URL(landingUrl);
-  await context.route("**/*", async (route) => {
-    const url = route.request().url();
-    if (url === releaseUrl) {
-      await releaseReady;
-      await route.fulfill({
-        json: {
-          tag_name: "v0.0.0-test",
-          html_url:
-            "https://github.com/Skare69/velvarr/releases/tag/v0.0.0-test",
-          published_at: "2026-11-21T09:00:00Z",
-        },
-      });
-      return;
-    }
-    const target = new URL(url);
-    if (
-      target.protocol === "file:" ||
-      (documentUrl.protocol !== "file:" && target.origin === documentUrl.origin)
-    ) {
-      await route.continue();
-    } else {
-      await route.abort();
-    }
-  });
   const page = await context.newPage();
   await page.goto(landingUrl, { waitUntil: "domcontentloaded" });
-  return { page, context, release };
+  return { page, context };
 }
 
 async function pauseButton(page) {
@@ -137,7 +168,7 @@ async function assertSaved(page, button, paused) {
 }
 
 test("Keyboard pause and resume control every persistent loop and survive reload", async (t) => {
-  const { page, release } = await openPage(t, { delayRelease: true });
+  const { page } = await openPage(t);
   const button = await pauseButton(page);
   await assertLoops(page, "running");
   for (
@@ -165,7 +196,6 @@ test("Keyboard pause and resume control every persistent loop and survive reload
   await page.keyboard.press("Enter");
   await assertSaved(page, button, true);
   await assertLoops(page, "paused");
-  release();
   await expect(page.locator("#release .shine")).toBeVisible();
   await expect
     .poll(() =>
